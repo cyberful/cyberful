@@ -1,0 +1,115 @@
+# Temporarily disabled. Remove the .disabled suffix when GitHub CI/CD is ready.
+name: Reusable native builds
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact verified commit to build
+        required: true
+        type: string
+      version:
+        description: SemVer to embed and package
+        required: true
+        type: string
+      channel:
+        description: Runtime release channel
+        required: true
+        type: string
+      retention_days:
+        description: Build artifact retention
+        required: false
+        default: 7
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.14
+  NODE_VERSION: 24.4.0
+  NPM_VERSION: 11.5.1
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64 and baseline
+            runner: ubuntu-24.04
+            platform: linux
+            architecture: x64
+            targets: cyberful-linux-x64,cyberful-linux-x64-baseline
+          - name: macOS 15 arm64
+            runner: macos-15
+            platform: darwin
+            architecture: arm64
+            targets: cyberful-darwin-arm64
+          - name: macOS 15 Intel and baseline
+            runner: macos-15-intel
+            platform: darwin
+            architecture: x64
+            targets: cyberful-darwin-x64,cyberful-darwin-x64-baseline
+          - name: Windows x64 and baseline
+            runner: windows-2025
+            platform: windows
+            architecture: x64
+            targets: cyberful-windows-x64,cyberful-windows-x64-baseline
+    env:
+      CYBERFUL_VERSION: ${{ inputs.version }}
+      CYBERFUL_CHANNEL: ${{ inputs.channel }}
+      CYBERFUL_BUILD_ID: ${{ inputs.version }}-${{ inputs.ref }}
+      CYBERFUL_SKIP_CODEX_COMPAT: "1"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm install --global "npm@${NPM_VERSION}"
+      - run: bun install --frozen-lockfile
+      - run: npm ci --prefix mcps
+      - name: Build native binaries
+        run: bun run --cwd cyberful build --target "${{ matrix.targets }}" --skip-install
+      - name: Pack the platform package
+        run: >-
+          bun cyberful/script/package-npm.ts
+          --platform "${{ matrix.platform }}"
+          --arch "${{ matrix.architecture }}"
+          --version "${{ inputs.version }}"
+          --output cyberful/dist/npm-platform
+      - name: Pack the metapackage for the isolated smoke test
+        run: >-
+          bun cyberful/script/package-npm.ts
+          --meta
+          --version "${{ inputs.version }}"
+          --output cyberful/dist/npm-meta-smoke
+      - name: Install and execute the local npm packages
+        shell: bash
+        run: >-
+          bun cyberful/script/smoke-npm.ts
+          --platform-package cyberful/dist/npm-platform/packages/*.tgz
+          --meta-package cyberful/dist/npm-meta-smoke/packages/*.tgz
+          --version "${{ inputs.version }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: cyberful/dist/npm-platform/packages/*.tgz
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+  required:
+    name: Native build aggregate
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test "${{ needs.build.result }}" = success

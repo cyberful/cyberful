@@ -1,21 +1,21 @@
 # Cyberful
 
-Cybersecurity is difficult: effective work spans source code, architecture,
-runtime behavior, infrastructure, specialized tooling, and evidence that can
-withstand independent verification. Cyberful is an **open-source AI workbench**
-built to help democratize cybersecurity by making this depth of security
-engineering more accessible.
+Cyberful is an **open-source application-security workbench** that orchestrates
+Codex, an isolated browser, OWASP ZAP, and 177 security tools as one
+evidence-driven system. It provides a single terminal for finding, exploiting,
+independently verifying, and remediating vulnerabilities, then turns the work
+into durable evidence and report-ready results.
 
 <p align="center">
   <img src="docs/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
 </p>
 
-It brings the full application-security lifecycle into one terminal workspace:
-end-to-end **authorized penetration testing**, repository-wide code audits,
-project and architecture assessments, secure review of code changes, and
-verified remediation. The same comprehensive suite supports professional
-security teams and independent researchers working within bug bounty program
-scopes, without forcing them to assemble a collection of disconnected scanners.
+It covers the full application-security lifecycle: end-to-end **authorized
+penetration testing**, repository-wide code audits, project and architecture
+assessments, secure review of code changes, and verified remediation. The same
+comprehensive suite supports professional security teams and independent
+researchers working within bug bounty program scopes, without forcing them to
+assemble a collection of disconnected scanners.
 
 Rather than acting as a single scanner or rebuilding a general-purpose
 autonomous agent, Cyberful uses a subsystem architecture. A subsystem is the

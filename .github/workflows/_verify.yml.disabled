@@ -1,0 +1,156 @@
+# Temporarily disabled. Remove the .disabled suffix when GitHub CI/CD is ready.
+name: Reusable verification
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to verify
+        required: true
+        type: string
+      pr_title:
+        description: Pull request title to validate; empty outside pull requests
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.14
+  CODEX_VERSION: 0.144.5
+
+jobs:
+  quality:
+    name: Quality and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Scan the checkout for secrets
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
+            --output /tmp/gitleaks.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" \
+            | sha256sum --check
+          tar --extract --gzip --file /tmp/gitleaks.tar.gz --directory /tmp gitleaks
+          /tmp/gitleaks dir . --redact --no-banner
+      - run: bun install --frozen-lockfile
+      - name: Validate the pull request title
+        if: inputs.pr_title != ''
+        env:
+          PR_TITLE: ${{ inputs.pr_title }}
+        run: bun scripts/release-plan.ts --validate-title
+      - run: make typecheck test-bun test-python
+
+  cyberful_os:
+    name: cyberful-os integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: make test-cyberful-os
+
+  zap:
+    name: Headless ZAP integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: npm ci --prefix mcps
+      - run: docker build --tag cyberful-zap:2.17.0 --file mcps/zap/Dockerfile mcps/zap
+      - run: docker build --tag cyberful-zap-bridge:0.1.0 --file mcps/zap/Dockerfile.bridge mcps/zap
+      - run: make test-zap
+
+  network:
+    name: Network integration (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+          - name: macOS arm64
+            runner: macos-15
+          - name: Windows x64
+            runner: windows-2025
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: make test-network
+
+  codex:
+    name: Codex contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CODEX_HOME: ${{ github.workspace }}/.codex-home
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: npm install --global "@openai/codex@${CODEX_VERSION}"
+      - run: mkdir -p "$CODEX_HOME"
+      - run: make test-codex
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NO_MKDOCS_2_WARNING: "true"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.16
+          enable-cache: true
+      - run: uv run --with-requirements docs-requirements.txt mkdocs build --strict
+
+  required:
+    name: Verification aggregate
+    if: always()
+    needs: [quality, cyberful_os, zap, network, codex, docs]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every verification stage
+        run: |
+          test "${{ needs.quality.result }}" = success
+          test "${{ needs.cyberful_os.result }}" = success
+          test "${{ needs.zap.result }}" = success
+          test "${{ needs.network.result }}" = success
+          test "${{ needs.codex.result }}" = success
+          test "${{ needs.docs.result }}" = success
