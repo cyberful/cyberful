@@ -14,14 +14,12 @@ rejects a generic test command so package-specific isolation is preserved.
 | `make test-codex`       | Pinned Codex app-server and MCP compatibility        |
 | `make docs-build`       | Strict documentation build and link validation       |
 
-CI also scans every checkout with a checksum-verified Gitleaks binary before
-running the quality suite. This is a safety net, not permission to place a real
-credential in Git history even briefly.
+Before publishing a change, scan the checkout for secrets. This is a safety net,
+not permission to place a real credential in Git history even briefly.
 
 `make test` runs the default Bun, Python, and live cyberful-os tiers;
 `make test-all` adds network, ZAP, and Codex contracts.
 
-Pull requests and `main` run the same verification stages in GitHub Actions.
-Native package builds begin only after verification succeeds. The aggregate
-`CI / required` job is the branch-protection target; individual matrix jobs
-remain useful diagnostics.
+GitHub CI/CD is temporarily disabled. Until it is activated, maintainers run the
+relevant commands above locally and record which checks passed. The workflow
+definitions remain in `.github/workflows` with a `.disabled` suffix.

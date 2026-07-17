@@ -242,9 +242,9 @@ make build       # build standalone binaries for all platforms
 make run         # launch from the repository root (dev)
 ```
 
-Pull requests and `main` run the same tiers in GitHub Actions. Loopback tests run
-on Linux, macOS, and Windows; the Codex contract job installs the exact pinned CLI;
-native builds start only after unit, cyberful-os, network, Codex, and documentation jobs pass.
+GitHub CI/CD is temporarily disabled while the public repository is prepared.
+Run the checks locally with the commands above; the preserved workflow definitions
+and reactivation note live under [`.github/workflows`](.github/workflows/README.md).
 See [Testing and CI](docs/development/testing.md).
 
 `make subsystems` is the maintainer path for exact host-subsystem pins. It queries

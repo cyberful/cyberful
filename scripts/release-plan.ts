@@ -2,7 +2,7 @@
 // ── Repository Release Planning ─────────────────────────────────────
 // Classifies distributable commits, computes the required semantic version
 // bump, and emits resumable CI state without consulting a mutable registry.
-// → .github/workflows/release.yml — executes the serialized release decision.
+// The preserved GitHub release workflow consumes this plan when CI/CD is enabled.
 // @docs/development/release.md
 // ────────────────────────────────────────────────────────────────────
 

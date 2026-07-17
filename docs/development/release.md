@@ -10,7 +10,8 @@ but not lower the inferred impact. The first public version is `0.1.0`.
 Documentation, tests, and CI-only changes do not independently trigger a
 runtime release.
 
-The scheduled weekday workflow and manual dispatch both:
+Automated GitHub releases are temporarily disabled. The preserved release
+workflow is designed to:
 
 1. select an immutable commit and calculate a version;
 2. run the full verification suite;
@@ -24,5 +25,5 @@ The scheduled weekday workflow and manual dispatch both:
 Release archives include the AGPL license, third-party notices, and the font
 and wordlist license texts. A partial release is resumed from its original tag
 and commit instead of rebuilding a different source state under the same
-version. Use the workflow's `dry_run` input to exercise assembly without
-tagging or publication.
+version. When GitHub CI/CD is activated, its `dry_run` input can exercise
+assembly without tagging or publication.

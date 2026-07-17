@@ -84,7 +84,7 @@ const codex = {
     output: "inherit",
     timeoutMs: 120_000,
   }),
-  functionalPinFiles: [".github/workflows/_verify.yml", "cyberful/src/dependency/codex.ts"],
+  functionalPinFiles: [".github/workflows/_verify.yml.disabled", "cyberful/src/dependency/codex.ts"],
 } satisfies ManagedSubsystem
 
 const registeredSubsystems = [codex] satisfies readonly ManagedSubsystem[]
