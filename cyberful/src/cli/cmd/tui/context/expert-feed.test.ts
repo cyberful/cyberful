@@ -63,7 +63,7 @@ test("delegated prose attribution points from the actor label to inline text", (
   expect(expertActorTextLabel("passive_hosts")).toBe("@passive_hosts → ")
 })
 
-test("semantic progress is recognized for informational styling without changing its JSON", () => {
+test("semantic progress is recognized for compact muted styling without changing its JSON", () => {
   const text = JSON.stringify({ semanticProgress: { phase: "recon", count: 2 } })
   expect(isExpertSemanticProgress(text)).toBe(true)
   expect(isExpertSemanticProgress('{"status":"ready"}')).toBe(false)

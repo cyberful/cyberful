@@ -1284,6 +1284,7 @@ function ExpertPhaseRow(props: {
   const renderer = useRenderer()
   const [outputOpen, setOutputOpen] = createSignal(false)
   const outputPreview = createMemo(() => expertPreview(props.entry.text, EXPERT_OUTPUT_PREVIEW_LINES))
+  const semanticProgress = createMemo(() => isExpertSemanticProgress(props.entry.text))
   // Synthetic ToolPart props let a phase-feed tool render through the same GenericTool as session tools.
   const toolPart = createMemo<ToolPart>(() => {
     const e = props.entry
@@ -1416,16 +1417,19 @@ function ExpertPhaseRow(props: {
           </box>
         </Match>
         <Match when={props.entry.kind === "status"}>
-          {/* Host-authored terminal telemetry remains raw when it is not the final phase status. Vertical
-              spacing keeps transport JSON distinct from the neighboring tool card and actor attribution. */}
+          {/* Host-authored terminal telemetry remains raw when it is not the final phase status. Semantic
+              progress stays compact and muted; warning telemetry retains the stronger separation and tone. */}
           <Show
             when={props.entry.phaseStatus?.ok ? props.entry.phaseStatus : undefined}
             fallback={
-              <box marginTop={2} marginBottom={2} paddingLeft={3} flexShrink={0}>
+              <box
+                marginTop={semanticProgress() ? 1 : 2}
+                marginBottom={semanticProgress() ? 1 : 2}
+                paddingLeft={3}
+                flexShrink={0}
+              >
                 <text wrapMode="word">
-                  <span style={{ fg: isExpertSemanticProgress(props.entry.text) ? theme.info : theme.warning }}>
-                    {props.entry.text}
-                  </span>
+                  <span style={{ fg: semanticProgress() ? theme.textMuted : theme.warning }}>{props.entry.text}</span>
                 </text>
               </box>
             }
