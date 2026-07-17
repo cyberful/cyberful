@@ -1,0 +1,79 @@
+.DS_Store
+Thumbs.db
+Desktop.ini
+.*.swp
+*~
+.idea
+.vscode
+Session.vim
+
+# Installed and generated dependencies.
+node_modules/
+site/
+dist/
+ts-dist/
+cyberful/dist/
+.turbo/
+*.bun-build
+tsconfig.tsbuildinfo
+a.out
+
+# Test, coverage, and language caches.
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+junit*.xml
+*.lcov
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+
+# Local runtime configuration.
+.env
+.env.*
+!.env-example
+!.env.example
+/cyberful.json
+.claude/settings.local.json
+
+# Pentest runtime state, created in the launch cwd (repo root for `make run`).
+# The tracked built-ins under cyberful/builtin are baked into releases.
+/work/
+/logs/
+/reports/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local release staging.
+/release-assets/
+/release-inputs/
+/release-meta/
+
+# MCP runtime downloads and state.
+/mcps/browser/.browsers/
+/.cyberful-zap/
+cyberful/mcp/cyberful-os/docker-config/
+
+# Local development state.
+/.worktrees/
+/.direnv/
+.sst
+.serena/
+**/.serena
+tmp/
+playground/
+cyberful-dev
+UPCOMING_CHANGELOG.md
+OPPORTUNITIES/
+*.zip
+__pycache__/
+*.py[cod]

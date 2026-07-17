@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authorization Boundary Tester"
+  short_description: "Object action tenant policy validation"
+  default_prompt: "Use $test-authorization-boundaries to build and test the effective authorization matrix and enforcement paths."

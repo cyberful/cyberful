@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate Code Graph"
+  short_description: "Query semantic security paths and coverage"
+  default_prompt: "Use $operate-code-graph to index and trace security-relevant code paths."

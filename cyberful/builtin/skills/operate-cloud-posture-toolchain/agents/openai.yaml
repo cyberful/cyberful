@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cloud Posture Toolchain"
+  short_description: "IAM and cloud posture evidence correlation"
+  default_prompt: "Use $operate-cloud-posture-toolchain to assess scoped cloud posture and visibility gaps."

@@ -1,0 +1,4 @@
+{
+  "$schema": "https://cyberful.ai/config.json",
+  "default_agent": "pentest/brief"
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Concurrency and Resource Abuse Tester"
+  short_description: "Race idempotency and amplification analysis"
+  default_prompt: "Use $test-concurrency-resource-abuse to test races idempotency distributed state and bounded resource amplification."

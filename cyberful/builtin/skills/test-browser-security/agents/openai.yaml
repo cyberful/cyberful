@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browser Security Tester"
+  short_description: "Origin DOM navigation and storage testing"
+  default_prompt: "Use $test-browser-security to analyze browser origin script navigation messaging and storage boundaries."

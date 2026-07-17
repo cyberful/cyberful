@@ -1,0 +1,4 @@
+interface:
+  display_name: "Realtime Integration Tester"
+  short_description: "Webhook WebSocket SSE and event security"
+  default_prompt: "Use $test-realtime-integrations to test realtime channels event authenticity replay ordering and authorization."

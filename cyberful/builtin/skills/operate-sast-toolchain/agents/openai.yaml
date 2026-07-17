@@ -1,0 +1,4 @@
+interface:
+  display_name: "SAST Toolchain Operations"
+  short_description: "Semgrep-led static analysis and rule tuning"
+  default_prompt: "Use $operate-sast-toolchain to run, tune, and validate the source analysis workflow."

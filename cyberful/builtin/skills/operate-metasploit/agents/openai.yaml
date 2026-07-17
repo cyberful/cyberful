@@ -1,0 +1,4 @@
+interface:
+  display_name: "Metasploit Operations"
+  short_description: "Evidence-led Metasploit module operations"
+  default_prompt: "Use $operate-metasploit to plan and execute the authorized Metasploit workflow."

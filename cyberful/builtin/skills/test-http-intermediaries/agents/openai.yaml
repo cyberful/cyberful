@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTTP Intermediary Tester"
+  short_description: "Request boundary cache and routing differentials"
+  default_prompt: "Use $test-http-intermediaries to compare proxy gateway cache and origin parsing and routing semantics."

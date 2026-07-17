@@ -1,0 +1,4 @@
+interface:
+  display_name: "Application Threat Modeler"
+  short_description: "Abuse-case and trust-boundary modeling"
+  default_prompt: "Use $threat-model-application to build an evidence-backed threat and abuse-case model for this system."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Exposed Service Assessor"
+  short_description: "Datastore admin and control-plane exposure"
+  default_prompt: "Use $test-exposed-services to inventory and validate exposed datastores admin surfaces and service trust boundaries."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Native Memory Safety Auditor"
+  short_description: "Lifetime bounds ABI and hardening analysis"
+  default_prompt: "Use $audit-native-memory-safety to audit native lifetime bounds integer ABI concurrency and mitigation behavior."

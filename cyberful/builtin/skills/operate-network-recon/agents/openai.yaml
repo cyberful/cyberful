@@ -1,0 +1,4 @@
+interface:
+  display_name: "Network Recon Operations"
+  short_description: "Nmap-led service and exposure mapping"
+  default_prompt: "Use $operate-network-recon to build and validate the authorized network inventory."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Application Code Auditor"
+  short_description: "Evidence-led secure code auditing"
+  default_prompt: "Use $audit-application-code to map trust boundaries and prove security paths across this repository."

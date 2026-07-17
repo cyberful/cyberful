@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# ── Browser Runtime Installer ────────────────────────────────────────
+# Installs the pinned Patchright dependency when absent and downloads its
+# Chromium fallback into the configured user-scoped browser directory.
+# → mcps/browser/browser_mcp.mjs — launches the installed browser runtime.
+# @docs/runtimes/browser.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGE_ROOT="$(cd "$ROOT/.." && pwd)"
+
+export PLAYWRIGHT_BROWSERS_PATH="${CYBER_BROWSER_BROWSERS_PATH:-$ROOT/.browsers}"
+mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+
+cd "$PACKAGE_ROOT"
+
+if [ ! -d "$PACKAGE_ROOT/node_modules/patchright-core" ]; then
+  npm install --ignore-scripts
+fi
+
+# Install the stealth driver's Chromium. Real Google Chrome (channel:"chrome") is preferred at launch
+# when present (CYBER_BROWSER_CHANNEL=auto); this bundled Chromium is the fallback.
+exec npx patchright-core install chromium "$@"

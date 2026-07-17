@@ -1,0 +1,4 @@
+interface:
+  display_name: "GraphQL Security Tester"
+  short_description: "Resolver federation cache and cost analysis"
+  default_prompt: "Use $test-graphql-security to test GraphQL resolver authorization federation coercion caching and cost."

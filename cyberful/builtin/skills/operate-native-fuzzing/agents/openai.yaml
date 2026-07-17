@@ -1,0 +1,4 @@
+interface:
+  display_name: "Native Fuzzing Operations"
+  short_description: "Jazzer AFL++ and libFuzzer campaigns"
+  default_prompt: "Use $operate-native-fuzzing to build, run, triage, and improve the fuzzing campaign."

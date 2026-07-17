@@ -1,0 +1,4 @@
+interface:
+  display_name: "API Security Tester"
+  short_description: "Advanced REST RPC and API abuse testing"
+  default_prompt: "Use $test-api-security to inventory and test API contracts authorization parsing and workflow abuse."

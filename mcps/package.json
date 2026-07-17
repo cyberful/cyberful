@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "cyberful-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyberful/cyberful"
+  },
+  "homepage": "https://github.com/cyberful/cyberful#readme",
+  "bugs": {
+    "url": "https://github.com/cyberful/cyberful/issues"
+  },
+  "bin": {
+    "cyberful-os": "./cyberful-os/bin/cyberful-os",
+    "cyberful-os-build": "./cyberful-os/bin/cyberful-os-build",
+    "cyberful-os-container": "./cyberful-os/bin/cyberful-os-container",
+    "cyber-browser": "./browser/bin/cyber-browser",
+    "cyber-browser-install": "./browser/bin/cyber-browser-install"
+  },
+  "scripts": {
+    "mcp": "cyberful-os/bin/cyberful-os",
+    "build": "cyberful-os/bin/cyberful-os-build",
+    "container": "cyberful-os/bin/cyberful-os-container",
+    "browser": "browser/bin/cyber-browser",
+    "browser:install": "browser/bin/cyber-browser-install",
+    "test:browser": "bun test browser",
+    "zap:build": "docker build -t cyberful-zap:2.17.0 -f zap/Dockerfile zap",
+    "zap:bridge:build": "docker build -t cyberful-zap-bridge:0.1.0 -f zap/Dockerfile.bridge zap"
+  },
+  "dependencies": {
+    "patchright-core": "1.61.1"
+  }
+}

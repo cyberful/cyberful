@@ -1,0 +1,6 @@
+{
+  "$comment": "Wall-clock budgets in minutes for incremental local Git security review.",
+  "map": 15,
+  "audit": 35,
+  "verify": 25
+}

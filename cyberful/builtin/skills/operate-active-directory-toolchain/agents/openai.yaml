@@ -1,0 +1,4 @@
+interface:
+  display_name: "Active Directory Toolchain"
+  short_description: "AD graph certificate and protocol analysis"
+  default_prompt: "Use $operate-active-directory-toolchain to map and validate the scoped Active Directory attack paths."

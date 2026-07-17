@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Agent Security Auditor"
+  short_description: "Prompt tool memory and RAG boundary auditing"
+  default_prompt: "Use $audit-ai-agent-security to test AI agent instruction data tool memory and retrieval trust boundaries."

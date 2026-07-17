@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible Cyberful defect that is safe to discuss publicly.
+title: "fix: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include vulnerabilities, credentials, source code you cannot share,
+        target details, reports, or session transcripts. Use private vulnerability
+        reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Cyberful version or commit
+      placeholder: cyberful --version or Git commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, architecture, Bun/Node/Docker versions as relevant
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe sequence that reproduces the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized logs
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public disclosure check
+      options:
+        - label: This report contains no vulnerability or sensitive engagement data.
+          required: true

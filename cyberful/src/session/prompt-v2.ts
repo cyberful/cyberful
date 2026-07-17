@@ -1,0 +1,48 @@
+// ── Structured Session Prompt Schema ─────────────────────────────────────
+// Defines runtime-validated text, file, and repository-reference prompt attachments.
+// → cyberful/src/session/event-v2.ts — embeds this prompt in versioned events.
+// ───────────────────────────────────────────────────────────────────────
+
+import * as Schema from "effect/Schema"
+
+export class Source extends Schema.Class<Source>("Prompt.Source")({
+  start: Schema.Finite,
+  end: Schema.Finite,
+  text: Schema.String,
+}) {}
+
+export class FileAttachment extends Schema.Class<FileAttachment>("Prompt.FileAttachment")({
+  uri: Schema.String,
+  mime: Schema.String,
+  name: Schema.String.pipe(Schema.optional),
+  description: Schema.String.pipe(Schema.optional),
+  source: Source.pipe(Schema.optional),
+}) {
+  static create(input: FileAttachment) {
+    return new FileAttachment({
+      uri: input.uri,
+      mime: input.mime,
+      name: input.name,
+      description: input.description,
+      source: input.source,
+    })
+  }
+}
+
+export class ReferenceAttachment extends Schema.Class<ReferenceAttachment>("Prompt.ReferenceAttachment")({
+  name: Schema.String,
+  kind: Schema.Literals(["local", "git", "invalid"]),
+  uri: Schema.String.pipe(Schema.optional),
+  repository: Schema.String.pipe(Schema.optional),
+  branch: Schema.String.pipe(Schema.optional),
+  target: Schema.String.pipe(Schema.optional),
+  targetUri: Schema.String.pipe(Schema.optional),
+  problem: Schema.String.pipe(Schema.optional),
+  source: Source.pipe(Schema.optional),
+}) {}
+
+export class Prompt extends Schema.Class<Prompt>("Prompt")({
+  text: Schema.String,
+  files: Schema.Array(FileAttachment).pipe(Schema.optional),
+  references: Schema.Array(ReferenceAttachment).pipe(Schema.optional),
+}) {}

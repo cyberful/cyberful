@@ -1,0 +1,284 @@
+// ── TUI Keymap Integration ───────────────────────────────────────
+// Registers Cyberful commands and aliases on OpenTUI's keymap, maintains the
+//   scoped mode stack, and exposes formatted shortcuts and slash entries.
+// ─────────────────────────────────────────────────────────────────
+
+import { type CliRenderer } from "@opentui/core"
+import * as addons from "@opentui/keymap/addons/opentui"
+import { stringifyKeyStroke } from "@opentui/keymap"
+import {
+  formatCommandBindings as formatCommandBindingsExtra,
+  formatKeySequence as formatKeySequenceExtra,
+} from "@opentui/keymap/extras"
+import { KeymapProvider, useKeymap, useKeymapSelector, useBindings } from "@opentui/keymap/solid"
+import { createMemo, type Accessor } from "solid-js"
+import type { TuiConfig } from "./config/tui"
+import { useTuiConfig } from "./context/tui-config"
+import { TuiKeybind } from "./config/keybind"
+
+export const LEADER_TOKEN = "leader"
+export const CYBERFUL_BASE_MODE = "base"
+export const COMMAND_PALETTE_COMMAND = "command.palette.show"
+
+const CYBERFUL_MODE_KEY = "cyberful.mode"
+
+export const CyberfulKeymapProvider = KeymapProvider
+export const useCyberfulKeymap = useKeymap
+
+export { useBindings, useKeymapSelector }
+
+export type OpenTuiKeymap = ReturnType<typeof useKeymap>
+type CyberfulModeStack = ReturnType<typeof createCyberfulModeStack>
+type CommandSlashEntry = {
+  display: string
+  description?: string
+  aliases?: string[]
+  onSelect: () => void
+}
+type Command = ReturnType<OpenTuiKeymap["getCommands"]>[number]
+
+const modeStacks = new WeakMap<OpenTuiKeymap, CyberfulModeStack>()
+
+function isVisiblePaletteCommand(command: Command) {
+  return command.hidden !== true && command.name !== COMMAND_PALETTE_COMMAND
+}
+
+export function createCyberfulModeStack(keymap: OpenTuiKeymap) {
+  keymap.setData(CYBERFUL_MODE_KEY, CYBERFUL_BASE_MODE)
+
+  const offFields = keymap.registerLayerFields({
+    mode(value, ctx) {
+      ctx.require(CYBERFUL_MODE_KEY, value)
+    },
+  })
+
+  const stack: { id: symbol; mode: string }[] = []
+  let disposed = false
+
+  const update = () => {
+    keymap.setData(CYBERFUL_MODE_KEY, stack.at(-1)?.mode ?? CYBERFUL_BASE_MODE)
+  }
+
+  const stackApi = {
+    current() {
+      return stack.at(-1)?.mode ?? CYBERFUL_BASE_MODE
+    },
+    push(mode: string) {
+      if (disposed) return () => {}
+      const id = Symbol(mode)
+      let active = true
+      stack.push({ id, mode })
+      update()
+
+      return () => {
+        if (!active) return
+        active = false
+        const index = stack.findIndex((item) => item.id === id)
+        if (index !== -1) stack.splice(index, 1)
+        update()
+      }
+    },
+    dispose() {
+      if (disposed) return
+      disposed = true
+      stack.length = 0
+      offFields()
+      keymap.setData(CYBERFUL_MODE_KEY, undefined)
+      modeStacks.delete(keymap)
+    },
+  }
+
+  modeStacks.set(keymap, stackApi)
+  return stackApi
+}
+
+export function useCyberfulModeStack() {
+  return getCyberfulModeStack(useCyberfulKeymap())
+}
+
+export function getCyberfulModeStack(keymap: OpenTuiKeymap) {
+  const value = modeStacks.get(keymap)
+  if (!value) throw new Error("Cyberful mode stack is not registered for this keymap")
+  return value
+}
+
+const KEY_ALIASES = {
+  enter: "return",
+  esc: "escape",
+  pgdown: "pagedown",
+  pgup: "pageup",
+} as const
+
+function expandKeyAliases(input: string) {
+  const result = Object.entries(KEY_ALIASES).reduce(
+    (acc, [alias, key]) => acc.replace(new RegExp(`(^|[+,\\s>])${alias}(?=$|[+,\\s<])`, "gi"), `$1${key}`),
+    input,
+  )
+  if (result === input) return
+  return result
+}
+
+function registerKeyAliases(keymap: OpenTuiKeymap) {
+  return keymap.appendBindingExpander((ctx) => {
+    const key = expandKeyAliases(ctx.input)
+    if (!key) return
+    return [{ key, displays: ctx.displays }]
+  })
+}
+
+const inputCommands = [
+  "input.move.left",
+  "input.move.right",
+  "input.move.up",
+  "input.move.down",
+  "input.select.left",
+  "input.select.right",
+  "input.select.up",
+  "input.select.down",
+  "input.line.home",
+  "input.line.end",
+  "input.select.line.home",
+  "input.select.line.end",
+  "input.visual.line.home",
+  "input.visual.line.end",
+  "input.select.visual.line.home",
+  "input.select.visual.line.end",
+  "input.buffer.home",
+  "input.buffer.end",
+  "input.select.buffer.home",
+  "input.select.buffer.end",
+  "input.delete.line",
+  "input.delete.to.line.end",
+  "input.delete.to.line.start",
+  "input.backspace",
+  "input.delete",
+  "input.newline",
+  "input.undo",
+  "input.redo",
+  "input.word.forward",
+  "input.word.backward",
+  "input.select.word.forward",
+  "input.select.word.backward",
+  "input.delete.word.forward",
+  "input.delete.word.backward",
+  "input.select.all",
+  "input.submit",
+] as const
+
+function leaderDisplay(config: TuiConfig.Resolved) {
+  const key = config.keybinds.get(LEADER_TOKEN)?.[0]?.key
+  if (!key) return TuiKeybind.LeaderDefault
+  return typeof key === "string" ? key : stringifyKeyStroke(key)
+}
+
+function formatOptions(config: TuiConfig.Resolved, separator?: string) {
+  return {
+    tokenDisplay: {
+      [LEADER_TOKEN]: leaderDisplay(config),
+    },
+    keyNameAliases: {
+      pageup: "pgup",
+      pagedown: "pgdn",
+      delete: "del",
+    },
+    modifierAliases: {
+      meta: "alt",
+    },
+    separator,
+  } as const
+}
+
+export function formatKeySequence(
+  parts: Parameters<typeof formatKeySequenceExtra>[0],
+  config: TuiConfig.Resolved,
+  separator?: string,
+) {
+  return formatKeySequenceExtra(parts, formatOptions(config, separator))
+}
+
+export function formatKeyBindings(
+  bindings: Parameters<typeof formatCommandBindingsExtra>[0],
+  config: TuiConfig.Resolved,
+) {
+  return formatCommandBindingsExtra(bindings, formatOptions(config))
+}
+
+export function registerCyberfulKeymap(
+  keymap: OpenTuiKeymap,
+  renderer: CliRenderer,
+  config: Pick<TuiConfig.Resolved, "keybinds" | "leader_timeout">,
+) {
+  const modeStack = createCyberfulModeStack(keymap)
+  const offCommaBindings = addons.registerCommaBindings(keymap)
+  const offAliasExpander = registerKeyAliases(keymap)
+  const offBaseLayout = addons.registerBaseLayoutFallback(keymap)
+  const offLeader = addons.registerTimedLeader(keymap, {
+    trigger: config.keybinds.get(LEADER_TOKEN),
+    name: LEADER_TOKEN,
+    timeoutMs: config.leader_timeout,
+  })
+  const offEscape = addons.registerEscapeClearsPendingSequence(keymap)
+  const offBackspace = addons.registerBackspacePopsPendingSequence(keymap)
+  const offInputBindings = addons.registerManagedTextareaLayer(keymap, renderer, {
+    enabled: () => renderer.currentFocusedEditor !== null,
+    bindings: config.keybinds.gather("input", inputCommands),
+  })
+
+  return () => {
+    offInputBindings()
+    offBackspace()
+    offEscape()
+    offLeader()
+    offAliasExpander()
+    offBaseLayout()
+    offCommaBindings()
+    modeStack.dispose()
+  }
+}
+
+export function useCommandShortcut(command: string, separator?: string): Accessor<string> {
+  const config = useTuiConfig()
+  return useKeymapSelector((keymap) =>
+    formatKeySequence(
+      keymap.getCommandBindings({ visibility: "registered", commands: [command] }).get(command)?.[0]?.sequence,
+      config,
+      separator,
+    ),
+  )
+}
+
+export function useLeaderActive(): Accessor<boolean> {
+  return useKeymapSelector((keymap: OpenTuiKeymap) => keymap.getPendingSequence()[0]?.tokenName === LEADER_TOKEN)
+}
+
+export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
+  const keymap = useCyberfulKeymap()
+  const entries = useKeymapSelector((keymap: OpenTuiKeymap) =>
+    keymap.getCommandEntries({
+      visibility: "reachable",
+      namespace: "palette",
+      filter: isVisiblePaletteCommand,
+    }),
+  )
+
+  return createMemo<CommandSlashEntry[]>(() =>
+    entries().flatMap((entry) => {
+      const slashName = entry.command.slashName
+      if (typeof slashName !== "string" || !slashName) return []
+      const slashAliases = entry.command.slashAliases
+      return {
+        display: `/${slashName}`,
+        description:
+          typeof entry.command.desc === "string"
+            ? entry.command.desc
+            : typeof entry.command.title === "string"
+              ? entry.command.title
+              : undefined,
+        aliases: Array.isArray(slashAliases)
+          ? slashAliases.filter((alias): alias is string => typeof alias === "string").map((alias) => `/${alias}`)
+          : undefined,
+        onSelect: () => keymap.dispatchCommand(entry.command.name),
+      }
+    }),
+  )
+}

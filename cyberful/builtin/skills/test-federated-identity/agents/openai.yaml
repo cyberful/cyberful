@@ -1,0 +1,4 @@
+interface:
+  display_name: "Federated Identity Tester"
+  short_description: "OAuth OIDC JWT and SAML confusion testing"
+  default_prompt: "Use $test-federated-identity to test issuer client tenant artifact binding and account linking."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mobile Instrumentation"
+  short_description: "Frida and Objection runtime instrumentation"
+  default_prompt: "Use $operate-mobile-instrumentation to design and execute the mobile runtime instrumentation plan."

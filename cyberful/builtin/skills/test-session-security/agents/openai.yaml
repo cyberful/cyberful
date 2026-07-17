@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Security Tester"
+  short_description: "Rotation revocation and stale authority"
+  default_prompt: "Use $test-session-security to trace session authority through rotation revocation and distributed consumers."

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# ── cyberful-os Container CLI Launcher ──────────────────────────────────
+# Resolves the embedded toolkit and forwards lifecycle requests to the Python
+# manager while preserving the caller's workspace and process signals.
+# → mcps/cyberful-os/scripts/container_ctl.py — implements container operations.
+# @docs/runtimes/cyberful-os.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export CYBERFUL_OS_WORKSPACE="${CYBERFUL_OS_WORKSPACE:-$(cd "$ROOT/../.." && pwd)}"
+exec python3 "$ROOT/scripts/container_ctl.py" "$@"

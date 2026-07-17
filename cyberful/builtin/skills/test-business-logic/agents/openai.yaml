@@ -1,0 +1,4 @@
+interface:
+  display_name: "Business Logic Tester"
+  short_description: "Invariant and state-machine abuse analysis"
+  default_prompt: "Use $test-business-logic to model and break workflow invariants with minimal controlled sequences."

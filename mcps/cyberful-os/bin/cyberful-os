@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# ── cyberful-os MCP Launcher ────────────────────────────────────────────
+# Resolves the embedded toolkit root and replaces the launcher process with the
+# Python stdio MCP server so signals and exit status remain transparent.
+# → mcps/cyberful-os/cyberful_os_mcp.py — implements the security-tool protocol.
+# @docs/runtimes/cyberful-os.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec python3 "$ROOT/cyberful_os_mcp.py"

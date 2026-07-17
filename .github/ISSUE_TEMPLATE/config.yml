@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/cyberful/cyberful/security/advisories/new
+    about: Report suspected vulnerabilities privately, never in a public issue.
+  - name: Support guide
+    url: https://github.com/cyberful/cyberful/blob/main/SUPPORT.md
+    about: Check setup guidance and the right place for questions.

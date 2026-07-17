@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-main-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Complete verification
+    uses: ./.github/workflows/_verify.yml
+    with:
+      ref: ${{ github.sha }}
+      pr_title: ${{ github.event.pull_request.title || '' }}
+
+  build:
+    name: Native packages
+    needs: [verify]
+    uses: ./.github/workflows/_build.yml
+    with:
+      ref: ${{ github.sha }}
+      version: 0.0.0-ci.${{ github.run_id }}.${{ github.run_attempt }}
+      channel: development
+      retention_days: 7
+
+  required:
+    name: CI / required
+    if: always()
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require verification and native packages
+        run: |
+          test "${{ needs.verify.result }}" = success
+          test "${{ needs.build.result }}" = success

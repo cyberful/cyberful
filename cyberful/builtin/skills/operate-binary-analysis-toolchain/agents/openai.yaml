@@ -1,0 +1,4 @@
+interface:
+  display_name: "Binary Analysis Toolchain"
+  short_description: "Headless reversing and binary evidence"
+  default_prompt: "Use $operate-binary-analysis-toolchain to triage and analyze the authorized binary artifact."

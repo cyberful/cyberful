@@ -1,0 +1,4 @@
+interface:
+  display_name: "TLS Toolchain Assessment"
+  short_description: "testssl and sslscan differential analysis"
+  default_prompt: "Use $assess-tls-toolchain to assess the target TLS surface and reconcile scanner evidence."

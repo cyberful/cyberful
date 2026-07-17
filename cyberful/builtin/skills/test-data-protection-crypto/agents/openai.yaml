@@ -1,0 +1,4 @@
+interface:
+  display_name: "Data Protection and Crypto Auditor"
+  short_description: "Key lifecycle and data exposure analysis"
+  default_prompt: "Use $test-data-protection-crypto to trace sensitive data and cryptographic controls across their full lifecycle."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kubernetes Toolchain"
+  short_description: "Kubernetes API and CIS evidence analysis"
+  default_prompt: "Use $operate-kubernetes-toolchain to collect and reconcile scoped Kubernetes security evidence."

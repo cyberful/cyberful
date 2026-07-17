@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQLMap Operations"
+  short_description: "Controlled SQLMap confirmation and evidence"
+  default_prompt: "Use $operate-sqlmap to validate the suspected injection with bounded, reproducible evidence."

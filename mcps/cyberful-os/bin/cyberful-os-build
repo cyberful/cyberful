@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# ── cyberful-os Image Build Launcher ────────────────────────────────────
+# Creates an isolated Docker configuration, preserves the selected daemon, and
+# builds the pinned cyberful-os image through Compose or a compatible Docker fallback.
+# → mcps/cyberful-os/Dockerfile — defines the verified security-tool image.
+# @docs/runtimes/cyberful-os.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOST_DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker}"
+DOCKER_CONFIG_DIR="${CYBERFUL_OS_DOCKER_CONFIG:-${XDG_STATE_HOME:-$HOME/.local/state}/cyberful-os/mcp/cyberful-os/docker-config}"
+mkdir -p "$DOCKER_CONFIG_DIR"
+if [ ! -f "$DOCKER_CONFIG_DIR/config.json" ]; then
+  printf '{"auths":{}}\n' > "$DOCKER_CONFIG_DIR/config.json"
+fi
+if [ -d "$HOST_DOCKER_CONFIG/cli-plugins" ] && [ ! -e "$DOCKER_CONFIG_DIR/cli-plugins" ]; then
+  ln -s "$HOST_DOCKER_CONFIG/cli-plugins" "$DOCKER_CONFIG_DIR/cli-plugins"
+fi
+export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}"
+export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-1}"
+
+DESKTOP_SOCK="$HOME/.docker/run/docker.sock"
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "$DESKTOP_SOCK" ]; then
+  export DOCKER_HOST="unix://$DESKTOP_SOCK"
+fi
+
+export CYBERFUL_OS_WORKSPACE="${CYBERFUL_OS_WORKSPACE:-$(cd "$ROOT/../.." && pwd)}"
+if docker compose version >/dev/null 2>&1; then
+  exec docker compose -f "$ROOT/docker-compose.yml" build "$@"
+fi
+if command -v docker-compose >/dev/null 2>&1; then
+  exec docker-compose -f "$ROOT/docker-compose.yml" build "$@"
+fi
+
+printf 'docker compose or docker-compose is required\n' >&2
+exit 127

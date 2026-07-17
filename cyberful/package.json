@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "version": "0.0.0-development",
+  "name": "cyberful",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyberful/cyberful"
+  },
+  "homepage": "https://github.com/cyberful/cyberful#readme",
+  "bugs": {
+    "url": "https://github.com/cyberful/cyberful/issues"
+  },
+  "private": true,
+  "scripts": {
+    "check:code": "bun run script/check-code-principles.ts",
+    "typecheck": "bun run check:code && tsgo --noEmit",
+    "build": "bun run script/build.ts",
+    "generate-client": "bun run script/generate-client.ts",
+    "test": "bun test --isolate --path-ignore-patterns='**/*.integration.test.ts'",
+    "test:cyberful-os": "bun test --isolate --no-orphans --timeout 300000 src/subsystem/cyberful-os.integration.test.ts",
+    "test:network": "bun test --isolate --timeout 10000 src/subsystem/browser-cdp.integration.test.ts",
+    "test:zap": "bun test --isolate --no-orphans src/subsystem/zap/runtime.integration.test.ts",
+    "test:codex-compat": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-compat.integration.test.ts",
+    "test-codex": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-version.integration.test.ts src/subsystem/codex-compat.integration.test.ts",
+    "test:all": "bun run test && bun run test:network && bun run test:zap && bun run test-codex",
+    "dev": "bun run --conditions=browser ./src/index.ts"
+  },
+  "bin": {
+    "cyberful": "./bin/cyberful"
+  },
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "0.90.10",
+    "@parcel/watcher-darwin-arm64": "2.5.1",
+    "@parcel/watcher-darwin-x64": "2.5.1",
+    "@parcel/watcher-linux-arm64-glibc": "2.5.1",
+    "@parcel/watcher-linux-arm64-musl": "2.5.1",
+    "@parcel/watcher-linux-x64-glibc": "2.5.1",
+    "@parcel/watcher-linux-x64-musl": "2.5.1",
+    "@parcel/watcher-win32-arm64": "2.5.1",
+    "@parcel/watcher-win32-x64": "2.5.1",
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/cross-spawn": "catalog:",
+    "@types/mime-types": "3.0.1",
+    "@types/npm-package-arg": "6.1.4",
+    "@types/npmcli__arborist": "6.3.3",
+    "@types/which": "3.0.4",
+    "@types/yargs": "17.0.33",
+    "@typescript/native-preview": "catalog:",
+    "prettier": "3.6.2",
+    "typescript": "catalog:"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "@npmcli/arborist": "9.4.0",
+    "@npmcli/config": "10.8.1",
+    "@opentui/core": "catalog:",
+    "@opentui/keymap": "catalog:",
+    "@opentui/solid": "catalog:",
+    "@parcel/watcher": "2.5.1",
+    "@solid-primitives/event-bus": "1.1.2",
+    "@solid-primitives/scheduled": "1.5.2",
+    "bun-pty": "0.4.8",
+    "clipboardy": "4.0.0",
+    "cross-spawn": "catalog:",
+    "diff": "catalog:",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
+    "fuzzysort": "3.1.0",
+    "glob": "13.0.5",
+    "gray-matter": "4.0.3",
+    "ignore": "7.0.5",
+    "jsonc-parser": "3.3.1",
+    "mime-types": "3.0.2",
+    "minimatch": "10.2.5",
+    "npm-package-arg": "13.0.2",
+    "open": "10.1.2",
+    "opentui-spinner": "catalog:",
+    "remeda": "catalog:",
+    "solid-js": "catalog:",
+    "strip-ansi": "7.1.2",
+    "ulid": "catalog:",
+    "web-tree-sitter": "0.25.10",
+    "which": "6.0.1",
+    "xdg-basedir": "5.1.0",
+    "yargs": "18.0.0"
+  },
+  "overrides": {
+    "drizzle-orm": "catalog:"
+  }
+}

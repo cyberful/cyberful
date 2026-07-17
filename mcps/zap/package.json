@@ -1,0 +1,18 @@
+{
+  "name": "@cyberful/zap-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyberful/cyberful"
+  },
+  "homepage": "https://github.com/cyberful/cyberful#readme",
+  "bugs": {
+    "url": "https://github.com/cyberful/cyberful/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.27.1"
+  }
+}

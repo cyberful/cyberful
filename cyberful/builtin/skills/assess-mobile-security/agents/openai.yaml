@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mobile Application Security Assessor"
+  short_description: "Android iOS static and dynamic assessment"
+  default_prompt: "Use $assess-mobile-security to assess Android or iOS application platform network storage and resilience boundaries."

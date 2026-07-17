@@ -1,0 +1,16 @@
+services:
+  cyberful-os:
+    build:
+      context: .
+    image: cyberful-os:latest
+    container_name: ${CYBERFUL_OS_CONTAINER:-cyberful-os}
+    hostname: ${CYBERFUL_OS_CONTAINER:-cyberful-os}
+    working_dir: ${CYBERFUL_OS_MOUNT:-/workspace}
+    volumes:
+      - ${CYBERFUL_OS_WORKSPACE:-../..}:${CYBERFUL_OS_MOUNT:-/workspace}
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    tty: true
+    stdin_open: true
+    command: ["sleep", "infinity"]

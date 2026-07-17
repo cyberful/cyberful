@@ -1,0 +1,4 @@
+interface:
+  display_name: "Server Fetch Security Tester"
+  short_description: "URL DNS redirect and egress analysis"
+  default_prompt: "Use $test-server-side-fetching to trace server-side fetch control through URL DNS redirects proxies and egress."

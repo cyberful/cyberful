@@ -1,0 +1,4 @@
+interface:
+  display_name: "Injection Dataflow Tracer"
+  short_description: "Multi-parser source-to-sink proof"
+  default_prompt: "Use $trace-injection-dataflows to prove attacker influence across decoding storage sanitization and interpreter boundaries."

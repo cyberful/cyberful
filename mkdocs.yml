@@ -1,0 +1,87 @@
+# Local preview for the same Markdown published through GitBook.
+# Fonts stay local and analytics remain disabled.
+
+site_name: Cyberful Documentation
+site_description: Learn, use, and contribute to the Cyberful application-security workbench.
+site_author: Cyberful
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+exclude_docs: |
+  SUMMARY.md
+
+theme:
+  name: material
+  language: en
+  font: false
+  icon:
+    logo: material/shield-lock-outline
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Anchor link to this section
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+validation:
+  omitted_files: warn
+  absolute_links: info
+  unrecognized_links: info
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: info
+    unrecognized_links: info
+
+nav:
+  - Home: README.md
+  - Start:
+      - What you need: getting-started/requirements.md
+      - Your first penetration test: getting-started/README.md
+  - Use Cyberful:
+      - Choose a workflow: user-guide/workflows.md
+      - Terminal interface: user-guide/interface.md
+      - Sessions, configuration, and reports: user-guide/sessions-and-reports.md
+  - How Cyberful works:
+      - The system: concepts/architecture.md
+      - Phases, tools, and safety: concepts/execution-model.md
+  - Security tools:
+      - Overview: runtimes/README.md
+      - cyberful-os: runtimes/cyberful-os.md
+      - Browser: runtimes/browser.md
+      - OWASP ZAP: runtimes/zap.md
+  - Build with us:
+      - Contributing: development/README.md
+      - Testing: development/testing.md
+      - Releases: development/release.md

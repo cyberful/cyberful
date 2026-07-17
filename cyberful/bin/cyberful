@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// ── npm Platform Launcher ───────────────────────────────────────
+// Resolves the installed platform package, starts its Cyberful binary with the
+// caller's arguments and stdio, forwards termination signals, and mirrors exit.
+// → cyberful/bin/resolve.cjs — selects and locates the supported binary.
+// → cyberful/script/package-npm.ts — packages this launcher for npm installs.
+// ─────────────────────────────────────────────────────────────────
+
+const childProcess = require("node:child_process")
+const fs = require("node:fs")
+const path = require("node:path")
+const resolver = require("./resolve.cjs")
+
+const target = process.env.CYBERFUL_BIN_PATH || resolver.resolveBinary(path.dirname(fs.realpathSync(__filename)))
+if (!target) {
+  console.error(resolver.missingBinaryMessage())
+  process.exit(1)
+}
+
+const child = childProcess.spawn(target, process.argv.slice(2), { stdio: "inherit" })
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
+const forwarders = Object.fromEntries(
+  forwardedSignals.map((signal) => [
+    signal,
+    () => {
+      try {
+        child.kill(signal)
+      } catch {
+        // The child may already have exited.
+      }
+    },
+  ]),
+)
+
+child.on("error", (error) => {
+  console.error(error.message)
+  process.exit(1)
+})
+forwardedSignals.forEach((signal) => process.on(signal, forwarders[signal]))
+child.on("exit", (code, signal) => {
+  forwardedSignals.forEach((forwardedSignal) => process.removeListener(forwardedSignal, forwarders[forwardedSignal]))
+  if (signal) {
+    process.kill(process.pid, signal)
+    return
+  }
+  process.exit(typeof code === "number" ? code : 0)
+})

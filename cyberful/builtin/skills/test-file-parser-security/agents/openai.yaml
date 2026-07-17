@@ -1,0 +1,4 @@
+interface:
+  display_name: "File and Parser Security Tester"
+  short_description: "Archive path parser and rendering analysis"
+  default_prompt: "Use $test-file-parser-security to test uploaded files archives paths serialization rendering and parser differentials."

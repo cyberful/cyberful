@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cloud Native Security Auditor"
+  short_description: "IAM container Kubernetes and IaC auditing"
+  default_prompt: "Use $audit-cloud-native-security to audit effective cloud identity deployment drift workloads secrets and network controls."

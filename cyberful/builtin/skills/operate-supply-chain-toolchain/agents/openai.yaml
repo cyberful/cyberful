@@ -1,0 +1,4 @@
+interface:
+  display_name: "Supply Chain Toolchain"
+  short_description: "SBOM vulnerability and secret correlation"
+  default_prompt: "Use $operate-supply-chain-toolchain to correlate SBOM, vulnerability, configuration, and secret evidence."

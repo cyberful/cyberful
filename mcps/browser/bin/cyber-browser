@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# ── Browser MCP Launcher ─────────────────────────────────────────────
+# Resolves the embedded browser tree, validates its Node driver dependency, and
+# replaces the launcher process with the isolated browser MCP server.
+# → mcps/browser/browser_mcp.mjs — implements the stdio MCP process.
+# @docs/runtimes/browser.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGE_ROOT="$(cd "$ROOT/.." && pwd)"
+
+export PLAYWRIGHT_BROWSERS_PATH="${CYBER_BROWSER_BROWSERS_PATH:-$ROOT/.browsers}"
+
+if [ ! -d "$PACKAGE_ROOT/node_modules/patchright-core" ]; then
+  printf 'patchright-core (the stealth browser driver) is not installed.\n' >&2
+  printf 'Run from mcps package root: npm install\n' >&2
+  exit 127
+fi
+
+exec node "$ROOT/browser_mcp.mjs"

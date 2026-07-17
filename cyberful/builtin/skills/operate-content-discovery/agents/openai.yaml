@@ -1,0 +1,4 @@
+interface:
+  display_name: "Content Discovery Operations"
+  short_description: "Differential ffuf and content discovery"
+  default_prompt: "Use $operate-content-discovery to design and interpret the authorized discovery campaign."

@@ -1,0 +1,10 @@
+{
+  "$comment": "Wall-clock budgets in minutes for the whole-project security assessment workflow.",
+  "brief": 15,
+  "map": 45,
+  "controls": 45,
+  "test": 60,
+  "correlate": 60,
+  "verify": 45,
+  "report": 40
+}
