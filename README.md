@@ -6,6 +6,10 @@ withstand independent verification. Cyberful is an **open-source AI workbench**
 built to help democratize cybersecurity by making this depth of security
 engineering more accessible.
 
+<p align="center">
+  <img src="docs/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
+</p>
+
 It brings the full application-security lifecycle into one terminal workspace:
 end-to-end **authorized penetration testing**, repository-wide code audits,
 project and architecture assessments, secure review of code changes, and
@@ -27,8 +31,6 @@ cyberful-os tools** and makes them available under phase-specific policy, alongs
 browser automation and headless OWASP ZAP. Isolated execution, a local Code
 Graph, independent verification gates, durable evidence, and report-ready
 outputs keep the work bounded and traceable.
-
-<!-- Cyberful demo GIF placeholder: ![Cyberful in action](docs/assets/cyberful-demo.gif) -->
 
 ## Motivation
 
@@ -97,6 +99,15 @@ The current implementation connects that boundary exclusively to Codex:
   bakes this directory into every binary (see [Configuration](#configuration-and-env)).
 
 ## Application security workflows
+
+> [!IMPORTANT]
+> Before using Cyberful, we recommend applying for
+> [OpenAI Trusted Access for Cyber](https://openai.com/index/trusted-access-for-cyber/).
+> Individual users can complete identity verification at
+> [chatgpt.com/cyber](https://chatgpt.com/cyber). Trusted access does not replace
+> target authorization, and all use must still comply with OpenAI's
+> [Usage Policies](https://openai.com/policies/usage-policies/) and
+> [Terms of Use](https://openai.com/policies/row-terms-of-use/).
 
 | Workflow          | Phases                                                      |
 | ----------------- | ----------------------------------------------------------- |
