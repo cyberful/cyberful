@@ -44,16 +44,14 @@ install or download templates during an engagement.
 
 ## Preferred workflow
 
-1. Record `tool_decision` for `nuclei_run_scoped`, never for `nuclei_plan`, which is not execution-gated. Use
-   `USE` only when the candidate and expected request cost justify it; otherwise record `SKIP` or `BLOCKED`.
-   The gateway will not execute a gated scanner without a phase-local `USE` decision.
-2. Call `nuclei_plan` with the narrowest tags or exact IDs supported by observed evidence. Treat a zero-match
+1. Call `nuclei_plan` only when the candidate and expected request cost justify a scan, using the narrowest
+   tags or exact IDs supported by observed evidence. Treat a zero-match
    or over-budget plan as feedback to refine the hypothesis, not as a reason to broaden blindly.
-3. Review the returned target, filter, template list, request rate, and output path. If any differs from the
+2. Review the returned target, filter, template list, request rate, and output path. If any differs from the
    intended scope, discard it and plan again.
-4. Call `nuclei_run_scoped` once with only the plan ID. Stop on challenge pages, `403`, `429`, instability, or
+3. Call `nuclei_run_scoped` once with only the plan ID. Stop on challenge pages, `403`, `429`, instability, or
    any mission circuit breaker even if the tool could continue.
-5. Reproduce each useful match with the smallest direct request and a control. Save only redacted durable
+4. Reproduce each useful match with the smallest direct request and a control. Save only redacted durable
    evidence. Record false positives and zero-hit runs too; they are tool-utility data, not vulnerabilities.
 
 ## Raw-wrapper discipline
@@ -73,6 +71,6 @@ behavior. Do not add remote template URLs, update the corpus, or treat a success
 - Verify replays the final minimal proof and control; it does not accept Nuclei JSONL as verification by itself.
 - Report reads the preserved evidence and `raw/operations/tool-usage.csv`; it sends no Nuclei traffic.
 
-The CSV is host-owned and local to the workarea. It records tool, decision, mode, duration, outcome, request
-counts when known, output size, marker attestation, and finding counts when supplied. It never records tool
-arguments, URLs, headers, bodies, cookies, tokens, or rationale text and emits no telemetry.
+The CSV is host-owned and local to the workarea. It records actual tool calls, duration, outcome, output size,
+marker attestation, and finding counts when supplied. It never records tool arguments, URLs, headers, bodies,
+cookies, or tokens and emits no telemetry.

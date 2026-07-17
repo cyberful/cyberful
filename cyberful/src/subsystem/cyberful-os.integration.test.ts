@@ -175,7 +175,7 @@ test("the built image exposes every required capability through cyberful-os and 
       if (!name) throw new Error(`tool_inventory.tools[${index}].name must be non-empty`)
       return tool.installed === false ? [] : [name]
     })
-    expect(exposed.toSorted()).toEqual(["tool_decision", "variable", ...installedInventoryNames].toSorted())
+    expect(exposed.toSorted()).toEqual(["variable", ...installedInventoryNames].toSorted())
     expect(exposed).not.toContain("jeb")
 
     const parseResult = await client.callTool({

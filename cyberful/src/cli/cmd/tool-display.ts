@@ -32,13 +32,6 @@ const TOOL_DETAIL_BUILDERS: Record<string, ToolDetailBuilder> = {
   todowrite: todoDetails,
   question: questionDetails,
   variable: (record) => details([field(record, "action"), field(record, "name")]),
-  tool_decision: (record) =>
-    details([
-      field(record, "tool"),
-      field(record, "decision"),
-      field(record, "reason_code", "reason"),
-      field(record, "rationale", "why"),
-    ]),
 }
 
 export function toolDisplayName(name: string) {

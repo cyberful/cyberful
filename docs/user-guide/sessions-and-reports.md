@@ -31,12 +31,12 @@ data, cookies, tool output, findings, and proof-of-concept material. Apply the
 engagement retention policy and never attach them to a public issue without
 sanitization.
 
-Tool-decision results display both their stable reason code and human rationale.
-The workarea's `raw/operations/tool-usage.csv` remains metadata-only and omits
-rationale text and tool arguments. Phase transcripts are a separate evidence
-record: they are enabled by default and can contain complete tool calls,
-including rationale text. Set `CYBERFUL_SUBSYSTEM_TRANSCRIPT=0` only when the
-engagement retention policy calls for disabling those raw transcripts.
+Actual gateway tool calls are summarized in the workarea's metadata-only
+`raw/operations/tool-usage.csv`, which omits tool arguments and response
+content. Phase transcripts are a separate evidence record: they are enabled by
+default and can contain complete tool calls. Set
+`CYBERFUL_SUBSYSTEM_TRANSCRIPT=0` only when the engagement retention policy
+calls for disabling those raw transcripts.
 
 ## Reports
 

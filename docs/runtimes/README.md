@@ -18,12 +18,8 @@ Each sequential phase receives a fresh private gateway. The host injects
 ephemeral keys, loopback ports, mounts, and network policy; agents cannot turn
 an environment setting into broader authorization.
 
-Scanner and other material active capabilities require a phase-local
-`tool_decision`. Live tools accept `USE`, `SKIP`, or `BLOCKED`; an absent name
-is accepted only as `BLOCKED` when it exactly matches Cyberful's fixed gated
-tool catalog. The resulting usage row records `capability_status=missing` and
-cannot authorize execution. Unknown, foreign-qualified, and client-qualified
-unavailable names remain rejected. The decision result shows both the stable
-`reason_code` and the human `rationale`. A decision for a live non-gated tool is
-coverage metadata only and the result says explicitly that it does not grant or
-block execution.
+Exposed tools are callable directly under gateway phase policy, runtime scope
+authorization, traffic budgets, and circuit breakers. Actual calls are recorded in the
+workarea's metadata-only `raw/operations/tool-usage.csv`; raw phase transcripts
+may retain their full arguments and results according to the local retention
+setting.

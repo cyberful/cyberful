@@ -18,7 +18,6 @@ test("the Nuclei skill teaches both new controls and the existing expert tools",
   expect(skill).toContain("`nuclei`")
   expect(skill).toContain("`tool_inventory`")
   expect(skill).toContain("`capability_attestation`")
-  expect(skill).toContain("`tool_decision`")
   expect(skill).toContain("SUSPECTED")
   expect(skill).toContain("X-Request-ID: Bugcrowd")
   expect(skill).toContain("5 requests/second")

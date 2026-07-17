@@ -1,7 +1,7 @@
 // ── Local Gateway Tool Usage Ledger ──────────────────────────────
-// Writes metadata-only gateway decisions and calls to private shards, then
+// Writes metadata-only gateway calls to private shards, then
 // atomically rebuilds one engagement-local CSV without request or response content.
-// → cyberful/src/subsystem/gateway/server.ts — records gateway decisions and outcomes.
+// → cyberful/src/subsystem/gateway/server.ts — records gateway call outcomes.
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
@@ -12,16 +12,9 @@ const COLUMNS = [
   "time_iso",
   "phase",
   "agent",
-  "event_type",
   "tool",
-  "capability_status",
-  "decision",
-  "reason_code",
-  "mode",
   "duration_ms",
   "outcome",
-  "estimated_requests",
-  "observed_requests",
   "peak_rps",
   "bytes_out",
   "marker_attested",
@@ -33,16 +26,9 @@ const COLUMNS = [
 ] as const
 
 export interface ToolUsageEvent {
-  event_type: "decision" | "call"
   tool: string
-  capability_status?: "available" | "missing" | "degraded" | "unknown"
-  decision?: "USE" | "SKIP" | "BLOCKED"
-  reason_code?: string
-  mode?: "offline" | "passive" | "active" | "unknown"
   duration_ms?: number
   outcome?: "ok" | "error" | "blocked"
-  estimated_requests?: number
-  observed_requests?: number
   peak_rps?: number
   bytes_out?: number
   marker_attested?: boolean
@@ -67,7 +53,7 @@ export class ToolUsageRecorder {
   private readonly root = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   private readonly phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim() || "unknown"
   private readonly agent = process.env.CYBERFUL_SUBSYSTEM_LABEL?.trim() || this.phase
-  private readonly directory = this.root ? path.join(this.root, "raw", "operations", "tool-usage") : undefined
+  private readonly directory = this.root ? path.join(this.root, "raw", "operations", "tool-calls") : undefined
   private readonly shard = this.directory
     ? path.join(this.directory, `${safeName(this.phase)}-${safeName(this.agent)}-${process.pid}.csv`)
     : undefined
@@ -126,7 +112,7 @@ export class ToolUsageRecorder {
       if (error.code === "ENOENT") return undefined
       throw error
     })
-    // A gateway that made no auditable decisions never creates a shard directory; closing that idle
+    // A gateway that made no auditable calls never creates a shard directory; closing that idle
     // recorder has nothing to merge and is distinct from losing a directory after records were queued.
     if (!shards) return
     const rows = (

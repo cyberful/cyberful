@@ -1,6 +1,6 @@
 // ── Phase Gateway MCP Server ─────────────────────────────────────────────────
 // Runs the standalone, session-scoped MCP bridge used by Codex phases for
-// variables, handoffs, questions, tool decisions, and optional hardened proxying.
+// variables, handoffs, questions, usage recording, and optional hardened proxying.
 // Template resolution and response redaction keep stored secrets out of model
 // traffic while the host remains the owner of phase transitions.
 // @docs/concepts/execution-model.md
@@ -451,133 +451,6 @@ const VARIABLE_TOOL_DEF = {
     },
     required: ["action"],
   },
-}
-
-const TOOL_DECISION_TOOL_DEF = {
-  name: "tool_decision",
-  description:
-    "Record the phase's explicit USE, SKIP, or BLOCKED decision for a scanner or other material active tool. " +
-    "A USE decision is required before gated tools can run. A known gated tool absent from the live inventory " +
-    "may only be recorded as BLOCKED, so unavailable coverage remains explicit without granting execution. " +
-    "Decisions for live non-gated tools are coverage metadata and do not grant or block execution. The host " +
-    "excludes rationale text and tool arguments from raw/operations/tool-usage.csv; local phase transcripts " +
-    "may retain the complete call under the configured transcript-retention policy.",
-  inputSchema: {
-    type: "object" as const,
-    additionalProperties: false,
-    properties: {
-      tool: {
-        type: "string",
-        description:
-          "Exact gateway-local tool name. Live tools accept all decisions; known unavailable gated tools accept only BLOCKED.",
-      },
-      decision: { type: "string", enum: ["USE", "SKIP", "BLOCKED"] },
-      reason_code: {
-        type: "string",
-        pattern: "^[a-z0-9][a-z0-9_-]{1,63}$",
-        description: "Stable machine-readable reason, for example candidate-driven, low-value, scope, or unavailable.",
-      },
-      rationale: {
-        type: "string",
-        description: "Short human explanation. Validated for the live decision but deliberately omitted from metrics.",
-      },
-      mode: { type: "string", enum: ["offline", "passive", "active", "unknown"] },
-      estimated_requests: { type: "integer", minimum: 0, maximum: 1_000_000 },
-    },
-    required: ["tool", "decision", "reason_code", "rationale", "mode"],
-  },
-}
-
-const DECISION_GATED_TOOLS = new Set([
-  "dirb",
-  "feroxbuster",
-  "ffuf",
-  "gobuster",
-  "hydra",
-  "masscan",
-  "msfconsole",
-  "nikto",
-  "nmap",
-  "nuclei",
-  "nuclei_run_scoped",
-  "sqlmap",
-  "wapiti",
-  "wfuzz",
-  "zap_http_request",
-  "zap_oast",
-  "zap_start_active_scan",
-  "zap_start_ajax_spider",
-  "zap_start_spider",
-])
-
-const QUALIFIED_GATEWAY_TOOL_PREFIXES = ["mcp__expert-gateway__", "mcp__expert_gateway__"] as const
-
-export function toolDecisionRequired(tool: string) {
-  return DECISION_GATED_TOOLS.has(tool)
-}
-
-interface ToolDecision {
-  decision: "USE" | "SKIP" | "BLOCKED"
-  reason_code: string
-  rationale: string
-  mode: "offline" | "passive" | "active" | "unknown"
-  estimated_requests?: number
-}
-
-// ── Tool Decisions Separate Coverage From Execution Authority ─────
-// Gateway inventory names are local MCP names, while Codex may expose a live tool
-// with a server-qualified identifier. Those two known client spellings normalize
-// only when the stripped name exists in the live upstream inventory. An exact
-// gateway-local name from the fixed gated catalog may also record BLOCKED when
-// absent, preserving an honest coverage decision with status missing. It cannot
-// record USE or enter the execution authorization map, and arbitrary, foreign,
-// or qualified unavailable names remain rejected.
-// ─────────────────────────────────────────────────────────────────
-function toolDecisionTarget(value: unknown, knownTools: ReadonlySet<string>, decision: unknown) {
-  if (typeof value !== "string") return undefined
-  if (knownTools.has(value)) return { tool: value, capabilityStatus: "available" as const }
-  const prefix = QUALIFIED_GATEWAY_TOOL_PREFIXES.find((candidate) => value.startsWith(candidate))
-  if (prefix) {
-    const localName = value.slice(prefix.length)
-    return knownTools.has(localName) ? { tool: localName, capabilityStatus: "available" as const } : undefined
-  }
-  return decision === "BLOCKED" && DECISION_GATED_TOOLS.has(value)
-    ? { tool: value, capabilityStatus: "missing" as const }
-    : undefined
-}
-
-function parseToolDecision(
-  args: Record<string, unknown>,
-  knownTools: ReadonlySet<string>,
-): ({ tool: string; capabilityStatus: "available" | "missing" } & ToolDecision) | { error: string } {
-  const target = toolDecisionTarget(args.tool, knownTools, args.decision)
-  if (!target)
-    return {
-      error: "tool_decision requires an available gateway tool, or the exact name of a known gated tool for BLOCKED",
-    }
-  if (args.decision !== "USE" && args.decision !== "SKIP" && args.decision !== "BLOCKED")
-    return { error: "tool_decision decision must be USE, SKIP, or BLOCKED" }
-  if (typeof args.reason_code !== "string" || !/^[a-z0-9][a-z0-9_-]{1,63}$/.test(args.reason_code))
-    return { error: "tool_decision reason_code must be a stable lowercase code" }
-  if (typeof args.rationale !== "string" || !args.rationale.trim() || args.rationale.length > 1_000)
-    return { error: "tool_decision rationale must contain 1-1000 characters" }
-  if (args.mode !== "offline" && args.mode !== "passive" && args.mode !== "active" && args.mode !== "unknown")
-    return { error: "tool_decision mode must be offline, passive, active, or unknown" }
-  if (
-    args.estimated_requests !== undefined &&
-    (!Number.isInteger(args.estimated_requests) ||
-      Number(args.estimated_requests) < 0 ||
-      Number(args.estimated_requests) > 1_000_000)
-  )
-    return { error: "tool_decision estimated_requests must be an integer from 0 to 1000000" }
-  return {
-    ...target,
-    decision: args.decision,
-    reason_code: args.reason_code,
-    rationale: args.rationale.trim(),
-    mode: args.mode,
-    ...(args.estimated_requests === undefined ? {} : { estimated_requests: Number(args.estimated_requests) }),
-  }
 }
 
 interface QuestionConfig {
@@ -1417,7 +1290,6 @@ export async function createGatewayServer(opts?: {
   const question = questionConfig()
   const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
-  const decisions = new Map<string, ToolDecision>()
   const server = new Server(
     { name: "expert-gateway", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
@@ -1444,7 +1316,6 @@ export async function createGatewayServer(opts?: {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       VARIABLE_TOOL_DEF,
-      TOOL_DECISION_TOOL_DEF,
       ...(question ? [QUESTION_TOOL_DEF] : []),
       ...(handoff ? [handoffToolDef(handoff)] : []),
       ...localTools,
@@ -1457,41 +1328,6 @@ export async function createGatewayServer(opts?: {
     const name = req.params.name
     const args = req.params.arguments ?? {}
     if (name === "variable") return handleVariable(sessionID, args)
-    if (name === "tool_decision") {
-      const parsed = parseToolDecision(args, new Set(byName.keys()))
-      if ("error" in parsed) return text({ error: parsed.error }, true)
-      if (parsed.capabilityStatus === "available") decisions.set(parsed.tool, parsed)
-      await usage
-        .record({
-          event_type: "decision",
-          tool: parsed.tool,
-          capability_status: parsed.capabilityStatus,
-          decision: parsed.decision,
-          reason_code: parsed.reason_code,
-          mode: parsed.mode,
-          estimated_requests: parsed.estimated_requests,
-          outcome: parsed.decision === "USE" ? "ok" : "blocked",
-        })
-        .catch((error) => log.warn("could not record phase tool decision", { tool: parsed.tool, error }))
-      return text({
-        ok: true,
-        tool: parsed.tool,
-        decision: parsed.decision,
-        reason_code: parsed.reason_code,
-        rationale: parsed.rationale,
-        mode: parsed.mode,
-        capability_status: parsed.capabilityStatus,
-        required_before_use: toolDecisionRequired(parsed.tool),
-        output:
-          parsed.capabilityStatus === "missing"
-            ? "BLOCKED coverage decision recorded for a known gated tool that is unavailable in this phase."
-            : !toolDecisionRequired(parsed.tool)
-              ? "Coverage decision recorded. This tool is not execution-gated, so the decision does not grant or block its use."
-              : parsed.decision === "USE"
-                ? "Decision recorded. The tool may run under the stated mode and phase policy."
-                : "Decision recorded. The tool remains blocked in this phase unless a new USE decision replaces it.",
-      })
-    }
     if (name === "question" && question) return handleQuestion(question, circuit, args)
     if (name === "handoff" && handoff) {
       const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
@@ -1565,41 +1401,13 @@ export async function createGatewayServer(opts?: {
     if (!upstream) return text({ error: `unknown tool ${name}` })
     const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
     if (breakerError) return text({ error: breakerError }, true)
-    const decision = decisions.get(name)
-    if (toolDecisionRequired(name) && decision?.decision !== "USE") {
-      await usage
-        .record({
-          event_type: "call",
-          tool: name,
-          capability_status: "available",
-          decision: decision?.decision ?? "BLOCKED",
-          reason_code: decision?.reason_code ?? "decision-required",
-          mode: decision?.mode ?? "unknown",
-          outcome: "blocked",
-          estimated_requests: decision?.estimated_requests,
-        })
-        .catch((error) => log.warn("could not record blocked phase tool call", { tool: name, error }))
-      return text(
-        {
-          error:
-            decision?.decision === "SKIP" || decision?.decision === "BLOCKED"
-              ? `${name} is ${decision.decision} for this phase; record a justified USE with tool_decision before invoking it.`
-              : `${name} requires tool_decision with decision USE before it can run.`,
-        },
-        true,
-      )
-    }
     const policyError = zapPhaseToolError(process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim(), name)
     if (policyError) {
       await usage
         .record({
-          event_type: "call",
           tool: name,
-          capability_status: "available",
-          decision: "BLOCKED",
-          reason_code: "phase-policy",
-          mode: decision?.mode ?? "unknown",
           outcome: "blocked",
+          error_class: "PhasePolicyError",
         })
         .catch((error) => log.warn("could not record policy-blocked phase tool call", { tool: name, error }))
       return text({ error: policyError }, true)
@@ -1624,16 +1432,9 @@ export async function createGatewayServer(opts?: {
       const redacted = redactResult(sessionID, result)
       await usage
         .record({
-          event_type: "call",
           tool: name,
-          capability_status: "available",
-          decision: decision?.decision,
-          reason_code: decision?.reason_code,
-          mode: decision?.mode ?? "unknown",
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: redacted.isError ? "error" : "ok",
-          estimated_requests: decision?.estimated_requests,
-          observed_requests: decision?.mode === "offline" ? 0 : undefined,
           bytes_out: Buffer.byteLength(JSON.stringify(redacted)),
           marker_attested: name === "nuclei_run_scoped" ? true : undefined,
           lead_count: resultMetric(redacted, "lead_count"),
@@ -1645,15 +1446,9 @@ export async function createGatewayServer(opts?: {
     } catch (error) {
       await usage
         .record({
-          event_type: "call",
           tool: name,
-          capability_status: "available",
-          decision: decision?.decision,
-          reason_code: decision?.reason_code,
-          mode: decision?.mode ?? "unknown",
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: "error",
-          estimated_requests: decision?.estimated_requests,
           error_class: error instanceof Error ? error.name : "UnknownError",
         })
         .catch((auditError) => log.warn("could not record failed phase tool call", { tool: name, error: auditError }))

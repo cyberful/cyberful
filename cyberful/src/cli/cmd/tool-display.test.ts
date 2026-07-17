@@ -36,18 +36,6 @@ describe("tool display", () => {
     )
   })
 
-  test("shows the machine reason and human rationale for tool decisions", () => {
-    expect(
-      toolDisplaySummary("tool_decision", {
-        tool: "nuclei_plan",
-        decision: "BLOCKED",
-        reason_code: "scope",
-        rationale: "No authorized target is available.",
-        mode: "offline",
-      }),
-    ).toBe('tool_decision tool=nuclei_plan decision=BLOCKED reason=scope why="No authorized target is available."')
-  })
-
   test("keeps partial pending JSON quiet", () => {
     expect(toolDisplaySummary("bash", '{"command":')).toBe("bash")
   })

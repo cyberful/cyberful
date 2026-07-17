@@ -165,13 +165,11 @@ Assessment `brief` and Remediate `intake` can invoke the host-owned
 call budget. Only the designated later phases receive those host-scoped routes
 after TUI consent; an ordinary session variable cannot grant access. Browser routing enforces the origin
 boundary per request; ZAP applies it at the bridge/tool-call boundary rather
-than claiming a packet-level firewall around every plugin. Pentest
-retains its engagement traffic policy. Scanner decisions and executions automatically populate
-the local metadata-only `raw/operations/tool-usage.csv`; exact known gated tools
-that are unavailable can be recorded only as `BLOCKED` with capability status
-`missing`, never as execution authority. Decision results show the stable reason
-code and human rationale, while the CSV omits rationale text and tool arguments;
-raw phase transcripts may retain complete calls under the local transcript-retention setting. A message submitted
+than claiming a packet-level firewall around every plugin. Pentest retains its
+engagement traffic policy. Gateway tool calls automatically populate the local
+metadata-only `raw/operations/tool-usage.csv` with timing,
+outcome, and bounded result metrics but no tool arguments. Raw phase transcripts
+may retain complete calls under the local transcript-retention setting. A message submitted
 in the TUI is steered into the currently running Codex turn. While delivery is pending it remains below the
 composer; it enters the feed and session journal only after the subsystem
 acknowledges the live turn.

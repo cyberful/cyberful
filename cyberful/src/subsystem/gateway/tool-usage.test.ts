@@ -1,5 +1,5 @@
 // ── Gateway Tool Usage Tests ──────────────────────────────────────
-// Verifies that routine gateway decisions and calls produce one metadata-only,
+// Verifies that routine gateway calls produce one metadata-only,
 // engagement-local CSV without storing sensitive arguments or response content.
 // → cyberful/src/subsystem/gateway/tool-usage.ts — owns the local ledger.
 // ─────────────────────────────────────────────────────────────────
@@ -23,25 +23,9 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
   try {
     const recorder = new ToolUsageRecorder()
     await recorder.record({
-      event_type: "decision",
       tool: "nuclei_run_scoped",
-      capability_status: "available",
-      decision: "USE",
-      reason_code: "candidate-driven",
-      mode: "active",
-      estimated_requests: 12,
-      outcome: "ok",
-    })
-    await recorder.record({
-      event_type: "call",
-      tool: "nuclei_run_scoped",
-      capability_status: "available",
-      decision: "USE",
-      reason_code: "candidate-driven",
-      mode: "active",
       duration_ms: 420,
       outcome: "ok",
-      observed_requests: 11,
       peak_rps: 5,
       bytes_out: 900,
       marker_attested: true,
@@ -50,12 +34,12 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     await recorder.close()
 
     const csv = await readFile(path.join(root, "raw", "operations", "tool-usage.csv"), "utf8")
-    expect(csv).toContain("time_iso,phase,agent,event_type,tool")
-    expect(csv).toContain("exploit,exploit,decision,nuclei_run_scoped")
-    expect(csv).toContain("exploit,exploit,call,nuclei_run_scoped")
-    expect(csv).toContain("candidate-driven")
+    expect(csv).toContain("time_iso,phase,agent,tool,duration_ms,outcome")
+    expect(csv).toContain("exploit,exploit,nuclei_run_scoped,420,ok,5,900,true")
+    expect(csv).not.toContain("decision")
+    expect(csv).not.toContain("reason_code")
     expect(csv).not.toContain("rationale")
-    expect(csv.trim().split("\n")).toHaveLength(3)
+    expect(csv.trim().split("\n")).toHaveLength(2)
   } finally {
     if (previous.root === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
     else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.root

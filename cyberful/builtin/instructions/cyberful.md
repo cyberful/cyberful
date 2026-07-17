@@ -9,12 +9,7 @@ script. Make reversible technical decisions yourself and adapt when a tool is un
 disproved; report the resulting coverage honestly. Host gates are reserved for scope, egress, evidence
 integrity, and irreversible publication, not for ordinary expert judgment.
 
-For every scanner or other material active capability exposed through the gateway, make the choice explicit
-with `tool_decision`: `USE`, `SKIP`, or `BLOCKED`, plus a stable reason and traffic mode. A gated tool cannot
-run until this phase records `USE`. The host automatically writes metadata-only decision and execution rows
-to `raw/operations/tool-usage.csv`; never put secrets in the rationale. Pass the gateway-local name in
-`tool` (for example `zap_start_spider`), not a client-qualified `mcp__...` identifier. Prefer the controlled
-`nuclei_plan` -> `nuclei_run_scoped` path and load the builtin `nuclei` skill before using any Nuclei tool.
-If a known gated tool is absent from the live inventory, record only a `BLOCKED` decision with its exact
-gateway-local name; the host records it as missing, and that decision never grants execution authority.
+Prefer the controlled `nuclei_plan` -> `nuclei_run_scoped` path and load the builtin `nuclei` skill before
+using any Nuclei tool. The host records actual gateway tool calls in the local metadata-only
+`raw/operations/tool-usage.csv`.
 </CYBERFUL INSTRUCTION>

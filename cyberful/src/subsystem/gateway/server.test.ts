@@ -143,9 +143,9 @@ afterAll(async () => {
 })
 
 describe("expert-gateway variable tool", () => {
-  test("exposes variable storage and the host-owned tool decision gate", async () => {
+  test("exposes variable storage as the base tool surface", async () => {
     const { tools } = await client.listTools()
-    expect(tools.map((tool) => tool.name)).toEqual(["variable", "tool_decision"])
+    expect(tools.map((tool) => tool.name)).toEqual(["variable"])
   })
 
   test("set persists to the shared session_variable table", async () => {
@@ -337,10 +337,10 @@ describe("expert-gateway workflow capability policy", () => {
       expect(assessment).toContain("runtime_authorization")
       expect(assessment).toContain("source_import")
 
-      expect(await toolNames("assessment", "missing")).toEqual(["variable", "tool_decision"])
-      expect(await toolNames("unknown", "brief")).toEqual(["variable", "tool_decision"])
+      expect(await toolNames("assessment", "missing")).toEqual(["variable"])
+      expect(await toolNames("unknown", "brief")).toEqual(["variable"])
 
-      expect(await toolNames("pentest", "recon")).toEqual(["variable", "tool_decision"])
+      expect(await toolNames("pentest", "recon")).toEqual(["variable"])
     } finally {
       if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
       else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
@@ -425,7 +425,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     try {
       // The gateway advertises its own variable tool AND the proxied upstream tool.
       const { tools } = await c.listTools()
-      expect(tools.map((tool) => tool.name).sort()).toEqual(["echo", "tool_decision", "variable"])
+      expect(tools.map((tool) => tool.name).sort()).toEqual(["echo", "variable"])
 
       await callVariable(c, { action: "set", name: "TARGET", value: "https://target.example/admin" })
       const res = await c.callTool({ name: "echo", arguments: { u: "{{var:TARGET}}" } })
@@ -496,7 +496,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("blocks a material scanner until the phase records a USE decision", async () => {
+  test("forwards exposed material scanner calls", async () => {
     let calls = 0
     const nmap: UpstreamTool = {
       def: { name: "nmap", description: "scanner", inputSchema: { type: "object" } },
@@ -508,187 +508,12 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     const server = await createGatewayServer({ upstreams: [nmap] })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
-    const scannerClient = new Client({ name: "decision-gate-test", version: "0" })
+    const scannerClient = new Client({ name: "scanner-forwarding-test", version: "0" })
     await scannerClient.connect(clientTransport)
     try {
-      const blocked = await scannerClient.callTool({ name: "nmap", arguments: { args: ["example.com"] } })
-      expect("isError" in blocked && blocked.isError).toBe(true)
-      expect(textContent(blocked)).toContain("tool_decision")
-      expect(calls).toBe(0)
-
-      const decision = await scannerClient.callTool({
-        name: "tool_decision",
-        arguments: {
-          tool: "nmap",
-          decision: "USE",
-          reason_code: "candidate-driven",
-          rationale: "A concrete service candidate needs bounded version confirmation.",
-          mode: "active",
-          estimated_requests: 3,
-        },
-      })
-      expect("isError" in decision && decision.isError).not.toBe(true)
-      expect(jsonContent(decision)).toMatchObject({
-        tool: "nmap",
-        decision: "USE",
-        reason_code: "candidate-driven",
-        rationale: "A concrete service candidate needs bounded version confirmation.",
-        mode: "active",
-        required_before_use: true,
-      })
-
-      const allowed = await scannerClient.callTool({ name: "nmap", arguments: { args: ["example.com"] } })
-      expect("isError" in allowed && allowed.isError).not.toBe(true)
+      const result = await scannerClient.callTool({ name: "nmap", arguments: { args: ["example.com"] } })
+      expect("isError" in result && result.isError).not.toBe(true)
       expect(calls).toBe(1)
-    } finally {
-      await scannerClient.close()
-      await server.closeGateway()
-    }
-  })
-
-  test("labels a decision for a non-gated live tool as coverage without claiming enforcement", async () => {
-    let calls = 0
-    const nucleiPlan: UpstreamTool = {
-      def: { name: "nuclei_plan", description: "offline scanner plan", inputSchema: { type: "object" } },
-      call: async () => {
-        calls++
-        return { content: [{ type: "text", text: "planned" }] }
-      },
-    }
-    const server = await createGatewayServer({ upstreams: [nucleiPlan] })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const scannerClient = new Client({ name: "coverage-decision-test", version: "0" })
-    await scannerClient.connect(clientTransport)
-    try {
-      const decision = jsonContent(
-        await scannerClient.callTool({
-          name: "tool_decision",
-          arguments: {
-            tool: "nuclei_plan",
-            decision: "BLOCKED",
-            reason_code: "scope",
-            rationale: "No authorized target is available.",
-            mode: "offline",
-          },
-        }),
-      )
-      expect(decision).toMatchObject({
-        tool: "nuclei_plan",
-        decision: "BLOCKED",
-        reason_code: "scope",
-        rationale: "No authorized target is available.",
-        mode: "offline",
-        required_before_use: false,
-      })
-      expect(decision.output).toBe(
-        "Coverage decision recorded. This tool is not execution-gated, so the decision does not grant or block its use.",
-      )
-
-      const planned = await scannerClient.callTool({ name: "nuclei_plan", arguments: {} })
-      expect("isError" in planned && planned.isError).not.toBe(true)
-      expect(calls).toBe(1)
-    } finally {
-      await scannerClient.close()
-      await server.closeGateway()
-    }
-  })
-
-  test("canonicalizes Codex-qualified tool names before recording a decision", async () => {
-    let calls = 0
-    const nmap: UpstreamTool = {
-      def: { name: "nmap", description: "scanner", inputSchema: { type: "object" } },
-      call: async () => {
-        calls++
-        return { content: [{ type: "text", text: "done" }] }
-      },
-    }
-    const server = await createGatewayServer({ upstreams: [nmap] })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const scannerClient = new Client({ name: "qualified-decision-gate-test", version: "0" })
-    await scannerClient.connect(clientTransport)
-    try {
-      for (const tool of ["mcp__expert-gateway__nmap", "mcp__expert_gateway__nmap"]) {
-        const decision = await scannerClient.callTool({
-          name: "tool_decision",
-          arguments: {
-            tool,
-            decision: "USE",
-            reason_code: "candidate-driven",
-            rationale: "A concrete service candidate needs bounded version confirmation.",
-            mode: "active",
-          },
-        })
-        expect("isError" in decision && decision.isError).not.toBe(true)
-        expect(jsonContent(decision).tool).toBe("nmap")
-      }
-
-      const foreign = await scannerClient.callTool({
-        name: "tool_decision",
-        arguments: {
-          tool: "mcp__other_gateway__nmap",
-          decision: "USE",
-          reason_code: "candidate-driven",
-          rationale: "A foreign server identifier must not cross the gateway boundary.",
-          mode: "active",
-        },
-      })
-      expect("isError" in foreign && foreign.isError).toBe(true)
-
-      const allowed = await scannerClient.callTool({ name: "nmap", arguments: { args: ["example.com"] } })
-      expect("isError" in allowed && allowed.isError).not.toBe(true)
-      expect(calls).toBe(1)
-    } finally {
-      await scannerClient.close()
-      await server.closeGateway()
-    }
-  })
-
-  test("records BLOCKED coverage for known gated tools missing from the live inventory", async () => {
-    const server = await createGatewayServer({ upstreams: [] })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const scannerClient = new Client({ name: "missing-decision-gate-test", version: "0" })
-    await scannerClient.connect(clientTransport)
-    try {
-      for (const tool of ["zap_start_spider", "zap_start_active_scan"]) {
-        const decision = await scannerClient.callTool({
-          name: "tool_decision",
-          arguments: {
-            tool,
-            decision: "BLOCKED",
-            reason_code: "unavailable",
-            rationale: "The optional ZAP upstream is unavailable in this phase.",
-            mode: "unknown",
-          },
-        })
-        expect("isError" in decision && decision.isError).not.toBe(true)
-        expect(jsonContent(decision)).toMatchObject({
-          ok: true,
-          tool,
-          decision: "BLOCKED",
-          capability_status: "missing",
-        })
-      }
-
-      for (const [tool, decision] of [
-        ["zap_start_spider", "USE"],
-        ["made_up_scanner", "BLOCKED"],
-        ["mcp__expert-gateway__zap_start_spider", "BLOCKED"],
-      ]) {
-        const rejected = await scannerClient.callTool({
-          name: "tool_decision",
-          arguments: {
-            tool,
-            decision,
-            reason_code: "unavailable",
-            rationale: "Unavailable names must not create execution authority.",
-            mode: "unknown",
-          },
-        })
-        expect("isError" in rejected && rejected.isError).toBe(true)
-      }
     } finally {
       await scannerClient.close()
       await server.closeGateway()
@@ -887,7 +712,7 @@ describe("expert-gateway handoff tool", () => {
       c = new Client({ name: "handoff-test", version: "0" })
       await c.connect(ct)
       const { tools } = await c.listTools()
-      expect(tools.map((tool) => tool.name).sort()).toEqual(["handoff", "tool_decision", "variable"])
+      expect(tools.map((tool) => tool.name).sort()).toEqual(["handoff", "variable"])
 
       const refused = await c.callTool({
         name: "handoff",
@@ -1017,7 +842,7 @@ describe("expert-gateway question tool", () => {
       c = new Client({ name: "question-test", version: "0" })
       await c.connect(ct)
       const { tools } = await c.listTools()
-      expect(tools.map((tool) => tool.name).sort()).toEqual(["question", "tool_decision", "variable"])
+      expect(tools.map((tool) => tool.name).sort()).toEqual(["question", "variable"])
 
       const result = await c.callTool({
         name: "question",
