@@ -44,9 +44,9 @@ install or download templates during an engagement.
 
 ## Preferred workflow
 
-1. Record `tool_decision` for `nuclei_run_scoped`. Use `USE` only when the candidate and expected request cost
-   justify it; otherwise record `SKIP` or `BLOCKED`. The gateway will not execute a gated scanner without a
-   phase-local `USE` decision.
+1. Record `tool_decision` for `nuclei_run_scoped`, never for `nuclei_plan`, which is not execution-gated. Use
+   `USE` only when the candidate and expected request cost justify it; otherwise record `SKIP` or `BLOCKED`.
+   The gateway will not execute a gated scanner without a phase-local `USE` decision.
 2. Call `nuclei_plan` with the narrowest tags or exact IDs supported by observed evidence. Treat a zero-match
    or over-budget plan as feedback to refine the hypothesis, not as a reason to broaden blindly.
 3. Review the returned target, filter, template list, request rate, and output path. If any differs from the

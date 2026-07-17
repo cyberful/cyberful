@@ -23,4 +23,7 @@ Scanner and other material active capabilities require a phase-local
 is accepted only as `BLOCKED` when it exactly matches Cyberful's fixed gated
 tool catalog. The resulting usage row records `capability_status=missing` and
 cannot authorize execution. Unknown, foreign-qualified, and client-qualified
-unavailable names remain rejected.
+unavailable names remain rejected. The decision result shows both the stable
+`reason_code` and the human `rationale`. A decision for a live non-gated tool is
+coverage metadata only and the result says explicitly that it does not grant or
+block execution.

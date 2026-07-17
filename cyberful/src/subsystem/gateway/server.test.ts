@@ -528,9 +528,65 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         },
       })
       expect("isError" in decision && decision.isError).not.toBe(true)
+      expect(jsonContent(decision)).toMatchObject({
+        tool: "nmap",
+        decision: "USE",
+        reason_code: "candidate-driven",
+        rationale: "A concrete service candidate needs bounded version confirmation.",
+        mode: "active",
+        required_before_use: true,
+      })
 
       const allowed = await scannerClient.callTool({ name: "nmap", arguments: { args: ["example.com"] } })
       expect("isError" in allowed && allowed.isError).not.toBe(true)
+      expect(calls).toBe(1)
+    } finally {
+      await scannerClient.close()
+      await server.closeGateway()
+    }
+  })
+
+  test("labels a decision for a non-gated live tool as coverage without claiming enforcement", async () => {
+    let calls = 0
+    const nucleiPlan: UpstreamTool = {
+      def: { name: "nuclei_plan", description: "offline scanner plan", inputSchema: { type: "object" } },
+      call: async () => {
+        calls++
+        return { content: [{ type: "text", text: "planned" }] }
+      },
+    }
+    const server = await createGatewayServer({ upstreams: [nucleiPlan] })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const scannerClient = new Client({ name: "coverage-decision-test", version: "0" })
+    await scannerClient.connect(clientTransport)
+    try {
+      const decision = jsonContent(
+        await scannerClient.callTool({
+          name: "tool_decision",
+          arguments: {
+            tool: "nuclei_plan",
+            decision: "BLOCKED",
+            reason_code: "scope",
+            rationale: "No authorized target is available.",
+            mode: "offline",
+          },
+        }),
+      )
+      expect(decision).toMatchObject({
+        tool: "nuclei_plan",
+        decision: "BLOCKED",
+        reason_code: "scope",
+        rationale: "No authorized target is available.",
+        mode: "offline",
+        required_before_use: false,
+      })
+      expect(decision.output).toBe(
+        "Coverage decision recorded. This tool is not execution-gated, so the decision does not grant or block its use.",
+      )
+
+      const planned = await scannerClient.callTool({ name: "nuclei_plan", arguments: {} })
+      expect("isError" in planned && planned.isError).not.toBe(true)
       expect(calls).toBe(1)
     } finally {
       await scannerClient.close()

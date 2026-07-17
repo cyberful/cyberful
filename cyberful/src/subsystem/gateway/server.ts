@@ -459,8 +459,9 @@ const TOOL_DECISION_TOOL_DEF = {
     "Record the phase's explicit USE, SKIP, or BLOCKED decision for a scanner or other material active tool. " +
     "A USE decision is required before gated tools can run. A known gated tool absent from the live inventory " +
     "may only be recorded as BLOCKED, so unavailable coverage remains explicit without granting execution. " +
-    "The host writes metadata only to " +
-    "raw/operations/tool-usage.csv; rationale text and tool arguments are never logged.",
+    "Decisions for live non-gated tools are coverage metadata and do not grant or block execution. The host " +
+    "excludes rationale text and tool arguments from raw/operations/tool-usage.csv; local phase transcripts " +
+    "may retain the complete call under the configured transcript-retention policy.",
   inputSchema: {
     type: "object" as const,
     additionalProperties: false,
@@ -518,6 +519,7 @@ export function toolDecisionRequired(tool: string) {
 interface ToolDecision {
   decision: "USE" | "SKIP" | "BLOCKED"
   reason_code: string
+  rationale: string
   mode: "offline" | "passive" | "active" | "unknown"
   estimated_requests?: number
 }
@@ -572,6 +574,7 @@ function parseToolDecision(
     ...target,
     decision: args.decision,
     reason_code: args.reason_code,
+    rationale: args.rationale.trim(),
     mode: args.mode,
     ...(args.estimated_requests === undefined ? {} : { estimated_requests: Number(args.estimated_requests) }),
   }
@@ -1474,14 +1477,19 @@ export async function createGatewayServer(opts?: {
         ok: true,
         tool: parsed.tool,
         decision: parsed.decision,
+        reason_code: parsed.reason_code,
+        rationale: parsed.rationale,
+        mode: parsed.mode,
         capability_status: parsed.capabilityStatus,
         required_before_use: toolDecisionRequired(parsed.tool),
         output:
           parsed.capabilityStatus === "missing"
             ? "BLOCKED coverage decision recorded for a known gated tool that is unavailable in this phase."
-            : parsed.decision === "USE"
-              ? "Decision recorded. The tool may run under the stated mode and phase policy."
-              : "Decision recorded. The tool remains blocked in this phase unless a new USE decision replaces it.",
+            : !toolDecisionRequired(parsed.tool)
+              ? "Coverage decision recorded. This tool is not execution-gated, so the decision does not grant or block its use."
+              : parsed.decision === "USE"
+                ? "Decision recorded. The tool may run under the stated mode and phase policy."
+                : "Decision recorded. The tool remains blocked in this phase unless a new USE decision replaces it.",
       })
     }
     if (name === "question" && question) return handleQuestion(question, circuit, args)
