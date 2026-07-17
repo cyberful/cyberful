@@ -34,7 +34,7 @@
     "./*": "./src/*.ts"
   },
   "devDependencies": {
-    "@hey-api/openapi-ts": "0.90.10",
+    "@hey-api/openapi-ts": "0.99.0",
     "@parcel/watcher-darwin-arm64": "2.5.1",
     "@parcel/watcher-darwin-x64": "2.5.1",
     "@parcel/watcher-linux-arm64-glibc": "2.5.1",
