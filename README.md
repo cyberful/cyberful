@@ -29,6 +29,28 @@ browser automation and headless OWASP ZAP. Isolated execution, a local Code
 Graph, independent verification gates, durable evidence, and report-ready
 outputs keep the work bounded and traceable.
 
+## Getting started
+
+After completing the [requirements](#requirements), run these commands from the
+repository root:
+
+```sh
+npm install --global @openai/codex@0.144.5
+codex
+```
+
+In Codex, choose **Sign in with ChatGPT**, complete the browser flow, then type
+`/exit`. Back in the terminal, install the project dependencies and launch
+Cyberful:
+
+```sh
+make deps
+make run
+```
+
+Keep **Pentest** selected, create a workarea, and describe the authorized target
+and its exact in-scope and out-of-scope boundaries.
+
 ## Motivation
 
 Large language models have brought powerful new capabilities into software
