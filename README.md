@@ -1,7 +1,7 @@
 # Cyberful
 
-Cyberful is an open-source application-security workbench for discovering, 
-exploiting, verifying, and remediating vulnerabilities.
+**Cyberful is an open-source application-security workbench for discovering, 
+exploiting, verifying, and remediating vulnerabilities**.
 
 <p align="center">
   <img src="docs/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
