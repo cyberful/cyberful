@@ -1,10 +1,7 @@
 # Cyberful
 
-Cyberful is an **open-source application-security workbench** that orchestrates
-Codex, an isolated browser, OWASP ZAP, and 177 security tools as one
-evidence-driven system. It provides a single terminal for finding, exploiting,
-independently verifying, and remediating vulnerabilities, then turns the work
-into durable evidence and report-ready results.
+Cyberful is an open-source application-security workbench for discovering, 
+exploiting, verifying, and remediating vulnerabilities.
 
 <p align="center">
   <img src="docs/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
