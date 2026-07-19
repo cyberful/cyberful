@@ -14,8 +14,8 @@ cyberful/builtin/
   agents/
     brief.md                Engagement framing and mission contract
     recon.md                Whole-surface reconnaissance
-    exploit.md      Systematic exploitation
-    hacker.md       Creative breakthrough pass
+    exploit.md              Autonomous PoC-driven exploitation
+    hacker.md               Unconventional breakthrough pass
     verify.md       Independent adversarial verification
     report.md       Client report synthesis
     budgets.json            Host-enforced wall-clock ceilings
@@ -48,6 +48,13 @@ brief -> recon -> exploit -> hacker
 Every stage persists a named workarea artifact: `MISSION.md`, `RECON.md`,
 `EXPLOIT.md`, `HACKER.md`, `VERIFY.md`, and `REPORT.md`. `budgets.json` defines
 the wall-clock ceiling for each phase process; Recon has one 60-minute budget.
+Exploit owns systematic validation through PoC construction and execution,
+including short-lived local test infrastructure and adjacent hypotheses exposed
+by failed attempts. Promising primitives require source-provenance closure across
+safe first-party paths before an external boundary is accepted as the blocker.
+Hacker receives the cleaned evidence ledger, applies the same rule to new
+primitives, and concentrates on novel attack ideas rather than unfinished
+routine checks.
 
 The constrained `handoff` tool accepts only the successor configured by the
 host. Calling it records a request; it does not launch the next phase. The host

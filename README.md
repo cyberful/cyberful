@@ -151,6 +151,13 @@ process and gateway are proven stopped; invalid handoffs or failed gates still
 halt. Durable memory lives in workarea artifacts and the local Code Graph
 rather than hidden model state.
 
+In Pentest, Exploit owns in-scope systematic validation through runnable PoCs
+and temporary test infrastructure, including new hypotheses exposed by failed
+attempts. Both offensive phases must exhaust safe first-party source provenance
+for promising primitives before accepting an unavailable fixture or out-of-scope
+system as the blocker. Hacker starts from Exploit's cleaned ledger and focuses
+on unconventional attack ideas instead of completing its routine backlog.
+
 Code Audit adds a host gate between Index and Trace: the source preflight must
 still pass, and the current full-inventory graph snapshot and per-file coverage
 must match a host-keyed readiness record. Markdown cleanup is ownership-scoped:
