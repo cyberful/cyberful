@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto"
 import { readFile, rename, rm, writeFile } from "node:fs/promises"
 import { SubsystemPhase } from "../phase"
 import { SubsystemBrowserCdp } from "../browser-cdp"
+import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import {
@@ -934,7 +935,66 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
 export interface UpstreamTool {
   def: { name: string; description?: string; inputSchema: unknown }
   capability?: SubsystemPhase.WorkflowCapability
+  browserProfile?: BrowserProfileId
   call(args: Record<string, unknown>): Promise<CallToolResult>
+}
+
+// ── One Browser Surface Selects Five Isolated Identities ────────────
+// Repeating every browser tool five times would obscure the useful tool surface
+// and weaken existing prompts that already know the `browser_*` names. The
+// gateway instead adds one bounded profile selector to each browser schema and
+// removes it before forwarding the call to that profile's unmodified MCP tool.
+// Profile one remains the default, preserving existing calls while natural
+// references such as "the second browser profile" map directly to `profile: 2`.
+// ─────────────────────────────────────────────────────────────────────
+export function browserProfileToolDefinition(
+  definition: UpstreamTool["def"],
+  profiles: readonly BrowserProfileId[],
+): UpstreamTool["def"] {
+  if (!isRecord(definition.inputSchema)) return definition
+  const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
+  return {
+    ...definition,
+    description: `${definition.description ?? "Use the isolated browser."} Select profile 1-5 for a distinct authenticated browser identity; profile 1 is the default.`,
+    inputSchema: {
+      ...definition.inputSchema,
+      properties: {
+        ...properties,
+        profile: {
+          type: "integer",
+          enum: profiles,
+          default: 1,
+          description: "Isolated browser identity: 1 is the first profile, through 5 for the fifth profile.",
+        },
+      },
+    },
+  }
+}
+
+export function selectBrowserProfileUpstream(
+  candidates: readonly UpstreamTool[],
+  args: Record<string, unknown>,
+): { upstream: UpstreamTool; args: Record<string, unknown> } {
+  const profiled = candidates.filter(
+    (candidate): candidate is UpstreamTool & { browserProfile: BrowserProfileId } =>
+      candidate.browserProfile !== undefined,
+  )
+  if (profiled.length === 0) {
+    const upstream = candidates[0]
+    if (!upstream) throw new Error("browser tool has no available upstream")
+    return { upstream, args }
+  }
+
+  const requested = args.profile ?? 1
+  if (!BrowserProfile.isBrowserProfileId(requested)) {
+    throw new Error("browser profile must be an integer from 1 through 5")
+  }
+  const upstream = profiled.find((candidate) => candidate.browserProfile === requested)
+  if (!upstream) throw new Error(`browser profile ${requested} is unavailable`)
+  return {
+    upstream,
+    args: Object.fromEntries(Object.entries(args).filter(([name]) => name !== "profile")),
+  }
 }
 
 interface ToolArgumentAdjustment {
@@ -1062,15 +1122,6 @@ function proxyEnabled(): boolean {
   return v === "1" || v === "true" || v === "yes"
 }
 
-function agentBrowserProfileDir(): string {
-  if (process.env.CYBER_BROWSER_USER_DATA_DIR) return process.env.CYBER_BROWSER_USER_DATA_DIR
-  const stateHome = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state")
-  return path.join(stateHome, "cyberful-os", "mcp", "browser", "profile")
-}
-async function readAgentCdpPort(): Promise<number | undefined> {
-  return SubsystemBrowserCdp.readCdpPort(agentBrowserProfileDir())
-}
-
 // ── Profile Choice Avoids Browser Lock Contention ────────────────
 // A persistent browser context locks its user-data directory, so another process
 // must not launch against a profile with a live CDP holder. The caller performs
@@ -1079,14 +1130,31 @@ async function readAgentCdpPort(): Promise<number | undefined> {
 // login; every other state falls back to a per-run profile whose lock cannot
 // collide with another phase or an orphaned browser.
 // ─────────────────────────────────────────────────────────────────
-export function resolveBrowserUpstreamEnv(input: { dedicated?: string; livePort?: number; tempProfileDir: string }): {
+export function resolveBrowserUpstreamEnv(input: {
+  dedicated?: string
+  artifactsDir: string
+  livePort?: number
+  tempProfileDir: string
+}): {
   set: Record<string, string>
   unset: string[]
 } {
   if (input.dedicated && !input.livePort) {
-    return { set: { CYBER_BROWSER_USER_DATA_DIR: input.dedicated }, unset: [] }
+    return {
+      set: {
+        CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
+        CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
+      },
+      unset: [],
+    }
   }
-  return { set: { CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir }, unset: [] }
+  return {
+    set: {
+      CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
+      CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
+    },
+    unset: [],
+  }
 }
 
 // ── Upstreams Receive Least-Privilege Environments ───────────────
@@ -1130,12 +1198,20 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const out: UpstreamTool[] = []
   const clients: Client[] = []
   const bridgeContainers = new Set<string>()
-  const upstreamCapabilities = [
-    ["cyberful-os", "isolated-exec"],
-    ["browser", "browser"],
-    ["zap", "zap"],
-  ] as const satisfies readonly (readonly [string, SubsystemPhase.WorkflowCapability])[]
-  for (const [key, capability] of upstreamCapabilities) {
+  const upstreamCapabilities: readonly {
+    readonly key: "cyberful-os" | "browser" | "zap"
+    readonly capability: SubsystemPhase.WorkflowCapability
+    readonly browserProfile?: BrowserProfileId
+  }[] = [
+    { key: "cyberful-os", capability: "isolated-exec" },
+    ...BrowserProfile.BROWSER_PROFILE_IDS.map((browserProfile) => ({
+      key: "browser" as const,
+      capability: "browser" as const,
+      browserProfile,
+    })),
+    { key: "zap", capability: "zap" },
+  ]
+  for (const { key, capability, browserProfile } of upstreamCapabilities) {
     const workflow = selectedWorkflow()
     if (!activeWorkflowPhase(workflow) || !workflow || !SubsystemPhase.hasCapability(workflow, capability)) continue
     if (!activeRuntimeAllowed(capability)) continue
@@ -1145,16 +1221,21 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       if (key === "zap" && "container" in def && def.container) bridgeContainers.add(def.container)
       const [cmd, ...args] = def.command
       const env = upstreamProcessEnv(key, process.env, def.environment)
-      if (key === "browser") {
-        const dedicated = process.env.CYBER_BROWSER_USER_DATA_DIR
-        const livePort = dedicated ? await readAgentCdpPort() : undefined
+      if (key === "browser" && browserProfile !== undefined) {
+        const dedicated = BrowserProfile.browserProfileDir(browserProfile)
+        const livePort = await SubsystemBrowserCdp.readCdpPort(dedicated)
         const { set, unset } = resolveBrowserUpstreamEnv({
           dedicated,
+          artifactsDir: BrowserProfile.browserArtifactsDir(browserProfile),
           livePort,
-          tempProfileDir: path.join(os.tmpdir(), `expert-browser-${boundSession()}-${process.pid}`),
+          tempProfileDir: path.join(
+            os.tmpdir(),
+            `expert-browser-${boundSession()}-${process.pid}-profile-${browserProfile}`,
+          ),
         })
         for (const [k, v] of Object.entries(set)) env[k] = v
         for (const k of unset) delete env[k]
+        env.CYBER_BROWSER_PROFILE_ID = String(browserProfile)
         const policy = runtimePolicy(boundSession(), selectedWorkflow())
         if (policy) env.CYBER_BROWSER_ALLOWED_ORIGINS = JSON.stringify(policy.origins)
       }
@@ -1203,7 +1284,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           try {
             upstreamDiagnosticSink(chunk.toString("utf8"))
           } catch (error) {
-            log.warn("upstream diagnostic sink failed", { upstream: key, error })
+            log.warn("upstream diagnostic sink failed", {
+              upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+              error,
+            })
           }
         })
       }
@@ -1212,10 +1296,11 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       clients.push(client)
       const { tools } = await client.listTools()
       for (const t of tools) {
-        if (out.some((u) => u.def.name === t.name)) continue
+        if (browserProfile === undefined && out.some((u) => u.def.name === t.name)) continue
         out.push({
           def: t,
           capability,
+          ...(browserProfile === undefined ? {} : { browserProfile }),
           // ── Tool Calls Share One Explicit Ten-Minute Ceiling ─────────────
           // Authorized scanners can legitimately run beyond the MCP SDK's
           // one-minute default. The gateway and Codex registration therefore
@@ -1234,7 +1319,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       }
     } catch (error) {
       if (key === "cyberful-os") throw error
-      log.warn("optional phase gateway upstream is unavailable", { upstream: key, error })
+      log.warn("optional phase gateway upstream is unavailable", {
+        upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+        error,
+      })
     }
   }
   return {
@@ -1278,7 +1366,20 @@ export async function createGatewayServer(opts?: {
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
       : { tools: [], clients: [], close: () => Promise.resolve() }
   const upstreams = connected.tools
-  const byName = new Map(upstreams.map((u) => [u.def.name, u]))
+  const byName = new Map<string, UpstreamTool[]>()
+  for (const upstream of upstreams) {
+    const candidates = byName.get(upstream.def.name) ?? []
+    candidates.push(upstream)
+    byName.set(upstream.def.name, candidates)
+  }
+  const upstreamDefinitions = Array.from(byName.values(), (candidates) => {
+    const definition = candidates[0]?.def
+    if (!definition) throw new Error("gateway upstream group has no tool definition")
+    const profiles = candidates.flatMap((candidate) =>
+      candidate.browserProfile === undefined ? [] : [candidate.browserProfile],
+    )
+    return profiles.length > 0 ? browserProfileToolDefinition(definition, profiles) : definition
+  })
   const localTools = localToolDefinitions()
   const localToolNames = new Set<string>(localTools.map((tool) => tool.name))
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name))
@@ -1319,7 +1420,7 @@ export async function createGatewayServer(opts?: {
       ...(question ? [QUESTION_TOOL_DEF] : []),
       ...(handoff ? [handoffToolDef(handoff)] : []),
       ...localTools,
-      ...upstreams.map((u) => u.def),
+      ...upstreamDefinitions,
     ],
   }))
 
@@ -1397,8 +1498,8 @@ export async function createGatewayServer(opts?: {
         return text({ error: error instanceof Error ? error.message : String(error) }, true)
       }
     }
-    const upstream = byName.get(name)
-    if (!upstream) return text({ error: `unknown tool ${name}` })
+    const candidates = byName.get(name)
+    if (!candidates) return text({ error: `unknown tool ${name}` })
     const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
     if (breakerError) return text({ error: breakerError }, true)
     const policyError = zapPhaseToolError(process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim(), name)
@@ -1413,7 +1514,14 @@ export async function createGatewayServer(opts?: {
       return text({ error: policyError }, true)
     }
     const resolvedArgs = resolveArgs(sessionID, name, args)
-    const adjusted = adjustUpstreamArguments(upstream.def, resolvedArgs)
+    let selected: ReturnType<typeof selectBrowserProfileUpstream>
+    try {
+      selected = selectBrowserProfileUpstream(candidates, resolvedArgs)
+    } catch (error) {
+      return text({ error: error instanceof Error ? error.message : String(error) }, true)
+    }
+    const upstream = selected.upstream
+    const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
     if (
       (upstream.capability === "browser" || upstream.capability === "zap") &&
       (selectedWorkflow() === "assessment" || selectedWorkflow() === "remediate")

@@ -1,4 +1,4 @@
-.PHONY: all help deps subsystems install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-codex test-all build run docs docs-build clean
+.PHONY: all help deps subsystems install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-codex test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
 
 PYTHON ?= python3
 
@@ -21,6 +21,7 @@ help:
 	@echo "  make build        Build standalone binaries for all platforms (gated on test-codex)"
 	@echo "  make install      Build and install the 'cyberful' command for this system"
 	@echo "  make run          Launch Cyberful from the repository root"
+	@echo "  make browser-run-{1..5} Open a persistent browser profile for target pre-authentication"
 	@echo "  make docs         Serve the engineer docs locally"
 	@echo "  make docs-build   Build the static documentation site"
 	@echo "  make clean        Remove generated build and documentation output"
@@ -96,6 +97,9 @@ install:
 # the app layers `.env` itself, so no --env-file is needed.
 run:
 	cd $(dir $(abspath $(firstword $(MAKEFILE_LIST)))) && CYBERFUL_BUILD_ID="$${CYBERFUL_BUILD_ID:-$$(bun ./cyberful/script/source-build-id.ts)}" bun --preload ./cyberful/node_modules/@opentui/solid/scripts/preload.ts --conditions=browser cyberful/src/index.ts $(ARGS)
+
+browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5:
+	bun cyberful/script/browser-run.ts $(@:browser-run-%=%)
 
 docs:
 	cd $(dir $(abspath $(firstword $(MAKEFILE_LIST)))) && ./scripts/serve-docs.sh

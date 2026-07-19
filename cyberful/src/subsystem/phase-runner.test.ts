@@ -183,6 +183,24 @@ describe("runPhase transcript persistence", () => {
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
+  test("the phase prompt maps account descriptions to isolated browser profile selectors", async () => {
+    let prompt = ""
+    await SubsystemPhaseRunner.runPhase(
+      spec(),
+      deps({
+        run: async (input) => {
+          prompt = input.prompt
+          return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+
+    expect(prompt).toContain("optional integer `profile` from 1 through 5")
+    expect(prompt).toContain("first, second")
+    expect(prompt).toContain("`profile: 1`, `profile: 2`, or `profile: 5`")
+    expect(prompt).toContain("Never copy session material between them")
+  })
+
   test("keeps shell temporary files inside the workarea", async () => {
     let env: Record<string, string> | undefined
     let privateEnv: Record<string, string> | undefined

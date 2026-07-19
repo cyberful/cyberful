@@ -428,8 +428,10 @@ wedged worker cannot leave Cyberful-owned processes or Docker workloads active.
 ### First launch: the browser
 
 The browser MCP drives open-source **Chromium** (patchright's Chrome-for-Testing)
-by default — no proprietary Chrome, and a dedicated `cyberful` profile under
-`~/.cyberful/browser`. The driver ships inside the binary; only Chromium itself
+by default — no proprietary Chrome, and up to five dedicated profiles under
+`~/.cyberful/browser`. Every `browser_*` tool accepts `profile: 1..5` (profile 1
+is the default), so separate authorized accounts keep independent cookies,
+storage, tabs, and downloads. The driver ships inside the binary; only Chromium itself
 (~150 MB) is fetched on first launch by a visible preflight, streaming the
 download, then reused. Target cookies persist in that isolated profile by default,
 while browser-owned background calls are disabled for both Chromium and Chrome so a
@@ -438,7 +440,10 @@ Google Chrome instead (skips login OTP, passes Cloudflare), set
 `CYBER_BROWSER_CHANNEL=chrome` in the `.env` of the directory you launch from; it
 uses the default Cyberful profile unless `CYBER_BROWSER_USER_DATA_DIR=<profile>` is
 also set. Fully close the manually seeded browser before Cyberful starts so the
-profile lock is released. Disable the preflight with
+profile lock is released. From a source checkout, run `make browser-run-1`
+through `make browser-run-5` to open and pre-authenticate each identity, close
+each browser, then describe the account-to-profile mapping in the Cyberful prompt.
+Disable the preflight with
 `CYBERFUL_SKIP_BROWSER_PREFLIGHT=1`. See **[Browser MCP](docs/runtimes/browser.md)** for the full reference:
 choosing Chromium vs real Chrome, and how to open a dedicated Chrome and log into a target once so an
 authorized bug-bounty / pentest engagement reuses that authenticated session.

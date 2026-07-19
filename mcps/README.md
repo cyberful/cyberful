@@ -198,11 +198,14 @@ Chromium. It does **not** auto-solve CAPTCHAs — real challenges still go throu
 
 ### Isolation
 
-Everything the browser persists lives outside the user's own Chrome profile:
+Everything the browser persists lives outside the user's own Chrome profile.
+Cyberful exposes five identities through the optional `profile: 1..5` argument
+on every `browser_*` tool; each MCP process still owns one profile:
 
 - Browser cache: `mcps/browser/.browsers`
-- Profile: `~/.local/state/cyberful-os/mcp/browser/profile`
-- Artifacts: `~/.local/state/cyberful-os/mcp/browser/artifacts`
+- Installed profiles: `~/.cyberful/browser/profiles/cyberful{,-2,-3,-4,-5}`
+- Installed artifacts: `~/.cyberful/browser/artifacts/profile-{1..5}`
+- Standalone MCP defaults: `~/.local/state/cyberful-os/mcp/browser/{profile,artifacts}`
 
 ### Environment overrides
 
@@ -211,8 +214,10 @@ Everything the browser persists lives outside the user's own Chrome profile:
 - `CYBER_BROWSER_HEADLESS` — default `false`; `=true` runs Chromium headless
 - `CYBER_BROWSER_BROWSERS_PATH` — Chromium install/cache location
 - `CYBER_BROWSER_USER_DATA_DIR` — persistent profile dir
+- `CYBER_BROWSER_USER_DATA_DIR_1` … `_5` — per-identity profile dirs (`_1` takes precedence over the legacy unsuffixed value)
 - `CYBER_BROWSER_CLEAR_COOKIES_ON_START` — default `false`; set `true` only to discard the dedicated profile's target login
 - `CYBER_BROWSER_ARTIFACTS_DIR` — saved artifacts / downloads
+- `CYBER_BROWSER_ARTIFACTS_DIR_1` … `_5` — per-identity artifact dirs
 - `CYBER_BROWSER_EXECUTABLE` — use a specific Chromium/Chrome binary
 - `CYBER_BROWSER_PROXY` — route the browser through a proxy
 - `CYBER_BROWSER_STEALTH` — default `true`; `=false` reverts to the stock driver + bundled Chromium
