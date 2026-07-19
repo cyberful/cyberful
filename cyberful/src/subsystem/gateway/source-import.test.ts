@@ -21,11 +21,22 @@ import { isRecord } from "@/util/record"
 
 let root = ""
 let workarea = ""
+let sourceStore = ""
+let importRoot = ""
 let previousWorkarea: string | undefined
 let previousWorkflow: string | undefined
-let previousLedgerKey: string | undefined
+let previousSourceStore: string | undefined
+let previousImportKey: string | undefined
 
-const ledgerKey = "source-import-test-ledger-key-with-at-least-thirty-two-bytes"
+const importKey = "source-import-test-attestation-key-with-at-least-thirty-two-bytes"
+
+function sourceEnvironment(extra: Record<string, string> = {}) {
+  return {
+    CYBERFUL_SOURCE_STORE_ROOT: sourceStore,
+    CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY: importKey,
+    ...extra,
+  }
+}
 
 function cloneDestination(args: readonly string[]): string {
   const destination = args.at(-1)
@@ -73,12 +84,16 @@ async function createRealImport() {
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), "cyberful-source-import-"))
   workarea = path.join(root, "workarea")
-  await mkdir(workarea)
+  sourceStore = path.join(root, "source-store")
+  importRoot = path.join(sourceStore, "import")
+  await Promise.all([mkdir(workarea), mkdir(importRoot, { recursive: true })])
   previousWorkarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
   previousWorkflow = process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
-  previousLedgerKey = process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
+  previousSourceStore = process.env.CYBERFUL_SOURCE_STORE_ROOT
+  previousImportKey = process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
   process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
-  process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY = ledgerKey
+  process.env.CYBERFUL_SOURCE_STORE_ROOT = sourceStore
+  process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY = importKey
   delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
 })
 
@@ -87,8 +102,10 @@ afterEach(async () => {
   else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previousWorkarea
   if (previousWorkflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
   else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previousWorkflow
-  if (previousLedgerKey === undefined) delete process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
-  else process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY = previousLedgerKey
+  if (previousSourceStore === undefined) delete process.env.CYBERFUL_SOURCE_STORE_ROOT
+  else process.env.CYBERFUL_SOURCE_STORE_ROOT = previousSourceStore
+  if (previousImportKey === undefined) delete process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
+  else process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY = previousImportKey
   await rm(root, { recursive: true, force: true })
 })
 
@@ -190,7 +207,7 @@ describe("public source import policy", () => {
   })
 
   test("does not ask for approval when host attestation is unavailable", async () => {
-    delete process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
+    delete process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
     let prompted = false
     await expect(
       handleSourceImport(
@@ -202,7 +219,7 @@ describe("public source import policy", () => {
           },
         },
       ),
-    ).rejects.toThrow("attestation is unavailable")
+    ).rejects.toThrow("attestation key is unavailable")
     expect(prompted).toBe(false)
   })
 
@@ -259,7 +276,7 @@ describe("public source import policy", () => {
     ])
     expect(calls[0]?.slice(0, 2)).toEqual(["-c", "http.curloptResolve=github.com:443:8.8.8.8"])
     const manifest: unknown = JSON.parse(
-      await readFile(path.join(workarea, "raw", "source-import", "manifest.json"), "utf8"),
+      await readFile(path.join(importRoot, "manifest.json"), "utf8"),
     )
     if (!isRecord(manifest)) throw new Error("source import fixture manifest is not an object")
     expect(manifest).toMatchObject({
@@ -271,6 +288,7 @@ describe("public source import policy", () => {
     })
     if (!isRecord(manifest.attestation)) throw new Error("source import fixture attestation is not an object")
     expect(manifest.attestation.hmac_sha256).toMatch(/^[a-f0-9]{64}$/)
+    await expect(readFile(path.join(workarea, "raw", "source-import", "manifest.json"), "utf8")).rejects.toThrow()
 
     let promptedAgain = false
     await expect(
@@ -341,29 +359,37 @@ describe("public source import policy", () => {
 
   test("uses an attested import and fails closed when its source tree changes", async () => {
     await createRealImport()
-    const repository = path.join(workarea, "raw", "source-import", "repository")
-    expect(await effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).toBe(
+    const repository = path.join(importRoot, "repository")
+    expect(
+      await effectiveSourceRoot(
+        root,
+        workarea,
+        sourceEnvironment({ CYBERFUL_CODE_GRAPH_LEDGER_KEY: "a-different-session-ledger-key" }),
+      ),
+    ).toBe(
       await realpath(repository),
     )
     await writeFile(path.join(repository, "main.ts"), "export const sealed = false\n")
-    await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+    await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "attested content",
     )
   })
 
   test("fails closed when the authenticated manifest or HEAD commit changes", async () => {
     await createRealImport()
-    const importRoot = path.join(workarea, "raw", "source-import")
     const manifestPath = path.join(importRoot, "manifest.json")
     const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"))
     if (!isRecord(manifest)) throw new Error("source import fixture manifest is not an object")
     manifest.created_at = "2099-01-01T00:00:00.000Z"
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n")
-    await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+    await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "attestation does not match",
     )
 
-    await rm(importRoot, { recursive: true, force: true })
+    await Promise.all([
+      rm(path.join(importRoot, "repository"), { recursive: true, force: true }),
+      rm(path.join(importRoot, "manifest.json"), { force: true }),
+    ])
     await createRealImport()
     const repository = path.join(importRoot, "repository")
     const committed = await runLocalGit(
@@ -381,18 +407,16 @@ describe("public source import policy", () => {
       repository,
     )
     expect(committed.exitCode).toBe(0)
-    await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+    await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "HEAD no longer matches",
     )
   })
 
   test("rejects authenticated manifests whose runtime fields are malformed", async () => {
     await createRealImport()
-    const manifestPath = path.join(workarea, "raw", "source-import", "manifest.json")
-    const repository = path.join(workarea, "raw", "source-import", "repository")
-    const original = await verifySourceImport(repository, manifestPath, {
-      CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey,
-    })
+    const manifestPath = path.join(importRoot, "manifest.json")
+    const repository = path.join(importRoot, "repository")
+    const original = await verifySourceImport(repository, manifestPath, sourceEnvironment())
     const { attestation: _attestation, ...payload } = original
     const cases = [
       { field: "files_on_disk", value: "1", error: "manifest is malformed" },
@@ -403,9 +427,9 @@ describe("public source import policy", () => {
     for (const malformedCase of cases) {
       const malformed = structuredClone(payload)
       Reflect.set(malformed, malformedCase.field, malformedCase.value)
-      const sealed = attestSourceImportManifest(malformed, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })
+      const sealed = attestSourceImportManifest(malformed, sourceEnvironment())
       await writeFile(manifestPath, JSON.stringify(sealed, null, 2) + "\n")
-      await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+      await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
         malformedCase.error,
       )
     }
@@ -413,20 +437,17 @@ describe("public source import policy", () => {
 
   test("does not silently fall back when an import becomes incomplete", async () => {
     await createRealImport()
-    await rm(path.join(workarea, "raw", "source-import", "manifest.json"))
-    await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+    await rm(path.join(importRoot, "manifest.json"))
+    await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "manifest is missing",
     )
   })
 
   test("verifies every sealed local ref without network access", async () => {
     await createRealImport()
-    const importRoot = path.join(workarea, "raw", "source-import")
     const repository = path.join(importRoot, "repository")
     const manifestPath = path.join(importRoot, "manifest.json")
-    const original = await verifySourceImport(repository, manifestPath, {
-      CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey,
-    })
+    const original = await verifySourceImport(repository, manifestPath, sourceEnvironment())
     const localRef = "refs/cyberful/import/0"
     expect((await runLocalGit(["update-ref", localRef, original.commit], repository)).exitCode).toBe(0)
     const { attestation: _attestation, ...unsigned } = original
@@ -438,10 +459,9 @@ describe("public source import policy", () => {
     }
     await writeFile(
       manifestPath,
-      JSON.stringify(attestSourceImportManifest(payload, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey }), null, 2) +
-        "\n",
+      JSON.stringify(attestSourceImportManifest(payload, sourceEnvironment()), null, 2) + "\n",
     )
-    expect(await effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).toBe(
+    expect(await effectiveSourceRoot(root, workarea, sourceEnvironment())).toBe(
       await realpath(repository),
     )
 
@@ -467,7 +487,7 @@ describe("public source import policy", () => {
     const alternate = (await runLocalGit(["rev-parse", "HEAD^{commit}"], repository)).stdout.trim()
     expect((await runLocalGit(["reset", "--hard", "--quiet", originalHead], repository)).exitCode).toBe(0)
     expect((await runLocalGit(["update-ref", localRef, alternate], repository)).exitCode).toBe(0)
-    await expect(effectiveSourceRoot(root, workarea, { CYBERFUL_CODE_GRAPH_LEDGER_KEY: ledgerKey })).rejects.toThrow(
+    await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "ref 'refs/cyberful/import/0' no longer matches",
     )
   })

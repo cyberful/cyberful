@@ -21,8 +21,10 @@ runtime authorization referenced by `ASSESSMENT_MISSION.md`.
 - If a host policy is active, use only browser/ZAP calls within its exact allowed origins and remaining call
   budget, plus the mission's identities, rate limits, prohibited effects, and stop conditions. Native Codex and
   cyberful-os have no network route. Begin passive and ordinary-flow-first; run only targeted, non-destructive tests
-  linked to a control hypothesis. Stop on 403/429, managed challenge, instability, scope uncertainty, or
-  unexpected data.
+  linked to a control hypothesis. A 403/429 or managed challenge closes the current test and must not be retried
+  or disguised; it does not suppress independent authorized tests while the target remains stable. Stop all
+  target traffic for scope uncertainty, systemic instability, unexpected private data, an unplanned side effect,
+  or an explicit mission stop condition.
 - Use benign controls and negative cases. A status code, scanner alert, graph path, or configuration string is
   not proof by itself. Preserve reproducible, redacted evidence under `raw/` or `poc/` and register structured
   findings through `code_finding` when applicable.

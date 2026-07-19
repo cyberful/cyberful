@@ -7,6 +7,6 @@ LABEL org.opencontainers.image.title="cyberful-zap-bridge" \
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --production --frozen-lockfile
-COPY zap_bridge.mjs zap_history.mjs zap_http_request.mjs zap_policy.mjs zap_report_path.mjs ./
+COPY zap_bridge.mjs zap_history.mjs zap_http_request.mjs zap_oast.mjs zap_policy.mjs zap_report_path.mjs ./
 USER bun
 ENTRYPOINT ["bun", "run", "/app/zap_bridge.mjs"]

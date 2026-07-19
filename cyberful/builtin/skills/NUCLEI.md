@@ -49,8 +49,11 @@ install or download templates during an engagement.
    or over-budget plan as feedback to refine the hypothesis, not as a reason to broaden blindly.
 2. Review the returned target, filter, template list, request rate, and output path. If any differs from the
    intended scope, discard it and plan again.
-3. Call `nuclei_run_scoped` once with only the plan ID. Stop on challenge pages, `403`, `429`, instability, or
-   any mission circuit breaker even if the tool could continue.
+3. Call `nuclei_run_scoped` once with only the plan ID. A challenge page, `403`, or `429` ends that scanner
+   run and is evidence about its requests, not a phase-wide stop. Do not retry or disguise the rejected run;
+   continue only independent authorized work while the target is stable. Stop all target traffic for an
+   explicit mission stop condition, scope uncertainty, systemic instability, unexpected private data, or an
+   unplanned side effect.
 4. Reproduce each useful match with the smallest direct request and a control. Save only redacted durable
    evidence. Record false positives and zero-hit runs too; they are tool-utility data, not vulnerabilities.
 
@@ -65,7 +68,7 @@ behavior. Do not add remote template URLs, update the corpus, or treat a success
 ## Phase use
 
 - Recon may preview or plan from a concrete fingerprint, but target scanning must remain within its traffic and
-  circuit-breaker policy. Broad "scan everything" behavior is not Recon coverage.
+  mission policy. Broad "scan everything" behavior is not Recon coverage.
 - Exploit uses controlled plans to test a specific Recon candidate, then confirms or disproves it manually.
 - Hacker uses Nuclei only for a new concrete chain component, not to repeat systematic coverage.
 - Verify replays the final minimal proof and control; it does not accept Nuclei JSONL as verification by itself.

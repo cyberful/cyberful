@@ -69,9 +69,9 @@ describe("ZAP API bridge policy", () => {
   test("blocks only unscoped egress, foreign origins, and automatic redirects", () => {
     const origins = parseZapAllowedOrigins('["https://target.example"]')
     expect(() => assertScopedZapTool("zap_active_scan", {}, origins, true)).toThrow("explicit")
-    expect(() =>
-      assertScopedZapTool("zap_active_scan", { url: "https://foreign.example" }, origins, true),
-    ).toThrow("outside")
+    expect(() => assertScopedZapTool("zap_active_scan", { url: "https://foreign.example" }, origins, true)).toThrow(
+      "outside",
+    )
     expect(() =>
       assertScopedZapTool(
         "zap_api_call",
@@ -87,11 +87,19 @@ describe("ZAP API bridge policy", () => {
       ),
     ).toThrow("redirects")
     expect(() =>
+      assertScopedZapTool("zap_oast", { component: "oast", type: "action", operation: "start" }, origins),
+    ).toThrow("service URL")
+  })
+
+  test("allows OAST capability discovery and local views without granting egress", () => {
+    const origins = parseZapAllowedOrigins('["https://target.example"]')
+    expect(() => assertScopedZapTool("zap_oast", {}, origins)).not.toThrow()
+    expect(() =>
       assertScopedZapTool(
         "zap_oast",
-        { component: "oast", type: "action", operation: "start" },
+        { component: "oast", type: "view", operation: "getServices", parameters: {} },
         origins,
       ),
-    ).toThrow("service URL")
+    ).not.toThrow()
   })
 })

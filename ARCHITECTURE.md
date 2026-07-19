@@ -14,7 +14,7 @@ TUI input
   -> SessionPrompt journal + orchestration
   -> ephemeral Codex app-server
   -> private host MCP gateway
-  -> cyberful-os / browser / ZAP / variables / question / handoff
+  -> read-only source store / Code Graph / cyberful-os / browser / ZAP / variables / question / handoff
   -> workarea artifacts
   -> validated successor
 ```
@@ -47,6 +47,12 @@ For each sequential phase the orchestrator:
 8. proves the process and gateway tree have exited, then seals the final artifact with a host-generated
    SHA-256 manifest before launching the successor.
 
+The phase runner supplies Markdown cleanup with only the required deliverable
+path; it never traverses the complete workarea. Code Audit also verifies a
+host-keyed, full-inventory graph readiness record before accepting
+`index → trace`, binding the post-gateway source preflight, graph snapshot, and
+coverage rows to the transition.
+
 The host always runs one phase process at a time. Recon, Exploit, and Hacker can
 permit native direct Codex children through persona metadata when the resolved
 effort is Ultra; those children do not become host phases or own handoffs.
@@ -71,6 +77,14 @@ Gateway secrets are materialized in owner-only temporary files rather than
 Codex process arguments. ZAP bridge containers are named and labelled per
 gateway, removed explicitly when it closes, and swept again when the engagement
 ends.
+
+Repository imports and deterministic source snapshots live in an owner-only
+application-data store keyed by canonical workarea identity, outside Codex's
+writable root. The gateway exposes only virtual read-only source operations.
+The import HMAC key is durable for that workarea/import and separate from the
+session finding-ledger key. Target repository `AGENTS.md`, skills, prompts, and
+similar instruction-shaped content remain untrusted evidence and never join
+the first-party runtime instruction chain.
 
 ## Host extensions
 

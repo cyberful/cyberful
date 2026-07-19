@@ -182,15 +182,48 @@ describe("SessionVariable", () => {
     )
   })
 
-  test("unusableValueReason rejects nullish/empty/coercion-sentinel values, accepts real ones", () => {
+  test("unusableValueReason rejects nullish, coerced, and already-redacted values", () => {
     // The garbage a failed extraction serializes to — each must be refused at the write boundary.
-    for (const bad of [null, undefined, "", "   ", "undefined", "UNDEFINED", "null", "NaN", "[object Object]"]) {
+    for (const bad of [
+      null,
+      undefined,
+      "",
+      "   ",
+      "undefined",
+      "UNDEFINED",
+      "null",
+      "NaN",
+      "[object Object]",
+      "https://[redacted:variable:scope_assets]/app",
+      { launch_url: "https://[redacted:variable:scope_assets]/app" },
+    ]) {
       expect(typeof SessionVariable.unusableValueReason(bad)).toBe("string")
     }
     // Real values, including falsy-looking-but-legitimate ones ("0", "false", empty-looking structures).
     for (const ok of ["mark@park.io", "0", "false", "a-real-token", 42, { k: "v" }]) {
       expect(SessionVariable.unusableValueReason(ok)).toBeUndefined()
     }
+  })
+
+  test("refuses a partially redacted browser URL before it becomes an action variable", () => {
+    // A structured scope variable can contain the hostname returned by browser_evaluate. Output redaction
+    // then replaces only that hostname; persisting the display-safe result must not turn its reserved marker
+    // into an invalid URL that reaches browser_navigate on the next call.
+    const redacted = SessionVariable.redactText("https://walletbot.me/app#signed-init-data", [
+      {
+        name: SessionVariable.Name.make("scope_assets"),
+        value: ["walletbot.me"],
+        type: "array",
+        size: 16,
+        preview: "<redacted:array:16 chars>",
+      },
+    ])
+
+    expect(redacted).toBe("https://[redacted:variable:scope_assets]/app#signed-init-data")
+    expect(SessionVariable.unusableValueReason(redacted)).toContain("redaction marker")
+    expect(() =>
+      SessionVariable.resolveTemplateReferences("{{var:wallet_webapp_session_url}}", () => redacted),
+    ).toThrow(SessionVariable.UnusableTemplateVariableError)
   })
 
   test("refuses to resolve a saved-but-garbage variable, but still resolves a real one", () => {

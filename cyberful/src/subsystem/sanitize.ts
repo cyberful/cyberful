@@ -1,48 +1,56 @@
-// ── Workarea Markdown Sanitization ──────────────────────────────
-// Normalizes typographic confusables in generated Markdown while refusing
-// symlink traversal and preserving every non-Markdown engagement artifact.
+// ── Owned Markdown Artifact Sanitization ─────────────────────────
+// Normalizes typographic confusables only in Markdown artifacts explicitly
+// owned by the completed phase; repository and prior-phase data stay untouched.
 // → cyberful/src/subsystem/phase-runner.ts — invokes cleanup after a phase run.
 // ─────────────────────────────────────────────────────────────────
 
-import fs from "fs/promises"
+import { lstat, readFile, realpath, writeFile } from "fs/promises"
 import path from "path"
 import { deTypography } from "../util/typography"
 
 const MARKDOWN = /\.(md|markdown)$/i
-const SANITIZE_CONCURRENCY = 32
 
-export async function sanitizeMarkdownTree(root: string): Promise<void> {
-  const directories = [root]
-  while (directories.length > 0) {
-    const directoryBatch = directories.splice(0, SANITIZE_CONCURRENCY)
-    const listings = await Promise.all(
-      directoryBatch.map(async (directory) => ({
-        directory,
-        entries: await fs.readdir(directory, { withFileTypes: true }),
-      })),
-    )
-    const markdown: string[] = []
-    for (const listing of listings) {
-      for (const entry of listing.entries) {
-        const file = path.join(listing.directory, entry.name)
-        if (entry.isSymbolicLink()) continue
-        if (entry.isDirectory()) {
-          directories.push(file)
-          continue
-        }
-        if (entry.isFile() && MARKDOWN.test(entry.name)) markdown.push(file)
-      }
-    }
-    for (let offset = 0; offset < markdown.length; offset += SANITIZE_CONCURRENCY) {
-      await Promise.all(
-        markdown.slice(offset, offset + SANITIZE_CONCURRENCY).map(async (file) => {
-          const before = await fs.readFile(file, "utf8")
-          const after = deTypography(before)
-          if (after !== before) await fs.writeFile(file, after)
-        }),
-      )
-    }
+function contained(root: string, candidate: string) {
+  const relative = path.relative(root, candidate)
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+}
+
+async function ownedMarkdown(root: string, artifact: string) {
+  if (!artifact || path.isAbsolute(artifact) || !MARKDOWN.test(artifact))
+    throw new Error(`Markdown artifact '${artifact}' is not a safe relative Markdown path`)
+  const normalized = path.normalize(artifact)
+  if (normalized.split(path.sep).some((segment) => !segment || segment === "." || segment === ".."))
+    throw new Error(`Markdown artifact '${artifact}' escapes its phase workarea`)
+  const candidate = path.resolve(root, normalized)
+  if (!contained(root, candidate)) throw new Error(`Markdown artifact '${artifact}' escapes its phase workarea`)
+  let current = root
+  for (const segment of path.relative(root, candidate).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment)
+    const metadata = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined
+      throw error
+    })
+    if (!metadata) return
+    if (metadata.isSymbolicLink()) throw new Error(`Markdown artifact '${artifact}' traverses a symlink`)
   }
+  const metadata = await lstat(candidate)
+  if (!metadata.isFile()) throw new Error(`Markdown artifact '${artifact}' is not a regular file`)
+  const canonical = await realpath(candidate)
+  if (!contained(root, canonical)) throw new Error(`Markdown artifact '${artifact}' resolves outside its workarea`)
+  return canonical
+}
+
+export async function sanitizeMarkdownArtifacts(root: string, artifacts: readonly string[]): Promise<void> {
+  const canonicalRoot = await realpath(root)
+  await Promise.all(
+    [...new Set(artifacts)].map(async (artifact) => {
+      const file = await ownedMarkdown(canonicalRoot, artifact)
+      if (!file) return
+      const before = await readFile(file, "utf8")
+      const after = deTypography(before)
+      if (after !== before) await writeFile(file, after)
+    }),
+  )
 }
 
 export * as SubsystemSanitize from "./sanitize"

@@ -139,6 +139,7 @@ describe("offline Git environment", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-git-offline-"))
     const project = path.join(root, "project")
     const workarea = path.join(project, "work", "engagement")
+    const sourceStore = path.join(root, "source-store")
     const bin = path.join(root, "bin")
     const filterMarker = path.join(root, "filter-invoked")
     const realGit = Bun.which("git")
@@ -148,6 +149,7 @@ describe("offline Git environment", () => {
       "CYBERFUL_REMEDIATION_PROOF_KEY",
       "CYBERFUL_SUBSYSTEM_SOURCE_ROOT",
       "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT",
+      "CYBERFUL_SOURCE_STORE_ROOT",
       "GH_TOKEN",
       "GITLAB_TOKEN",
       "GIT_ASKPASS",
@@ -169,7 +171,11 @@ describe("offline Git environment", () => {
     const previous = new Map(changedEnvironment.map((name) => [name, process.env[name]]))
 
     try {
-      await Promise.all([mkdir(workarea, { recursive: true }), mkdir(bin)])
+      await Promise.all([
+        mkdir(workarea, { recursive: true }),
+        mkdir(bin),
+        mkdir(path.join(sourceStore, "import"), { recursive: true }),
+      ])
       await run([realGit, "init", "--initial-branch=main", project], root)
       await run([realGit, "config", "user.name", "Cyberful Offline Test"], project)
       await run([realGit, "config", "user.email", "offline@example.invalid"], project)
@@ -234,6 +240,7 @@ describe("offline Git environment", () => {
         CYBERFUL_REMEDIATION_PROOF_KEY: "offline-test-proof-key-at-least-thirty-two-characters",
         CYBERFUL_SUBSYSTEM_SOURCE_ROOT: project,
         CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: workarea,
+        CYBERFUL_SOURCE_STORE_ROOT: sourceStore,
         GH_TOKEN: "github-secret",
         GITLAB_TOKEN: "gitlab-secret",
         GIT_ASKPASS: blockingFilter,

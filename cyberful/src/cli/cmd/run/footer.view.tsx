@@ -270,6 +270,15 @@ export function RunFooterView(props: RunFooterViewProps) {
     props.onRequestExit?.(undefined)
   })
 
+  const requestBlockingExit = () => {
+    if (props.onExitRequest) {
+      return props.onExitRequest()
+    }
+
+    props.onExit()
+    return true
+  }
+
   useKeyboard((event) => {
     if (event.defaultPrevented) {
       return
@@ -442,6 +451,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                             theme={theme()}
                             onReply={props.onQuestionReply}
                             onReject={props.onQuestionReject}
+                            onExitRequest={requestBlockingExit}
                           />
                         )}
                       </Show>

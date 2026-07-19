@@ -117,20 +117,23 @@ function preview(value: Value) {
   return `<redacted:${valueType(value)}:${valueText(value).length} chars>`
 }
 
-// ── Serialized Non-Values Never Become Session Variables ────────
+// ── Non-Values And Redaction Markers Never Become Variables ─────
 // Failed DOM reads and missing response fields often arrive as empty values or
-// JavaScript coercion sentinels such as `undefined` and `[object Object]`.
-// Accepting them would defer failure until a later command submits that literal.
-// Both write boundaries and template resolution share this predicate so invalid
-// extraction fails where it enters, including untyped gateway values.
+// JavaScript coercion sentinels. Gateway output can instead contain a reserved
+// marker where protected data was removed before the model received it. Saving
+// either form would turn display-safe text into invalid input for a later action.
+// Write boundaries and template resolution therefore share this predicate.
 // ─────────────────────────────────────────────────────────────────
 const COERCION_SENTINELS = new Set(["undefined", "null", "nan", "[object object]"])
+const REDACTED_VARIABLE_PATTERN = /\[redacted:variable:[A-Za-z_][A-Za-z0-9_.-]{0,127}\]/
 export function unusableValueReason(value: unknown): string | undefined {
   if (value === null || value === undefined) return "the value is null/undefined — the source produced nothing"
   const text = (typeof value === "string" ? value : (JSON.stringify(value) ?? "")).trim()
   if (text === "") return "the value is empty"
   if (COERCION_SENTINELS.has(text.toLowerCase()))
     return `the value is the literal ${JSON.stringify(text)} — a non-value coerced to text, not a real extraction`
+  if (REDACTED_VARIABLE_PATTERN.test(text))
+    return "the value contains a Cyberful redaction marker — protected data was removed before capture"
   return undefined
 }
 
@@ -438,6 +441,8 @@ export const layer = Layer.effect(
 
     const set: Interface["set"] = Effect.fn("SessionVariable.set")(function* (input) {
       if (isHostOwnedName(input.name)) throw new Error("Host-owned session variables cannot be set by agents.")
+      const rejection = unusableValueReason(input.value)
+      if (rejection) throw new Error(`Refusing to save session variable "${input.name}": ${rejection}.`)
       const row = Database.transaction((db) => {
         const current = db
           .select()

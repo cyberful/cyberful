@@ -25,7 +25,7 @@ import {
 } from "node:fs"
 import { rm } from "node:fs/promises"
 import type { Provider, SubsystemRunSpec } from "./provider"
-import { sanitizeMarkdownTree } from "./sanitize"
+import { sanitizeMarkdownArtifacts } from "./sanitize"
 import { SubsystemCodex } from "./codex"
 import { SubsystemCodexControl } from "./codex-control"
 import type { AskHuman, HumanQuestion } from "./question-bridge"
@@ -45,9 +45,9 @@ function nodeErrorCode(error: unknown) {
 }
 
 async function sanitizationWarning(input: RunInput) {
-  if (input.spec.permission.kind === "readonly") return undefined
+  if (input.spec.permission.kind === "readonly" || !input.spec.markdownArtifacts?.length) return undefined
   try {
-    await sanitizeMarkdownTree(input.spec.cwd)
+    await sanitizeMarkdownArtifacts(input.spec.cwd, input.spec.markdownArtifacts)
     return undefined
   } catch (error) {
     return `Markdown sanitization failed: ${errorDetail(error)}`

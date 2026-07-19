@@ -34,6 +34,7 @@ import {
 import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
 import { engagementReportPath, engagementReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
+import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
 
 const MCP_URL = process.env.CYBER_ZAP_MCP_URL || "http://127.0.0.1:8282"
 const API_URL = (process.env.CYBER_ZAP_API_URL || "http://127.0.0.1:8080").replace(/\/+$/, "")
@@ -396,21 +397,6 @@ const NATIVE_TOOLS = [
     },
   },
   {
-    name: "zap_oast",
-    description: "Call an installed OAST, callback, BOAST, or Interactsh API operation.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        component: { type: "string", enum: ["oast", "callback", "boast", "interactsh"] },
-        type: { type: "string", enum: ["view", "action"] },
-        operation: { type: "string" },
-        parameters: { type: "object", additionalProperties: true },
-      },
-      required: ["component", "type", "operation"],
-    },
-  },
-  {
     name: "zap_prompt_get",
     description:
       "Resolve one official ZAP MCP prompt, including baseline and full scan workflows, into its prompt messages.",
@@ -521,8 +507,14 @@ async function nativeTool(name, args) {
       ),
     )
   }
-  if (name === "zap_context_auth" || name === "zap_oast") {
+  if (name === "zap_context_auth") {
     return text(await apiFetch(args.component, args.type, args.operation, args.parameters))
+  }
+  if (name === "zap_oast") {
+    const operation = resolveOastOperation(apiCatalog, args)
+    if (!operation) return text(oastCapabilities(apiCatalog))
+    const result = await apiFetch(operation.component, operation.type, operation.operation, args.parameters)
+    return text(completedOastCall(operation, result))
   }
   if (name === "zap_prompt_get")
     return text(await upstream.getPrompt({ name: args.name, arguments: args.arguments || {} }))
@@ -535,6 +527,7 @@ const upstreamTransport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
 const upstream = new Client({ name: "cyberful-zap-bridge", version: "0.1.0" })
 await upstream.connect(upstreamTransport)
 const apiCatalog = await discoverApiCatalog()
+const nativeTools = [...NATIVE_TOOLS, oastToolDefinition(apiCatalog)]
 
 const discoveredOfficialTools = []
 let toolCursor
@@ -559,7 +552,7 @@ const server = new Server(
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [...officialTools, ...NATIVE_TOOLS.filter((item) => !officialToolNames.has(item.name))],
+  tools: [...officialTools, ...nativeTools.filter((item) => !officialToolNames.has(item.name))],
 }))
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {

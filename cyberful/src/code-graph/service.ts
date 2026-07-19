@@ -47,6 +47,11 @@ export interface FindingIntegrityState {
   readonly transitions: readonly FindingTransitionRecord[]
 }
 
+export interface CodeGraphReadinessState {
+  readonly snapshot: ReturnType<CodeGraphStore["latestSnapshot"]>
+  readonly coverage: ReturnType<CodeGraphStore["coverage"]>
+}
+
 export interface CodeGraphService {
   readonly databasePath: string
   readonly progressPath: string
@@ -62,6 +67,7 @@ export interface CodeGraphService {
   exportSarif(outputPath?: unknown, integrity?: FindingIntegrityState): Promise<CodeGraphExportResult>
   exportEvidence(outputPath?: unknown, integrity?: FindingIntegrityState): Promise<CodeGraphExportResult>
   languageManifest(): ReturnType<typeof languageManifestFor>
+  readinessState(): CodeGraphReadinessState
   close(): Promise<void>
 }
 
@@ -325,6 +331,10 @@ export async function createCodeGraphService(options: CreateCodeGraphServiceOpti
     languageManifest() {
       assertOpen()
       return languageManifestFor(registry)
+    },
+    readinessState() {
+      assertOpen()
+      return { snapshot: store.latestSnapshot(), coverage: store.coverage() }
     },
     async close() {
       if (closed) return

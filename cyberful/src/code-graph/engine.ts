@@ -110,7 +110,6 @@ const excludedSegments = new Set([
   ".pytest_cache",
   ".tox",
   ".venv",
-  ".vscode",
   "__pycache__",
   "bower_components",
   "build",

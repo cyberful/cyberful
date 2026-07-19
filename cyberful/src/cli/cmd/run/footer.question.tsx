@@ -13,6 +13,7 @@ import {
   createQuestionBodyState,
   questionConfirm,
   questionCustom,
+  questionExitKey,
   questionInfo,
   questionInput,
   questionMove,
@@ -43,6 +44,7 @@ export function RunQuestionBody(props: {
   theme: RunFooterTheme
   onReply: (input: QuestionReply) => void | Promise<void>
   onReject: (input: QuestionReject) => void | Promise<void>
+  onExitRequest: () => boolean
 }) {
   const dims = useTerminalDimensions()
   const [state, setState] = createSignal(createQuestionBodyState(props.request.id))
@@ -178,6 +180,24 @@ export function RunQuestionBody(props: {
   }
 
   useKeyboard((event) => {
+    if (event.defaultPrevented) {
+      return
+    }
+
+    // ── Blocking Questions Cannot Capture Process Exit ─────────────
+    // Raw terminal mode turns Ctrl+C into a key event instead of SIGINT. The
+    // question component owns keyboard focus and may disable its ordinary actions
+    // while a reply is in flight, but it must never disable process shutdown.
+    // Handling exit before submission state preserves the footer's protected exit
+    // policy even if the control-plane request has stalled or disappeared.
+    // ─────────────────────────────────────────────────────────────────
+    if (questionExitKey(event)) {
+      if (props.onExitRequest()) {
+        event.preventDefault()
+      }
+      return
+    }
+
     const cur = state()
     if (cur.submitting) {
       event.preventDefault()

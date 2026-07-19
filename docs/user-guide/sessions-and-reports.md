@@ -21,6 +21,13 @@ logs/session-logs/      session journals and phase transcripts
 reports/<timestamp>/    generated report output
 ```
 
+Authoritative public-source imports and immutable source snapshots are the
+exception: Cyberful keeps them below the platform application-data directory in
+an owner-only `cyberful/source-store/<workarea-hash>/` tree, outside the Codex
+writable root. The store is durable for resume and should follow the same
+engagement retention policy as the corresponding workarea. Its import key is
+host-only and independent from session variables and the Code Graph ledger.
+
 Session metadata is stored in a global local SQLite database keyed by launch
 directory. On Unix its database and sidecars use owner-only permissions. Resume
 from the same directory with `cyberful run --continue` or select an id with
@@ -37,6 +44,19 @@ content. Phase transcripts are a separate evidence record: they are enabled by
 default and can contain complete tool calls. Set
 `CYBERFUL_SUBSYSTEM_TRANSCRIPT=0` only when the engagement retention policy
 calls for disabling those raw transcripts.
+
+## Session variables
+
+Agents save reusable values in the session store and reference them in later
+tool arguments as `{{var:name}}`. The gateway expands these references only for
+the destination tool and redacts matching values before tool output returns to
+the model.
+
+A value containing `[redacted:variable:...]` is already a display-safe
+substitute rather than the original data. Cyberful refuses to save or resolve
+such a value, preventing a partially redacted URL, command, or token from being
+reused as actionable input. This guard adds no variable type or configuration;
+ordinary JSON values and the `{{var:name}}` syntax are unchanged.
 
 ## Reports
 

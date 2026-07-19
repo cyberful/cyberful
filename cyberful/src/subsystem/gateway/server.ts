@@ -900,7 +900,7 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
         )
       }
       const rejection = SessionVariable.unusableValueReason(value)
-      if (rejection) return text({ error: `refusing to save '${name}': ${rejection}` })
+      if (rejection) return text({ error: `refusing to save '${name}': ${rejection}` }, true)
       if (args.description !== undefined && typeof args.description !== "string")
         return text({ error: "description must be a string" }, true)
       if (typeof args.description === "string" && args.description.length > 120)

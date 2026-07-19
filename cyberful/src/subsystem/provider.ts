@@ -33,6 +33,8 @@ export interface SubsystemRunSpec {
   nativeSubagents?: boolean
   // Additional native skill roots exposed through app-server progressive disclosure.
   skillRoots?: readonly string[]
+  // Relative Markdown deliverables owned by this run. Cleanup may normalize only these named files.
+  markdownArtifacts?: readonly string[]
   stream?: boolean
   env?: Record<string, string>
 }

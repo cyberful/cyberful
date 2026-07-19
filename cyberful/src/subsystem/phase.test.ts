@@ -332,6 +332,8 @@ describe("phase runner contract", () => {
         env: {
           CYBER_BROWSER_HEADLESS: "true",
           CYBER_ZAP_API_KEY: "engagement-secret",
+          CYBERFUL_SOURCE_STORE_ROOT: "/host/source-store",
+          CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY: "host-import-attestation-secret",
         },
       },
       fakeDeps(capture),
@@ -340,8 +342,14 @@ describe("phase runner contract", () => {
     const input = requireValue(capture.input, "private-environment phase did not invoke the captured Codex process")
     expect(input.spec.env?.CYBER_BROWSER_HEADLESS).toBeUndefined()
     expect(input.spec.env?.CYBER_ZAP_API_KEY).toBeUndefined()
+    expect(input.spec.env?.CYBERFUL_SOURCE_STORE_ROOT).toBeUndefined()
+    expect(input.spec.env?.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY).toBeUndefined()
     expect(input.spec.mcpServer?.privateEnv?.CYBER_BROWSER_HEADLESS).toBe("true")
     expect(input.spec.mcpServer?.privateEnv?.CYBER_ZAP_API_KEY).toBe("engagement-secret")
+    expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SOURCE_STORE_ROOT).toBe("/host/source-store")
+    expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY).toBe(
+      "host-import-attestation-secret",
+    )
   })
 })
 
@@ -468,6 +476,30 @@ describe("phase orchestration (runAndAdvance)", () => {
             : completedPhase(spec.phase),
       }),
     )
+    expect(out.terminal).toBe(true)
+    expect(out.status).toBe("completed_with_warnings")
+  })
+
+  test("a validated budget cutoff advances to the successor and keeps the workflow degraded", async () => {
+    const phases: string[] = []
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
+        runPhase: async (spec) => {
+          phases.push(spec.phase)
+          return spec.phase === "recon"
+            ? {
+                ...completedPhase(spec.phase),
+                exitCode: 1,
+                timedOut: true,
+                termination: "budget_exhausted",
+                warnings: ["advanced with a sealed partial deliverable"],
+              }
+            : completedPhase(spec.phase)
+        },
+      }),
+    )
+
+    expect(phases).toEqual(["recon", "exploit", "hacker", "verify", "report"])
     expect(out.terminal).toBe(true)
     expect(out.status).toBe("completed_with_warnings")
   })

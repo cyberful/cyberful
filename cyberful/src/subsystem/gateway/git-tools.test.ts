@@ -16,12 +16,15 @@ import { isRecord } from "@/util/record"
 let root = ""
 let project = ""
 let workarea = ""
+let sourceStore = ""
 let testBin = ""
 let previousSource: string | undefined
 let previousWorkarea: string | undefined
 let previousSessionLogRoot: string | undefined
 let previousProofKey: string | undefined
 let previousLedgerKey: string | undefined
+let previousSourceStore: string | undefined
+let previousImportKey: string | undefined
 let previousContainer: string | undefined
 let previousPath: string | undefined
 
@@ -55,7 +58,9 @@ beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), "cyberful-git-tools-"))
   project = path.join(root, "project")
   workarea = path.join(project, "work", "engagement")
+  sourceStore = path.join(root, "source-store")
   await mkdir(workarea, { recursive: true })
+  await mkdir(path.join(sourceStore, "import"), { recursive: true })
   await run(["git", "init", "--initial-branch=main", project], root)
   await run(["git", "config", "user.name", "Cyberful Test"])
   await run(["git", "config", "user.email", "cyberful@example.invalid"])
@@ -100,6 +105,8 @@ beforeEach(async () => {
   previousSessionLogRoot = process.env.CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT
   previousProofKey = process.env.CYBERFUL_REMEDIATION_PROOF_KEY
   previousLedgerKey = process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
+  previousSourceStore = process.env.CYBERFUL_SOURCE_STORE_ROOT
+  previousImportKey = process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
   previousContainer = process.env.CYBERFUL_OS_CONTAINER
   previousPath = process.env.PATH
   process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = project
@@ -107,6 +114,9 @@ beforeEach(async () => {
   process.env.CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT = path.join(project, "logs", "session-logs")
   process.env.CYBERFUL_REMEDIATION_PROOF_KEY = "test-remediation-proof-key-that-is-never-shared-with-the-model"
   process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY = "test-code-graph-ledger-key-that-is-never-shared-with-the-model"
+  process.env.CYBERFUL_SOURCE_STORE_ROOT = sourceStore
+  process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY =
+    "test-source-import-attestation-key-that-is-never-shared-with-the-model"
   process.env.CYBERFUL_OS_CONTAINER = "cyberful-os-test"
   process.env.PATH = `${testBin}${path.delimiter}${previousPath ?? ""}`
 })
@@ -122,6 +132,10 @@ afterEach(async () => {
   else process.env.CYBERFUL_REMEDIATION_PROOF_KEY = previousProofKey
   if (previousLedgerKey === undefined) delete process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
   else process.env.CYBERFUL_CODE_GRAPH_LEDGER_KEY = previousLedgerKey
+  if (previousSourceStore === undefined) delete process.env.CYBERFUL_SOURCE_STORE_ROOT
+  else process.env.CYBERFUL_SOURCE_STORE_ROOT = previousSourceStore
+  if (previousImportKey === undefined) delete process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
+  else process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY = previousImportKey
   if (previousContainer === undefined) delete process.env.CYBERFUL_OS_CONTAINER
   else process.env.CYBERFUL_OS_CONTAINER = previousContainer
   if (previousPath === undefined) delete process.env.PATH
@@ -228,9 +242,8 @@ describe("Git workflow gateway tools", () => {
   })
 
   test("reviews and remediates a manifest-backed source import instead of the host project", async () => {
-    const importRoot = path.join(workarea, "raw", "source-import")
+    const importRoot = path.join(sourceStore, "import")
     const imported = path.join(importRoot, "repository")
-    await mkdir(importRoot, { recursive: true })
     await run(["git", "init", "--initial-branch=main", imported], root)
     await run(["git", "config", "user.name", "Cyberful Import"], imported)
     await run(["git", "config", "user.email", "import@example.invalid"], imported)

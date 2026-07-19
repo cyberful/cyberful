@@ -46,6 +46,13 @@ describe("ZAP phase workflow", () => {
     expect(await read("brief.md")).toMatch(/never shorten an absolute URL to a path or drop its scheme/i)
     expect(await read("verify.md")).toMatch(/exact absolute URL as `target_url`/i)
   })
+
+  test("does not let one HTTP rejection suppress independent hypotheses", async () => {
+    const recon = await read("recon.md")
+    expect(recon).toMatch(/A single response does not stop the phase or suppress unrelated/i)
+    expect(recon).not.toMatch(/`403`, `429`,[\s\S]{0,100}circuit.breaker/i)
+    expect(recon).toMatch(/explicit mission stop[\s\S]*scope uncertainty[\s\S]*instability/i)
+  })
 })
 
 describe("built-in ZAP MCP skill", () => {
@@ -76,5 +83,13 @@ describe("built-in ZAP MCP skill", () => {
     expect(skill).toContain("zap_api_call")
     expect(skill).toMatch(/origin-form requests require `target_url`/i)
     expect(skill).toMatch(/File transfer is intentionally disabled/i)
+  })
+
+  test("keeps HTTP rejection local and publishes the real OAST API boundary", async () => {
+    const skill = await read()
+    expect(skill).toMatch(/does not stop unrelated authorized work/i)
+    expect(skill).not.toMatch(/`403`, `429`,[\s\S]{0,80}circuit.breaker/i)
+    expect(skill).toMatch(/Call `zap_oast` without an operation first/i)
+    expect(skill).toMatch(/does not expose[\s\S]*registration[\s\S]*payload generation[\s\S]*polling/i)
   })
 })

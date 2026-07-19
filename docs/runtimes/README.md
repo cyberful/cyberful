@@ -19,7 +19,8 @@ ephemeral keys, loopback ports, mounts, and network policy; agents cannot turn
 an environment setting into broader authorization.
 
 Exposed tools are callable directly under gateway phase policy, runtime scope
-authorization, traffic budgets, and circuit breakers. Actual calls are recorded in the
+authorization, traffic budgets, and the visible-CAPTCHA interlock. Individual HTTP
+rejections do not globally disable independent authorized work. Actual calls are recorded in the
 workarea's metadata-only `raw/operations/tool-usage.csv`; raw phase transcripts
 may retain their full arguments and results according to the local retention
 setting.

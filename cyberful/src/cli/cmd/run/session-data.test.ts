@@ -436,7 +436,7 @@ describe("run session data", () => {
     expect(detail?.commits[0]?.mode).toBe("replace")
   })
 
-  test("shows and clears question footer blockers", () => {
+  test("shows and clears retracted question footer blockers", () => {
     const data = createSessionData()
 
     const questionAsked = reduceSessionData({
@@ -448,18 +448,18 @@ describe("run session data", () => {
     })
     expect(questionAsked.footer?.view?.type).toBe("question")
 
-    const questionReplied = reduceSessionData({
+    const questionRetracted = reduceSessionData({
       data,
       event: {
-        id: "event-question-replied",
-        type: "question.replied",
-        properties: { sessionID: parentSessionID, requestID: "que_manual", answers: [["Fallback"]] },
+        id: "event-question-rejected",
+        type: "question.rejected",
+        properties: { sessionID: parentSessionID, requestID: "que_manual" },
       },
       sessionID: parentSessionID,
       thinking: true,
       limits: {},
     })
-    expect(questionReplied.footer?.view?.type).toBe("prompt")
+    expect(questionRetracted.footer?.view?.type).toBe("prompt")
   })
 })
 

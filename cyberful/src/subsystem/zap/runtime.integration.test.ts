@@ -430,7 +430,8 @@ describe("real headless ZAP containers", () => {
     await rejectedTransport.close()
 
     const client = await connect(runtime)
-    const tools = (await client.listTools()).tools.map((item) => item.name)
+    const definitions = (await client.listTools()).tools
+    const tools = definitions.map((item) => item.name)
     expect(tools).toContain("zap_version")
     for (const name of [
       "zap_api_catalog",
@@ -445,6 +446,48 @@ describe("real headless ZAP containers", () => {
       "zap_prompt_get",
     ])
       expect(tools).toContain(name)
+
+    const oastDefinition = definitions.find((item) => item.name === "zap_oast")
+    expect(recordValue(oastDefinition?.inputSchema, "zap_oast schema")).toMatchObject({
+      properties: { component: { const: "oast" } },
+    })
+    const oastCapabilities = resultRecord(
+      await client.callTool({ name: "zap_oast", arguments: {} }),
+      "zap_oast capabilities",
+    )
+    expect(oastCapabilities).toMatchObject({
+      status: "available",
+      component: "oast",
+      lifecycle: {
+        registration: "not_exposed_by_http_api",
+        payload_generation: "not_exposed_by_http_api",
+        polling: "not_exposed_by_http_api",
+        interaction_history: "not_exposed_by_http_api",
+      },
+    })
+    expect(arrayValue(oastCapabilities.operations, "zap_oast operations")).toContainEqual({
+      component: "oast",
+      type: "view",
+      operation: "getServices",
+    })
+    const oastServices = resultRecord(
+      await client.callTool({
+        name: "zap_oast",
+        arguments: { component: "oast", type: "view", operation: "getServices" },
+      }),
+      "zap_oast getServices",
+    )
+    expect(oastServices).toMatchObject({
+      status: "completed",
+      result_state: "data",
+      operation: { component: "oast", type: "view", operation: "getServices" },
+    })
+    const guessedLifecycle = await client.callTool({
+      name: "zap_oast",
+      arguments: { component: "interactsh", type: "view", operation: "getNewPayload" },
+    })
+    expect("isError" in guessedLifecycle && guessedLifecycle.isError).toBe(true)
+    expect(resultText(guessedLifecycle)).toContain("not exposed by the installed HTTP API")
 
     expect((await client.listResources()).resources.length).toBeGreaterThan(0)
     expect((await client.listResourceTemplates()).resourceTemplates).toEqual([])
