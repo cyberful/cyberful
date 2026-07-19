@@ -40,6 +40,25 @@ afterEach(async () => {
 })
 
 describe("incremental code graph service", () => {
+  test("indexes vendor and editor configuration as auditable source", async () => {
+    const { sourceRoot, service } = await fixture()
+    try {
+      await Promise.all([
+        mkdir(path.join(sourceRoot, "vendor")),
+        mkdir(path.join(sourceRoot, ".vscode")),
+      ])
+      await Promise.all([
+        Bun.write(path.join(sourceRoot, "vendor", "bubblewrap.c"), "int sandbox(void) { return 1; }\n"),
+        Bun.write(path.join(sourceRoot, ".vscode", "settings.json"), '{"security.audit": true}\n'),
+      ])
+      const report = await service.index()
+      expect(report.coverage.map((entry) => entry.path)).toContain("vendor/bubblewrap.c")
+      expect(report.coverage.map((entry) => entry.path)).toContain(".vscode/settings.json")
+    } finally {
+      await service.close()
+    }
+  })
+
   test("migrates the legacy finding mode column to workflow without losing records", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-code-graph-migration-"))
     temporaryRoots.push(root)

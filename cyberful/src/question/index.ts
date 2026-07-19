@@ -178,13 +178,30 @@ export const layer = Layer.effect(
         questions: input.questions,
         tool: input.tool,
       }
-      pending.set(id, { info, deferred })
+      const entry = { info, deferred }
+      pending.set(id, entry)
       yield* bus.publish(Event.Asked, info)
 
+      // ── Producer Cancellation Retracts The Visible Question ────────
+      // A phase can complete while an app-server user-input request is still
+      // outstanding. Its request owner then interrupts this effect during process
+      // cleanup. Removing only the in-memory entry would leave every live TUI with
+      // the earlier Asked event and a blocker that can no longer accept a reply.
+      // The entry identity makes cleanup race-safe with an actual reply or rejection;
+      // only the still-pending producer cancellation publishes Rejected.
+      // ─────────────────────────────────────────────────────────────────
       return yield* Effect.ensuring(
         Deferred.await(deferred),
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          if (pending.get(id) !== entry) {
+            return
+          }
+
           pending.delete(id)
+          yield* bus.publish(Event.Rejected, {
+            sessionID: info.sessionID,
+            requestID: id,
+          })
         }),
       )
     })

@@ -38,6 +38,17 @@ app-server process behind its own private host gateway. It must write the
 required artifact and request a valid handoff. The host validates both, stops
 the current process and gateway, and only then starts the successor.
 
+If the phase reaches its wall-clock budget before requesting the handoff, the
+host advances in degraded mode only when the required partial artifact exists,
+can be sealed, and the old process and gateway have fully stopped. The host
+then creates the configured handoff for the successor. Invalid handoffs,
+missing artifacts, seal failures, and incomplete cleanup remain blocking.
+
+After a phase exits, Cyberful normalizes typographic confusables only in that
+phase's declared Markdown deliverable. It does not recursively sanitize the
+workarea, imported source, snapshots, earlier artifacts, or repository
+documentation.
+
 This keeps phases sequential and prevents hidden model memory from becoming
 workflow state. Durable context lives in workarea artifacts and the local Code
 Graph. When a workflow completes, Cyberful opens **Ask** for follow-up questions
@@ -74,6 +85,14 @@ Required phase artifacts are `CODE_SCOPE.md`, `CODE_GRAPH.md`,
 `CODE_TRACE.md`, `CODE_HUNT.md`, `CODE_VERIFY.md`, and
 `CODE_AUDIT_REPORT.md`. Terminal outputs are the PDF report, the Markdown
 source, and `reports/code-audit.sarif`.
+
+Index cannot hand off to Trace on narrative output alone. The host re-runs the
+source preflight after the gateway stops and requires a signed readiness record
+for a repository-wide graph index. Its graph snapshot identifier, fingerprint,
+and complete per-file coverage digest must still match the SQLite state. A
+missing import attestation, partial-only index, absent graph snapshot, stale or
+tampered coverage, or live gateway blocks Trace even when `CODE_GRAPH.md` and a
+syntactically valid handoff exist.
 
 ## Assessment
 
@@ -151,6 +170,25 @@ downloads, non-HTTPS transports, dependency installation, and private or local
 network destinations. Once import completes, all source analysis is local.
 Permission to import public source does not authorize traffic to a deployed
 target.
+
+The authoritative repository and deterministic source snapshot live in an
+owner-only host source store outside the model-writable workarea. Phases receive
+bounded read-only source tools and virtual `source://` identities, not a native
+writable path. The import manifest uses a durable key scoped to that canonical
+workarea/import; it survives session resumption and is separate from the
+session-scoped Code Graph finding ledger. Mutable `raw/source-import` or
+`raw/source-snapshot` workarea copies are not accepted as source authority.
+
+Inventories and Code Graph indexing retain `vendor/` and `.vscode/`. Generated
+dependencies, caches, VCS metadata, and build output remain bounded exclusions
+and are reported in snapshot/coverage metadata rather than being confused with
+an examined file set.
+
+All repository text is untrusted evidence. Files such as `AGENTS.md`,
+`CLAUDE.md`, `.codex/**`, `.agents/**`, repository skills, prompts, comments,
+and documentation cannot issue operational instructions to an audit phase.
+Only Cyberful's active host policy and embedded first-party persona/skills are
+instruction authorities.
 
 ## Offline Git boundary
 

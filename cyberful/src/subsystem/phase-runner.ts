@@ -1,7 +1,8 @@
 // ── Codex Phase Runner ────────────────────────────────────────────
 // Runs one phase with its persona and gateway, then validates process
-// exit, required artifact, handoff, cleanup, and transcript results.
+// exit, required artifact, handoff or budget cutoff, cleanup, and transcript results.
 // → cyberful/src/subsystem/phase.ts — supplies workflow policy, capability scope, and paths.
+// @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
 import path from "path"
@@ -17,6 +18,7 @@ import { SubsystemGateway } from "./gateway/config"
 import { SubsystemPhase } from "./phase"
 import { SubsystemQuestionBridge, type AskHuman } from "./question-bridge"
 import { SubsystemCompletion, type Candidate as CompletionCandidate } from "./completion"
+import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 
 export interface PhaseSpec {
@@ -59,6 +61,8 @@ export interface PhaseHandoff {
 
 export interface PhaseResult {
   phase: string
+  // Authorizes the orchestrator to accept this phase's handoff. A budget-exhausted phase can remain
+  // degraded while passing this gate after the host seals its partial artifact and synthesizes a handoff.
   ok: boolean
   // The phase's final reply text (its structured handoff summary), envelope already unwrapped.
   summary: string
@@ -122,6 +126,9 @@ export interface PhaseDeps {
   // Production binds this to the session's in-process Question service. When absent (small unit adapters
   // and non-interactive callers), the gateway correctly omits `question` instead of exposing a dead tool.
   askQuestion?: AskHuman
+  // The Code Audit index phase cannot authorize trace until source preflight and current graph coverage
+  // match the gateway's host-keyed readiness attestation.
+  verifyCodeGraphReadiness?: (environment: Readonly<Record<string, string | undefined>>) => Promise<unknown>
 }
 
 function errorDetail(error: unknown) {
@@ -180,6 +187,7 @@ export function defaultDeps(): PhaseDeps {
     removeFile: (filePath) => rm(filePath, { force: true }),
     removeDirectory: (directory) => rm(directory, { recursive: true, force: true }),
     waitForGatewayExit,
+    verifyCodeGraphReadiness,
     writeTranscript: async (filePath, ndjson) => {
       await mkdir(path.dirname(filePath), { recursive: true })
       const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`
@@ -507,21 +515,28 @@ async function readHandoff(
   read: PhaseDeps["readFile"],
   signalPath: string,
   spec: PhaseSpec,
-): Promise<{ value?: PhaseHandoff; warning?: string }> {
+): Promise<{ value?: PhaseHandoff; warning?: string; missing: boolean }> {
   try {
     const parsed: unknown = JSON.parse(await read(signalPath))
-    if (!isRecord(parsed)) return { warning: "Required handoff is not a JSON object." }
+    if (!isRecord(parsed)) return { warning: "Required handoff is not a JSON object.", missing: false }
     const successor = typeof parsed.successor === "string" ? parsed.successor : undefined
     const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : ""
     const artifact = typeof parsed.artifact === "string" ? parsed.artifact : undefined
     const completion = SubsystemCompletion.parseCandidate(parsed.completion)
-    if (parsed.phase !== spec.phase) return { warning: "Handoff phase does not match the running phase." }
+    if (parsed.phase !== spec.phase)
+      return { warning: "Handoff phase does not match the running phase.", missing: false }
     if (successor !== spec.handoff?.successor)
-      return { warning: "Handoff successor does not match the configured chain." }
-    if (!summary) return { warning: "Handoff summary is empty." }
-    return { value: { phase: spec.phase, successor, summary, artifact, completion } }
+      return { warning: "Handoff successor does not match the configured chain.", missing: false }
+    if (!summary) return { warning: "Handoff summary is empty.", missing: false }
+    return { value: { phase: spec.phase, successor, summary, artifact, completion }, missing: false }
   } catch (error) {
-    return { warning: `Required handoff was not completed: ${errorDetail(error)}` }
+    const missing = errorCode(error) === "ENOENT"
+    return {
+      warning: missing
+        ? "Required handoff was not completed: no handoff was recorded."
+        : `Required handoff was not completed: ${errorDetail(error)}`,
+      missing,
+    }
   }
 }
 
@@ -656,9 +671,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       ...spec.env,
       CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: spec.workareaCwd,
       CYBERFUL_SUBSYSTEM_LABEL: spec.phase,
-      ...(spec.transcriptPath
-        ? { CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT: path.dirname(spec.transcriptPath) }
-        : {}),
+      ...(spec.transcriptPath ? { CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT: path.dirname(spec.transcriptPath) } : {}),
       ...(spec.workflow ? { CYBERFUL_SUBSYSTEM_WORKFLOW: spec.workflow } : {}),
       ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
     },
@@ -827,6 +840,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       developerInstructions: instructionLoad.value.instructions,
       nativeSubagents: instructionLoad.value.delegationEnabled,
       skillRoots: [SubsystemPhase.skillRoot(spec.home)],
+      markdownArtifacts: semanticArtifact && /\.(?:md|markdown)$/i.test(semanticArtifact) ? [semanticArtifact] : [],
       // Stream when a live observer is attached OR when persisting the transcript; otherwise keep the
       // cheaper single-envelope json path. extractResultText unwraps the summary from either format.
       stream,
@@ -881,7 +895,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   ])
   const handoff = handoffPath
     ? await readHandoff(deps.readFile, handoffPath, spec)
-    : ({ value: undefined, warning: undefined } as const)
+    : ({ value: undefined, warning: undefined, missing: false } as const)
   lifecycleWarnings.push(
     ...(await operationWarnings([
       [
@@ -892,7 +906,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ])),
   )
   const providerSummary = deps.provider.extractResultText(run.stdout)
-  const summary = handoff.value?.summary ?? providerSummary
   const deliverable = phaseDeliverable(spec)
   const deliverableCheck =
     deliverable && deps.fileExists
@@ -928,14 +941,79 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     "Could not remove the phase runtime directory",
     removeDirectory ? () => removeDirectory(shellTemporaryDirectory) : undefined,
   )
+
+  // ── A Budget Cutoff Advances Only A Sealed Partial Artifact ────────
+  // Wall-clock exhaustion is an expected scheduler boundary, not a request to
+  // leave the workflow parked forever. If the cutoff arrives before the model's
+  // handoff, the host may synthesize that record only after the required artifact
+  // exists, its manifest is sealed, and the private gateway is proven gone.
+  // Malformed handoffs and failed artifact or lifecycle gates still fail closed.
+  // The successor receives an explicit degraded summary and must treat unfinished
+  // coverage as partial rather than silently assuming phase completeness.
+  //
+  // @docs/concepts/execution-model.md
+  // ─────────────────────────────────────────────────────────────────
+  const canSynthesizeBudgetHandoff =
+    rawTermination === "budget_exhausted" &&
+    spec.handoff !== undefined &&
+    handoff.missing &&
+    deliverable !== undefined &&
+    deliverableExists &&
+    !manifestWarning &&
+    gatewayExited
+  const synthesizedHandoff: PhaseHandoff | undefined = canSynthesizeBudgetHandoff
+    ? {
+        phase: spec.phase,
+        successor: spec.handoff?.successor,
+        summary: [
+          `The ${spec.phase} phase exhausted its wall-clock budget. Continue from the sealed partial deliverable '${deliverable}' and treat unfinished coverage as degraded.`,
+          providerSummary.trim(),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        artifact: deliverable,
+      }
+    : undefined
+  const acceptedHandoff = handoff.value ?? synthesizedHandoff
+  const handoffWarning = synthesizedHandoff ? undefined : handoff.warning
+  const summary = acceptedHandoff?.summary ?? providerSummary
+  const readinessRequired =
+    spec.workflow === "code-audit" && spec.phase === "index" && acceptedHandoff?.successor === "trace"
+  const readinessWarning = readinessRequired
+    ? !gatewayExited
+      ? "Code Audit index readiness was not evaluated because the phase gateway is still live; trace is blocked."
+      : deps.verifyCodeGraphReadiness
+      ? await deps
+          .verifyCodeGraphReadiness({
+            ...spec.env,
+            CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: spec.workareaCwd,
+            ...(spec.workflow ? { CYBERFUL_SUBSYSTEM_WORKFLOW: spec.workflow } : {}),
+            ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
+          })
+          .then(() => undefined)
+          .catch((error) => `Code Audit index readiness failed; trace is blocked: ${errorDetail(error)}`)
+      : "Code Audit index readiness verifier is unavailable; trace is blocked."
+    : undefined
+  const budgetAdvanceWarning =
+    rawTermination === "budget_exhausted" &&
+    acceptedHandoff &&
+    deliverable !== undefined &&
+    deliverableExists &&
+    !manifestWarning &&
+    gatewayExited
+      ? synthesizedHandoff
+        ? `Phase budget exhausted before an explicit handoff; advancing with sealed partial deliverable '${deliverable}'.`
+        : `Phase budget exhausted after a valid handoff; advancing with sealed deliverable '${deliverable}'.`
+      : undefined
   const ok =
-    rawTermination === "completed" &&
-    run.exitCode === 0 &&
+    ((rawTermination === "completed" && run.exitCode === 0) ||
+      (rawTermination === "budget_exhausted" && spec.handoff !== undefined && acceptedHandoff !== undefined)) &&
     summary.trim().length > 0 &&
     deliverableExists &&
     !manifestWarning &&
     gatewayExited &&
-    !handoff.warning
+    !handoffWarning &&
+    !readinessWarning
   const warnings = [
     ...budgetWarnings,
     ...(run.failureReason ? [run.failureReason] : []),
@@ -949,7 +1027,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ...lifecycleWarnings,
     ...(gatewayExit.warning ? [gatewayExit.warning] : []),
     ...(!gatewayExited ? ["Phase gateway did not exit cleanly; no successor may start."] : []),
-    ...(handoff.warning ? [handoff.warning] : []),
+    ...(handoffWarning ? [handoffWarning] : []),
+    ...(readinessWarning ? [readinessWarning] : []),
+    ...(budgetAdvanceWarning ? [budgetAdvanceWarning] : []),
   ]
   const result: PhaseResult = {
     phase: spec.phase,
@@ -957,14 +1037,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     summary,
     exitCode: run.exitCode,
     timedOut: rawTermination === "budget_exhausted",
-    termination: ok ? "completed" : rawTermination === "completed" ? "provider_failed" : rawTermination,
+    termination: rawTermination === "completed" ? (ok ? "completed" : "provider_failed") : rawTermination,
     backend: deps.provider.name,
     durationMs: Math.max(0, now() - startedAt),
     limitMs,
     effectiveLimitMs,
     deadlineAt,
     warnings,
-    handoff: handoff.value,
+    handoff: acceptedHandoff,
     artifactManifest: manifest && !manifestWarning ? path.relative(spec.workareaCwd, manifest.path) : undefined,
     semanticCheckpoints: semanticCheckpoints || undefined,
     lastSemanticProgressAt,

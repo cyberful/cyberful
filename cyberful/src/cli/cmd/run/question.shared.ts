@@ -22,6 +22,16 @@ export type QuestionStep = {
   reply?: QuestionReply
 }
 
+export function questionExitKey(event: {
+  name: string
+  ctrl?: boolean
+  meta?: boolean
+  shift?: boolean
+  super?: boolean
+}): boolean {
+  return event.name === "c" && event.ctrl === true && !event.meta && !event.shift && !event.super
+}
+
 export function createQuestionBodyState(requestID: string): QuestionBodyState {
   return {
     requestID,

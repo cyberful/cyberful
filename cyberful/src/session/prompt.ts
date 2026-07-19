@@ -41,6 +41,7 @@ import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
 import type { PhaseActivityActor, PhaseActivityActorState } from "@/subsystem/provider"
 import { SubsystemUsage } from "@/subsystem/usage"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
+import { HostSourceStore } from "@/source-store"
 import { Question } from "@/question"
 import { Reference } from "@/reference/reference"
 import { ModelID, ProviderID } from "@/provider/schema"
@@ -1208,6 +1209,9 @@ export const layer = Layer.effect(
             name: SessionVariable.Name.make("_cyberful_host_code_graph_ledger_key"),
           })
         : undefined
+      const sourceStore = SubsystemPhase.hasCapability(workflow, "source")
+        ? yield* Effect.promise(() => HostSourceStore.ensureSourceStore(workareaCwd))
+        : undefined
       // Pentest deliberately retains its established engagement-wide proxy/history. AppSec runtimes
       // are instead created inside runPhaseWithStatus after its host authorization check.
       const engagementZap =
@@ -1238,6 +1242,12 @@ export const layer = Layer.effect(
             CYBERFUL_OS_CONTAINER: container,
             ...(remediationProofKey ? { CYBERFUL_REMEDIATION_PROOF_KEY: remediationProofKey } : {}),
             ...(codeGraphLedgerKey ? { CYBERFUL_CODE_GRAPH_LEDGER_KEY: codeGraphLedgerKey } : {}),
+            ...(sourceStore
+              ? {
+                  CYBERFUL_SOURCE_STORE_ROOT: sourceStore.root,
+                  CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY: sourceStore.attestationKey,
+                }
+              : {}),
           },
         },
         { runPhase: runPhaseWithStatus },

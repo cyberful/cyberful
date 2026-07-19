@@ -21,4 +21,6 @@ test("the Nuclei skill teaches both new controls and the existing expert tools",
   expect(skill).toContain("SUSPECTED")
   expect(skill).toContain("X-Request-ID: Bugcrowd")
   expect(skill).toContain("5 requests/second")
+  expect(skill).toMatch(/`403`, or `429` ends that scanner[\s\S]*not a phase-wide stop/i)
+  expect(skill).not.toContain("circuit-breaker policy")
 })

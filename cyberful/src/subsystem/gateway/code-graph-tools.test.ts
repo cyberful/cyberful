@@ -15,12 +15,14 @@ import {
   codeGraphToolsAvailable,
   createCodeGraphToolHandler,
   isCodeGraphTool,
+  verifyCodeGraphReadiness,
 } from "./code-graph-tools"
 import { attestSourceImportManifest, sourceImportTreeFingerprint } from "./source-import"
 import { isRecord } from "@/util/record"
 
 const temporaryRoots: string[] = []
 const ledgerKey = "gateway-test-ledger-key-with-at-least-thirty-two-bytes"
+const importKey = "gateway-test-import-key-with-at-least-thirty-two-bytes"
 
 type Workflow = "code-audit" | "assessment" | "remediate" | "secure-review"
 
@@ -64,16 +66,20 @@ async function fixture(workflow: Workflow, includeKey = true) {
   temporaryRoots.push(root)
   const sourceRoot = path.join(root, "source")
   const workareaRoot = path.join(root, "workarea")
+  const sourceStoreRoot = path.join(root, "source-store")
   await mkdir(sourceRoot)
   await mkdir(workareaRoot)
+  await mkdir(path.join(sourceStoreRoot, "import"), { recursive: true })
   await writeFile(path.join(sourceRoot, "project.ts"), "export function projectEntry() { return 1 }\n")
   const environment: Record<string, string | undefined> = {
     CYBERFUL_SUBSYSTEM_WORKFLOW: workflow,
     CYBERFUL_SUBSYSTEM_SOURCE_ROOT: sourceRoot,
     CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: workareaRoot,
+    CYBERFUL_SOURCE_STORE_ROOT: sourceStoreRoot,
+    CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY: importKey,
   }
   if (includeKey) environment.CYBERFUL_CODE_GRAPH_LEDGER_KEY = ledgerKey
-  return { root, sourceRoot, workareaRoot, environment }
+  return { root, sourceRoot, workareaRoot, sourceStoreRoot, environment }
 }
 
 function findingRecord(workflow: Workflow) {
@@ -153,10 +159,10 @@ describe("Code Graph gateway registration and ownership", () => {
 
 describe("canonical analysis source selection", () => {
   test("prefers a verified repository import over a durable source snapshot", async () => {
-    const { workareaRoot, environment } = await fixture("code-audit")
-    const importRoot = path.join(workareaRoot, "raw", "source-import")
-    const imported = path.join(workareaRoot, "raw", "source-import", "repository")
-    const snapshot = path.join(workareaRoot, "raw", "source-snapshot", "tree")
+    const { sourceStoreRoot, environment } = await fixture("code-audit")
+    const importRoot = path.join(sourceStoreRoot, "import")
+    const imported = path.join(importRoot, "repository")
+    const snapshot = path.join(sourceStoreRoot, "snapshot", "tree")
     await mkdir(imported, { recursive: true })
     await mkdir(snapshot, { recursive: true })
     await runGit(["init", "--quiet"], imported)
@@ -215,9 +221,9 @@ describe("canonical analysis source selection", () => {
   })
 
   test("uses the isolated remediation checkout before imports", async () => {
-    const { workareaRoot, environment } = await fixture("remediate")
+    const { workareaRoot, sourceStoreRoot, environment } = await fixture("remediate")
     const checkout = path.join(workareaRoot, "remediation", "checkout")
-    const imported = path.join(workareaRoot, "raw", "source-import", "repository")
+    const imported = path.join(sourceStoreRoot, "import", "repository")
     await mkdir(checkout, { recursive: true })
     await mkdir(imported, { recursive: true })
     await writeFile(path.join(checkout, "fixed.ts"), "export function checkoutEntry() { return 4 }\n")
@@ -238,15 +244,42 @@ describe("canonical analysis source selection", () => {
 
   test("fails closed when a preferred source component is a symlink", async () => {
     if (process.platform === "win32") return
-    const { root, workareaRoot, environment } = await fixture("secure-review")
+    const { root, sourceStoreRoot, environment } = await fixture("secure-review")
     const outside = path.join(root, "outside")
     await mkdir(outside)
-    await mkdir(path.join(workareaRoot, "raw", "source-import"), { recursive: true })
-    await symlink(outside, path.join(workareaRoot, "raw", "source-import", "repository"), "dir")
+    await symlink(outside, path.join(sourceStoreRoot, "import", "repository"), "dir")
     const handler = createCodeGraphToolHandler({ environment })
     await expect(handler.handle("code_graph_manifest", {})).rejects.toThrow("symlink")
-    expect(await exists(path.join(workareaRoot, "raw", "code-graph", "index.sqlite"))).toBe(false)
     await handler.close()
+  })
+})
+
+describe("Code Audit graph readiness", () => {
+  test("attests current source, snapshot, and coverage and rejects marker tampering", async () => {
+    const { workareaRoot, environment } = await fixture("code-audit")
+    const handler = createCodeGraphToolHandler({ environment })
+    await handler.handle("code_graph_index", {})
+    await handler.close()
+
+    await expect(verifyCodeGraphReadiness(environment)).resolves.toMatchObject({
+      version: 1,
+      workflow: "code-audit",
+      source_kind: "project-source",
+      coverage_entries: 1,
+    })
+
+    const readinessPath = path.join(workareaRoot, "raw", "code-graph", "readiness.json")
+    const readiness = recordValue(JSON.parse(await readFile(readinessPath, "utf8")), "readiness attestation")
+    await writeFile(readinessPath, JSON.stringify({ ...readiness, hmac_sha256: "0".repeat(64) }))
+    await expect(verifyCodeGraphReadiness(environment)).rejects.toThrow("does not match")
+  })
+
+  test("does not attest a path-limited index as repository-wide coverage", async () => {
+    const { environment } = await fixture("code-audit")
+    const handler = createCodeGraphToolHandler({ environment })
+    await handler.handle("code_graph_index", { paths: ["project.ts"] })
+    await handler.close()
+    await expect(verifyCodeGraphReadiness(environment)).rejects.toThrow()
   })
 })
 

@@ -22,6 +22,8 @@ cover. This phase inventories and records; it does not hunt vulnerabilities or e
 - Inventory application, systems, crypto/Web3, robotics/control, firmware, HDL, build, infrastructure, schema,
   generated-code, vendored-code, fixture, and test surfaces. Classify declarative artifacts as topology,
   dependency, trust, or configuration inputs rather than pretending they have ordinary program dataflow.
+- Keep `vendor/` and `.vscode/` in the inventory. Their sandbox implementations, executable tasks, workspace
+  settings, and extension policy can be security-relevant source or configuration, not automatic noise.
 - Identify expected language-adapter capabilities, build variants, entry points, privileged components,
   generated boundaries, FFI/ABI edges, ROS/DDS relationships, contract interfaces, and inaccessible material.
 - Turn every exclusion into an explicit reason and risk. A parser or adapter gap is a coverage limitation, not

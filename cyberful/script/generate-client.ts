@@ -201,7 +201,17 @@ try {
       path: output,
       tsConfigPath: path.join(root, "tsconfig.json"),
       clean: true,
-      header: (context) => generatedHeader(context.file.finalPath ?? context.file.logicalFilePath),
+      // ── Bundle Headers Do Not Always Belong To A File ─────────────
+      // The generator invokes this callback once for the output bundle before it
+      // associates a concrete file. Per-file calls still receive the path required
+      // by the repository's generated header registry, while the bundle-level call
+      // has no source module to decorate. Returning no lines for that call preserves
+      // strict file header validation without dereferencing absent generator state.
+      // ─────────────────────────────────────────────────────────────────
+      header: (context) => {
+        const filePath = context.file?.finalPath ?? context.file?.logicalFilePath
+        return filePath ? generatedHeader(filePath) : []
+      },
     },
     plugins: [
       {

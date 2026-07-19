@@ -1,6 +1,6 @@
 # Cyberful
 
-**Cyberful is an open-source application-security workbench for discovering, 
+**Cyberful is an open-source application-security workbench for discovering,
 exploiting, verifying, and remediating software vulnerabilities**.
 
 <p align="center">
@@ -111,6 +111,10 @@ The current implementation connects that boundary exclusively to Codex:
   queries, persists local stage/resource progress, and owns the validated
   finding ledger and structured exports. Differential SQLite updates,
   checkpoints, WAL truncation, and an aggregate record budget bound indexing.
+- **Host source store** (`cyberful/src/source-store.ts`) — keeps imported
+  repositories and deterministic snapshots outside the model-writable workarea,
+  addressed through read-only gateway tools and sealed with a durable
+  per-workarea import key independent from the session finding ledger.
 - **MCP collection** (`mcps/`) — the containerized cyberful-os toolbox, isolated web
   browser, and Dockerized OWASP ZAP runtime/bridge, reached through the host-owned gateway.
 - **Built-in configuration** (`cyberful/builtin/`) — read-only phase personas, shared
@@ -137,12 +141,21 @@ The current implementation connects that boundary exclusively to Codex:
 | **Secure Review** | Map → Audit → Verify                                        |
 | **Ask**           | One interactive answer against an existing workarea         |
 
-Every workflow phase starts with a fresh Codex context and advances only by
+Every workflow phase starts with a fresh Codex context and normally advances by
 calling the constrained `handoff` tool. The host validates the successor and
 required artifact, terminates the current Codex process and gateway, seals the
 artifact with a host-generated SHA-256 manifest, and only then launches the
-next phase. Durable memory lives in workarea artifacts and the local Code Graph
+next phase. If the wall-clock budget expires first, the host advances in
+degraded mode only after the required partial artifact is sealed and the old
+process and gateway are proven stopped; invalid handoffs or failed gates still
+halt. Durable memory lives in workarea artifacts and the local Code Graph
 rather than hidden model state.
+
+Code Audit adds a host gate between Index and Trace: the source preflight must
+still pass, and the current full-inventory graph snapshot and per-file coverage
+must match a host-keyed readiness record. Markdown cleanup is ownership-scoped:
+it can normalize only the required deliverable named by the phase contract and
+never walks or rewrites the complete workarea.
 
 Code Audit performs repository-wide static analysis. Assessment adds
 architecture, supply-chain, infrastructure and compliance-readiness evidence,
@@ -163,6 +176,14 @@ URL. The TUI fixes the hostname for explicit human approval, records the exact
 commit/ref mapping, and all subsequent source analysis is offline. See
 [Application security workflows](docs/user-guide/workflows.md)
 for the full contracts and outputs.
+
+Imported repositories and source snapshots are not placed under `work/`.
+Cyberful stores their authoritative copies below its owner-only application
+data directory and exposes them to Codex only through bounded read-only tools
+using virtual `source://` identities. Repository `AGENTS.md`, skills, prompts,
+and similar files remain untrusted audit evidence; they cannot become runtime
+instructions. Source inventories retain `vendor/` and `.vscode/` instead of
+silently excluding security-relevant tracked content.
 
 The embedded language registry detects application code, C/C++ and systems
 languages, cryptography and Web3 stacks, ROS/firmware/PLC/HDL projects, and
@@ -337,6 +358,12 @@ logs/session-logs/      per-session journals and Codex phase transcripts
 reports/<timestamp>/    generated security reports
 ```
 
+The exception is authoritative imported source and immutable source snapshots.
+They live below the platform application-data directory in
+`cyberful/source-store/<workarea-hash>/`, outside the Codex writable root; the
+workarea contains reports, evidence, graph state, and phase artifacts, but not
+a writable copy of those source acquisitions.
+
 These directories hold sensitive engagement data and are git-ignored. The
 installed binary does not load project configuration from the directory you
 run it in — its configuration is the one baked in at build time.
@@ -376,13 +403,19 @@ Gateway-specific bridge names and labels provide explicit phase cleanup plus a
 session-wide final sweep. ZAP keys live in an owner-only temporary gateway file,
 not app-server arguments or the model environment. Docker unavailability blocks
 startup. A later ZAP runtime failure marks the engagement degraded and browser
-launches show direct fallback. Disable ZAP with `CYBER_ZAP_ENABLED=0`, or keep ZAP while disabling
-browser proxying with `CYBER_BROWSER_THROUGH_ZAP=0`.
+launches show direct fallback. The OAST bridge derives its callable operations
+from the installed add-on catalog and exposes configuration/discovery only;
+callback lifecycle tests use an engagement-owned one-shot harness. An individual
+HTTP rejection closes its current experiment without globally disabling
+independent authorized work. Disable ZAP with `CYBER_ZAP_ENABLED=0`, or keep ZAP
+while disabling browser proxying with `CYBER_BROWSER_THROUGH_ZAP=0`.
 
 While a phase is running, `Escape` immediately aborts its Codex, gateway, and
 complete descendant process tree. A full `Ctrl+C` exit also tears down the
-worker, engagement cyberful-os containers, ZAP,
-and disposable bridges. The main process keeps a live fallback inventory so a
+worker, engagement cyberful-os containers, ZAP, and disposable bridges, even
+while a question is visible. Questions are retracted when their requesting
+phase ends, so an unanswered prompt cannot remain as a stale blocker over a
+successor. The main process keeps a live fallback inventory so a
 wedged worker cannot leave Cyberful-owned processes or Docker workloads active.
 
 ### First launch: the browser

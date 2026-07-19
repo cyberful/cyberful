@@ -112,8 +112,12 @@ also be retrieved through `zap_prompt_get` when the client surface needs a tool 
 - `zap_context_auth` exposes context, authentication, session management, user, and forced-user
   operations. Read the relevant catalog entries before configuring them; keep credentials in session
   variables rather than artifacts.
-- `zap_oast` exposes installed OAST/callback services. Use unique engagement-owned payloads and save the
-  captured interaction that proves the effect.
+- Call `zap_oast` without an operation first to inspect its catalog-derived capability report. The packaged
+  add-on exposes service discovery and configuration under `component: "oast"`; its HTTP API does not expose
+  registration, payload generation, polling, or interaction history. Do not guess `interactsh`, `boast`, or
+  `callback` subcomponents and do not improvise ZAP scripts. When the mission justifies a callback test, use an
+  engagement-owned one-shot harness with a unique payload, a successful self-test, bounded polling, redacted
+  evidence, and cleanup.
 
 Lifecycle shutdown, API security weakening, listener expansion, aliases, and file transfer remain
 host-owned and cannot be invoked through `zap_api_call`. File transfer is intentionally disabled.
@@ -135,9 +139,11 @@ does not authorize navigation, replay, spidering, scanning, direct fallback, or 
 ## Scanning discipline
 
 Spidering is discovery traffic; active scanning is attacking traffic. In recon, use browser traffic,
-history, passive scan, and narrowly authorized spiders only. Start active scans in exploit or hacker, 
-Poll status at a reasonable interval rather than busy-looping, and stop on `403`, `429`, 
-a managed challenge, service instability, or any mission stop condition.
+history, passive scan, and narrowly authorized spiders only. Start active scans in exploit or hacker.
+Poll status at a reasonable interval rather than busy-looping. A `403`, `429`, or managed challenge ends the
+current scan and must not be retried or disguised, but it does not stop unrelated authorized work. Stop all
+target traffic only for an explicit mission stop condition, scope uncertainty, systemic service instability,
+unexpected private data, or an unplanned side effect.
 
 For OpenAPI or GraphQL imports, discover the installed component operations with `zap_api_catalog`, then
 call the exact `importUrl`/equivalent operation through `zap_api_call`. For WebSockets, page messages with

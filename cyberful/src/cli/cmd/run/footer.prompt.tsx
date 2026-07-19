@@ -971,7 +971,12 @@ export function createPromptState(input: PromptInput): PromptState {
       return
     }
 
-    if (input.view() === "command" || input.view() === "skill" || input.view() === "subagent-menu") {
+    if (
+      input.view() === "question" ||
+      input.view() === "command" ||
+      input.view() === "skill" ||
+      input.view() === "subagent-menu"
+    ) {
       return
     }
 

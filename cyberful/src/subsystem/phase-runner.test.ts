@@ -336,6 +336,68 @@ describe("runPhase transcript persistence", () => {
     expect(result.warnings).toContain("Phase gateway did not exit cleanly; no successor may start.")
   })
 
+  test("blocks Code Audit index to trace when host graph readiness is invalid", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({
+        workflow: "code-audit",
+        phase: "index",
+        sourceRoot: "/tmp/source",
+        handoff: { successor: "trace" },
+      }),
+      deps({
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ index: 120 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          return JSON.stringify({
+            phase: "index",
+            successor: "trace",
+            summary: "index complete",
+            artifact: "CODE_GRAPH.md",
+          })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        verifyCodeGraphReadiness: async () => {
+          throw new Error("coverage attestation is missing")
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.warnings).toContain(
+      "Code Audit index readiness failed; trace is blocked: coverage attestation is missing",
+    )
+  })
+
+  test("accepts Code Audit index to trace after host graph readiness succeeds", async () => {
+    let verified = false
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({
+        workflow: "code-audit",
+        phase: "index",
+        sourceRoot: "/tmp/source",
+        handoff: { successor: "trace" },
+      }),
+      deps({
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ index: 120 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          return JSON.stringify({ phase: "index", successor: "trace", summary: "index complete" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        verifyCodeGraphReadiness: async () => {
+          verified = true
+        },
+      }),
+    )
+
+    expect(verified).toBe(true)
+    expect(result.ok).toBe(true)
+  })
+
   test("a configured phase cannot pass without calling handoff", async () => {
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ phase: "exploit", handoff: { successor: "hacker" } }),
@@ -351,6 +413,122 @@ describe("runPhase transcript persistence", () => {
     )
     expect(result.ok).toBe(false)
     expect(result.warnings).toContain("Required handoff was not completed: handoff missing")
+  })
+
+  test("a missing handoff does not expose its ephemeral host signal path", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "exploit", handoff: { successor: "hacker" } }),
+      deps({
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ exploit: 120 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${filePath}'`), { code: "ENOENT" })
+        },
+        removeFile: async () => {},
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.warnings).toContain("Required handoff was not completed: no handoff was recorded.")
+    expect(result.warnings.join("\n")).not.toContain("expert-phase-handoff-")
+  })
+
+  test("a phase budget cutoff advances with a sealed partial deliverable", async () => {
+    const manifests: string[] = []
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "exploit", handoff: { successor: "hacker" } }),
+      deps({
+        run: async () => ({
+          stdout: "{}",
+          stderr: "",
+          exitCode: 1,
+          timedOut: true,
+          termination: "budget_exhausted",
+        }),
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ exploit: 15 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          throw Object.assign(new Error("handoff signal does not exist"), { code: "ENOENT" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        writeArtifactManifest: async (manifestPath) => {
+          manifests.push(manifestPath)
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.termination).toBe("budget_exhausted")
+    expect(result.handoff).toEqual({
+      phase: "exploit",
+      successor: "hacker",
+      summary:
+        "The exploit phase exhausted its wall-clock budget. Continue from the sealed partial deliverable 'EXPLOIT.md' and treat unfinished coverage as degraded.\n\nphase summary",
+      artifact: "EXPLOIT.md",
+    })
+    expect(manifests).toEqual(["/tmp/wa/raw/phase-manifests/exploit.sha256"])
+    expect(result.warnings).toContain(
+      "Phase budget exhausted before an explicit handoff; advancing with sealed partial deliverable 'EXPLOIT.md'.",
+    )
+    expect(result.warnings.join("\n")).not.toContain("Required handoff was not completed")
+  })
+
+  test("a phase budget cutoff still halts when its required deliverable is missing", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "exploit", handoff: { successor: "hacker" } }),
+      deps({
+        run: async () => ({
+          stdout: "{}",
+          stderr: "",
+          exitCode: 1,
+          timedOut: true,
+          termination: "budget_exhausted",
+        }),
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ exploit: 15 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          throw Object.assign(new Error("handoff signal does not exist"), { code: "ENOENT" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        fileExists: async () => false,
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.handoff).toBeUndefined()
+    expect(result.warnings).toContain("Required deliverable 'EXPLOIT.md' is missing.")
+  })
+
+  test("a phase budget cutoff does not repair an invalid handoff", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "exploit", handoff: { successor: "hacker" } }),
+      deps({
+        run: async () => ({
+          stdout: "{}",
+          stderr: "",
+          exitCode: 1,
+          timedOut: true,
+          termination: "budget_exhausted",
+        }),
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ exploit: 15 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          return JSON.stringify({ phase: "exploit", successor: "report", summary: "skip ahead" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.handoff).toBeUndefined()
+    expect(result.warnings).toContain("Handoff successor does not match the configured chain.")
   })
 
   test("CYBERFUL_SUBSYSTEM_TRANSCRIPT=0 disables persistence and keeps the buffered path", async () => {
@@ -590,6 +768,25 @@ describe("interactive Ask excursion", () => {
     expect(prompt).toContain("Explain the report")
     expect(prompt).not.toContain("Required deliverable")
     expect(privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH).toBeUndefined()
+  })
+
+  test("a budget cutoff remains unsuccessful without a phase handoff contract", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "ask", kind: "interactive", home: "/tmp/agents/ask", objective: "Explain the report" }),
+      deps({
+        run: async () => ({
+          stdout: "{}",
+          stderr: "",
+          exitCode: 1,
+          timedOut: true,
+          termination: "budget_exhausted",
+        }),
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.termination).toBe("budget_exhausted")
+    expect(result.handoff).toBeUndefined()
   })
 })
 

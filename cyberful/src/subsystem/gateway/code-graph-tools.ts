@@ -9,13 +9,13 @@
 
 import path from "node:path"
 import { constants } from "node:fs"
-import { chmod, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises"
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import { parseSecurityFindingInput } from "../../code-graph/ledger"
 import { createCodeGraphService, type CodeGraphService, type FindingIntegrityState } from "../../code-graph/service"
 import { findingIdentity } from "../../code-graph/store"
 import type { FindingTransitionRecord, SecurityFinding } from "../../code-graph/types"
-import { effectiveSourceRoot } from "./source-tools"
+import { resolveEffectiveSource } from "./source-tools"
 
 const CODE_GRAPH_WORKFLOWS = ["code-audit", "assessment", "remediate", "secure-review"] as const
 type CodeGraphWorkflow = (typeof CODE_GRAPH_WORKFLOWS)[number]
@@ -391,10 +391,10 @@ async function optionalPlainDirectory(root: string, relative: string) {
 
 // ── Analysis Uses The Most Specific Verified Source ──────────────
 // Remediation must analyze the isolated checkout that receives fixes. Otherwise
-// a controlled public-repository import precedes a durable source snapshot and
-// finally project source. No preferred path is trusted merely because it lives
-// under the workarea: every component must be a real directory and remain
-// inside the canonical workarea; malformed or symlinked paths fail closed.
+// the source boundary selects a verified host-owned import or snapshot before
+// project source. Mutable legacy copies inside the workarea fail closed.
+// Import manifests and snapshots are revalidated before a SQLite service opens,
+// so no graph state is created for an ambiguous or unauthenticated source.
 //
 // ─────────────────────────────────────────────────────────────────
 
@@ -409,12 +409,8 @@ async function resolveContext(environment: Environment): Promise<ResolvedContext
     const checkout = await optionalPlainDirectory(workareaRoot, "remediation/checkout")
     if (checkout) return { workflow, sourceRoot: checkout, workareaRoot, sourceKind: "remediation-checkout" }
   }
-  const effectiveSource = await effectiveSourceRoot(sourceRoot, workareaRoot, environment)
-  if (effectiveSource !== sourceRoot)
-    return { workflow, sourceRoot: effectiveSource, workareaRoot, sourceKind: "source-import" }
-  const snapshot = await optionalPlainDirectory(workareaRoot, "raw/source-snapshot/tree")
-  if (snapshot) return { workflow, sourceRoot: snapshot, workareaRoot, sourceKind: "source-snapshot" }
-  return { workflow, sourceRoot, workareaRoot, sourceKind: "project-source" }
+  const effective = await resolveEffectiveSource(sourceRoot, workareaRoot, environment)
+  return { workflow, sourceRoot: effective.root, workareaRoot, sourceKind: effective.kind }
 }
 
 interface FindingAttestationPayload {
@@ -480,6 +476,146 @@ function attestationPayload(
 
 function findingHmac(payload: FindingAttestationPayload, key: string) {
   return createHmac("sha256", key).update(canonicalJson(payload)).digest("hex")
+}
+
+interface CodeGraphReadinessPayload {
+  readonly version: 1
+  readonly full_inventory: true
+  readonly workflow: CodeGraphWorkflow
+  readonly source_kind: ResolvedContext["sourceKind"]
+  readonly snapshot_id: string
+  readonly snapshot_fingerprint: string
+  readonly coverage_sha256: string
+  readonly coverage_entries: number
+}
+
+interface CodeGraphReadinessAttestation extends CodeGraphReadinessPayload {
+  readonly hmac_sha256: string
+}
+
+function readinessHmac(payload: CodeGraphReadinessPayload, key: string) {
+  return createHmac("sha256", key).update(canonicalJson(payload)).digest("hex")
+}
+
+function currentReadinessPayload(context: ResolvedContext, service: CodeGraphService): CodeGraphReadinessPayload {
+  const state = service.readinessState()
+  const snapshot = state.snapshot
+  if (!snapshot) throw new Error("Code Graph readiness requires a committed graph snapshot")
+  if (snapshot.root !== service.sourceRoot)
+    throw new Error("Code Graph snapshot does not describe the preflighted source root")
+  if (state.coverage.length === 0) throw new Error("Code Graph readiness requires non-empty coverage")
+  return {
+    version: 1,
+    full_inventory: true,
+    workflow: context.workflow,
+    source_kind: context.sourceKind,
+    snapshot_id: snapshot.id,
+    snapshot_fingerprint: snapshot.fingerprint,
+    coverage_sha256: createHash("sha256").update(canonicalJson(state.coverage)).digest("hex"),
+    coverage_entries: state.coverage.length,
+  }
+}
+
+function readinessPath(context: ResolvedContext) {
+  return path.join(context.workareaRoot, "raw", "code-graph", "readiness.json")
+}
+
+async function writeCodeGraphReadiness(context: ResolvedContext, service: CodeGraphService, key: string) {
+  await ensurePlainDirectory(context.workareaRoot, "raw/code-graph")
+  const payload = currentReadinessPayload(context, service)
+  const value: CodeGraphReadinessAttestation = { ...payload, hmac_sha256: readinessHmac(payload, key) }
+  const destination = readinessPath(context)
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`
+  const flags =
+    constants.O_WRONLY |
+    constants.O_CREAT |
+    constants.O_EXCL |
+    (process.platform === "win32" ? 0 : constants.O_NOFOLLOW)
+  const handle = await open(temporary, flags, 0o600)
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8" })
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  try {
+    if (process.platform === "win32") await rm(destination, { force: true })
+    await rename(temporary, destination)
+    if (process.platform !== "win32") await chmod(destination, 0o600)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+function parseCodeGraphReadiness(value: unknown): CodeGraphReadinessAttestation | undefined {
+  if (!isRecord(value)) return
+  const workflow = CODE_GRAPH_WORKFLOWS.find((candidate) => candidate === value.workflow)
+  const sourceKind = ["project-source", "source-import", "source-snapshot", "remediation-checkout"].find(
+    (candidate) => candidate === value.source_kind,
+  ) as ResolvedContext["sourceKind"] | undefined
+  if (
+    value.version !== 1 ||
+    value.full_inventory !== true ||
+    !workflow ||
+    !sourceKind ||
+    typeof value.snapshot_id !== "string" ||
+    !value.snapshot_id ||
+    typeof value.snapshot_fingerprint !== "string" ||
+    !value.snapshot_fingerprint ||
+    typeof value.coverage_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.coverage_sha256) ||
+    !Number.isSafeInteger(value.coverage_entries) ||
+    Number(value.coverage_entries) <= 0 ||
+    typeof value.hmac_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.hmac_sha256)
+  )
+    return
+  return {
+    version: 1,
+    full_inventory: true,
+    workflow,
+    source_kind: sourceKind,
+    snapshot_id: value.snapshot_id,
+    snapshot_fingerprint: value.snapshot_fingerprint,
+    coverage_sha256: value.coverage_sha256,
+    coverage_entries: Number(value.coverage_entries),
+    hmac_sha256: value.hmac_sha256,
+  }
+}
+
+function equalHmac(expected: string, actual: string) {
+  const expectedBytes = Buffer.from(expected, "hex")
+  const actualBytes = Buffer.from(actual, "hex")
+  return expectedBytes.byteLength === actualBytes.byteLength && timingSafeEqual(expectedBytes, actualBytes)
+}
+
+export async function verifyCodeGraphReadiness(environment: Environment = process.env) {
+  const context = await resolveContext(environment)
+  const key = ledgerKey(environment)
+  const service = await createCodeGraphService({ sourceRoot: context.sourceRoot, workareaRoot: context.workareaRoot })
+  try {
+    const destination = readinessPath(context)
+    const metadata = await lstat(destination)
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 64 * 1024)
+      throw new Error("Code Graph readiness attestation is missing or unsafe")
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await readFile(destination, "utf8"))
+    } catch {
+      throw new Error("Code Graph readiness attestation is not valid JSON")
+    }
+    const recorded = parseCodeGraphReadiness(parsed)
+    if (!recorded) throw new Error("Code Graph readiness attestation is malformed")
+    const { hmac_sha256: hmac, ...recordedPayload } = recorded
+    if (!equalHmac(readinessHmac(recordedPayload, key), hmac))
+      throw new Error("Code Graph readiness attestation does not match")
+    const current = currentReadinessPayload(context, service)
+    if (canonicalJson(recordedPayload) !== canonicalJson(current))
+      throw new Error("Code Graph snapshot or coverage changed after readiness was attested")
+    return current
+  } finally {
+    await service.close()
+  }
 }
 
 async function ensurePlainDirectory(root: string, relative: string) {
@@ -714,7 +850,12 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
       const active = await runtime()
       switch (name) {
         case "code_graph_index":
-          return active.service.index(args)
+          await rm(readinessPath(active.context), { force: true })
+          return active.service.index(args).then(async (report) => {
+            if (args.paths === undefined)
+              await writeCodeGraphReadiness(active.context, active.service, ledgerKey(environment))
+            return report
+          })
         case "code_graph_query":
           return active.service.query(args)
         case "code_graph_manifest":

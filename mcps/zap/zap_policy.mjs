@@ -152,7 +152,8 @@ const SCOPED_CONTEXT_ACTIONS = new Set([
   "setforcedusermodeenabled",
 ])
 
-const NETWORK_OPERATION = /(?:scan|spider|attack|request|import|openapi|graphql|ajax|fuzz|oast|callback|boast|interact)/i
+const NETWORK_OPERATION =
+  /(?:scan|spider|attack|request|import|openapi|graphql|ajax|fuzz|oast|callback|boast|interact)/i
 const READ_OPERATION = /(?:status|result|report|history|alert|version|list|get|view)/i
 
 export function assertScopedZapTool(name, args, allowedOrigins, official = false) {
@@ -164,13 +165,16 @@ export function assertScopedZapTool(name, args, allowedOrigins, official = false
     }
     return
   }
-  if (name === "zap_oast" && explicitUrls === 0) {
-    throw new Error("ZAP OAST requires an explicit host-authorized service URL")
+  if (name === "zap_oast") {
+    const capabilityDiscovery = args?.operation === undefined && args?.type === undefined
+    if (capabilityDiscovery || args?.type === "view") return
+    if (explicitUrls === 0) throw new Error("ZAP OAST actions require an explicit host-authorized service URL")
   }
   if (name === "zap_api_call" && args?.type !== "view" && args?.type !== undefined) {
     const operation = typeof args.operation === "string" ? args.operation.toLowerCase() : ""
     const passiveConfiguration =
-      SCOPED_CONTEXT_ACTIONS.has(operation) || /^(?:setoption|enable|disable|clear|remove|exclude|include)/i.test(operation)
+      SCOPED_CONTEXT_ACTIONS.has(operation) ||
+      /^(?:setoption|enable|disable|clear|remove|exclude|include)/i.test(operation)
     if (!passiveConfiguration && explicitUrls === 0) {
       throw new Error("this ZAP action requires an explicit host-authorized target URL")
     }

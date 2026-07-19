@@ -53,6 +53,10 @@ The constrained `handoff` tool accepts only the successor configured by the
 host. Calling it records a request; it does not launch the next phase. The host
 waits for the current Codex process and gateway tree to exit, validates the
 deliverable and handoff record, and only then starts a fresh successor context.
+If the wall-clock budget expires before that call, the host may synthesize the
+configured handoff and advance in degraded mode only after it seals the required
+partial deliverable and proves the old process and gateway are gone. Invalid
+handoffs and failed deliverable or lifecycle gates still halt the chain.
 Report terminates through `handoff` with target `complete`.
 
 ## Tools and interaction

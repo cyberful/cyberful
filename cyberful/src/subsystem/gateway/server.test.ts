@@ -197,6 +197,26 @@ describe("expert-gateway variable tool", () => {
   test("get of a missing variable is a clean error, and set validates inputs", async () => {
     expect((await callVariable(client, { action: "get", name: "NOPE" })).error).toContain("no variable")
     expect((await callVariable(client, { action: "set", name: "X" })).error).toContain("value")
+
+    const rejected = await client.callTool({
+      name: "variable",
+      arguments: {
+        action: "set",
+        name: "CORRUPTED_CAPTURE",
+        value: "https://[redacted:variable:scope_assets]/app#signed-init-data",
+      },
+    })
+    expect(rejected.isError).toBe(true)
+    expect(jsonContent(rejected).error).toContain("redaction marker")
+
+    const row = Database.use((db: import("../../storage/db").TxOrDb) =>
+      db
+        .select()
+        .from(SessionVariableTable)
+        .where(and(eq(SessionVariableTable.session_id, SESSION), eq(SessionVariableTable.name, "CORRUPTED_CAPTURE")))
+        .get(),
+    )
+    expect(row).toBeUndefined()
   })
 
   test("reserved host state cannot be listed, read, changed, or deleted through MCP", async () => {
@@ -285,15 +305,18 @@ describe("expert-gateway workflow capability policy", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-workflow-tools-"))
     const source = path.join(directory, "source")
     const workarea = path.join(directory, "workarea")
-    await Promise.all([mkdir(source), mkdir(workarea)])
+    const sourceStore = path.join(directory, "source-store")
+    await Promise.all([mkdir(source), mkdir(workarea), mkdir(path.join(sourceStore, "import"), { recursive: true })])
     const previous = {
       workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
       phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
       source: process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT,
       workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+      sourceStore: process.env.CYBERFUL_SOURCE_STORE_ROOT,
     }
     process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = source
     process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
+    process.env.CYBERFUL_SOURCE_STORE_ROOT = sourceStore
 
     async function toolNames(workflow: string, phase: string) {
       process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = workflow
@@ -350,6 +373,8 @@ describe("expert-gateway workflow capability policy", () => {
       else process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = previous.source
       if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
       else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
+      if (previous.sourceStore === undefined) delete process.env.CYBERFUL_SOURCE_STORE_ROOT
+      else process.env.CYBERFUL_SOURCE_STORE_ROOT = previous.sourceStore
       await rm(directory, { recursive: true, force: true })
     }
   })
@@ -770,8 +795,9 @@ describe("expert-gateway handoff tool", () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "expert-terminal-export-test-"))
     const source = path.join(dir, "source")
     const workarea = path.join(dir, "workarea")
+    const sourceStore = path.join(dir, "source-store")
     const signal = path.join(dir, "handoff.json")
-    await Promise.all([mkdir(source), mkdir(workarea)])
+    await Promise.all([mkdir(source), mkdir(workarea), mkdir(path.join(sourceStore, "import"), { recursive: true })])
     const keys = [
       "CYBERFUL_SUBSYSTEM_WORKFLOW",
       "CYBERFUL_SUBSYSTEM_PHASE",
@@ -781,6 +807,8 @@ describe("expert-gateway handoff tool", () => {
       "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR",
       "CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL",
       "CYBERFUL_CODE_GRAPH_LEDGER_KEY",
+      "CYBERFUL_SOURCE_STORE_ROOT",
+      "CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY",
     ] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     Object.assign(process.env, {
@@ -791,6 +819,8 @@ describe("expert-gateway handoff tool", () => {
       CYBERFUL_SUBSYSTEM_HANDOFF_PATH: signal,
       CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL: "1",
       CYBERFUL_CODE_GRAPH_LEDGER_KEY: "terminal-export-test-key-with-at-least-32-bytes",
+      CYBERFUL_SOURCE_STORE_ROOT: sourceStore,
+      CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY: "terminal-export-import-key-with-at-least-32-bytes",
     })
     delete process.env.CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR
     let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
