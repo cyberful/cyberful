@@ -37,7 +37,8 @@ current phase authorize that exact action.
 
 ## Readiness and automatic capture
 
-Before the first target request, call `browser_status`. The proxy path is attested only when
+Before the first target request from each browser identity you will use, call `browser_status` with that
+profile number. The proxy path is attested only when
 `proxy.configured` is `true` and `proxy.mode` is exactly `zap`. A `pending` result is not permission to
 navigate: recheck at a bounded interval, then record a platform blocker if it does not settle. A
 `direct-fallback` result is explicit degraded operation; follow the mission's fallback policy and never
@@ -54,7 +55,8 @@ searches, preserve message IDs in handoffs, and leave final report generation to
 
 ## Normal workflow
 
-1. Attest `browser_status`, then use `browser_*` for the real application flow.
+1. Attest `browser_status` for each selected profile, then consistently pass the same `profile` to
+   `browser_*` for that account's real application flow.
 2. Search a bounded metadata page with `zap_history_search`; use `zap_history_get` to inspect selected
    metadata, and set `include_bodies: true` only for the smallest pair whose content is actually needed.
 3. Replay the raw request with `zap_http_request`, changing one factor at a time and comparing the

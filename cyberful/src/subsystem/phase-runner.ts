@@ -471,6 +471,10 @@ function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number): string {
     "  boundary: everything stays under the workarea.",
     "- Persist reusable or secret values (tokens, a target base URL, IDs) as session variables via your",
     "  variable tool, and reference them as {{var:name}} in later tool arguments instead of raw values.",
+    "- Every `browser_*` tool accepts an optional integer `profile` from 1 through 5; omitted means profile 1.",
+    "  Each number is a distinct persistent cookie/storage identity. Treat user wording such as first, second,",
+    "  or fifth browser profile as `profile: 1`, `profile: 2`, or `profile: 5` respectively, and keep every",
+    "  account's actions and evidence labelled with that profile number. Never copy session material between them.",
     "- When a blocking choice, authorization, or missing fact genuinely requires the human, call",
     "  `question` and continue from the answer shown through the TUI. Do not ask only in prose and stop.",
     "- CAPTCHA is a host-enforced circuit breaker. First perform only the normal user action that makes",
@@ -983,16 +987,16 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ? !gatewayExited
       ? "Code Audit index readiness was not evaluated because the phase gateway is still live; trace is blocked."
       : deps.verifyCodeGraphReadiness
-      ? await deps
-          .verifyCodeGraphReadiness({
-            ...spec.env,
-            CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: spec.workareaCwd,
-            ...(spec.workflow ? { CYBERFUL_SUBSYSTEM_WORKFLOW: spec.workflow } : {}),
-            ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
-          })
-          .then(() => undefined)
-          .catch((error) => `Code Audit index readiness failed; trace is blocked: ${errorDetail(error)}`)
-      : "Code Audit index readiness verifier is unavailable; trace is blocked."
+        ? await deps
+            .verifyCodeGraphReadiness({
+              ...spec.env,
+              CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: spec.workareaCwd,
+              ...(spec.workflow ? { CYBERFUL_SUBSYSTEM_WORKFLOW: spec.workflow } : {}),
+              ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
+            })
+            .then(() => undefined)
+            .catch((error) => `Code Audit index readiness failed; trace is blocked: ${errorDetail(error)}`)
+        : "Code Audit index readiness verifier is unavailable; trace is blocked."
     : undefined
   const budgetAdvanceWarning =
     rawTermination === "budget_exhausted" &&

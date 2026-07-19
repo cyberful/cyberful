@@ -80,6 +80,7 @@ const USER_DATA_DIR =
 const ARTIFACTS_DIR =
   process.env.CYBER_BROWSER_ARTIFACTS_DIR || path.join(STATE_HOME, "cyberful-os", "mcp", "browser", "artifacts")
 const ALLOWED_ORIGINS = parseBrowserAllowedOrigins(process.env.CYBER_BROWSER_ALLOWED_ORIGINS)
+const PROFILE_ID = envInt("CYBER_BROWSER_PROFILE_ID", 1, 1, 5)
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = BROWSERS_PATH
@@ -1750,6 +1751,7 @@ registerTool(
         chromium_executable: executablePath,
         chromium_installed: executableExists,
         browser_cache: BROWSERS_PATH,
+        profile: PROFILE_ID,
         user_data_dir: USER_DATA_DIR,
         artifacts_dir: ARTIFACTS_DIR,
         headless: envBool("CYBER_BROWSER_HEADLESS", false),

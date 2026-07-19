@@ -1,14 +1,14 @@
 // ── Embedded Browser Bootstrap ───────────────────────────────────
 // Materializes the browser MCP and its binary assets from release definitions,
-// then points installed builds at the resulting per-build cache layout.
+// then binds source and installed builds to five stable profile identities.
 // → cyberful/src/dependency/browser-preflight.ts — acquires Chromium separately on first use.
 // → mcps/browser/bin/cyber-browser — consumes the materialized driver layout.
 // @docs/runtimes/browser.md
 // ─────────────────────────────────────────────────────────────────
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { Global } from "@/global"
+import { browserHome, browserProfileDir } from "@/dependency/browser-profile"
 
 declare const CYBERFUL_EMBEDDED_BROWSER: Record<string, string> | undefined
 declare const CYBERFUL_EMBEDDED_BROWSER_BIN: Record<string, string> | undefined
@@ -21,15 +21,11 @@ function buildIdSlug(): string {
 
 // ── Browser State Outlives A Release Cache ───────────────────────
 // Driver files are immutable build assets and belong in a build-specific cache,
-// but Chromium and the isolated profile are large mutable user state. Keeping
+// but Chromium and the isolated profiles are large mutable user state. Keeping
 // those resources in a stable browser home avoids downloading Chromium after
-// every upgrade and preserves the dedicated Cyberful profile. Explicit command
+// every upgrade and preserves the dedicated Cyberful profiles. Explicit command
 // and path overrides still win, so source runs and operator policy remain intact.
 // ─────────────────────────────────────────────────────────────────
-export function browserHome(): string {
-  return path.join(os.homedir(), ".cyberful", "browser")
-}
-
 function materializeBrowser(): boolean {
   const text = typeof CYBERFUL_EMBEDDED_BROWSER === "undefined" ? undefined : CYBERFUL_EMBEDDED_BROWSER
   const bin = typeof CYBERFUL_EMBEDDED_BROWSER_BIN === "undefined" ? undefined : CYBERFUL_EMBEDDED_BROWSER_BIN
@@ -62,15 +58,25 @@ function materializeBrowser(): boolean {
   }
 
   process.env.CYBER_BROWSER_MCP_COMMAND = path.join(root, "browser", "bin", "cyber-browser")
-  // Chromium download + the cyberful profile live in the stable home, not the per-build cache.
-  const home = browserHome()
-  if (!process.env.CYBER_BROWSER_BROWSERS_PATH) process.env.CYBER_BROWSER_BROWSERS_PATH = path.join(home, ".browsers")
-  if (!process.env.CYBER_BROWSER_USER_DATA_DIR) {
-    process.env.CYBER_BROWSER_USER_DATA_DIR = path.join(home, "profiles", "cyberful")
-  }
   return true
 }
 
+// ── Source And Release Launches Share Browser State ─────────────────
+// The embedded payload exists only in release binaries, but manual profile
+// seeding is a source-tree command. Both launch paths must resolve the same
+// Chromium cache and first persistent identity or a successful pre-login would
+// disappear when Cyberful starts. Environment overrides remain authoritative,
+// including the numbered profile-one override used by the five-profile router.
+// @docs/runtimes/browser.md
+// ─────────────────────────────────────────────────────────────────────
+const home = browserHome()
+if (!process.env.CYBER_BROWSER_BROWSERS_PATH) process.env.CYBER_BROWSER_BROWSERS_PATH = path.join(home, ".browsers")
+if (!process.env.CYBER_BROWSER_USER_DATA_DIR && !process.env.CYBER_BROWSER_USER_DATA_DIR_1) {
+  process.env.CYBER_BROWSER_USER_DATA_DIR = browserProfileDir(1)
+}
+
 export const bootstrapBrowserReady = materializeBrowser()
+
+export { browserHome }
 
 export * as BootstrapBrowser from "./bootstrap-browser"

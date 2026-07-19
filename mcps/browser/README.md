@@ -3,6 +3,10 @@
 Standalone stdio MCP server for browser-use style automation with an isolated
 Playwright Chromium on macOS.
 
+Cyberful starts one instance per numbered browser identity and adds the
+gateway-only `profile` selector to the tools. A standalone MCP process still
+owns exactly one `CYBER_BROWSER_USER_DATA_DIR`.
+
 ## Install
 
 From the repository root:
@@ -101,6 +105,7 @@ Useful environment overrides:
 
 - `CYBER_BROWSER_BROWSERS_PATH`
 - `CYBER_BROWSER_USER_DATA_DIR`
+- `CYBER_BROWSER_PROFILE_ID` as an integer from `1` through `5` reported by `browser_status`
 - `CYBER_BROWSER_CLEAR_COOKIES_ON_START=true` to intentionally clear the persistent target login (default: preserve it)
 - `CYBER_BROWSER_ARTIFACTS_DIR`
 - `CYBER_BROWSER_HEADLESS=true`

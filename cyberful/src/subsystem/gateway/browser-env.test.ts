@@ -11,7 +11,13 @@ import path from "node:path"
 
 // resolveBrowserUpstreamEnv is a pure decision function; importing ./server has no load-time side effects
 // (its DB client is lazy and main() only runs as an entrypoint), so a plain dynamic import is safe here.
-const { loadPrivateGatewayEnvironment, resolveBrowserUpstreamEnv, upstreamProcessEnv } = await import("./server")
+const {
+  browserProfileToolDefinition,
+  loadPrivateGatewayEnvironment,
+  resolveBrowserUpstreamEnv,
+  selectBrowserProfileUpstream,
+  upstreamProcessEnv,
+} = await import("./server")
 
 function environmentValue(name: string): string | undefined {
   return process.env[name]
@@ -36,20 +42,82 @@ test("gateway loads the owner-private environment file before binding its sessio
 // Locks browser-profile routing for the one gateway owned by a phase.
 describe("resolveBrowserUpstreamEnv", () => {
   const TEMP = "/tmp/expert-browser-x"
+  const ARTIFACTS = "/home/u/artifacts"
 
   test("pinned profile with no live holder → reuse it for the login", () => {
-    const r = resolveBrowserUpstreamEnv({ dedicated: "/home/u/.chrome", tempProfileDir: TEMP })
-    expect(r.set).toEqual({ CYBER_BROWSER_USER_DATA_DIR: "/home/u/.chrome" })
+    const r = resolveBrowserUpstreamEnv({
+      dedicated: "/home/u/.chrome",
+      artifactsDir: ARTIFACTS,
+      tempProfileDir: TEMP,
+    })
+    expect(r.set).toEqual({
+      CYBER_BROWSER_USER_DATA_DIR: "/home/u/.chrome",
+      CYBER_BROWSER_ARTIFACTS_DIR: ARTIFACTS,
+    })
   })
 
   test("a locked pinned profile falls back to a per-session temp profile", () => {
-    const r = resolveBrowserUpstreamEnv({ dedicated: "/home/u/.chrome", livePort: 4321, tempProfileDir: TEMP })
-    expect(r.set).toEqual({ CYBER_BROWSER_USER_DATA_DIR: TEMP })
+    const r = resolveBrowserUpstreamEnv({
+      dedicated: "/home/u/.chrome",
+      artifactsDir: ARTIFACTS,
+      livePort: 4321,
+      tempProfileDir: TEMP,
+    })
+    expect(r.set).toEqual({
+      CYBER_BROWSER_USER_DATA_DIR: TEMP,
+      CYBER_BROWSER_ARTIFACTS_DIR: path.join(TEMP, "artifacts"),
+    })
   })
 
   test("nothing set → a per-session temp profile", () => {
-    const r = resolveBrowserUpstreamEnv({ tempProfileDir: TEMP })
-    expect(r.set).toEqual({ CYBER_BROWSER_USER_DATA_DIR: TEMP })
+    const r = resolveBrowserUpstreamEnv({ artifactsDir: ARTIFACTS, tempProfileDir: TEMP })
+    expect(r.set).toEqual({
+      CYBER_BROWSER_USER_DATA_DIR: TEMP,
+      CYBER_BROWSER_ARTIFACTS_DIR: path.join(TEMP, "artifacts"),
+    })
+  })
+})
+
+describe("browser profile tool routing", () => {
+  const definition = {
+    name: "browser_navigate",
+    description: "Open a URL.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { url: { type: "string" } },
+      required: ["url"],
+    },
+  }
+  const call = async () => ({ content: [] })
+  const candidates = [
+    { def: definition, capability: "browser" as const, browserProfile: 1 as const, call },
+    { def: definition, capability: "browser" as const, browserProfile: 2 as const, call },
+  ]
+
+  test("advertises one optional selector without changing the underlying browser schema", () => {
+    const advertised = browserProfileToolDefinition(definition, [1, 2])
+    expect(advertised.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: { profile: { type: "integer", enum: [1, 2], default: 1 } },
+    })
+    expect(definition.inputSchema.properties).not.toHaveProperty("profile")
+  })
+
+  test("defaults to profile one and strips the gateway-only selector before forwarding", () => {
+    expect(selectBrowserProfileUpstream(candidates, { url: "https://example.test" })).toEqual({
+      upstream: candidates[0],
+      args: { url: "https://example.test" },
+    })
+    expect(selectBrowserProfileUpstream(candidates, { profile: 2, url: "https://example.test" })).toEqual({
+      upstream: candidates[1],
+      args: { url: "https://example.test" },
+    })
+  })
+
+  test("rejects invalid or unavailable profile identities", () => {
+    expect(() => selectBrowserProfileUpstream(candidates, { profile: "2" })).toThrow("integer from 1 through 5")
+    expect(() => selectBrowserProfileUpstream(candidates, { profile: 5 })).toThrow("profile 5 is unavailable")
   })
 })
 

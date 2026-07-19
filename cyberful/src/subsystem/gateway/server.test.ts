@@ -477,6 +477,58 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
+  test("advertises one browser tool and routes calls to isolated numbered profiles", async () => {
+    const calls: { profile: number; args: Record<string, unknown> }[] = []
+    const browserTool = (profile: 1 | 2): UpstreamTool => ({
+      def: {
+        name: "browser_navigate",
+        description: "Open a URL.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { url: { type: "string" } },
+          required: ["url"],
+        },
+      },
+      capability: "browser",
+      browserProfile: profile,
+      call: async (args) => {
+        calls.push({ profile, args })
+        return { content: [{ type: "text", text: JSON.stringify({ profile }) }] }
+      },
+    })
+    const server = await createGatewayServer({ upstreams: [browserTool(1), browserTool(2)] })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const browserClient = new Client({ name: "browser-profile-test", version: "0" })
+    await browserClient.connect(clientTransport)
+    try {
+      const browserDefinitions = (await browserClient.listTools()).tools.filter(
+        (tool) => tool.name === "browser_navigate",
+      )
+      expect(browserDefinitions).toHaveLength(1)
+      expect(browserDefinitions[0]?.inputSchema).toMatchObject({
+        properties: { profile: { type: "integer", enum: [1, 2], default: 1 } },
+      })
+
+      await browserClient.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 2, url: "https://example.test/account" },
+      })
+      await browserClient.callTool({
+        name: "browser_navigate",
+        arguments: { url: "https://example.test/default" },
+      })
+      expect(calls).toEqual([
+        { profile: 2, args: { url: "https://example.test/account" } },
+        { profile: 1, args: { url: "https://example.test/default" } },
+      ])
+    } finally {
+      await browserClient.close()
+      await server.closeGateway()
+    }
+  })
+
   test("applies the advertised max_output_bytes ceiling once before an upstream executes", async () => {
     let received: Record<string, unknown> | undefined
     const bounded: UpstreamTool = {
