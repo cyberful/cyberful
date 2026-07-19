@@ -62,8 +62,17 @@ brief → recon → exploit → hacker → verify → report
 
 Pentest is the live-target workflow. Its mission records the authorized target,
 rules of engagement, and traffic policy before later phases investigate or
-interact with the target. Verification is independent from exploitation, and
-the report phase produces the client-facing security report.
+interact with the target. Exploit owns systematic validation end to end: it can
+write and run PoCs, operate short-lived test infrastructure, and turn behavior
+observed during both successful and failed attempts into new hypotheses. It
+must also close source provenance for promising sinks by exhausting safe
+first-party paths before recording an unavailable fixture or out-of-scope
+system as the exact blocker. It hands Hacker a cleaned evidence base with only
+genuine blockers; Hacker spends its phase on unconventional assumptions and
+novel chains rather than unfinished routine checks, applying the same
+source-provenance rule to newly discovered primitives. Verification is
+independent from both offensive phases, and the report phase produces the
+client-facing security report.
 
 Required phase artifacts are `MISSION.md`, `RECON.md`, `EXPLOIT.md`,
 `HACKER.md`, `VERIFY.md`, and `REPORT.md`. The terminal result is
