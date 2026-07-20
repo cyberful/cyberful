@@ -86,7 +86,7 @@
     "solid-js": "catalog:",
     "strip-ansi": "7.1.2",
     "ulid": "catalog:",
-    "web-tree-sitter": "0.25.10",
+    "web-tree-sitter": "0.26.11",
     "which": "6.0.1",
     "xdg-basedir": "5.1.0",
     "yargs": "18.0.0"
