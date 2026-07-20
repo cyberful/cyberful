@@ -490,7 +490,8 @@ const QUESTION_TOOL_DEF = {
   description:
     "Ask the human one short batch of questions and wait for the answer. Use this only when a decision, " +
     "authorization, or missing fact cannot be discovered safely from the engagement context. " +
-    "The TUI displays the choices and returns the selected labels or a custom answer. For a CAPTCHA, " +
+    "The host suspends the phase execution and budget while the TUI or external approval selector " +
+    "returns the selected labels or a custom answer. For a CAPTCHA, " +
     "first make the normal action that displays it, call browser_captcha_handoff, then use kind=captcha.",
   inputSchema: {
     type: "object" as const,

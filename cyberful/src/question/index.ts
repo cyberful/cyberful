@@ -5,13 +5,14 @@
 // → cyberful/src/bus/index.ts — publishes user-visible question state changes.
 // ─────────────────────────────────────────────────────────────────
 
-import { Deferred, Effect, Layer, Schema, Context } from "effect"
+import { Effect, Layer, Schema, Context } from "effect"
 import { Bus } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID, MessageID } from "@/session/schema"
 import * as Log from "@/util/log"
 import { QuestionID } from "./schema"
+import { ApprovalMailbox } from "./mailbox"
 
 const log = Log.create({ service: "question" })
 
@@ -114,7 +115,6 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
 
 interface PendingEntry {
   info: Request
-  deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
 }
 
 interface State {
@@ -143,22 +143,12 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const mailbox = yield* ApprovalMailbox.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
-        const state = {
+        return {
           pending: new Map<QuestionID, PendingEntry>(),
         }
-
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            for (const item of state.pending.values()) {
-              yield* Deferred.fail(item.deferred, new RejectedError())
-            }
-            state.pending.clear()
-          }),
-        )
-
-        return state
       }),
     )
 
@@ -171,37 +161,65 @@ export const layer = Layer.effect(
       const id = QuestionID.ascending()
       log.info("asking", { id, questions: input.questions.length })
 
-      const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
       const info: Request = {
         id,
         sessionID: input.sessionID,
         questions: input.questions,
         tool: input.tool,
       }
-      const entry = { info, deferred }
+      const entry = { info }
       pending.set(id, entry)
-      yield* bus.publish(Event.Asked, info)
+      let published = false
 
-      // ── Producer Cancellation Retracts The Visible Question ────────
-      // A phase can complete while an app-server user-input request is still
-      // outstanding. Its request owner then interrupts this effect during process
-      // cleanup. Removing only the in-memory entry would leave every live TUI with
-      // the earlier Asked event and a blocker that can no longer accept a reply.
-      // The entry identity makes cleanup race-safe with an actual reply or rejection;
-      // only the still-pending producer cancellation publishes Rejected.
+      // ── One Durable Decision Resumes Every Question Surface ────────
+      // The immutable owner-only mailbox request is published before the live
+      // event, so a TUI and an external CLI always resolve the same request ID.
+      // Both writers compete for one exclusive response file; this owner consumes
+      // that decision, publishes the normal bus event, and resumes the phase.
+      // Cancellation removes both files and retracts only a question that was
+      // actually visible, so a dead phase cannot authorize a later execution.
       // ─────────────────────────────────────────────────────────────────
       return yield* Effect.ensuring(
-        Deferred.await(deferred),
         Effect.gen(function* () {
-          if (pending.get(id) !== entry) {
-            return
-          }
-
+          yield* Effect.promise(() =>
+            mailbox.publish({
+              version: 1,
+              id: String(id),
+              sessionID: input.sessionID,
+              questions: input.questions,
+              createdAt: Date.now(),
+              ownerPID: process.pid,
+            }),
+          )
+          yield* bus.publish(Event.Asked, info)
+          published = true
+          const decision = yield* Effect.promise((signal) => mailbox.wait(String(id), signal))
+          if (pending.get(id) !== entry) return yield* new RejectedError()
           pending.delete(id)
-          yield* bus.publish(Event.Rejected, {
+          if (decision.status === "rejected") {
+            yield* bus.publish(Event.Rejected, {
+              sessionID: info.sessionID,
+              requestID: id,
+            })
+            return yield* new RejectedError()
+          }
+          const answers = decision.answers.map((answer) => [...answer])
+          yield* bus.publish(Event.Replied, {
             sessionID: info.sessionID,
             requestID: id,
+            answers,
           })
+          return answers
+        }),
+        Effect.gen(function* () {
+          const unresolved = pending.get(id) === entry
+          if (unresolved) pending.delete(id)
+          yield* Effect.promise(() => mailbox.remove(String(id)))
+          if (unresolved && published)
+            yield* bus.publish(Event.Rejected, {
+              sessionID: info.sessionID,
+              requestID: id,
+            })
         }),
       )
     })
@@ -211,35 +229,22 @@ export const layer = Layer.effect(
       answers: ReadonlyArray<Answer>
     }) {
       const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(input.requestID)
-      if (!existing) {
+      if (!pending.has(input.requestID)) {
         log.warn("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      pending.delete(input.requestID)
       log.info("replied", { requestID: input.requestID, answers: input.answers })
-      yield* bus.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-        answers: input.answers.map((a) => [...a]),
-      })
-      yield* Deferred.succeed(existing.deferred, input.answers)
+      yield* Effect.promise(() => mailbox.answer(String(input.requestID), input.answers))
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
       const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(requestID)
-      if (!existing) {
+      if (!pending.has(requestID)) {
         log.warn("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      pending.delete(requestID)
       log.info("rejected", { requestID })
-      yield* bus.publish(Event.Rejected, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-      })
-      yield* Deferred.fail(existing.deferred, new RejectedError())
+      yield* Effect.promise(() => mailbox.reject(String(requestID)))
     })
 
     const list = Effect.fn("Question.list")(function* () {
@@ -251,6 +256,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+export const defaultLayer = layer.pipe(Layer.provide(Bus.layer), Layer.provide(ApprovalMailbox.defaultLayer))
 
 export * as Question from "."

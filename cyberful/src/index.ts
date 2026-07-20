@@ -30,6 +30,7 @@ import { AttachCommand } from "./cli/cmd/tui/attach"
 import { TuiThreadCommand } from "./cli/cmd/tui/thread"
 import { EOL } from "os"
 import { SessionCommand } from "./cli/cmd/session"
+import { ApprovalCommand } from "./cli/cmd/approval"
 import { bootstrapConfigReady } from "./bootstrap-config"
 import { bootstrapBrowserReady } from "./bootstrap-browser"
 import { GATEWAY_ARGV } from "./subsystem/gateway/config"
@@ -209,6 +210,7 @@ const cli = yargs(args)
   .command(GenerateCommand)
   .command(AgentCommand)
   .command(SessionCommand)
+  .command(ApprovalCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

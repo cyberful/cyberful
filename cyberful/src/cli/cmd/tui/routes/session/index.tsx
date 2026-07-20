@@ -1443,6 +1443,11 @@ function ExpertPhaseRow(props: {
                     <span style={{ fg: theme.textMuted }}> · </span>
                     <span style={{ fg: theme.success }}>Phase completed</span>
                     <span style={{ fg: theme.textMuted }}>{` · ${expertPhaseDuration(status().durationMs)}`}</span>
+                    <span style={{ fg: theme.textMuted }}>
+                      {status().approvalWaitMs
+                        ? ` · approval wait ${expertPhaseDuration(status().approvalWaitMs ?? 0)}`
+                        : ""}
+                    </span>
                   </text>
                 </box>
                 <Show when={status().warnings[0]}>

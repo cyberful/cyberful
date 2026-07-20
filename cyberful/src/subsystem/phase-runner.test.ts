@@ -173,14 +173,48 @@ describe("runPhase transcript persistence", () => {
       }),
     )
     expect(prompt).toContain("authorization, or missing fact genuinely requires the human")
-    expect(prompt).toContain("`question` and continue from the answer shown through the TUI")
-    expect(prompt).toContain("Do not ask only in prose and stop")
+    expect(prompt).toContain("host suspends this phase and its budget")
+    expect(prompt).toContain("external `cyberful approval` selector")
+    expect(prompt).toContain("Do not ask only in")
+    expect(prompt).toContain("unrelated steering text as approval")
     expect(prompt).toContain("First perform only the normal user action that makes")
     expect(prompt).toContain('`question` with `kind: "captcha"`')
     expect(prompt).toContain("persists across phase gateways")
     expect(prompt).toContain("host writes the authoritative SHA-256 manifest")
     expect(prompt).toContain("Do not create a checksum for that still-mutable deliverable")
     expect(skillRoots).toEqual(["/tmp/skills"])
+  })
+
+  test("human approval wait extends the deadline without consuming phase duration", async () => {
+    const before = Date.now()
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec(),
+      deps({
+        askQuestion: async () => {
+          await Bun.sleep(35)
+          return [["Approve"]]
+        },
+        run: async (input) => {
+          const ask = requireValue(input.askQuestion, "phase did not expose its human question callback")
+          await ask(
+            [
+              {
+                header: "Mutation",
+                question: "Allow the bounded mutation?",
+                options: [{ label: "Approve", description: "Continue." }],
+              },
+            ],
+            new AbortController().signal,
+          )
+          return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+    const wallMs = Date.now() - before
+
+    expect(result.approvalWaitMs).toBeGreaterThanOrEqual(25)
+    expect(result.durationMs).toBeLessThan(wallMs)
+    expect(result.deadlineAt).toBeGreaterThanOrEqual(before + result.limitMs + (result.approvalWaitMs ?? 0) - 10)
   })
 
   test("the phase prompt maps account descriptions to isolated browser profile selectors", async () => {

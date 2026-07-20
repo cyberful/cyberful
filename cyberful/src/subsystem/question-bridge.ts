@@ -43,7 +43,8 @@ interface QuestionRequest {
 }
 
 interface StartOptions {
-  requestTimeoutMs?: number
+  // null keeps a phase-owned approval pending until answer or lifecycle cancellation.
+  requestTimeoutMs?: number | null
   stopTimeoutMs?: number
   pollIntervalMs?: number
 }
@@ -207,21 +208,25 @@ async function askWithDeadline(
   ask: AskHuman,
   questions: readonly HumanQuestion[],
   lifecycle: AbortSignal,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ) {
   const controller = new AbortController()
   const stop = () => controller.abort(abortReason(lifecycle, "question bridge stopped"))
   if (lifecycle.aborted) stop()
   else lifecycle.addEventListener("abort", stop, { once: true })
-  const timeout = setTimeout(
-    () => controller.abort(new Error(`question bridge request timed out after ${timeoutMs}ms`)),
-    timeoutMs,
-  )
+  const timeout =
+    timeoutMs === null
+      ? undefined
+      : setTimeout(
+          () => controller.abort(new Error(`question bridge request timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+  timeout?.unref?.()
   try {
     const pending = Promise.resolve().then(() => ask(questions, controller.signal))
     return await abortable(pending, controller.signal)
   } finally {
-    clearTimeout(timeout)
+    if (timeout) clearTimeout(timeout)
     lifecycle.removeEventListener("abort", stop)
   }
 }
@@ -251,7 +256,7 @@ async function processRequest(
   name: string,
   ask: AskHuman,
   lifecycle: AbortSignal,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ) {
   const requestID = name.slice(0, -REQUEST_SUFFIX.length)
   const requestPath = path.join(directory, name)
@@ -316,12 +321,16 @@ export interface Bridge {
 // ── One Pump Owns Discovery, Questions, And Cleanup ──────────────────
 // The bridge claims each request by rename and handles requests serially, which
 // bounds both filesystem work and visible human prompts without a growing seen
-// set. One lifecycle controller cancels polling and the active deadline-bound
-// question. stop() waits only for its configured grace period and removes the
-// owner directory in finally, even when processing or cancellation fails.
+// set. One lifecycle controller cancels polling and the active question; phase
+// approvals deliberately have no request deadline because their separate gate
+// pauses the execution budget. stop() still waits only for its configured grace
+// period and removes the owner directory even when cancellation fails.
 // ────────────────────────────────────────────────────────────────
 export async function start(directory: string, ask: AskHuman, options: StartOptions = {}): Promise<Bridge> {
-  const requestTimeoutMs = positiveDuration(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs")
+  const requestTimeoutMs =
+    options.requestTimeoutMs === null
+      ? null
+      : positiveDuration(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs")
   const stopTimeoutMs = positiveDuration(options.stopTimeoutMs, DEFAULT_STOP_TIMEOUT_MS, "stopTimeoutMs")
   const pollIntervalMs = positiveDuration(options.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS, "pollIntervalMs")
   await mkdir(directory, { recursive: false, mode: 0o700 })

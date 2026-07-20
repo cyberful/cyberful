@@ -9,6 +9,7 @@ import { SubsystemCli } from "./cli"
 import { SubsystemProvider } from "./provider"
 import { SubsystemCodex } from "./codex"
 import { SubsystemControl } from "./control"
+import { SubsystemApprovalState } from "./approval-state"
 import { chmod, mkdtemp, readFile, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
@@ -419,6 +420,29 @@ describe("Expert subprocess lifecycle", () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  test("a pending approval pauses the process budget until its decision arrives", async () => {
+    const approvalState = SubsystemApprovalState.create()
+    const decision = Promise.withResolvers<void>()
+    const startedAt = Date.now()
+    const running = SubsystemCli.run({
+      ...sleepInput(30),
+      timeoutMs: 250,
+      approvalState,
+    })
+    await waitForLiveCount(1)
+    const waiting = approvalState.wait(() => decision.promise)
+
+    await Bun.sleep(350)
+    expect(SubsystemCli.liveCount()).toBe(1)
+    decision.resolve()
+    await waiting
+
+    const result = await running
+    expect(result.termination).toBe("budget_exhausted")
+    expect(result.timedOut).toBe(true)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(500)
   })
 
   test("the Codex app-server turn accepts a live steer before completing", async () => {

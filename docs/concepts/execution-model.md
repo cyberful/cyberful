@@ -12,11 +12,40 @@ required file and handoff, saves the result, closes the current process, and
 only then starts the next phase. The real memory is the saved workarea and
 evidence—not an invisible chat history.
 
-The wall-clock budget is also a phase boundary. If it expires before the model
+The active-execution budget is also a phase boundary. If it expires before the model
 requests a handoff, Cyberful stops and reaps the process and gateway, verifies
 and seals the required partial artifact, synthesizes the configured handoff,
 and starts the successor in degraded mode. A missing artifact, failed seal,
 invalid handoff, or gateway that cannot be proven stopped still halts the chain.
+
+Blocking human decisions suspend the complete active phase rather than spending
+that budget. The first pending question freezes the deadline and, on POSIX,
+stops the Codex process group and its descendants. Nested questions share the
+same gate; only the final reply or rejection resumes the group. No handoff or
+successor can advance while the request remains pending. Cancellation and full
+shutdown resume a stopped group before bounded cleanup so it cannot become an
+orphan.
+
+Every pending request is also written to an owner-only local approval mailbox.
+The TUI and an external operator resolve the same immutable request ID, and the
+first valid decision wins. This lets a remotely directed coding assistant relay
+the question and apply the human's selected option without converting ordinary
+session steering into authorization:
+
+```sh
+cyberful approval list --session ses_... --format json
+cyberful approval reply que_... --select '#1'
+cyberful approval reject que_...
+```
+
+Use one `--select` per question; a selector may be a one-based option number,
+an exact option label, or custom text only when the request permits it. Use
+`--answers '[["Choice A","Choice B"]]'` for a multi-select answer. The mailbox
+binds each decision to the session, request envelope, and live owner process;
+stale requests remain inspectable as orphaned but cannot authorize another run.
+An assistant must submit a decision only after the human explicitly selects or
+rejects that specific pending request; a generic instruction to continue is not
+approval and must not be inferred as one.
 
 Phase cleanup owns only the declared output. For Markdown, Cyberful passes the
 single required deliverable path to the normalizer; it never recursively edits
@@ -63,5 +92,7 @@ separate Cyberful sessions.
 `Escape` aborts the active process and descendants. `Ctrl+C` performs a full
 shutdown and cleans up Cyberful-owned workers, gateways, containers, and
 bridges, including while a blocking question is visible. A question belongs to
-the phase that requested it; if that phase finishes or is cancelled before an
-answer arrives, Cyberful retracts the question so it cannot block a successor.
+the phase that requested it; while pending it blocks that phase and its
+successors without consuming execution budget. If the phase is cancelled before
+an answer arrives, Cyberful retracts the question so it cannot authorize later
+work.

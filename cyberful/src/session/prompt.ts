@@ -1157,6 +1157,7 @@ export const layer = Layer.effect(
               limitMs: result.limitMs,
               effectiveLimitMs: result.effectiveLimitMs,
               deadlineAt: result.deadlineAt,
+              approvalWaitMs: result.approvalWaitMs,
               exitCode: result.exitCode,
               warnings: result.warnings,
               handoff: result.handoff
@@ -1462,6 +1463,7 @@ export const layer = Layer.effect(
           limitMs: result.limitMs,
           effectiveLimitMs: result.effectiveLimitMs,
           deadlineAt: result.deadlineAt,
+          approvalWaitMs: result.approvalWaitMs,
           exitCode: result.exitCode,
           warnings: result.warnings,
         }),

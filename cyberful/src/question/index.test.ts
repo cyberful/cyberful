@@ -1,17 +1,22 @@
-// ── Interactive Question Cancellation Tests ─────────────────────
-// Proves that producer interruption retracts a pending question from both the
-//   service state and the live event stream before a successor can be blocked.
+// ── Interactive Question Lifecycle Tests ────────────────────────
+// Proves cancellation cleanup and cross-process mailbox replies through the
+//   same pending request contract consumed by the TUI.
 // → cyberful/src/question/index.ts — owns pending question lifecycle events.
+// → cyberful/src/question/mailbox.ts — persists externally selectable requests.
 // ─────────────────────────────────────────────────────────────────
 
-import { expect, spyOn, test } from "bun:test"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { Effect, Fiber, Layer } from "effect"
+import path from "node:path"
+import os from "node:os"
+import { rm } from "node:fs/promises"
 import { Bus } from "@/bus"
 import { InstanceDisposalRegistry } from "@/effect/instance-registry"
 import { InstanceRef } from "@/effect/instance-ref"
 import { ProjectID } from "@/project/schema"
 import { SessionID } from "@/session/schema"
 import { Question } from "."
+import { ApprovalMailbox } from "./mailbox"
 
 const context = {
   directory: "/question-cancellation-test",
@@ -24,9 +29,16 @@ const context = {
 }
 
 const busLayer = Bus.layer
-const questionLayer = Layer.merge(busLayer, Question.layer.pipe(Layer.provide(busLayer))).pipe(
+const mailboxRoot = path.join(os.tmpdir(), `question-mailbox-test-${process.pid}`)
+const questionLayer = Layer.merge(
+  busLayer,
+  Question.layer.pipe(Layer.provide(busLayer), Layer.provide(ApprovalMailbox.layer(mailboxRoot))),
+).pipe(
   Layer.provide(InstanceDisposalRegistry.layer),
 )
+
+beforeEach(() => rm(mailboxRoot, { recursive: true, force: true }))
+afterEach(() => rm(mailboxRoot, { recursive: true, force: true }))
 
 test("interrupting a question retracts its live blocker", async () => {
   const asked = Promise.withResolvers<void>()
@@ -64,6 +76,60 @@ test("interrupting a question retracts its live blocker", async () => {
           yield* Effect.promise(() => retracted.promise)
 
           expect(yield* question.list()).toEqual([])
+        } finally {
+          unsubscribe()
+        }
+      }).pipe(Effect.provideService(InstanceRef, context), Effect.provide(questionLayer), Effect.scoped),
+    )
+  } finally {
+    stderr.mockRestore()
+  }
+})
+
+test("an external mailbox selection resumes the live question", async () => {
+  const asked = Promise.withResolvers<void>()
+  const replies: unknown[] = []
+  const mailbox = ApprovalMailbox.make(mailboxRoot)
+  const stderr = spyOn(process.stderr, "write").mockImplementation(() => true)
+
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const bus = yield* Bus.Service
+        const question = yield* Question.Service
+        const unsubscribe = yield* bus.subscribeAllCallback((event) => {
+          if (event.type === "question.asked") asked.resolve()
+          if (event.type === "question.replied") replies.push(event.properties)
+        })
+
+        try {
+          const fiber = yield* question
+            .ask({
+              sessionID: SessionID.make("ses_question_external"),
+              questions: [
+                {
+                  header: "Mutation",
+                  question: "Allow the reversible tester-owned mutation?",
+                  options: [
+                    { label: "Approve", description: "Run the bounded mutation." },
+                    { label: "Deny", description: "Leave state unchanged." },
+                  ],
+                  custom: false,
+                },
+              ],
+            })
+            .pipe(Effect.forkChild)
+
+          yield* Effect.promise(() => asked.promise)
+          const pending = yield* Effect.promise(() => mailbox.list())
+          expect(pending).toHaveLength(1)
+          expect(pending[0]?.active).toBe(true)
+          yield* Effect.promise(() => mailbox.answer(pending[0]?.id ?? "", [["Approve"]]))
+
+          expect(yield* Fiber.join(fiber)).toEqual([["Approve"]])
+          expect(replies).toHaveLength(1)
+          expect(yield* question.list()).toEqual([])
+          expect(yield* Effect.promise(() => mailbox.list())).toEqual([])
         } finally {
           unsubscribe()
         }

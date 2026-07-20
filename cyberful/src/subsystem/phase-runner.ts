@@ -17,6 +17,7 @@ import { SubsystemCli } from "./cli"
 import { SubsystemGateway } from "./gateway/config"
 import { SubsystemPhase } from "./phase"
 import { SubsystemQuestionBridge, type AskHuman } from "./question-bridge"
+import { SubsystemApprovalState } from "./approval-state"
 import { SubsystemCompletion, type Candidate as CompletionCandidate } from "./completion"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
@@ -74,6 +75,8 @@ export interface PhaseResult {
   limitMs: number
   effectiveLimitMs: number
   deadlineAt: number
+  // Human-wait time is excluded from durationMs and extends deadlineAt by this amount.
+  approvalWaitMs?: number
   warnings: string[]
   handoff?: PhaseHandoff
   // Relative path to the host-generated SHA-256 manifest for the final named deliverable. The host
@@ -476,7 +479,9 @@ function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number): string {
     "  or fifth browser profile as `profile: 1`, `profile: 2`, or `profile: 5` respectively, and keep every",
     "  account's actions and evidence labelled with that profile number. Never copy session material between them.",
     "- When a blocking choice, authorization, or missing fact genuinely requires the human, call",
-    "  `question` and continue from the answer shown through the TUI. Do not ask only in prose and stop.",
+    "  `question`. The host suspends this phase and its budget until the answer arrives through the TUI",
+    "  or the external `cyberful approval` selector, then returns that exact answer. Do not ask only in",
+    "  prose, continue work while the decision is pending, or treat unrelated steering text as approval.",
     "- CAPTCHA is a host-enforced circuit breaker. First perform only the normal user action that makes",
     "  the challenge visible. Then call `browser_captcha_handoff`; it refuses unless detection attests",
     "  the active challenge and brings that same browser to the front. Only after that succeeds call",
@@ -562,6 +567,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     limitMs: result.limitMs,
     effectiveLimitMs: result.effectiveLimitMs,
     deadlineAt: result.deadlineAt,
+    approvalWaitMs: result.approvalWaitMs,
     exitCode: result.exitCode,
     warnings: result.warnings,
     handoff: result.handoff
@@ -663,6 +669,12 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const handoffPath = spec.handoff ? path.join(os.tmpdir(), `expert-phase-handoff-${signalKey}.json`) : undefined
   const gatewayPidPath = path.join(os.tmpdir(), `expert-phase-gateway-pid-${signalKey}.json`)
   const questionDirectory = deps.askQuestion ? path.join(os.tmpdir(), `expert-phase-question-${signalKey}`) : undefined
+  const approvalState = SubsystemApprovalState.create()
+  const questionHandler = deps.askQuestion
+  const askQuestion = questionHandler
+    ? (questions: Parameters<AskHuman>[0], signal: AbortSignal) =>
+        approvalState.wait(() => questionHandler(questions, signal))
+    : undefined
   const shellTemporaryDirectory = path.join(spec.workareaCwd, ".cyberful-tmp")
   const engagementCircuitBreakerPath = circuitBreakerPath(spec.sessionID, spec.phase)
   // Codex materializes one explicit MCP server. cli.ts moves its private environment into the phase's
@@ -713,8 +725,8 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   }
 
   const questionBridgeStart =
-    questionDirectory && deps.askQuestion
-      ? await SubsystemQuestionBridge.start(questionDirectory, deps.askQuestion).then(
+    questionDirectory && askQuestion
+      ? await SubsystemQuestionBridge.start(questionDirectory, askQuestion, { requestTimeoutMs: null }).then(
           (bridge) => ({ ok: true as const, bridge }),
           (error) => ({ ok: false as const, error }),
         )
@@ -829,7 +841,8 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     timeoutMs: effectiveLimitMs,
     abort: spec.abort,
     sessionID: spec.sessionID,
-    askQuestion: deps.askQuestion,
+    askQuestion,
+    approvalState,
     spec: {
       cwd: spec.workareaCwd,
       permission: { kind: "autonomous" },
@@ -880,6 +893,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   )
   queueSemanticProgressCapture()
   await checkpointQueue
+  const approvalWaitMs = Math.round(approvalState.pausedMs())
   const rawTermination = processTermination(run)
   // The CLI promise resolves only after the Codex process has exited. Its explicit MCP gateway lives in
   // another process group, so reap that registered group and prove it is gone before validating handoff.
@@ -1043,10 +1057,11 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     timedOut: rawTermination === "budget_exhausted",
     termination: rawTermination === "completed" ? (ok ? "completed" : "provider_failed") : rawTermination,
     backend: deps.provider.name,
-    durationMs: Math.max(0, now() - startedAt),
+    durationMs: Math.max(0, now() - startedAt - approvalWaitMs),
     limitMs,
     effectiveLimitMs,
-    deadlineAt,
+    deadlineAt: deadlineAt + approvalWaitMs,
+    approvalWaitMs,
     warnings,
     handoff: acceptedHandoff,
     artifactManifest: manifest && !manifestWarning ? path.relative(spec.workareaCwd, manifest.path) : undefined,
