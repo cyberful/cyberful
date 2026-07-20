@@ -252,6 +252,26 @@ describe("phase runner contract", () => {
     expect(capture.input).toBeUndefined()
   })
 
+  test("a missing target-content trust boundary fails before Codex starts", async () => {
+    const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
+    const deps: PhaseDeps = {
+      ...fakeDeps(capture),
+      readFile: async (filePath) => {
+        if (filePath.endsWith("budgets.json")) return "{}"
+        if (filePath.endsWith("instructions/trust-boundary.md")) throw new Error("trust boundary missing")
+        return fixtureFile(filePath)
+      },
+    }
+    const result = await SubsystemPhaseRunner.runPhase(
+      { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
+      deps,
+    )
+    expect(result.ok).toBe(false)
+    expect(result.termination).toBe("spawn_failed")
+    expect(result.warnings.join(" ")).toContain("trust boundary missing")
+    expect(capture.input).toBeUndefined()
+  })
+
   test("invalid subagent frontmatter fails phase setup before Codex starts", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     const deps: PhaseDeps = {

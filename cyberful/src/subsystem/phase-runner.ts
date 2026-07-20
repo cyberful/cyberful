@@ -696,6 +696,15 @@ function failedBeforeSpawn(input: {
   }
 }
 
+// ── Target Evidence Policy Is A Separate Final Instruction Layer ─────
+// Phase personas and behavioral posture define how the model works, while the
+// trust boundary defines which observed content may issue instructions. The host
+// loads that reviewed built-in file independently and appends it last for every
+// primary phase, then reuses the exact text in compact fallback base instructions.
+// A missing or empty layer fails phase setup before any provider process starts.
+//
+// @docs/concepts/execution-model.md
+// ─────────────────────────────────────────────────────────────────
 async function loadPhaseDeveloperInstructions(spec: PhaseSpec, read: PhaseDeps["readFile"]) {
   const paths = [
     SubsystemPhase.personaPath(spec.home, spec.phase),
