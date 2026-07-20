@@ -84,7 +84,7 @@
     "opentui-spinner": "catalog:",
     "remeda": "catalog:",
     "solid-js": "catalog:",
-    "strip-ansi": "7.1.2",
+    "strip-ansi": "7.2.0",
     "ulid": "catalog:",
     "web-tree-sitter": "0.25.10",
     "which": "6.0.1",
