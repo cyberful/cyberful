@@ -26,6 +26,19 @@ successor can advance while the request remains pending. Cancellation and full
 shutdown resume a stopped group before bounded cleanup so it cannot become an
 orphan.
 
+The phase gateway carries that question as a standard MCP form elicitation with
+a versioned Cyberful approval envelope. Codex pauses the gateway tool's active
+timer while the elicitation is pending, so the normal 600-second MCP tool limit
+still bounds operational work but does not bound human response time. The same
+gateway resumes the original tool call after `accept`, returns a non-authorizing
+result after `decline`, and cancels it during phase shutdown. There is no
+separate file-based question transport.
+
+The app-server thread uses a granular approval policy that enables only MCP
+elicitations. Sandbox escalation, rules, skill approval, and standalone
+permission requests remain disabled and continue to fail closed at the host
+boundary.
+
 Every pending request is also written to an owner-only local approval mailbox.
 The TUI and an external operator resolve the same immutable request ID, and the
 first valid decision wins. This lets a remotely directed coding assistant relay

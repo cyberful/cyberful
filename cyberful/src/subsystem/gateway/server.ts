@@ -10,8 +10,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import path from "node:path"
 import os from "node:os"
-import { randomUUID } from "node:crypto"
-import { readFile, rename, rm, writeFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { SubsystemPhase } from "../phase"
 import { SubsystemBrowserCdp } from "../browser-cdp"
 import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
@@ -61,6 +60,13 @@ import {
   clearCircuitBreaker,
   readCircuitBreaker,
 } from "./circuit-breaker"
+import {
+  approvalElicitationMetadata,
+  approvalElicitationSchema,
+  parseApprovalElicitationContent,
+  parseHumanQuestions,
+  type HumanQuestion,
+} from "../human-question"
 
 const log = Log.create({ service: "phase-gateway" })
 const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
@@ -377,10 +383,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function isMissingFile(error: unknown) {
-  return nodeErrorCode(error) === "ENOENT"
-}
-
 function nodeErrorCode(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
     ? error.code
@@ -430,10 +432,6 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item: unknown) => typeof item === "string")
 }
 
-function isStringMatrix(value: unknown): value is string[][] {
-  return Array.isArray(value) && value.every((item: unknown) => isStringArray(item))
-}
-
 const VARIABLE_TOOL_DEF = {
   name: "variable",
   description:
@@ -454,28 +452,16 @@ const VARIABLE_TOOL_DEF = {
   },
 }
 
-interface QuestionConfig {
-  directory: string
-}
-
 interface CircuitBreakerConfig {
   filePath: string
   phase: string
 }
 
-interface HumanQuestion {
-  question: string
-  header: string
-  options: { label: string; description: string }[]
-  multiple?: boolean
-  custom?: boolean
-}
-
-function questionConfig(): QuestionConfig | undefined {
-  const directory = process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR?.trim()
-  if (!directory) return undefined
-  if (!path.isAbsolute(directory)) throw new Error("expert-gateway question directory must be absolute")
-  return { directory }
+function questionEnabled(): boolean {
+  const enabled = process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED?.trim()
+  if (!enabled) return false
+  if (enabled !== "1") throw new Error("expert-gateway question flag must be 1")
+  return true
 }
 
 function circuitBreakerConfig(): CircuitBreakerConfig | undefined {
@@ -533,35 +519,12 @@ const QUESTION_TOOL_DEF = {
   },
 }
 
-function humanQuestions(value: unknown): HumanQuestion[] | undefined {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 3) return undefined
-  const questions: HumanQuestion[] = []
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.header !== "string" || typeof item.question !== "string") return undefined
-    if (!Array.isArray(item.options)) return undefined
-    const options = item.options.flatMap((option: unknown) =>
-      isRecord(option) && typeof option.label === "string" && typeof option.description === "string"
-        ? [{ label: option.label, description: option.description }]
-        : [],
-    )
-    if (options.length !== item.options.length) return undefined
-    questions.push({
-      header: item.header.slice(0, 30),
-      question: item.question,
-      options,
-      ...(typeof item.multiple === "boolean" ? { multiple: item.multiple } : {}),
-      ...(typeof item.custom === "boolean" ? { custom: item.custom } : {}),
-    })
-  }
-  return questions
-}
-
 async function handleQuestion(
-  config: QuestionConfig,
+  server: Server,
   circuit: CircuitBreakerConfig | undefined,
   args: Record<string, unknown>,
 ) {
-  const questions = humanQuestions(args.questions)
+  const questions = parseHumanQuestions(args.questions)
   if (!questions) return text({ error: "question requires one to three valid questions" })
   const captcha = args.kind === "captcha"
   if (captcha) {
@@ -588,58 +551,50 @@ async function handleQuestion(
         },
       ]
     : questions
-  const id = randomUUID()
-  const requestPath = path.join(config.directory, `${id}.request.json`)
-  const responsePath = path.join(config.directory, `${id}.response.json`)
-  const temporary = `${requestPath}.tmp`
-  await writeFile(temporary, JSON.stringify({ id, questions: presentedQuestions }), { mode: 0o600 })
-  await rename(temporary, requestPath)
-  try {
-    while (true) {
-      let raw: string
-      try {
-        raw = await readFile(responsePath, "utf8")
-      } catch (error) {
-        if (!isMissingFile(error)) throw error
-        await new Promise((resolve) => setTimeout(resolve, 40))
-        continue
-      }
-      const response = jsonRecord(raw)
-      if (!response) return text({ error: "question bridge returned an invalid response" }, true)
-      if (typeof response.error === "string") return text({ error: response.error })
-      if (!isStringMatrix(response.answers) || response.answers.length !== presentedQuestions.length)
-        return text({ error: "question bridge returned invalid answers" }, true)
-      if (captcha && circuit) await acknowledgeCircuitBreaker(circuit.filePath)
-      const answers = response.answers
-      return text({
-        ok: true,
-        answers: presentedQuestions.map((question, index) => ({
-          question: question.question,
-          answers: answers[index] ?? [],
-        })),
-        output: captcha
-          ? "The human answered. Call browser_captcha_status now; active tooling remains blocked until the host observes that the challenge cleared."
-          : "The human answered. Continue the current phase using these answers.",
-      })
-    }
-  } finally {
-    await settleOperations("question bridge signal cleanup failed", [
-      () => rm(requestPath, { force: true }),
-      () => rm(responsePath, { force: true }),
-    ])
-  }
+  const response = await server.elicitInput({
+    mode: "form",
+    message:
+      presentedQuestions.length === 1
+        ? (presentedQuestions[0]?.question ?? "Cyberful requires a human decision.")
+        : `Cyberful requires ${presentedQuestions.length} related human decisions.`,
+    requestedSchema: approvalElicitationSchema(presentedQuestions),
+    _meta: approvalElicitationMetadata(presentedQuestions),
+  })
+  if (response.action !== "accept")
+    return text({
+      ok: false,
+      action: response.action,
+      output:
+        response.action === "decline"
+          ? "The human explicitly declined this request. Do not perform the proposed action."
+          : "The human interaction was cancelled. Do not perform the proposed action.",
+    })
+  const answers = parseApprovalElicitationContent(presentedQuestions, response.content)
+  if (!answers) return text({ error: "native elicitation returned invalid answers" }, true)
+  if (captcha && circuit) await acknowledgeCircuitBreaker(circuit.filePath)
+  return text({
+    ok: true,
+    answers: presentedQuestions.map((question, index) => ({
+      question: question.question,
+      answers: answers[index] ?? [],
+    })),
+    output: captcha
+      ? "The human answered. Call browser_captcha_status now; active tooling remains blocked until the host observes that the challenge cleared."
+      : "The human answered. Continue the current phase using these answers.",
+  })
 }
 
 // ── Publication Consent Is Host-Owned ─────────────────────────────
 // Remediation may prepare and commit locally without external side effects,
 // but it cannot turn model text into permission to push. The gateway itself
-// presents one fixed question and interprets the bridge response; only that
+// presents one fixed question and interprets the native elicitation response; only that
 // answer can unlock the Git publisher for this call.
 //
 // ─────────────────────────────────────────────────────────────────
 
 async function confirmRemediationPublish(
-  question: QuestionConfig | undefined,
+  server: Server,
+  question: boolean,
   circuit: CircuitBreakerConfig | undefined,
   candidate: PublishCandidate,
 ) {
@@ -657,7 +612,7 @@ async function confirmRemediationPublish(
     .join("; ")
   const hiddenCommands = Math.max(0, candidate.proofs.length - 3)
   const remote = candidate.remoteURL ?? candidate.remote
-  const result = await handleQuestion(question, circuit, {
+  const result = await handleQuestion(server, circuit, {
     questions: [
       {
         header: "Publish fix",
@@ -685,13 +640,14 @@ async function confirmRemediationPublish(
 }
 
 async function confirmSourceImport(
-  question: QuestionConfig | undefined,
+  server: Server,
+  question: boolean,
   circuit: CircuitBreakerConfig | undefined,
   request: SourceImportRequest,
 ) {
   if (!question) return false
   const refs = [request.checkoutRef, ...request.additionalRefs].filter(Boolean).join(", ") || "default HEAD"
-  const result = await handleQuestion(question, circuit, {
+  const result = await handleQuestion(server, circuit, {
     questions: [
       {
         header: "Import source",
@@ -717,7 +673,8 @@ async function confirmSourceImport(
 
 async function authorizeRuntimeTesting(
   sessionID: SessionID,
-  question: QuestionConfig | undefined,
+  server: Server,
+  question: boolean,
   circuit: CircuitBreakerConfig | undefined,
   args: Record<string, unknown>,
 ) {
@@ -728,7 +685,7 @@ async function authorizeRuntimeTesting(
     ? Math.min(2_000, Math.max(1, Number(args.max_tool_calls)))
     : 200
   if (!question) return { authorized: false, reason: "human-question-unavailable" }
-  const result = await handleQuestion(question, circuit, {
+  const result = await handleQuestion(server, circuit, {
     questions: [
       {
         header: "Runtime scope",
@@ -1389,7 +1346,7 @@ export async function createGatewayServer(opts?: {
       })
     : undefined
   const handoff = handoffConfig()
-  const question = questionConfig()
+  const question = questionEnabled()
   const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
   const server = new Server(
@@ -1430,7 +1387,7 @@ export async function createGatewayServer(opts?: {
     const name = req.params.name
     const args = req.params.arguments ?? {}
     if (name === "variable") return handleVariable(sessionID, args)
-    if (name === "question" && question) return handleQuestion(question, circuit, args)
+    if (name === "question" && question) return handleQuestion(server, circuit, args)
     if (name === "handoff" && handoff) {
       const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
       if (breakerError) return text({ error: breakerError }, true)
@@ -1455,7 +1412,7 @@ export async function createGatewayServer(opts?: {
     }
     if (localToolNames.has(name) && name === "runtime_authorization") {
       try {
-        return text(await authorizeRuntimeTesting(sessionID, question, circuit, args))
+        return text(await authorizeRuntimeTesting(sessionID, server, question, circuit, args))
       } catch (error) {
         return text({ error: error instanceof Error ? error.message : String(error) }, true)
       }
@@ -1464,7 +1421,7 @@ export async function createGatewayServer(opts?: {
       try {
         return text(
           await handleSourceImport(args, {
-            confirm: (request) => confirmSourceImport(question, circuit, request),
+            confirm: (request) => confirmSourceImport(server, question, circuit, request),
           }),
         )
       } catch (error) {
@@ -1489,7 +1446,7 @@ export async function createGatewayServer(opts?: {
       try {
         return text(
           await handleGitTool(sessionID, name, args, {
-            confirmPublish: (candidate) => confirmRemediationPublish(question, circuit, candidate),
+            confirmPublish: (candidate) => confirmRemediationPublish(server, question, circuit, candidate),
             fixedFindings: (ids) =>
               codeGraph?.fixedFindings(ids) ??
               Promise.resolve({ ok: false, unresolved: [...ids, "Code Graph finding ledger is unavailable"] }),

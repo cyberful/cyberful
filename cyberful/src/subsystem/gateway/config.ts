@@ -14,8 +14,8 @@ export interface GatewayOptions {
   pidSignalPath?: string
   // Host-owned handoff request and expected successor.
   handoff?: { phase: string; successor?: string; signalPath: string }
-  // Private IPC directory for blocking human questions.
-  questionDirectory?: string
+  // Exposes native MCP elicitation for blocking human questions.
+  questionEnabled?: boolean
   // Engagement-stable CAPTCHA circuit-breaker state.
   circuitBreakerPath?: string
   // Owner-private per-run environment overrides.
@@ -82,7 +82,7 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
       ...(phase ? { CYBERFUL_SUBSYSTEM_PHASE: phase } : {}),
       ...(opts?.proxy ? { CYBERFUL_SUBSYSTEM_GATEWAY_PROXY: "1" } : {}),
       ...(opts?.pidSignalPath ? { CYBERFUL_SUBSYSTEM_GATEWAY_PID_PATH: opts.pidSignalPath } : {}),
-      ...(opts?.questionDirectory ? { CYBERFUL_SUBSYSTEM_QUESTION_DIR: opts.questionDirectory } : {}),
+      ...(opts?.questionEnabled ? { CYBERFUL_SUBSYSTEM_QUESTION_ENABLED: "1" } : {}),
       ...(opts?.circuitBreakerPath ? { CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH: opts.circuitBreakerPath } : {}),
       ...(opts?.handoff
         ? {

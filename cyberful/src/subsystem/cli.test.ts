@@ -10,6 +10,12 @@ import { SubsystemProvider } from "./provider"
 import { SubsystemCodex } from "./codex"
 import { SubsystemControl } from "./control"
 import { SubsystemApprovalState } from "./approval-state"
+import {
+  approvalElicitationMetadata,
+  approvalElicitationSchema,
+  type AskHuman,
+  type HumanQuestion,
+} from "./human-question"
 import { chmod, mkdtemp, readFile, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
@@ -210,6 +216,53 @@ function sleepInput(seconds: number): SubsystemCli.RunInput {
     prompt: "",
     timeoutMs: 60_000,
   }
+}
+
+const ELICITATION_QUESTIONS: HumanQuestion[] = [
+  {
+    header: "Authorization",
+    question: "Proceed with the bounded active test?",
+    options: [
+      { label: "Proceed", description: "Run the bounded test." },
+      { label: "Stop", description: "Do not run the test." },
+    ],
+    custom: false,
+  },
+]
+
+function elicitationParams(overrides: Record<string, unknown> = {}) {
+  return {
+    threadId: "thread-fixture",
+    turnId: "turn-fixture",
+    serverName: "expert-gateway",
+    mode: "form",
+    _meta: approvalElicitationMetadata(ELICITATION_QUESTIONS),
+    message: ELICITATION_QUESTIONS[0]?.question,
+    requestedSchema: approvalElicitationSchema(ELICITATION_QUESTIONS),
+    ...overrides,
+  }
+}
+
+async function runFixtureElicitation(params: Record<string, unknown>, askQuestion?: AskHuman) {
+  const provider: SubsystemProvider.Provider = {
+    ...SubsystemProvider.codex,
+    buildAppServerArgs: () => ({
+      args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
+      extraEnv: { CYBERFUL_FIXTURE_ELICITATION_PARAMS: JSON.stringify(params) },
+    }),
+  }
+  return SubsystemCli.runStreaming(
+    {
+      provider,
+      spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
+      command: process.execPath,
+      prompt: "exercise native elicitation",
+      timeoutMs: 5_000,
+      sessionID: "ses_elicitation_fixture",
+      askQuestion,
+    },
+    () => {},
+  )
 }
 
 async function waitForLiveCount(expected: number): Promise<void> {
@@ -497,6 +550,88 @@ describe("Expert subprocess lifecycle", () => {
     expect(result.exitCode).toBe(0)
     expect(SubsystemProvider.codex.extractResultText(result.stdout)).toBe("steered: prioritize the admin route")
     expect(SubsystemControl.activeCount("ses_app_server_test")).toBe(0)
+  })
+
+  test("routes an exactly correlated gateway elicitation to the human selector", async () => {
+    let observed: ReadonlyArray<HumanQuestion> | undefined
+    const result = await runFixtureElicitation(elicitationParams(), async (questions) => {
+      observed = questions
+      return [["Proceed"]]
+    })
+
+    expect(result.termination).toBe("completed")
+    expect(observed).toEqual(ELICITATION_QUESTIONS)
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"q0":"[\\"Proceed\\"]"')
+  })
+
+  test("maps an explicit human rejection to MCP decline", async () => {
+    const result = await runFixtureElicitation(elicitationParams(), async () => {
+      throw Object.assign(new Error("dismissed"), { _tag: "QuestionRejectedError" })
+    })
+
+    expect(result.termination).toBe("completed")
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"decline"')
+  })
+
+  test("cancels an elicitation when no human selector belongs to the run", async () => {
+    const result = await runFixtureElicitation(elicitationParams())
+
+    expect(result.termination).toBe("completed")
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"cancel"')
+  })
+
+  test("shutdown cancels a pending elicitation and reaps its app-server", async () => {
+    const selectorStarted = Promise.withResolvers<void>()
+    let selectorAborted = false
+    const running = runFixtureElicitation(elicitationParams(), async (_questions, signal) => {
+      selectorStarted.resolve()
+      if (!signal.aborted)
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+      selectorAborted = signal.aborted
+      throw new Error("selector canceled")
+    })
+    await selectorStarted.promise
+
+    await SubsystemCli.killAll()
+
+    const result = await running
+    expect(selectorAborted).toBe(true)
+    expect(result.termination).toBe("shutdown")
+    expect(SubsystemCli.liveCount()).toBe(0)
+  })
+
+  for (const [label, params, message] of [
+    ["gateway", elicitationParams({ serverName: "other-gateway" }), "active Cyberful gateway"],
+    ["thread", elicitationParams({ threadId: "other-thread" }), "active Cyberful thread"],
+    ["turn", elicitationParams({ turnId: "other-turn" }), "active Cyberful turn"],
+  ] as const) {
+    test(`rejects an elicitation correlated to the wrong ${label}`, async () => {
+      let asked = false
+      const result = await runFixtureElicitation(params, async () => {
+        asked = true
+        return [["Proceed"]]
+      })
+
+      expect(asked).toBe(false)
+      expect(result.termination).toBe("completed")
+      expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain(message)
+    })
+  }
+
+  test("rejects an elicitation whose form and versioned envelope disagree", async () => {
+    let asked = false
+    const result = await runFixtureElicitation(
+      elicitationParams({ requestedSchema: { type: "object", properties: {}, required: [] } }),
+      async () => {
+        asked = true
+        return [["Proceed"]]
+      },
+    )
+
+    expect(asked).toBe(false)
+    expect(result.termination).toBe("completed")
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain("does not match")
   })
 
   test("fails closed when app-server attests settings different from the requested effort", async () => {

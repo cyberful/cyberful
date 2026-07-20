@@ -23,6 +23,7 @@
     "test:network": "bun test --isolate --timeout 10000 src/subsystem/browser-cdp.integration.test.ts",
     "test:zap": "bun test --isolate --no-orphans src/subsystem/zap/runtime.integration.test.ts",
     "test:codex-compat": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-compat.integration.test.ts",
+    "test:approval-long": "CYBERFUL_APPROVAL_LONG_TEST=1 bun test --isolate --no-orphans --timeout 660000 src/subsystem/codex-compat.integration.test.ts -t 'historical response after 628 seconds'",
     "test-codex": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-version.integration.test.ts src/subsystem/codex-compat.integration.test.ts",
     "test:all": "bun run test && bun run test:network && bun run test:zap && bun run test-codex",
     "dev": "bun run --conditions=browser ./src/index.ts"

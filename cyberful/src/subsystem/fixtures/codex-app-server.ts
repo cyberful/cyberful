@@ -1,6 +1,6 @@
 // ── Codex App-Server Contract Fixture ────────────────────────────
-// Emulates the JSON-RPC settings, skill registration, turn, and steering
-// surface exercised by subsystem tests. Skill registration checks both a
+// Emulates the JSON-RPC approval policy, settings, skill registration, turn,
+// and steering surface exercised by subsystem tests. Skill registration checks both a
 // structured security package with a progressively loaded reference and the
 // retained flat ZAP contract, proving that the runtime projects both formats.
 // → cyberful/src/subsystem/cli.test.ts — drives this fixture as a subprocess.
@@ -12,6 +12,9 @@ import { readFile, readdir } from "node:fs/promises"
 
 const write = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`)
 let skillsReady = process.env.CYBERFUL_FIXTURE_REQUIRE_SKILLS !== "1"
+const elicitationParams: unknown = process.env.CYBERFUL_FIXTURE_ELICITATION_PARAMS
+  ? JSON.parse(process.env.CYBERFUL_FIXTURE_ELICITATION_PARAMS)
+  : undefined
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -42,11 +45,46 @@ async function optionalText(file: string) {
 for await (const line of createInterface({ input: process.stdin })) {
   const message: unknown = JSON.parse(line)
   if (!isRecord(message)) throw new Error("fixture request must be a JSON object")
+  if (message.id === "elicitation-fixture" && message.method === undefined) {
+    const outcome = "result" in message ? message.result : message.error
+    write({
+      method: "item/completed",
+      params: {
+        threadId: "thread-fixture",
+        turnId: "turn-fixture",
+        item: { id: "agent-fixture", type: "agentMessage", text: `elicitation: ${JSON.stringify(outcome)}` },
+      },
+    })
+    write({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-fixture",
+        turn: { id: "turn-fixture", status: "completed", items: [] },
+      },
+    })
+    continue
+  }
   if (message.method === "initialize") {
     write({ id: message.id, result: { userAgent: "fixture" } })
     continue
   }
   if (message.method === "thread/start") {
+    const params = isRecord(message.params) ? message.params : {}
+    const policy = isRecord(params.approvalPolicy) ? params.approvalPolicy : {}
+    const granular = isRecord(policy.granular) ? policy.granular : {}
+    if (
+      granular.sandbox_approval !== false ||
+      granular.rules !== false ||
+      granular.skill_approval !== false ||
+      granular.request_permissions !== false ||
+      granular.mcp_elicitations !== true
+    ) {
+      write({
+        id: message.id,
+        error: { code: -32000, message: "Only MCP elicitations may pass the phase approval policy" },
+      })
+      continue
+    }
     if (!skillsReady) {
       write({ id: message.id, error: { code: -32000, message: "Cyberful skills were not registered" } })
       continue
@@ -87,6 +125,13 @@ for await (const line of createInterface({ input: process.stdin })) {
       write({ id: message.id, error: { code: -32000, message: "multiAgentMode must be omitted" } })
       continue
     }
+    write({
+      method: "turn/started",
+      params: {
+        threadId: "thread-fixture",
+        turn: { id: "turn-fixture", status: "inProgress", items: [] },
+      },
+    })
     if (process.env.CYBERFUL_FIXTURE_OPERATION_BEFORE_SETTINGS === "1") {
       write({
         method: "item/started",
@@ -109,6 +154,13 @@ for await (const line of createInterface({ input: process.stdin })) {
       })
     }
     write({ id: message.id, result: { turn: { id: "turn-fixture", status: "inProgress" } } })
+    if (elicitationParams !== undefined) {
+      write({
+        id: "elicitation-fixture",
+        method: "mcpServer/elicitation/request",
+        params: elicitationParams,
+      })
+    }
     continue
   }
   if (message.method === "turn/interrupt") {

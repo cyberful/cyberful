@@ -12,6 +12,7 @@ import { SessionID } from "../../session/schema"
 import { ProjectID } from "../../project/schema"
 import type { UpstreamTool } from "./server"
 import { isRecord } from "@/util/record"
+import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js"
 
 // Exercise the real database layer without touching the developer database. Flag.CYBERFUL_DB is
 // captured at module load, so set it before the dynamic imports below and run test files isolated.
@@ -33,6 +34,7 @@ const {
   ListResourcesRequestSchema,
   ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
+  ElicitRequestSchema,
 } = await import("@modelcontextprotocol/sdk/types.js")
 const {
   claimGatewayPidSignal,
@@ -908,21 +910,47 @@ describe("expert-gateway handoff tool", () => {
 })
 
 describe("expert-gateway question tool", () => {
-  test("waits for the host Question bridge and returns the human answer", async () => {
-    const parent = await mkdtemp(path.join(os.tmpdir(), "expert-question-gateway-test-"))
-    const directory = path.join(parent, "bridge")
-    const previous = process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR
-    process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR = directory
-    const { SubsystemQuestionBridge } = await import("../question-bridge")
-    const bridge = await SubsystemQuestionBridge.start(directory, async () => [["Proceed"]])
+  async function questionClient(answer: (params: ElicitRequestFormParams) => ElicitResult | Promise<ElicitResult>) {
+    const previous = process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED
+    process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED = "1"
     let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
     let c: McpClient | undefined
     try {
       server = await createGatewayServer({ upstreams: [] })
       const [ct, st] = InMemoryTransport.createLinkedPair()
       await server.connect(st)
-      c = new Client({ name: "question-test", version: "0" })
+      c = new Client({ name: "question-test", version: "0" }, { capabilities: { elicitation: { form: {} } } })
+      c.setRequestHandler(ElicitRequestSchema, async (request) => {
+        if (request.params.mode === "url") throw new Error("question tool requested URL elicitation")
+        return answer(request.params)
+      })
       await c.connect(ct)
+      return {
+        client: c,
+        close: async () => {
+          await c?.close()
+          await server?.closeGateway()
+          if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED
+          else process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED = previous
+        },
+      }
+    } catch (error) {
+      await c?.close()
+      await server?.closeGateway()
+      if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED
+      else process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED = previous
+      throw error
+    }
+  }
+
+  test("uses native form elicitation and returns a single human answer", async () => {
+    let observed: ElicitRequestFormParams | undefined
+    const connected = await questionClient((params) => {
+      observed = params
+      return { action: "accept", content: { q0: JSON.stringify(["Proceed"]) } }
+    })
+    try {
+      const c = connected.client
       const { tools } = await c.listTools()
       expect(tools.map((tool) => tool.name).sort()).toEqual(["question", "variable"])
 
@@ -941,30 +969,112 @@ describe("expert-gateway question tool", () => {
       expect(jsonContent(result).answers).toEqual([
         { question: "Proceed with the next active test?", answers: ["Proceed"] },
       ])
+      expect(observed?.mode).toBe("form")
+      expect(observed?.requestedSchema.required).toEqual(["q0"])
+      expect(isRecord(observed?._meta?.["cyberful.dev/approval"])).toBe(true)
     } finally {
-      await c?.close()
-      await server?.closeGateway()
-      if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR
-      else process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR = previous
-      await bridge.stop()
-      await rm(parent, { recursive: true, force: true })
+      await connected.close()
+    }
+  })
+
+  test("round-trips multi-select and custom answers", async () => {
+    const connected = await questionClient(() => ({
+      action: "accept",
+      content: {
+        q0: JSON.stringify(["API", "UI"]),
+        q1: JSON.stringify(["A tester-controlled fixture"]),
+      },
+    }))
+    try {
+      const result = await connected.client.callTool({
+        name: "question",
+        arguments: {
+          questions: [
+            {
+              header: "Surfaces",
+              question: "Which surfaces should be exercised?",
+              options: [
+                { label: "API", description: "Exercise API paths." },
+                { label: "UI", description: "Exercise UI paths." },
+              ],
+              multiple: true,
+              custom: false,
+            },
+            {
+              header: "Fixture",
+              question: "Which temporary fixture should be created?",
+              options: [{ label: "None", description: "Do not create a fixture." }],
+            },
+          ],
+        },
+      })
+      expect(jsonContent(result).answers).toEqual([
+        { question: "Which surfaces should be exercised?", answers: ["API", "UI"] },
+        { question: "Which temporary fixture should be created?", answers: ["A tester-controlled fixture"] },
+      ])
+    } finally {
+      await connected.close()
+    }
+  })
+
+  for (const action of ["decline", "cancel"] as const) {
+    test(`does not authorize work after elicitation ${action}`, async () => {
+      const connected = await questionClient(() => ({ action }))
+      try {
+        const result = await connected.client.callTool({
+          name: "question",
+          arguments: {
+            questions: [
+              {
+                header: "Authorization",
+                question: "Proceed with the next active test?",
+                options: [{ label: "Proceed", description: "Continue inside the agreed scope." }],
+                custom: false,
+              },
+            ],
+          },
+        })
+        expect(jsonContent(result)).toMatchObject({ ok: false, action })
+      } finally {
+        await connected.close()
+      }
+    })
+  }
+
+  test("fails closed when accepted elicitation content is invalid", async () => {
+    const connected = await questionClient(() => ({ action: "accept", content: { q0: "not-json" } }))
+    try {
+      const result = await connected.client.callTool({
+        name: "question",
+        arguments: {
+          questions: [
+            {
+              header: "Authorization",
+              question: "Proceed with the next active test?",
+              options: [{ label: "Proceed", description: "Continue inside the agreed scope." }],
+              custom: false,
+            },
+          ],
+        },
+      })
+      expect(jsonContent(result).error).toContain("invalid answers")
+      expect(result.isError).toBe(true)
+    } finally {
+      await connected.close()
     }
   })
 
   test("requires visible CAPTCHA attestation and keeps active tools blocked through human verification", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "expert-captcha-gateway-test-"))
-    const directory = path.join(parent, "bridge")
     const circuit = path.join(parent, "circuit.json")
     const previous = {
-      question: process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR,
+      question: process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED,
       circuit: process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH,
       phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
     }
-    process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR = directory
+    process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED = "1"
     process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH = circuit
     process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
-    const { SubsystemQuestionBridge } = await import("../question-bridge")
-    const bridge = await SubsystemQuestionBridge.start(directory, async () => [["Solved"]])
     let navigations = 0
     const upstreams: UpstreamTool[] = [
       {
@@ -991,7 +1101,11 @@ describe("expert-gateway question tool", () => {
       server = await createGatewayServer({ upstreams })
       const [ct, st] = InMemoryTransport.createLinkedPair()
       await server.connect(st)
-      c = new Client({ name: "captcha-test", version: "0" })
+      c = new Client({ name: "captcha-test", version: "0" }, { capabilities: { elicitation: { form: {} } } })
+      c.setRequestHandler(ElicitRequestSchema, async () => ({
+        action: "accept",
+        content: { q0: JSON.stringify(["Resolved"]) },
+      }))
       await c.connect(ct)
       const question = {
         kind: "captcha",
@@ -1021,12 +1135,11 @@ describe("expert-gateway question tool", () => {
     } finally {
       await c?.close()
       await server?.closeGateway()
-      await bridge.stop()
       const restore = (key: string, value: string | undefined) => {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
       }
-      restore("CYBERFUL_SUBSYSTEM_QUESTION_DIR", previous.question)
+      restore("CYBERFUL_SUBSYSTEM_QUESTION_ENABLED", previous.question)
       restore("CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH", previous.circuit)
       restore("CYBERFUL_SUBSYSTEM_PHASE", previous.phase)
       await rm(parent, { recursive: true, force: true })

@@ -16,7 +16,7 @@ import { SubsystemProvider } from "./provider"
 import { SubsystemCli } from "./cli"
 import { SubsystemGateway } from "./gateway/config"
 import { SubsystemPhase } from "./phase"
-import { SubsystemQuestionBridge, type AskHuman } from "./question-bridge"
+import type { AskHuman } from "./human-question"
 import { SubsystemApprovalState } from "./approval-state"
 import { SubsystemCompletion, type Candidate as CompletionCandidate } from "./completion"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
@@ -668,7 +668,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const signalKey = `${safeRunKey}-${process.pid}-${randomUUID()}`
   const handoffPath = spec.handoff ? path.join(os.tmpdir(), `expert-phase-handoff-${signalKey}.json`) : undefined
   const gatewayPidPath = path.join(os.tmpdir(), `expert-phase-gateway-pid-${signalKey}.json`)
-  const questionDirectory = deps.askQuestion ? path.join(os.tmpdir(), `expert-phase-question-${signalKey}`) : undefined
   const approvalState = SubsystemApprovalState.create()
   const questionHandler = deps.askQuestion
   const askQuestion = questionHandler
@@ -692,7 +691,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
     },
     pidSignalPath: gatewayPidPath,
-    questionDirectory,
+    questionEnabled: Boolean(askQuestion),
     circuitBreakerPath: engagementCircuitBreakerPath,
     ...(handoffPath
       ? { handoff: { phase: spec.phase, successor: spec.handoff?.successor, signalPath: handoffPath } }
@@ -724,35 +723,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     return result
   }
 
-  const questionBridgeStart =
-    questionDirectory && askQuestion
-      ? await SubsystemQuestionBridge.start(questionDirectory, askQuestion, { requestTimeoutMs: null }).then(
-          (bridge) => ({ ok: true as const, bridge }),
-          (error) => ({ ok: false as const, error }),
-        )
-      : { ok: true as const, bridge: undefined }
-  const questionBridge = questionBridgeStart.ok ? questionBridgeStart.bridge : undefined
-  if (!questionBridgeStart.ok) {
-    const setupCleanupWarning = await operationWarning(
-      "Could not remove the phase runtime directory after the question bridge failed",
-      removeDirectory ? () => removeDirectory(shellTemporaryDirectory) : undefined,
-    )
-    const result = failedBeforeSpawn({
-      spec,
-      deps,
-      startedAt: beforeSetup,
-      limitMs,
-      effectiveLimitMs: initialEffectiveLimitMs,
-      deadlineAt: initialDeadline,
-      termination: "spawn_failed",
-      warning: `Phase setup failed: the human-question bridge could not start: ${errorDetail(questionBridgeStart.error)}`,
-      budgetWarnings,
-    })
-    if (setupCleanupWarning) result.warnings.push(setupCleanupWarning)
-    await persistStatusOnly(spec, result, deps)
-    return result
-  }
-
   // Setup time counts against the phase budget, so the process receives only the remaining wall clock.
   const startedAt = now()
   const deadlineAt = initialDeadline
@@ -771,7 +741,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     })
     result.warnings.push(
       ...(await operationWarnings([
-        ["Could not stop the human-question bridge after setup exhausted the budget", questionBridge?.stop],
         [
           "Could not remove the phase runtime directory after setup exhausted the budget",
           removeDirectory ? () => removeDirectory(shellTemporaryDirectory) : undefined,
@@ -908,9 +877,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
           }),
         )
   const gatewayExited = gatewayExit.exited
-  const lifecycleWarnings = await operationWarnings([
-    ["Could not stop the human-question bridge", questionBridge ? () => questionBridge.stop() : undefined],
-  ])
+  const lifecycleWarnings: string[] = []
   const handoff = handoffPath
     ? await readHandoff(deps.readFile, handoffPath, spec)
     : ({ value: undefined, warning: undefined, missing: false } as const)

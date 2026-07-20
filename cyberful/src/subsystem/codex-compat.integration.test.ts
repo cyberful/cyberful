@@ -59,6 +59,154 @@ async function boundedText(stream: ReadableStream<Uint8Array>, label: string) {
   }
 }
 
+async function beforeTimeout<T>(operation: Promise<T>, timeoutMs: number, failure: Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(failure), timeoutMs)
+  })
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+type ResponsesModelProbe = {
+  baseURL: string
+  requests: Record<string, unknown>[]
+  stop(): Promise<void>
+}
+
+type ModelToolReference = { name: string; namespace?: string }
+
+function modelTool(body: Record<string, unknown>, target: string): ModelToolReference | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  for (const candidate of tools) {
+    if (!isRecord(candidate) || typeof candidate.name !== "string") continue
+    if (candidate.name.includes(target)) return { name: candidate.name }
+    if (!Array.isArray(candidate.tools)) continue
+    const child = candidate.tools.find(
+      (value) => isRecord(value) && typeof value.name === "string" && value.name.includes(target),
+    )
+    if (isRecord(child) && typeof child.name === "string") return { namespace: candidate.name, name: child.name }
+  }
+  return undefined
+}
+
+function latestUserText(body: Record<string, unknown>): string {
+  const input = Array.isArray(body.input) ? body.input : []
+  for (const item of input.toReversed()) {
+    if (!isRecord(item) || item.type !== "message" || item.role !== "user" || !Array.isArray(item.content)) continue
+    const text = item.content
+      .filter((part) => isRecord(part) && part.type === "input_text" && typeof part.text === "string")
+      .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+      .join("\n")
+    if (text) return text
+  }
+  return ""
+}
+
+function hasToolOutput(body: Record<string, unknown>, callID: string): boolean {
+  return (
+    Array.isArray(body.input) &&
+    body.input.some(
+      (item) =>
+        isRecord(item) &&
+        item.call_id === callID &&
+        typeof item.type === "string" &&
+        item.type.endsWith("_call_output"),
+    )
+  )
+}
+
+function responsesSse(events: Record<string, unknown>[]): string {
+  return events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")
+}
+
+function modelResponse(id: string, output?: Record<string, unknown>): Response {
+  const events: Record<string, unknown>[] = [
+    { type: "response.created", response: { id } },
+    ...(output ? [{ type: "response.output_item.done", item: output }] : []),
+    {
+      type: "response.completed",
+      response: {
+        id,
+        usage: {
+          input_tokens: 0,
+          input_tokens_details: null,
+          output_tokens: 0,
+          output_tokens_details: null,
+          total_tokens: 0,
+        },
+      },
+    },
+  ]
+  return new Response(responsesSse(events), { headers: { "content-type": "text/event-stream" } })
+}
+
+// ── A Loopback Model Keeps Timeout Proofs Hermetic ───────────────
+// The timing regression must run inside a genuine model turn because Codex
+// intentionally declines MCP elicitations invoked by a detached direct tool
+// call. This Responses-compatible loopback selects only the named fixture tool
+// from the tool inventory supplied by Codex, then finishes the turn after its
+// output arrives. No provider credentials or external network are involved.
+// ───────────────────────────────────────────────────────────────
+function startResponsesModelProbe(): ResponsesModelProbe {
+  const requests: Record<string, unknown>[] = []
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url)
+      if (request.method === "GET" && url.pathname.endsWith("/models"))
+        return Response.json({ object: "list", data: [] })
+      if (request.method !== "POST" || !url.pathname.endsWith("/responses"))
+        return Response.json({ error: "not found" }, { status: 404 })
+      const decoded: unknown = await request.json()
+      if (!isRecord(decoded)) return Response.json({ error: "invalid body" }, { status: 400 })
+      requests.push(decoded)
+      const prompt = latestUserText(decoded).toLowerCase()
+      const target = prompt.includes("eliciting") ? "eliciting" : prompt.includes("slow") ? "slow" : undefined
+      if (!target) return modelResponse(`resp-${requests.length}`, assistantMessage("fixture turn complete"))
+      const callID = `call-${target}`
+      if (hasToolOutput(decoded, callID))
+        return modelResponse(`resp-${requests.length}`, assistantMessage(`${target} tool observed`))
+      const tool = modelTool(decoded, target)
+      if (!tool) return Response.json({ error: `missing ${target} tool` }, { status: 500 })
+      return modelResponse(`resp-${requests.length}`, {
+        type: "function_call",
+        call_id: callID,
+        name: tool.name,
+        arguments: "{}",
+        ...(tool.namespace ? { namespace: tool.namespace } : {}),
+      })
+    },
+  })
+  return {
+    baseURL: `http://${server.hostname}:${server.port}/v1`,
+    requests,
+    stop: () => server.stop(true),
+  }
+}
+
+function assistantMessage(text: string): Record<string, unknown> {
+  return {
+    type: "message",
+    role: "assistant",
+    id: `message-${crypto.randomUUID()}`,
+    content: [{ type: "output_text", text }],
+  }
+}
+
+function loopbackModelArgs(baseURL: string): string[] {
+  return [
+    "-c",
+    'model="fixture-model"',
+    "-c",
+    'model_provider="fixture"',
+    "-c",
+    `model_providers.fixture={name="Fixture",base_url=${JSON.stringify(baseURL)},wire_api="responses",requires_openai_auth=false,supports_websockets=false}`,
+  ]
+}
+
 // ── The Compatibility Probe Owns The Complete RPC Lifetime ──────
 // The gate starts Codex without a model turn, then coordinates every request
 // write with its bounded response deadline and validates JSON before use. One
@@ -66,7 +214,26 @@ async function boundedText(stream: ReadableStream<Uint8Array>, label: string) {
 // protocol failure, timeout, and assertion failure all terminate and reap the
 // child, escalate a stuck shutdown, and settle both output observers.
 // ─────────────────────────────────────────────────────────────────
-async function driveAppServer(args: string[], extraEnv: Record<string, string>, cwd: string): Promise<string> {
+interface CompatibilityProbeOptions {
+  elicitationDelayMs?: number
+  exerciseElicitation?: boolean
+  exerciseSlowTool?: boolean
+  turnTimeoutMs?: number
+}
+
+interface CompatibilityProbeResult {
+  threadId: string
+  serverRequests: string[]
+  elicitation?: { durationMs: number; turn: Record<string, unknown> }
+  slowTool?: { durationMs: number; turn: Record<string, unknown> }
+}
+
+async function driveAppServer(
+  args: string[],
+  extraEnv: Record<string, string>,
+  cwd: string,
+  options: CompatibilityProbeOptions = {},
+): Promise<CompatibilityProbeResult> {
   const proc = Bun.spawn(["codex", ...args], {
     stdin: "pipe",
     stdout: "pipe",
@@ -88,6 +255,8 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  const observedServerRequests: string[] = []
+  let activeTurnCompletion: ReturnType<typeof Promise.withResolvers<Record<string, unknown>>> | undefined
 
   const responseReader = (async () => {
     const dec = new TextDecoder()
@@ -112,6 +281,23 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
         }
         if (!isRecord(decoded)) continue
         const msg = decoded
+        if (typeof msg.method === "string" && msg.id !== undefined)
+          observedServerRequests.push(`${msg.method}:${typeof msg.id}`)
+        if (
+          (typeof msg.id === "string" || typeof msg.id === "number") &&
+          msg.method === "mcpServer/elicitation/request"
+        ) {
+          await Bun.sleep(options.elicitationDelayMs ?? 0)
+          await send({
+            id: msg.id,
+            result: { action: "accept", content: { answer: "continue" }, _meta: null },
+          })
+          continue
+        }
+        if (msg.method === "turn/completed" && isRecord(msg.params) && isRecord(msg.params.turn)) {
+          activeTurnCompletion?.resolve(msg.params.turn)
+          activeTurnCompletion = undefined
+        }
         if (typeof msg.id === "number" && !msg.method) {
           const request = pending.get(msg.id)
           if (!request) continue
@@ -166,7 +352,7 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
     }
   }
 
-  let interaction: { status: "success"; threadId: string } | { status: "failure"; error: unknown }
+  let interaction: { status: "success"; value: CompatibilityProbeResult } | { status: "failure"; error: unknown }
   try {
     const init = await request("initialize", {
       clientInfo: { name: "cyberful-compat", title: "cyberful compat", version: "0.0.1" },
@@ -178,7 +364,15 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
       model: null,
       cwd,
       runtimeWorkspaceRoots: [cwd],
-      approvalPolicy: "never",
+      approvalPolicy: {
+        granular: {
+          sandbox_approval: false,
+          rules: false,
+          skill_approval: false,
+          request_permissions: false,
+          mcp_elicitations: true,
+        },
+      },
       sandbox: "read-only",
       ephemeral: true,
     })
@@ -195,7 +389,35 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
         await Bun.sleep(100)
       }
     }
-    interaction = { status: "success", threadId }
+    const value: CompatibilityProbeResult = { threadId, serverRequests: observedServerRequests }
+    if (options.exerciseElicitation || options.exerciseSlowTool) {
+      const runTurn = async (prompt: string) => {
+        activeTurnCompletion = Promise.withResolvers<Record<string, unknown>>()
+        const completion = activeTurnCompletion.promise
+        const turn = await request("turn/start", {
+          threadId,
+          input: [{ type: "text", text: prompt }],
+          model: "fixture-model",
+        })
+        if (turn.error) throw new Error(`turn/start error: ${JSON.stringify(turn.error)}`)
+        return beforeTimeout(
+          completion,
+          options.turnTimeoutMs ?? 15_000,
+          new Error(`timeout waiting for ${prompt} turn`),
+        )
+      }
+      if (options.exerciseElicitation) {
+        const elicitationStarted = Date.now()
+        const elicitation = await runTurn("Call the eliciting compatibility tool now.")
+        value.elicitation = { durationMs: Date.now() - elicitationStarted, turn: elicitation }
+      }
+      if (options.exerciseSlowTool) {
+        const slowStarted = Date.now()
+        const slowTool = await runTurn("Call the slow compatibility tool now.")
+        value.slowTool = { durationMs: Date.now() - slowStarted, turn: slowTool }
+      }
+    }
+    interaction = { status: "success", value }
   } catch (error) {
     interaction = { status: "failure", error }
   }
@@ -230,7 +452,7 @@ async function driveAppServer(args: string[], extraEnv: Record<string, string>, 
       cause: failure,
     })
   }
-  return interaction.threadId
+  return interaction.value
 }
 
 describe("codex", () => {
@@ -284,8 +506,8 @@ describe("codex", () => {
     }
     const { args, extraEnv } = codex.buildAppServerArgs(spec)
     try {
-      const threadId = await driveAppServer(args, extraEnv, dir)
-      expect(threadId).toBeTruthy()
+      const result = await driveAppServer(args, extraEnv, dir)
+      expect(result.threadId).toBeTruthy()
       const recorded = await readFile(marker, "utf8").catch(() => "")
       // The exact integration path a phase's expert-gateway uses — spawn, MCP handshake, tool discovery.
       expect(recorded).toContain("spawned")
@@ -295,4 +517,76 @@ describe("codex", () => {
       await rm(dir, { recursive: true, force: true })
     }
   }, 60000)
+
+  test("native elicitation pauses MCP active time while an ordinary slow tool expires", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cyberful-codex-elicitation-timeout-"))
+    const marker = path.join(dir, "mcp-marker.txt")
+    const model = startResponsesModelProbe()
+    const spec: SubsystemRunSpec = {
+      cwd: dir,
+      permission: { kind: "readonly" },
+      mcpServer: {
+        name: "probe",
+        command: "bun",
+        args: [FIXTURE_MCP],
+        env: { MCP_MARKER: marker, MCP_OPERATION_DELAY_MS: "1250" },
+      },
+    }
+    const built = codex.buildAppServerArgs(spec)
+    const args = [
+      ...built.args.map((argument) => argument.replace("tool_timeout_sec=600", "tool_timeout_sec=1")),
+      ...loopbackModelArgs(model.baseURL),
+    ]
+    try {
+      const result = await driveAppServer(args, built.extraEnv, dir, {
+        elicitationDelayMs: 1_250,
+        exerciseElicitation: true,
+        exerciseSlowTool: true,
+      })
+      const recorded = await readFile(marker, "utf8").catch(() => "")
+      expect(recorded).toContain('"elicitation"')
+      expect(result.serverRequests).toContain("mcpServer/elicitation/request:number")
+      expect(result.elicitation?.turn.status).toBe("completed")
+      expect(result.elicitation?.durationMs).toBeGreaterThanOrEqual(1_200)
+      expect(result.slowTool?.durationMs).toBeGreaterThanOrEqual(900)
+      expect(result.slowTool?.turn.status).toBe("completed")
+      expect(JSON.stringify(model.requests)).toContain("elicitation-accept")
+      expect(JSON.stringify(model.requests).toLowerCase()).toContain("timed out")
+      expect(recorded).toContain("elicitation-accept")
+    } finally {
+      await model.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  const historicalApprovalTest = process.env.CYBERFUL_APPROVAL_LONG_TEST === "1" ? test : test.skip
+  historicalApprovalTest(
+    "native elicitation accepts the historical response after 628 seconds",
+    async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "cyberful-codex-elicitation-628s-"))
+      const marker = path.join(dir, "mcp-marker.txt")
+      const model = startResponsesModelProbe()
+      const spec: SubsystemRunSpec = {
+        cwd: dir,
+        permission: { kind: "readonly" },
+        mcpServer: { name: "probe", command: "bun", args: [FIXTURE_MCP], env: { MCP_MARKER: marker } },
+      }
+      const built = codex.buildAppServerArgs(spec)
+      try {
+        const result = await driveAppServer([...built.args, ...loopbackModelArgs(model.baseURL)], built.extraEnv, dir, {
+          elicitationDelayMs: 628_000,
+          exerciseElicitation: true,
+          turnTimeoutMs: 645_000,
+        })
+        expect(result.elicitation?.turn.status).toBe("completed")
+        expect(result.elicitation?.durationMs).toBeGreaterThanOrEqual(628_000)
+        expect(JSON.stringify(model.requests)).toContain("elicitation-accept")
+        expect(await readFile(marker, "utf8")).toContain("elicitation-accept")
+      } finally {
+        await model.stop()
+        await rm(dir, { recursive: true, force: true })
+      }
+    },
+    660000,
+  )
 })

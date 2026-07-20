@@ -22,7 +22,7 @@ const ENVIRONMENT_KEYS = [
   "CYBERFUL_SUBSYSTEM_GATEWAY_PROXY",
   "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT",
   "CYBERFUL_SUBSYSTEM_HANDOFF_PATH",
-  "CYBERFUL_SUBSYSTEM_QUESTION_DIR",
+  "CYBERFUL_SUBSYSTEM_QUESTION_ENABLED",
   "CYBERFUL_OS_DIR",
   "CYBERFUL_OS_MCP_ENABLED",
   "CYBER_BROWSER_MCP_ENABLED",
@@ -112,7 +112,7 @@ test("the built image exposes every required capability through cyberful-os and 
   process.env.CYBERFUL_OS_IMAGE = IMAGE
   process.env.CYBERFUL_OS_DOCKER_CONFIG = path.join(workarea, ".docker")
   delete process.env.CYBERFUL_SUBSYSTEM_HANDOFF_PATH
-  delete process.env.CYBERFUL_SUBSYSTEM_QUESTION_DIR
+  delete process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED
 
   try {
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js")

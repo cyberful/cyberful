@@ -423,7 +423,9 @@ while disabling browser proxying with `CYBER_BROWSER_THROUGH_ZAP=0`.
 While a phase is running, `Escape` immediately aborts its Codex, gateway, and
 complete descendant process tree. A blocking human question suspends the phase,
 its process group, deadline, and budget until the answer or rejection arrives;
-no successor starts during that interval. The same immutable request can be
+no successor starts during that interval. Questions travel through native MCP
+form elicitation, whose pending human wait is excluded from the gateway's
+600-second operational tool timeout. The same immutable request can be
 answered in the TUI or remotely through `cyberful approval list` followed by
 `cyberful approval reply <requestID> --select '#1'`. A remotely directed coding
 assistant may relay and apply the answer, but only after the human explicitly

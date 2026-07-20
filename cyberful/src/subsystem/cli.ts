@@ -28,7 +28,14 @@ import type { Provider, SubsystemRunSpec } from "./provider"
 import { sanitizeMarkdownArtifacts } from "./sanitize"
 import { SubsystemCodex } from "./codex"
 import { SubsystemCodexControl } from "./codex-control"
-import type { AskHuman, HumanQuestion } from "./question-bridge"
+import {
+  approvalElicitationContent,
+  approvalElicitationSchema,
+  isQuestionRejected,
+  parseApprovalElicitationMetadata,
+  type AskHuman,
+  type HumanQuestion,
+} from "./human-question"
 import type { Controller as ApprovalController } from "./approval-state"
 import * as Log from "@/util/log"
 import { BoundedByteTail } from "@/util/bounded-output"
@@ -84,7 +91,7 @@ export interface RunInput {
   // Phase runs bind the app-server turn to the owning cyberful session. This enables live human steering;
   // non-phase Expert calls omit it and retain the one-shot CLI path.
   sessionID?: string
-  // Used by both Codex's native request_user_input request and the gateway question bridge.
+  // Used by both Codex's native request_user_input request and gateway MCP elicitation.
   askQuestion?: AskHuman
   // One phase-owned gate pauses the process budget for every blocking human decision.
   approvalState?: ApprovalController
@@ -609,6 +616,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (Array.isArray(left) || Array.isArray(right))
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJson(value, right[index]))
+    )
+  if (!isRecord(left) || !isRecord(right)) return false
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && sameJson(left[key], right[key]))
+  )
+}
+
 type RpcID = string | number
 
 interface RpcPending {
@@ -769,6 +794,32 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     const handleServerRequest = async (message: Record<string, unknown>) => {
       const id = message.id
       if ((typeof id !== "string" && typeof id !== "number") || typeof message.method !== "string") return
+      if (message.method === "mcpServer/elicitation/request") {
+        if (!isRecord(message.params)) return respondError(id, "Codex supplied invalid elicitation parameters")
+        const params = message.params
+        if (params.serverName !== "expert-gateway")
+          return respondError(id, "Elicitation did not originate from the active Cyberful gateway")
+        if (!activeThreadID || params.threadId !== activeThreadID)
+          return respondError(id, "Elicitation does not belong to the active Cyberful thread")
+        if (!activeTurnID || params.turnId !== activeTurnID)
+          return respondError(id, "Elicitation does not belong to the active Cyberful turn")
+        if (params.mode !== "form") return respondError(id, "Cyberful accepts only standard MCP form elicitation")
+        const questions = parseApprovalElicitationMetadata(params._meta)
+        if (!questions) return respondError(id, "Elicitation contains an invalid Cyberful approval envelope")
+        if (!sameJson(params.requestedSchema, approvalElicitationSchema(questions)))
+          return respondError(id, "Elicitation form does not match its Cyberful approval envelope")
+        if (!input.askQuestion) return respond(id, { action: "cancel", content: null, _meta: null })
+        try {
+          const answers = await input.askQuestion(questions, questionSignal)
+          const content = approvalElicitationContent(questions, answers)
+          if (!content) return respondError(id, "Human selector returned invalid answers")
+          return respond(id, { action: "accept", content, _meta: null })
+        } catch (error) {
+          if (isQuestionRejected(error)) return respond(id, { action: "decline", content: null, _meta: null })
+          if (questionSignal.aborted) return respond(id, { action: "cancel", content: null, _meta: null })
+          return respondError(id, error instanceof Error ? error.message : String(error))
+        }
+      }
       if (message.method === "item/tool/requestUserInput" && input.askQuestion && isRecord(message.params)) {
         const parsed = appServerQuestions(message.params.questions)
         if (!parsed) return respondError(id, "Codex supplied an invalid human question payload")
@@ -808,12 +859,21 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
         task = Promise.resolve()
           .then(() => handleServerRequest(event))
           .catch((error) => {
-            log.warn("Codex app-server request failed", { method: event.method, error })
+            if (!serverRequestAbort.signal.aborted)
+              log.warn("Codex app-server request failed", { method: event.method, error })
           })
           .finally(() => serverRequests.delete(task))
         serverRequests.add(task)
         return
       }
+      if (
+        event.method === "turn/started" &&
+        isRecord(event.params) &&
+        event.params.threadId === activeThreadID &&
+        isRecord(event.params.turn) &&
+        typeof event.params.turn.id === "string"
+      )
+        activeTurnID = event.params.turn.id
       const settings = SubsystemCodex.threadSettings(event)
       if (awaitingTurnSettings && settings) settleAttestation(settings)
       if (awaitingTurnSettings && !settingsSettled && isOperationalCodexEvent(event))
@@ -844,7 +904,15 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       model: input.spec.model ?? null,
       cwd: input.spec.cwd,
       runtimeWorkspaceRoots: [input.spec.cwd],
-      approvalPolicy: "never",
+      approvalPolicy: {
+        granular: {
+          sandbox_approval: false,
+          rules: false,
+          skill_approval: false,
+          request_permissions: false,
+          mcp_elicitations: true,
+        },
+      },
       sandbox: input.spec.permission.kind === "readonly" ? "read-only" : "workspace-write",
       ephemeral: true,
     })
@@ -861,6 +929,8 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     })
     if (!isRecord(turnResult) || !isRecord(turnResult.turn) || typeof turnResult.turn.id !== "string")
       throw new Error("Codex app-server did not return a turn id")
+    if (activeTurnID && activeTurnID !== turnResult.turn.id)
+      throw new Error("Codex app-server returned a turn id different from turn/started")
     activeTurnID = turnResult.turn.id
     const observedSettings = await beforeTimeout<SubsystemCodex.ThreadSettings | { error: string }>(
       settingsAttestation,
@@ -962,7 +1032,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
         .join("\n"),
       exitCode: logicalExitCode,
       timedOut: wasTimedOut(proc),
-      termination: wasTimedOut(proc) ? "budget_exhausted" : logicalExitCode === 0 ? "completed" : "provider_failed",
+      termination: terminationOf(proc, logicalExitCode),
     }
   } catch (error) {
     unregister?.()
@@ -979,11 +1049,11 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       stderr: withWarning(errorDetail(error), cleanupWarning),
       exitCode: proc?.spawnError ? 127 : 1,
       timedOut: proc ? wasTimedOut(proc) : false,
-      termination: proc?.spawnError
-        ? "spawn_failed"
-        : proc && wasTimedOut(proc)
-          ? "budget_exhausted"
-          : "provider_failed",
+      termination: cleanupWarning
+        ? "provider_failed"
+        : proc
+          ? terminationOf(proc, proc.spawnError ? 127 : 1)
+          : "spawn_failed",
     }
   }
 }
