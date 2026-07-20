@@ -81,6 +81,15 @@ describe("Codex effort and persona delegation policy", () => {
     expect(enabled.instructions).toContain('fork_turns: "none"')
     expect(enabled.instructions).toContain("remain solely responsible for synthesis")
 
+    const layered = SubsystemCodex.composeDeveloperInstructions(
+      "# Exploit",
+      ["shared posture", "host trust boundary"],
+      "high",
+    )
+    expect(layered.instructions.indexOf("host trust boundary")).toBeGreaterThan(
+      layered.instructions.indexOf("shared posture"),
+    )
+
     const lowerEffort = SubsystemCodex.composeDeveloperInstructions(
       "---\nsubagents: 2\n---\n# Exploit",
       "shared posture",

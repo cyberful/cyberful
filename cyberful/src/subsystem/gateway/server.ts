@@ -1,9 +1,10 @@
-// ── Phase Gateway MCP Server ─────────────────────────────────────────────────
-// Runs the standalone, session-scoped MCP bridge used by Codex phases for
-// variables, handoffs, questions, usage recording, and optional hardened proxying.
-// Template resolution and response redaction keep stored secrets out of model
-// traffic while the host remains the owner of phase transitions.
+// ── Phase And Fallback Gateway MCP Server ────────────────────────────────────
+// Runs the session-scoped MCP bridge used by primary and local fallback attempts
+// for variables, handoffs, questions, usage recording, and hardened proxying.
+// Template resolution, response redaction, and enforced tool profiles keep stored
+// secrets and excluded capability definitions out of local model traffic.
 // @docs/concepts/execution-model.md
+// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -67,6 +68,7 @@ import {
   parseHumanQuestions,
   type HumanQuestion,
 } from "../human-question"
+import { GatewayToolProfile, type ToolProfile } from "./tool-profile"
 
 const log = Log.create({ service: "phase-gateway" })
 const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
@@ -891,7 +893,7 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
 
 // An upstream tool re-exposed through the gateway: the definition the Expert sees, and how to invoke it.
 export interface UpstreamTool {
-  def: { name: string; description?: string; inputSchema: unknown }
+  def: { name: string; description?: string; inputSchema: unknown; _meta?: unknown }
   capability?: SubsystemPhase.WorkflowCapability
   browserProfile?: BrowserProfileId
   call(args: Record<string, unknown>): Promise<CallToolResult>
@@ -1313,6 +1315,7 @@ export async function createGatewayServer(opts?: {
   upstreamClients?: Client[]
   closeUpstreams?: () => Promise<void>
   upstreamDiagnosticSink?: (text: string) => void
+  toolProfile?: ToolProfile
 }): Promise<GatewayServer> {
   const connected = opts?.upstreams
     ? {
@@ -1323,7 +1326,15 @@ export async function createGatewayServer(opts?: {
     : proxyEnabled()
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
       : { tools: [], clients: [], close: () => Promise.resolve() }
-  const upstreams = connected.tools
+  const toolProfile = opts?.toolProfile ?? GatewayToolProfile.parse(process.env.CYBERFUL_SUBSYSTEM_TOOL_PROFILE)
+  const upstreams = connected.tools.filter((upstream) =>
+    GatewayToolProfile.allowsUpstream({
+      profile: toolProfile,
+      name: upstream.def.name,
+      capability: upstream.capability,
+      metadata: upstream.def._meta,
+    }),
+  )
   const byName = new Map<string, UpstreamTool[]>()
   for (const upstream of upstreams) {
     const candidates = byName.get(upstream.def.name) ?? []
@@ -1338,7 +1349,7 @@ export async function createGatewayServer(opts?: {
     )
     return profiles.length > 0 ? browserProfileToolDefinition(definition, profiles) : definition
   })
-  const localTools = localToolDefinitions()
+  const localTools = toolProfile === "full" ? localToolDefinitions() : []
   const localToolNames = new Set<string>(localTools.map((tool) => tool.name))
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name))
     ? createCodeGraphToolHandler({
@@ -1375,8 +1386,8 @@ export async function createGatewayServer(opts?: {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       VARIABLE_TOOL_DEF,
-      ...(question ? [QUESTION_TOOL_DEF] : []),
-      ...(handoff ? [handoffToolDef(handoff)] : []),
+      ...(question && GatewayToolProfile.allowsLifecycle(toolProfile, "question") ? [QUESTION_TOOL_DEF] : []),
+      ...(handoff && GatewayToolProfile.allowsLifecycle(toolProfile, "handoff") ? [handoffToolDef(handoff)] : []),
       ...localTools,
       ...upstreamDefinitions,
     ],
@@ -1386,9 +1397,11 @@ export async function createGatewayServer(opts?: {
     const sessionID = boundSession()
     const name = req.params.name
     const args = req.params.arguments ?? {}
-    if (name === "variable") return handleVariable(sessionID, args)
-    if (name === "question" && question) return handleQuestion(server, circuit, args)
-    if (name === "handoff" && handoff) {
+    if (name === "variable" && GatewayToolProfile.allowsLifecycle(toolProfile, "variable"))
+      return handleVariable(sessionID, args)
+    if (name === "question" && question && GatewayToolProfile.allowsLifecycle(toolProfile, "question"))
+      return handleQuestion(server, circuit, args)
+    if (name === "handoff" && handoff && GatewayToolProfile.allowsLifecycle(toolProfile, "handoff")) {
       const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
       if (breakerError) return text({ error: breakerError }, true)
       if (!handoff.successor && codeGraph) {

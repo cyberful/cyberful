@@ -89,14 +89,16 @@ interface (TUI) is built on OpenTUI, using its core, keymap, and Solid packages.
 
 The repository root is the Bun/TypeScript workspace. The host owns
 orchestration, session storage, policy, MCP lifecycle, live steering, and
-reporting; model reasoning happens only inside one ephemeral Codex process per
-phase. Cyberful does not embed or ship a model runtime. Its only currently
-implemented subsystem, Codex, launches Codex CLI as an external runtime.
+reporting; primary model reasoning happens inside one ephemeral Codex process
+per phase. Cyberful does not embed or ship a model runtime. Codex remains the
+primary subsystem; an operator may optionally attach a pre-started, loopback
+Responses server as a bounded helper and as one-shot recovery from a structured
+provider security-policy block.
 
 ## Architecture
 
 Cyberful is a host orchestrator built around a per-phase subsystem boundary.
-The current implementation connects that boundary exclusively to Codex:
+The production phase chain runs through Codex, with an optional local fallback:
 
 - **Orchestration** (`cyberful/src`) — the terminal control plane:
   session journal, phase sequencing, project and host policy, live activity
@@ -106,6 +108,11 @@ The current implementation connects that boundary exclusively to Codex:
   TUI events and a phase transcript, forwards live user steering, and reaps the
   old process before a successor starts. The gateway under
   `src/subsystem/gateway/` exposes only the MCP tools approved for that phase.
+- **Local fallback adapter** (`cyberful/src/subsystem/fallback.ts`) — preflights
+  an operator-owned loopback Responses server once per run, exposes a compact
+  helper tool when available, and performs at most one recovery attempt per
+  phase after an exact terminal `cyberPolicy` failure. It inherits the phase
+  scope, workarea, controls, remaining budget, and recorded approval decisions.
 - **Code Graph** (`cyberful/src/code-graph/`) — builds the local incremental
   repository graph, records per-file analysis coverage, serves bounded graph
   queries, persists local stage/resource progress, and owns the validated
@@ -509,6 +516,16 @@ precedence first:
 
 So the build ships sensible defaults, and dropping a `.env` next to where you
 run `cyberful` overrides them per engagement — without rebuilding.
+
+An optional `fallback-server.yaml` in the launch directory connects an
+operator-started local inference server. The source checkout includes an enabled
+default for antirez/ds4 at `http://127.0.0.1:8000/v1`; when ds4 is not running,
+the normal Codex path still starts and fallback is omitted. Cyberful accepts
+only loopback URLs, reads credentials through a named environment variable, and
+omits the fallback tool for the whole run when its startup preflight fails. A
+malformed or unsafe configuration stops startup. See
+**[Local fallback inference](docs/runtimes/fallback-inference.md)** for the
+schema, lifecycle, tool profiles, and compatible server requirements.
 
 ## Documentation
 

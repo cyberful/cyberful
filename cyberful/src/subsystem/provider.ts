@@ -1,11 +1,16 @@
-// ── Codex Phase Provider Adapter ─────────────────────────────────
-// Translates one capability-level phase run into the sole isolated Codex CLI
-// invocation, including sandbox, gateway, environment, and activity event policy.
+// ── Agentic Subsystem Adapter Contract ──────────────────────────
+// Defines the runtime-neutral phase contract every agentic subsystem must honor,
+// including structured provider failures, host dynamic tools, and binding the
+// same adapter to an operator-owned local Responses endpoint for assist/recovery.
+// Codex remains the primary implementation and owns its CLI-specific translation.
 // → cyberful/src/subsystem/cli.ts — executes the resulting run specification.
+// → cyberful/src/subsystem/fallback.ts — validates local provider configuration.
+// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────
 
 import { webSearchMode, type ExpertBackend } from "@/dependency/config"
 import { SubsystemCodex } from "./codex"
+import type { RuntimeConfig as FallbackRuntimeConfig } from "./fallback"
 import type { SubsystemUsage } from "./usage"
 
 export type SubsystemPermission = { kind: "readonly" | "workareaEdit" | "autonomous" }
@@ -23,6 +28,9 @@ export interface SubsystemRunSpec {
   cwd: string
   permission: SubsystemPermission
   model?: string
+  // Replaces the provider's built-in system/base instructions for a compact local fallback session. The phase
+  // runner may precompose immutable host trust policy after the operator-owned fallback instructions.
+  baseInstructions?: string
   // False disables both Codex web search and direct sandbox egress.
   networkAccess?: boolean
   // Explicit gateway registration; personal and project MCP servers stay excluded.
@@ -37,6 +45,41 @@ export interface SubsystemRunSpec {
   markdownArtifacts?: readonly string[]
   stream?: boolean
   env?: Record<string, string>
+  localInference?: {
+    readonly baseUrl: string
+    readonly apiKeyEnvironment?: string
+  }
+  dynamicTools?: readonly DynamicToolDefinition[]
+}
+
+export interface DynamicToolDefinition {
+  readonly type: "function"
+  readonly name: string
+  readonly description: string
+  readonly inputSchema: Record<string, unknown>
+  readonly deferLoading?: boolean
+}
+
+export interface DynamicToolResult {
+  readonly success: boolean
+  readonly text: string
+}
+
+export interface DynamicToolContext {
+  readonly signal: AbortSignal
+}
+
+export interface DynamicTool {
+  readonly definition: DynamicToolDefinition
+  readonly execute: (input: unknown, context: DynamicToolContext) => Promise<DynamicToolResult>
+}
+
+export type ProviderFailureKind = "security_policy_block" | "transport" | "authentication" | "capacity" | "unknown"
+
+export interface ProviderFailure {
+  readonly kind: ProviderFailureKind
+  readonly providerCode?: string
+  readonly retryable: boolean
 }
 
 export type PhaseActivityActor = {
@@ -58,14 +101,23 @@ export type PhaseActivity = PhaseActivityContext &
     | { kind: "agent"; actor: PhaseActivityActor; state: PhaseActivityActorState; transitionID: string }
   )
 
-export interface Provider {
+export interface AgenticSubsystemAdapter {
   readonly name: ExpertBackend
+  readonly capabilities: {
+    readonly localResponses: boolean
+    readonly baseInstructions: "system" | "developer" | "unsupported"
+    readonly dynamicTools: boolean
+  }
   buildArgs(spec: SubsystemRunSpec): { args: string[]; extraEnv: Record<string, string> }
   // Phase runs use app-server so the host can call turn/steer while a turn is running.
   buildAppServerArgs(spec: SubsystemRunSpec): { args: string[]; extraEnv: Record<string, string> }
   extractResultText(stdout: string): string
   streamActivities(event: unknown): PhaseActivity[]
+  classifyFailure(completedTurn: unknown): ProviderFailure | undefined
+  bindFallback(spec: SubsystemRunSpec, config: FallbackRuntimeConfig): SubsystemRunSpec
 }
+
+export type Provider = AgenticSubsystemAdapter
 
 // ── Actor References Resolve Inside One Subsystem Run ────────────
 // Providers may learn an actor's readable identity from one lifecycle event
@@ -164,8 +216,48 @@ function codexConfigArgs(spec: SubsystemRunSpec): string[] {
     "sandbox_workspace_write.exclude_slash_tmp=true",
   ]
   if (spec.developerInstructions) args.push("-c", `developer_instructions=${tomlString(spec.developerInstructions)}`)
+  if (spec.localInference) {
+    const provider = [
+      `name=${tomlString("Cyberful local fallback")}`,
+      `base_url=${tomlString(spec.localInference.baseUrl)}`,
+      `wire_api=${tomlString("responses")}`,
+      "requires_openai_auth=false",
+      "supports_websockets=false",
+      "request_max_retries=0",
+      "stream_max_retries=0",
+      "stream_idle_timeout_ms=1000000",
+      ...(spec.localInference.apiKeyEnvironment
+        ? [`env_key=${tomlString(spec.localInference.apiKeyEnvironment)}`]
+        : []),
+    ].join(",")
+    args.push("-c", `model_provider=${tomlString("cyberful_fallback")}`)
+    args.push("-c", `model_providers.cyberful_fallback={${provider}}`)
+    if (spec.localInference.apiKeyEnvironment)
+      args.push("-c", `shell_environment_policy.exclude=[${tomlString(spec.localInference.apiKeyEnvironment)}]`)
+  }
   if (spec.mcpServer) args.push("-c", `mcp_servers=${codexMcpTable(spec.mcpServer)}`)
   return args
+}
+
+function codexFailure(completedTurn: unknown): ProviderFailure | undefined {
+  if (!isRecord(completedTurn) || completedTurn.status === "completed") return
+  const error = isRecord(completedTurn.error) ? completedTurn.error : undefined
+  const info = error?.codexErrorInfo
+  const providerCode =
+    typeof info === "string" ? info : isRecord(info) ? Object.keys(info).find((key) => key.length > 0) : undefined
+  if (providerCode === "cyberPolicy") return { kind: "security_policy_block", providerCode, retryable: false }
+  if (providerCode === "unauthorized") return { kind: "authentication", providerCode, retryable: false }
+  if (providerCode === "serverOverloaded") return { kind: "capacity", providerCode, retryable: true }
+  if (providerCode === "usageLimitExceeded" || providerCode === "sessionBudgetExceeded")
+    return { kind: "capacity", providerCode, retryable: false }
+  if (
+    providerCode === "httpConnectionFailed" ||
+    providerCode === "responseStreamConnectionFailed" ||
+    providerCode === "responseStreamDisconnected" ||
+    providerCode === "responseTooManyFailedAttempts"
+  )
+    return { kind: "transport", providerCode, retryable: true }
+  return { kind: "unknown", ...(providerCode ? { providerCode } : {}), retryable: false }
 }
 
 // ── Buffered Results Accept JSON Events Or Plain Final Text ──────────
@@ -186,6 +278,11 @@ function parseJsonLine(line: string): unknown | undefined {
 
 export const codex: Provider = {
   name: "codex",
+  capabilities: {
+    localResponses: true,
+    baseInstructions: "system",
+    dynamicTools: true,
+  },
   buildArgs(spec) {
     const sandbox = spec.permission.kind === "readonly" ? "read-only" : "workspace-write"
     const args = [
@@ -234,6 +331,21 @@ export const codex: Provider = {
       }
     }
     return lastText ?? (sawJson ? "" : stdout)
+  },
+  classifyFailure: codexFailure,
+  bindFallback(spec, config) {
+    return {
+      ...spec,
+      model: config.model,
+      baseInstructions: spec.baseInstructions ?? config.systemPrompt,
+      developerInstructions: undefined,
+      nativeSubagents: false,
+      skillRoots: [],
+      localInference: {
+        baseUrl: config.baseUrl,
+        ...(config.apiKeyEnvironment ? { apiKeyEnvironment: config.apiKeyEnvironment } : {}),
+      },
+    }
   },
   streamActivities(event) {
     if (!isRecord(event)) return []

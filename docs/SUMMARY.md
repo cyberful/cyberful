@@ -24,6 +24,7 @@
 - [cyberful-os](runtimes/cyberful-os.md)
 - [Browser](runtimes/browser.md)
 - [OWASP ZAP](runtimes/zap.md)
+- [Local fallback inference](runtimes/fallback-inference.md)
 
 ## Build with us
 

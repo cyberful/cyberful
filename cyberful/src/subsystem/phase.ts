@@ -420,6 +420,10 @@ export function cyberfulInstructionPath(home = expertHome()): string {
   return path.join(rootForHome(home), "instructions", "cyberful.md")
 }
 
+export function trustBoundaryInstructionPath(home = expertHome()): string {
+  return path.join(rootForHome(home), "instructions", "trust-boundary.md")
+}
+
 export function skillRoot(home = expertHome()): string {
   return path.join(rootForHome(home), "skills")
 }

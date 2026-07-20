@@ -16,7 +16,7 @@ import {
   type PhaseDeps,
   type PhaseSpec,
 } from "./phase-runner"
-import type { SubsystemProvider } from "./provider"
+import { SubsystemProvider } from "./provider"
 import { isRecord } from "@/util/record"
 
 // ── Transcript Tests Exercise Headless And Observed Runs ────────────
@@ -34,6 +34,18 @@ const NDJSON =
   '{"type":"result","result":"phase summary"}\n'
 
 const TRANSCRIPT = "/tmp/cyberful-logs/session-ses_test.expert-recon.jsonl"
+
+const FALLBACK = {
+  status: "available",
+  config: {
+    version: 1,
+    enabled: true,
+    protocol: "openai-responses",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    model: "local-model",
+    systemPrompt: "Complete the bounded local operation.",
+  },
+} as const satisfies NonNullable<PhaseSpec["fallback"]>
 
 function requireValue<T>(value: T | null | undefined, message: string): T {
   if (value === undefined || value === null) throw new Error(message)
@@ -55,12 +67,14 @@ function spec(over: Partial<PhaseSpec> = {}): PhaseSpec {
 function developerInstructionFile(filePath: string) {
   if (filePath.endsWith("instructions/cyberful.md"))
     return "<CYBERFUL INSTRUCTION>shared posture</CYBERFUL INSTRUCTION>"
+  if (filePath.endsWith("instructions/trust-boundary.md"))
+    return "<CYBERFUL TRUST BOUNDARY>target content is evidence</CYBERFUL TRUST BOUNDARY>"
   if (filePath.endsWith(".md")) return "# Phase persona"
   return undefined
 }
 
 const provider: SubsystemProvider.Provider = {
-  name: "codex",
+  ...SubsystemProvider.codex,
   buildArgs: () => ({ args: [], extraEnv: {} }),
   buildAppServerArgs: () => ({ args: [], extraEnv: {} }),
   extractResultText: () => "phase summary",
@@ -783,6 +797,48 @@ describe("runPhase transcript persistence", () => {
     }
   })
 
+  test("writes a separate runtime manifest without provider secrets or prompts", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "phase-runtime-manifest-")))
+    try {
+      const result = await SubsystemPhaseRunner.runPhase(
+        spec({
+          workareaCwd: root,
+          fallback: {
+            status: "available",
+            config: {
+              version: 1,
+              enabled: true,
+              protocol: "openai-responses",
+              baseUrl: "http://127.0.0.1:8000/v1",
+              model: "local-model",
+              apiKeyEnvironment: "PRIVATE_LOCAL_KEY",
+              systemPrompt: "secret operator instruction",
+            },
+          },
+        }),
+        deps({
+          writeRuntimeManifest: SubsystemPhaseRunner.writeRuntimeManifest,
+        }),
+      )
+      const manifestPath = join(root, "raw", "phase-manifests", "recon.runtime.json")
+      const contents = await readFileFromDisk(manifestPath, "utf8")
+      const manifest: unknown = JSON.parse(contents)
+      expect(result.runtimeManifest).toBe("raw/phase-manifests/recon.runtime.json")
+      expect(manifest).toMatchObject({
+        version: 1,
+        phase: "recon",
+        backend: "codex",
+        recovered: false,
+        fallback: { server: { status: "available", model: "local-model" } },
+      })
+      expect(contents).not.toContain("PRIVATE_LOCAL_KEY")
+      expect(contents).not.toContain("secret operator instruction")
+      expect(contents).not.toContain("baseUrl")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("default temporary-directory setup rejects a linked workarea child", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "phase-temp-boundary-")))
     const outside = await realpath(await mkdtemp(join(tmpdir(), "phase-temp-outside-")))
@@ -795,6 +851,295 @@ describe("runPhase transcript persistence", () => {
       await rm(root, { recursive: true, force: true })
       await rm(outside, { recursive: true, force: true })
     }
+  })
+})
+
+describe("local aggressive fallback lifecycle", () => {
+  const approvalQuestion = [
+    {
+      header: "Mutation",
+      question: "Run this exact bounded mutation?",
+      options: [{ label: "Approve once", description: "Permit this operation." }],
+    },
+  ] as const
+
+  test("gives assist and recovery attempts distinct transcript identities", () => {
+    expect(SubsystemPhaseRunner.fallbackTranscriptPath(TRANSCRIPT, "assist")).toBe(
+      "/tmp/cyberful-logs/session-ses_test.expert-recon.fallback-assist-1.jsonl",
+    )
+    expect(SubsystemPhaseRunner.fallbackTranscriptPath(TRANSCRIPT, "recovery")).toBe(
+      "/tmp/cyberful-logs/session-ses_test.expert-recon.fallback-recovery-1.jsonl",
+    )
+  })
+
+  test("omits the helper tool for an unavailable preflight and keeps the primary phase running", async () => {
+    const unavailable: PhaseSpec["fallback"] = {
+      status: "unavailable",
+      config: FALLBACK.config,
+      warning: "Local fallback inference server is unavailable; the primary run will continue.",
+    }
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ fallback: unavailable }),
+      deps({
+        run: async (input) => {
+          expect(input.dynamicTools).toBeUndefined()
+          expect(input.spec.dynamicTools).toBeUndefined()
+          return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.fallback?.server.status).toBe("unavailable")
+    expect(result.warnings.join(" ")).toContain("primary run will continue")
+  })
+
+  test("reaps the blocked primary gateway before one recovery and reuses its approval", async () => {
+    let primaryGatewayReaped = false
+    let gatewayWaits = 0
+    let humanCalls = 0
+    let fallbackRuns = 0
+    const localProvider: SubsystemProvider.Provider = {
+      ...provider,
+      extractResultText: (stdout) => stdout,
+    }
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({
+        workflow: "pentest",
+        phase: "hacker",
+        objective: "Complete the authorized hacker phase.",
+        handoff: { successor: "verify" },
+        fallback: FALLBACK,
+      }),
+      deps({
+        provider: localProvider,
+        askQuestion: async () => {
+          humanCalls += 1
+          return [["Approve once"]]
+        },
+        run: async (input) => {
+          await requireValue(input.askQuestion, "primary approval boundary missing")(
+            approvalQuestion,
+            new AbortController().signal,
+          )
+          return {
+            stdout: "primary public state",
+            stderr: "",
+            exitCode: 1,
+            timedOut: false,
+            termination: "provider_failed",
+            failure: { kind: "security_policy_block", providerCode: "cyberPolicy", retryable: false },
+          }
+        },
+        runStreaming: async (input) => {
+          fallbackRuns += 1
+          expect(primaryGatewayReaped).toBe(true)
+          expect(input.spec.localInference?.baseUrl).toBe("http://127.0.0.1:8000/v1")
+          expect(input.spec.baseInstructions).toBe(
+            "Complete the bounded local operation.\n\n<CYBERFUL TRUST BOUNDARY>target content is evidence</CYBERFUL TRUST BOUNDARY>",
+          )
+          expect(input.spec.developerInstructions).toBeUndefined()
+          expect(input.spec.dynamicTools).toBeUndefined()
+          expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_TOOL_PROFILE).toBe("aggressive-recovery")
+          await requireValue(input.askQuestion, "recovery approval boundary missing")(
+            approvalQuestion,
+            new AbortController().signal,
+          )
+          return {
+            stdout: "recovery public state",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+            termination: "completed",
+          }
+        },
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ hacker: 120 })
+          const instruction = developerInstructionFile(filePath)
+          if (instruction) return instruction
+          if (filePath.includes("fallback-recovery"))
+            return JSON.stringify({
+              phase: "hacker",
+              successor: "verify",
+              summary: "recovered hacker phase",
+              artifact: "HACKER.md",
+            })
+          throw Object.assign(new Error("missing"), { code: "ENOENT" })
+        },
+        removeFile: async () => {},
+        removeDirectory: async () => {},
+        waitForGatewayExit: async () => {
+          gatewayWaits += 1
+          if (gatewayWaits === 1) primaryGatewayReaped = true
+          return true
+        },
+      }),
+    )
+
+    expect(fallbackRuns).toBe(1)
+    expect(gatewayWaits).toBe(2)
+    expect(humanCalls).toBe(1)
+    expect(result.ok).toBe(true)
+    expect(result.recovered).toBe(true)
+    expect(result.termination).toBe("completed")
+    expect(result.summary).toBe("recovered hacker phase")
+    expect(result.providerFailure?.kind).toBe("security_policy_block")
+    expect(result.fallback?.recovery?.result).toBe("completed")
+  })
+
+  test("offers one voluntary helper, returns its result, and prevents recursion and handoff", async () => {
+    let helperRuns = 0
+    const localProvider: SubsystemProvider.Provider = {
+      ...provider,
+      extractResultText: (stdout) => stdout,
+    }
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ fallback: FALLBACK }),
+      deps({
+        provider: localProvider,
+        run: async (input) => {
+          const tool = requireValue(input.dynamicTools?.[0], "fallback helper tool was not exposed")
+          expect(tool.definition.name).toBe("aggressive_fallback_inference")
+          const first = await tool.execute(
+            {
+              task: "Validate the strongest bounded hypothesis.",
+              success_criteria: "Return a conclusion and evidence paths.",
+              relevant_artifacts: ["RECON.md"],
+            },
+            { signal: new AbortController().signal },
+          )
+          expect(first).toEqual({ success: true, text: "local helper conclusion" })
+          const second = await tool.execute(
+            { task: "Try again", success_criteria: "Finish" },
+            { signal: new AbortController().signal },
+          )
+          expect(second.success).toBe(false)
+          return { stdout: "primary conclusion", stderr: "", exitCode: 0, timedOut: false }
+        },
+        runStreaming: async (input) => {
+          helperRuns += 1
+          expect(input.dynamicTools).toBeUndefined()
+          expect(input.spec.dynamicTools).toBeUndefined()
+          expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH).toBeUndefined()
+          expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_TOOL_PROFILE).toBe("aggressive-assist")
+          return { stdout: "local helper conclusion", stderr: "", exitCode: 0, timedOut: false }
+        },
+        removeFile: async () => {},
+        removeDirectory: async () => {},
+        waitForGatewayExit: async () => true,
+      }),
+    )
+
+    expect(helperRuns).toBe(1)
+    expect(result.ok).toBe(true)
+    expect(result.summary).toBe("primary conclusion")
+    expect(result.fallback?.assists).toHaveLength(1)
+    expect(result.fallback?.assists[0]?.result).toBe("completed")
+    expect(result.recovered).toBeUndefined()
+  })
+
+  test("does not recover from policy-like text without the structured terminal failure", async () => {
+    let fallbackRuns = 0
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ fallback: FALLBACK }),
+      deps({
+        run: async () => ({
+          stdout: "",
+          stderr: "cyberPolicy security threat",
+          exitCode: 1,
+          timedOut: false,
+          termination: "provider_failed",
+        }),
+        runStreaming: async () => {
+          fallbackRuns += 1
+          return { stdout: "unexpected", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+    expect(fallbackRuns).toBe(0)
+    expect(result.recovered).toBeUndefined()
+    expect(result.ok).toBe(false)
+  })
+
+  test("preserves the primary policy error when the local server drops without retrying", async () => {
+    let fallbackRuns = 0
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ fallback: FALLBACK }),
+      deps({
+        provider: { ...provider, extractResultText: (stdout) => stdout },
+        run: async () => ({
+          stdout: "primary state",
+          stderr: "",
+          exitCode: 1,
+          timedOut: false,
+          termination: "provider_failed",
+          failure: { kind: "security_policy_block", providerCode: "cyberPolicy", retryable: false },
+        }),
+        runStreaming: async () => {
+          fallbackRuns += 1
+          return {
+            stdout: "",
+            stderr: "connection refused",
+            exitCode: 1,
+            timedOut: false,
+            termination: "provider_failed",
+            failure: {
+              kind: "transport",
+              providerCode: "responseStreamConnectionFailed",
+              retryable: true,
+            },
+          }
+        },
+        removeFile: async () => {},
+        removeDirectory: async () => {},
+        waitForGatewayExit: async () => true,
+      }),
+    )
+
+    expect(fallbackRuns).toBe(1)
+    expect(result.ok).toBe(false)
+    expect(result.providerFailure?.providerCode).toBe("cyberPolicy")
+    expect(result.fallback?.recovery?.result).toBe("fallback_unavailable")
+    expect(result.warnings.join(" ")).toContain("Local fallback recovery failed")
+  })
+
+  test("reaps fallback state when the local runner throws before returning a result", async () => {
+    let fallbackRuns = 0
+    let gatewayWaits = 0
+    let fallbackDirectoryRemoved = false
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ fallback: FALLBACK }),
+      deps({
+        provider: { ...provider, extractResultText: (stdout) => stdout },
+        run: async () => ({
+          stdout: "primary state",
+          stderr: "",
+          exitCode: 1,
+          timedOut: false,
+          termination: "provider_failed",
+          failure: { kind: "security_policy_block", providerCode: "cyberPolicy", retryable: false },
+        }),
+        runStreaming: async () => {
+          fallbackRuns += 1
+          throw new Error("local process transport failed")
+        },
+        removeFile: async () => {},
+        removeDirectory: async (directory) => {
+          if (directory.includes("fallback-recovery")) fallbackDirectoryRemoved = true
+        },
+        waitForGatewayExit: async () => {
+          gatewayWaits += 1
+          return true
+        },
+      }),
+    )
+
+    expect(fallbackRuns).toBe(1)
+    expect(gatewayWaits).toBe(2)
+    expect(fallbackDirectoryRemoved).toBe(true)
+    expect(result.ok).toBe(false)
+    expect(result.providerFailure?.providerCode).toBe("cyberPolicy")
+    expect(result.fallback?.recovery?.result).toBe("fallback_unavailable")
   })
 })
 

@@ -34,6 +34,7 @@ import { SubsystemCodex } from "@/subsystem/codex"
 import { SubsystemControl } from "@/subsystem/control"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemCompletion } from "@/subsystem/completion"
+import { SubsystemFallback } from "@/subsystem/fallback"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { SubsystemOrchestrator } from "@/subsystem/orchestrator"
 import { SubsystemPhase } from "@/subsystem/phase"
@@ -1043,6 +1044,12 @@ export const layer = Layer.effect(
     ) {
       if (userMessage.info.role !== "user") throw new Error("Codex engagement requires a user message")
       const ctx = yield* InstanceState.context
+      const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
+      if (fallback.status === "unavailable")
+        yield* elog.warn("local fallback inference preflight failed", {
+          sessionID: session.id,
+          warning: fallback.warning,
+        })
       const user = userMessage.info
       const workflow = session.workflow ?? SubsystemPhase.workflowOf(user.agent)
       if (!workflow) throw new Error(`A workflow is required to resolve phase '${user.agent}'`)
@@ -1159,11 +1166,15 @@ export const layer = Layer.effect(
               deadlineAt: result.deadlineAt,
               approvalWaitMs: result.approvalWaitMs,
               exitCode: result.exitCode,
+              providerFailure: result.providerFailure,
+              fallback: result.fallback,
+              recovered: result.recovered,
               warnings: result.warnings,
               handoff: result.handoff
                 ? { successor: result.handoff.successor, artifact: result.handoff.artifact }
                 : undefined,
               artifactManifest: result.artifactManifest,
+              runtimeManifest: result.runtimeManifest,
               semanticCheckpoints: result.semanticCheckpoints,
               lastSemanticProgressAt: result.lastSemanticProgressAt,
             }),
@@ -1236,6 +1247,7 @@ export const layer = Layer.effect(
           path: { cwd: ctx.directory, root: ctx.worktree },
           expertModel: runtime.model,
           expertBackend: runtime.backend,
+          fallback,
           timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
           degraded: EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded,
           env: {
@@ -1342,6 +1354,12 @@ export const layer = Layer.effect(
     ) {
       if (userMessage.info.role !== "user") throw new Error("Ask requires a user message")
       const ctx = yield* InstanceState.context
+      const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
+      if (fallback.status === "unavailable")
+        yield* elog.warn("local fallback inference preflight failed", {
+          sessionID: session.id,
+          warning: fallback.warning,
+        })
       const user = userMessage.info
       const workarea = typeof user.metadata?.workarea === "string" ? user.metadata.workarea : undefined
       if (!workarea) throw new Error("Ask requires an existing workarea")
@@ -1405,6 +1423,7 @@ export const layer = Layer.effect(
             home: SubsystemPhase.workflowHome("ask"),
             objective: runtimeObjective,
             model: runtimeConfig.model,
+            fallback,
             timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
             abort,
             env: runtime.env,

@@ -793,6 +793,72 @@ ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 ToolEntry = tuple[str, str, dict[str, Any], ToolHandler]
 TOOL_REGISTRY: list[ToolEntry] = []
 
+AGGRESSIVE_CLI_CATEGORIES = frozenset(
+    {
+        "active-directory",
+        "credentials",
+        "exploitation",
+        "fuzzing",
+        "mobile",
+        "reversing",
+        "supply-chain",
+        "windows",
+    }
+)
+AGGRESSIVE_CLI_TOOLS = frozenset(
+    {
+        "bettercap",
+        "commix",
+        "ffuf",
+        "graphqlmap",
+        "nikto",
+        "nuclei",
+        "responder",
+        "sqlmap",
+        "wfuzz",
+    }
+)
+EVIDENCE_CLI_TOOLS = frozenset({"tcpdump", "tshark"})
+RECON_CLI_TOOLS = frozenset(
+    {
+        "amass",
+        "dirb",
+        "feroxbuster",
+        "gobuster",
+        "httpx",
+        "masscan",
+        "nmap",
+        "rustscan",
+        "subfinder",
+        "theharvester",
+        "whatweb",
+    }
+)
+
+
+# ── Fallback Roles Are Catalog Metadata, Not Prompt Heuristics ─────────
+# A local recovery session should see active tools without paying the prefill
+# cost of the entire reconnaissance catalog. Roles are derived from the verified
+# first-party registry and emitted in MCP metadata, never guessed from prose.
+# Unknown and passive tools receive no aggressive role and are therefore denied
+# by the gateway's default-deny fallback profile at both listing and call time.
+# ──────────────────────────────────────────────────────────────────────
+def _fallback_tool_roles(name: str) -> list[str]:
+    if name == "shell":
+        return ["shell"]
+    if name in {"requests", "bs4", "lxml"}:
+        return ["aggressive", "evidence"]
+    spec = next((candidate for candidate in CLI_TOOL_SPECS if candidate.name == name), None)
+    if spec is None:
+        return []
+    if name in RECON_CLI_TOOLS or spec.category in {"dns", "osint"}:
+        return ["recon"]
+    if name in EVIDENCE_CLI_TOOLS:
+        return ["aggressive", "evidence"]
+    if name in AGGRESSIVE_CLI_TOOLS or spec.category in AGGRESSIVE_CLI_CATEGORIES:
+        return ["aggressive"]
+    return []
+
 
 def register_tool(name: str, description: str, schema: dict[str, Any]) -> Callable[[ToolHandler], ToolHandler]:
     """Decorator that registers a tool handler."""
@@ -2782,6 +2848,12 @@ def handle_request(message: dict[str, Any]) -> None:
                     "name": tname,
                     "description": tdesc,
                     "inputSchema": tschema,
+                    "_meta": {
+                        "cyberful.dev/tool-profile": {
+                            "version": 1,
+                            "roles": _fallback_tool_roles(tname),
+                        }
+                    },
                 })
             ok(message_id, {"tools": tools_list})
         elif method == "tools/call":

@@ -1,9 +1,11 @@
 # Cyberful TUI Architecture
 
-The terminal application is a local control plane around one model executor:
-Codex. Session storage, orchestration, policy, MCP lifecycle, and reporting are
-host responsibilities; model reasoning occurs in one ephemeral Codex process
-per phase.
+The terminal application is a local control plane around Codex as its primary
+model executor. Session storage, orchestration, policy, MCP lifecycle, and
+reporting are host responsibilities; primary model reasoning occurs in one
+ephemeral Codex process per phase. An optional operator-owned loopback Responses
+server can run a bounded helper or one-shot recovery through the same subsystem
+contract.
 
 ## Runtime shape
 
@@ -17,10 +19,17 @@ TUI input
   -> read-only source store / Code Graph / cyberful-os / browser / ZAP / variables / question / handoff
   -> workarea artifacts
   -> validated successor
+
+Structured terminal cyberPolicy failure
+  -> primary process and gateway fully reaped
+  -> one local fallback recovery with an aggressive-recovery gateway
+  -> validated deliverable and handoff, or preserved dual failure
 ```
 
-Codex app-server is the complete model-execution boundary. The TUI has no
-alternate inference route or session-level executor selection.
+Codex app-server owns the normal phase path. The TUI has no session-level
+executor selector. Cyberful loads `fallback-server.yaml` once from the launch
+directory and makes the local route available only after a successful loopback
+preflight; it is never discovered from a workarea.
 
 Important host services under `cyberful/src` include:
 
@@ -30,8 +39,10 @@ Important host services under `cyberful/src` include:
 - the phase runtime under `src/subsystem/` for app-server, budgets, native delegation, steering, handoff, and transcripts;
 - the gateway under `src/subsystem/gateway/` for approved MCP capabilities.
 
-The session journal records user input and the public projection of Codex phase
-activity. It does not carry a transport choice.
+The session journal records user input and the public projection of subsystem
+activity. Separate fallback transcripts and host-owned runtime manifests record
+mode, trigger, adapter, model, server state, result, and recovery status without
+keys or the configured system prompt.
 
 ## Phase lifecycle
 
@@ -42,10 +53,28 @@ For each sequential phase the orchestrator:
 3. starts `codex app-server` over stdio;
 4. starts one thread and one turn;
 5. maps public text, tool activity, and delegated-actor lifecycle into TUI events and the phase transcript;
-6. forwards live user steering and TUI-backed questions;
+6. forwards live user steering and TUI-backed questions, preserving exact
+   accepted and declined decisions in a phase-confined approval ledger;
 7. validates the required artifact and constrained `handoff` request;
 8. proves the process and gateway tree have exited, then seals the final artifact with a host-generated
    SHA-256 manifest before launching the successor.
+
+When configured, one voluntary helper may temporarily suspend the primary turn,
+use an `aggressive-assist` gateway, and return a compact result without owning
+the phase handoff. Only a terminal failed turn classified structurally as
+`codexErrorInfo === "cyberPolicy"` can trigger automatic recovery. Cyberful
+first collects the primary process and gateway, then starts one fresh local
+process, nonce, gateway, and transcript in the same phase, workarea, scope, and
+remaining active budget. The recovery receives a sanitized capsule capped at
+16 KiB and may own the handoff; it cannot recursively invoke fallback. Approval
+waits remain outside the active budget.
+
+Both modes use default-deny, versioned first-party tool profiles. They retain
+active security, shell, evidence, browser, approval, rate-limit, and
+circuit-breaker controls while omitting recon inventory and report generators
+to reduce prefill noise. `handoff` appears only in recovery. Because shell
+remains general, this selection is an interface reduction rather than a
+security boundary.
 
 The phase runner supplies Markdown cleanup with only the required deliverable
 path; it never traverses the complete workarea. Code Audit also verifies a

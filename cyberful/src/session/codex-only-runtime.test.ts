@@ -1,6 +1,6 @@
-// ── Codex-Only Session Runtime Tests ──────────────────────────────
-// Verifies that every built-in workflow phase uses the Codex runtime and that
-// no generic inference path reappears at the session boundary.
+// ── Primary Codex Session Runtime Tests ───────────────────────────
+// Verifies that every built-in workflow phase keeps Codex as its primary
+// runtime and that no user-selectable AI SDK routing surface reappears.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
@@ -12,8 +12,8 @@ import { EventV2 } from "@/event-v2"
 import { isRecord } from "@/util/record"
 import "./event-v2"
 
-describe("Codex-only session boundary", () => {
-  test("the prompt and phase gateway have no generic inference dependency", async () => {
+describe("primary Codex session boundary", () => {
+  test("the prompt and phase gateway have no AI SDK routing dependency", async () => {
     const sources = await Promise.all(
       ["./prompt.ts", "../subsystem/gateway/server.ts"].map((path) => Bun.file(new URL(path, import.meta.url)).text()),
     )

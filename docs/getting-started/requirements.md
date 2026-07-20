@@ -10,6 +10,7 @@ must already be available on your computer.
 | Python              | 3.10 or newer                                       | cyberful-os host bridge            |
 | Node.js and npm     | Node 18 or newer                                    | npm launcher and browser MCP       |
 | Bun                 | 1.3.14 for source builds only                       | Workspace build and tests          |
+| Local Responses server | Optional; loopback, tool-calling compatible      | Aggressive helper and recovery     |
 
 Verify the host before the first engagement:
 
@@ -31,6 +32,12 @@ You do not need to configure those tools one by one. The first launch prepares
 `cyberful-zap-bridge:0.1.0`, and may download isolated Chromium. Allow enough
 disk space for those images, the browser, workarea evidence, and reports. Use a
 dedicated engagement directory and keep Docker running for the full session.
+
+The local Responses server is optional and operator-owned. Start it before
+Cyberful, place `fallback-server.yaml` in the launch directory, and use a build
+whose Responses API and tool calling are known to work. An unavailable server
+only disables fallback for that run; an unsafe configuration stops startup.
+See [Local fallback inference](../runtimes/fallback-inference.md).
 
 For a source checkout:
 

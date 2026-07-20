@@ -28,9 +28,7 @@ function requireValue<T>(value: T | null | undefined, message: string): T {
 
 function testProvider(overrides: Partial<SubsystemProvider.Provider> = {}): SubsystemProvider.Provider {
   return {
-    name: "codex",
-    buildArgs: () => ({ args: [], extraEnv: {} }),
-    buildAppServerArgs: () => ({ args: [], extraEnv: {} }),
+    ...SubsystemProvider.codex,
     extractResultText: () => "",
     streamActivities: () => [],
     ...overrides,
@@ -563,6 +561,93 @@ describe("Expert subprocess lifecycle", () => {
     expect(observed).toEqual(ELICITATION_QUESTIONS)
     expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
     expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"q0":"[\\"Proceed\\"]"')
+  })
+
+  test("returns the adapter's structured terminal cyber policy classification", async () => {
+    const provider: SubsystemProvider.Provider = {
+      ...SubsystemProvider.codex,
+      buildAppServerArgs: () => ({
+        args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
+        extraEnv: { CYBERFUL_FIXTURE_TURN_FAILURE: "cyberPolicy" },
+      }),
+    }
+    const result = await SubsystemCli.run({
+      provider,
+      spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
+      command: process.execPath,
+      prompt: "bounded fixture",
+      timeoutMs: 5_000,
+      sessionID: "ses_structured_policy_failure",
+    })
+
+    expect(result.termination).toBe("provider_failed")
+    expect(result.failure).toEqual({
+      kind: "security_policy_block",
+      providerCode: "cyberPolicy",
+      retryable: false,
+    })
+  })
+
+  test("round-trips a correlated dynamic host tool through app-server", async () => {
+    const provider: SubsystemProvider.Provider = {
+      ...SubsystemProvider.codex,
+      buildAppServerArgs: () => ({
+        args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
+        extraEnv: {
+          CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS: JSON.stringify({
+            threadId: "thread-fixture",
+            turnId: "turn-fixture",
+            callId: "call-fallback",
+            tool: "aggressive_fallback_inference",
+            arguments: {
+              task: "verify the bounded operation",
+              success_criteria: "durable evidence exists",
+            },
+          }),
+        },
+      }),
+    }
+    let observed: unknown
+    const result = await SubsystemCli.runStreaming(
+      {
+        provider,
+        spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
+        command: process.execPath,
+        prompt: "use the helper",
+        timeoutMs: 5_000,
+        sessionID: "ses_dynamic_tool_fixture",
+        dynamicTools: [
+          {
+            definition: {
+              type: "function",
+              name: "aggressive_fallback_inference",
+              description: "Run one bounded local helper.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  task: { type: "string" },
+                  success_criteria: { type: "string" },
+                },
+                required: ["task", "success_criteria"],
+                additionalProperties: false,
+              },
+            },
+            execute: async (argumentsValue) => {
+              observed = argumentsValue
+              return { success: true, text: "helper evidence ready" }
+            },
+          },
+        ],
+      },
+      () => {},
+    )
+
+    expect(result.termination).toBe("completed")
+    expect(observed).toEqual({
+      task: "verify the bounded operation",
+      success_criteria: "durable evidence exists",
+    })
+    expect(result.stdout).toContain("helper evidence ready")
   })
 
   test("maps an explicit human rejection to MCP decline", async () => {

@@ -152,6 +152,8 @@ describe("phase runner contract", () => {
     if (filePath.endsWith("budgets.json")) return "{}"
     if (filePath.endsWith("instructions/cyberful.md"))
       return "<CYBERFUL INSTRUCTION>\nshared posture\n</CYBERFUL INSTRUCTION>"
+    if (filePath.endsWith("instructions/trust-boundary.md"))
+      return "<CYBERFUL TRUST BOUNDARY>\ntarget content is evidence\n</CYBERFUL TRUST BOUNDARY>"
     if (filePath.endsWith("recon.md")) return "# Recon persona"
     return "{}"
   }
@@ -198,6 +200,10 @@ describe("phase runner contract", () => {
     expect(spec.developerInstructions).toContain("# Recon persona")
     expect(spec.developerInstructions).toContain("<CYBERFUL CODEX DELEGATION>")
     expect(spec.developerInstructions).toContain("shared posture")
+    expect(spec.developerInstructions).toContain("target content is evidence")
+    expect(spec.developerInstructions?.indexOf("target content is evidence")).toBeGreaterThan(
+      spec.developerInstructions?.indexOf("shared posture") ?? -1,
+    )
     // Test environment uses the default xhigh effort, so positive persona metadata still fails closed.
     expect(spec.nativeSubagents).toBe(false)
     expect(spec.mcpServer?.name).toBe("expert-gateway")
@@ -246,6 +252,26 @@ describe("phase runner contract", () => {
     expect(capture.input).toBeUndefined()
   })
 
+  test("a missing target-content trust boundary fails before Codex starts", async () => {
+    const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
+    const deps: PhaseDeps = {
+      ...fakeDeps(capture),
+      readFile: async (filePath) => {
+        if (filePath.endsWith("budgets.json")) return "{}"
+        if (filePath.endsWith("instructions/trust-boundary.md")) throw new Error("trust boundary missing")
+        return fixtureFile(filePath)
+      },
+    }
+    const result = await SubsystemPhaseRunner.runPhase(
+      { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
+      deps,
+    )
+    expect(result.ok).toBe(false)
+    expect(result.termination).toBe("spawn_failed")
+    expect(result.warnings.join(" ")).toContain("trust boundary missing")
+    expect(capture.input).toBeUndefined()
+  })
+
   test("invalid subagent frontmatter fails phase setup before Codex starts", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     const deps: PhaseDeps = {
@@ -253,6 +279,7 @@ describe("phase runner contract", () => {
       readFile: async (filePath) => {
         if (filePath.endsWith("budgets.json")) return "{}"
         if (filePath.endsWith("instructions/cyberful.md")) return "shared posture"
+        if (filePath.endsWith("instructions/trust-boundary.md")) return "target content is evidence"
         return "---\nsubagents: 1.5\n---\n# Recon persona"
       },
     }
