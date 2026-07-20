@@ -68,17 +68,22 @@ export function delegationInstructions(subagents: number, requestedEffort = effo
   ].join("\n")
 }
 
-export function composeDeveloperInstructions(personaSource: string, sharedSource: string, requestedEffort = effort()) {
+export function composeDeveloperInstructions(
+  personaSource: string,
+  sharedSources: string | readonly string[],
+  requestedEffort = effort(),
+) {
   const persona = parsePersona(personaSource)
+  const shared = typeof sharedSources === "string" ? [sharedSources] : sharedSources
   if (!persona.content) throw new Error("persona instruction file is empty")
-  if (!sharedSource.trim()) throw new Error("shared instruction file is empty")
+  if (!shared.length || shared.some((source) => !source.trim())) throw new Error("shared instruction file is empty")
   return {
     subagents: persona.subagents,
     delegationEnabled: requestedEffort === "ultra" && persona.subagents > 0,
     instructions: [
       persona.content,
       `<CYBERFUL CODEX DELEGATION>\n${delegationInstructions(persona.subagents, requestedEffort)}\n</CYBERFUL CODEX DELEGATION>`,
-      sharedSource.trim(),
+      ...shared.map((source) => source.trim()),
     ].join("\n\n"),
   }
 }

@@ -15,6 +15,9 @@ let skillsReady = process.env.CYBERFUL_FIXTURE_REQUIRE_SKILLS !== "1"
 const elicitationParams: unknown = process.env.CYBERFUL_FIXTURE_ELICITATION_PARAMS
   ? JSON.parse(process.env.CYBERFUL_FIXTURE_ELICITATION_PARAMS)
   : undefined
+const dynamicToolParams: unknown = process.env.CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS
+  ? JSON.parse(process.env.CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS)
+  : undefined
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -53,6 +56,25 @@ for await (const line of createInterface({ input: process.stdin })) {
         threadId: "thread-fixture",
         turnId: "turn-fixture",
         item: { id: "agent-fixture", type: "agentMessage", text: `elicitation: ${JSON.stringify(outcome)}` },
+      },
+    })
+    write({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-fixture",
+        turn: { id: "turn-fixture", status: "completed", items: [] },
+      },
+    })
+    continue
+  }
+  if (message.id === "dynamic-tool-fixture" && message.method === undefined) {
+    const outcome = "result" in message ? message.result : message.error
+    write({
+      method: "item/completed",
+      params: {
+        threadId: "thread-fixture",
+        turnId: "turn-fixture",
+        item: { id: "agent-fixture", type: "agentMessage", text: `dynamic tool: ${JSON.stringify(outcome)}` },
       },
     })
     write({
@@ -154,11 +176,33 @@ for await (const line of createInterface({ input: process.stdin })) {
       })
     }
     write({ id: message.id, result: { turn: { id: "turn-fixture", status: "inProgress" } } })
+    if (process.env.CYBERFUL_FIXTURE_TURN_FAILURE) {
+      write({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-fixture",
+          turn: {
+            id: "turn-fixture",
+            status: "failed",
+            items: [],
+            error: { codexErrorInfo: process.env.CYBERFUL_FIXTURE_TURN_FAILURE },
+          },
+        },
+      })
+      continue
+    }
     if (elicitationParams !== undefined) {
       write({
         id: "elicitation-fixture",
         method: "mcpServer/elicitation/request",
         params: elicitationParams,
+      })
+    }
+    if (dynamicToolParams !== undefined) {
+      write({
+        id: "dynamic-tool-fixture",
+        method: "item/tool/call",
+        params: dynamicToolParams,
       })
     }
     continue

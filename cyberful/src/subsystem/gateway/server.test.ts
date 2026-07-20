@@ -428,6 +428,51 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     expect(closes).toBe(1)
   })
 
+  test("applies aggressive metadata at listing and direct-call boundaries", async () => {
+    let deniedCalls = 0
+    const upstreams: UpstreamTool[] = [
+      {
+        capability: "isolated-exec",
+        def: {
+          name: "active_http_mutation",
+          inputSchema: { type: "object" },
+          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["aggressive"] } },
+        },
+        call: async () => ({ content: [{ type: "text", text: "mutated" }] }),
+      },
+      {
+        capability: "isolated-exec",
+        def: {
+          name: "nmap",
+          inputSchema: { type: "object" },
+          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["recon"] } },
+        },
+        call: async () => {
+          deniedCalls += 1
+          return { content: [{ type: "text", text: "should not execute" }] }
+        },
+      },
+    ]
+    const server = await createGatewayServer({ upstreams, toolProfile: "aggressive-assist" })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const c = new Client({ name: "fallback-profile-test", version: "0" })
+    await c.connect(ct)
+    try {
+      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+        "active_http_mutation",
+        "variable",
+      ])
+      expect(textContent(await c.callTool({ name: "active_http_mutation", arguments: {} }))).toBe("mutated")
+      const denied = await c.callTool({ name: "nmap", arguments: {} })
+      expect(textContent(denied)).toContain("unknown tool")
+      expect(deniedCalls).toBe(0)
+    } finally {
+      await c.close()
+      await server.closeGateway()
+    }
+  })
+
   test("re-exposes upstream tools, resolves simple and composed {{var}} args, and redacts replies", async () => {
     // A fake upstream stands in for cyberful-os/browser: it records the args it received (to prove the
     // gateway resolved the template before forwarding) and echoes them back (to prove the gateway

@@ -1,11 +1,15 @@
 // ── Private Phase Gateway Configuration ─────────────────────────
-// Builds the sole host-owned MCP registration for a phase, separating explicit
-// safe process settings from owner-private environment and lifecycle signal paths.
+// Builds host-owned MCP registrations for primary and local fallback attempts,
+// separating safe process settings from owner-private environment, lifecycle
+// signals, and the default-deny tool profile selected for that exact attempt.
 // → cyberful/src/subsystem/phase-runner.ts — creates one descriptor for each phase.
+// → cyberful/src/subsystem/gateway/tool-profile.ts — validates profile names.
+// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────
 
 import path from "path"
 import type { SubsystemMcpServer } from "../provider"
+import type { ToolProfile } from "./tool-profile"
 
 export interface GatewayOptions {
   proxy?: boolean
@@ -18,6 +22,8 @@ export interface GatewayOptions {
   questionEnabled?: boolean
   // Engagement-stable CAPTCHA circuit-breaker state.
   circuitBreakerPath?: string
+  // Full for the primary phase; compact default-deny surfaces for local fallback attempts.
+  toolProfile?: ToolProfile
   // Owner-private per-run environment overrides.
   env?: Readonly<Record<string, string>>
 }
@@ -84,6 +90,7 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
       ...(opts?.pidSignalPath ? { CYBERFUL_SUBSYSTEM_GATEWAY_PID_PATH: opts.pidSignalPath } : {}),
       ...(opts?.questionEnabled ? { CYBERFUL_SUBSYSTEM_QUESTION_ENABLED: "1" } : {}),
       ...(opts?.circuitBreakerPath ? { CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH: opts.circuitBreakerPath } : {}),
+      ...(opts?.toolProfile ? { CYBERFUL_SUBSYSTEM_TOOL_PROFILE: opts.toolProfile } : {}),
       ...(opts?.handoff
         ? {
             CYBERFUL_SUBSYSTEM_HANDOFF_PATH: opts.handoff.signalPath,

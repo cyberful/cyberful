@@ -39,6 +39,11 @@ elicitations. Sandbox escalation, rules, skill approval, and standalone
 permission requests remain disabled and continue to fail closed at the host
 boundary.
 
+Every primary thread receives the phase persona, delegation policy, shared
+behavioral posture, and finally Cyberful's embedded trust boundary as developer
+instructions. The last layer classifies target-controlled pages, responses,
+tool output, and persisted target data as evidence rather than instructions.
+
 Every pending request is also written to an owner-only local approval mailbox.
 The TUI and an external operator resolve the same immutable request ID, and the
 first valid decision wins. This lets a remotely directed coding assistant relay
@@ -85,6 +90,34 @@ origin-scoped runtime authorization.
 
 The gateway stops before the next phase starts, so tool registrations, traffic
 grants, and ephemeral credentials do not leak across phases.
+
+## Local fallback sessions
+
+When `fallback-server.yaml` passes its startup preflight, the primary subsystem
+can call one `aggressive_fallback_inference` helper per phase. Cyberful suspends
+the primary session while a new local controller works through a reduced,
+default-deny `aggressive-assist` gateway. The helper cannot request handoff or
+invoke itself; it returns a concise result and evidence references to the
+primary session, which retains responsibility for the deliverable.
+
+Automatic recovery is narrower. It runs once only after the terminal provider
+failure is structurally classified as `security_policy_block`; buffering,
+matching prose, and generic provider errors do not qualify. Cyberful first
+collects the primary process and gateway, then starts a fresh local session and
+`aggressive-recovery` gateway in the same run, phase, workarea, scope, and
+remaining active budget. A sanitized recovery capsule describes the incomplete
+operation and durable artifacts without copying the transcript, reasoning,
+credentials, or raw payloads. Recovery can complete the phase handoff but
+cannot recurse. Local sessions receive the configured compact system prompt
+followed by the same embedded trust boundary; Cyberful does not forward the
+primary phase persona or skill catalog.
+
+Accepted and declined approvals are matched by their exact request envelope and
+automatically reused only inside the same run and phase. A genuinely new action
+still asks the human. Fallback sessions receive distinct transcripts, while a
+host-owned runtime manifest records their public outcome without API keys or
+the configured system prompt. See
+[Local fallback inference](../runtimes/fallback-inference.md).
 
 For repository workflows, imported source and durable source snapshots live in
 an owner-only host store outside the Codex writable root. The model receives no

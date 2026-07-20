@@ -89,6 +89,16 @@ class CapabilityReportTest(unittest.TestCase):
         finally:
             cyberful_os_mcp.PREFLIGHT_REPORT = previous
 
+    def test_fallback_profiles_use_versioned_first_party_roles(self):
+        self.assertEqual(cyberful_os_mcp._fallback_tool_roles("shell"), ["shell"])
+        self.assertIn("aggressive", cyberful_os_mcp._fallback_tool_roles("requests"))
+        self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("requests"))
+        self.assertIn("recon", cyberful_os_mcp._fallback_tool_roles("nmap"))
+        self.assertNotIn("aggressive", cyberful_os_mcp._fallback_tool_roles("nmap"))
+        self.assertIn("aggressive", cyberful_os_mcp._fallback_tool_roles("afl_fuzz"))
+        self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("tcpdump"))
+        self.assertEqual(cyberful_os_mcp._fallback_tool_roles("wordlists"), [])
+
     def test_failed_smoke_probe_degrades_an_otherwise_complete_catalog(self):
         commands = {spec.command: f"/usr/bin/{spec.command}" for spec in cyberful_os_mcp.CLI_TOOL_SPECS}
         modules = {spec.module: f"/opt/venv/{spec.module}.py" for spec in cyberful_os_mcp.LIBRARY_TOOL_SPECS}

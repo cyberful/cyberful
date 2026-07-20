@@ -47,6 +47,65 @@ function withCodexEffort<T>(value: string, fn: () => T) {
 }
 
 describe("codex adapter", () => {
+  test("classifies only a terminal structured cyber policy failure", () => {
+    expect(
+      SubsystemProvider.codex.classifyFailure({
+        status: "failed",
+        error: { codexErrorInfo: "cyberPolicy" },
+      }),
+    ).toEqual({ kind: "security_policy_block", providerCode: "cyberPolicy", retryable: false })
+    expect(
+      SubsystemProvider.codex.classifyFailure({
+        status: "failed",
+        error: { message: "cyberPolicy security threat" },
+      }),
+    ).toEqual({ kind: "unknown", retryable: false })
+    expect(SubsystemProvider.codex.classifyFailure({ status: "completed", safetyBuffering: true })).toBeUndefined()
+    expect(
+      SubsystemProvider.codex.classifyFailure({
+        status: "failed",
+        error: { codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: null } } },
+      }),
+    ).toEqual({ kind: "transport", providerCode: "responseStreamConnectionFailed", retryable: true })
+    expect(
+      SubsystemProvider.codex.classifyFailure({ status: "failed", error: { codexErrorInfo: "unauthorized" } }),
+    ).toEqual({ kind: "authentication", providerCode: "unauthorized", retryable: false })
+  })
+
+  test("binds compact local base policy without forwarding the phase persona", () => {
+    const bound = SubsystemProvider.codex.bindFallback(
+      at(
+        { kind: "autonomous" },
+        {
+          model: "primary-model",
+          baseInstructions: "Compact local base instruction.\n\nhost trust boundary",
+          developerInstructions: "large primary persona",
+          nativeSubagents: true,
+          skillRoots: ["/skills"],
+        },
+      ),
+      {
+        version: 1,
+        enabled: true,
+        protocol: "openai-responses",
+        baseUrl: "http://127.0.0.1:8000/v1",
+        model: "local-model",
+        apiKeyEnvironment: "LOCAL_KEY",
+        systemPrompt: "Compact local base instruction.",
+      },
+    )
+    expect(bound.model).toBe("local-model")
+    expect(bound.baseInstructions).toBe("Compact local base instruction.\n\nhost trust boundary")
+    expect(bound.developerInstructions).toBeUndefined()
+    expect(bound.nativeSubagents).toBe(false)
+    expect(bound.skillRoots).toEqual([])
+    const built = SubsystemProvider.codex.buildAppServerArgs(bound)
+    expect(built.args).toContain('model_provider="cyberful_fallback"')
+    expect(built.args).toContain('shell_environment_policy.exclude=["LOCAL_KEY"]')
+    expect(built.args.join(" ")).toContain("stream_idle_timeout_ms=1000000")
+    expect(built.args.join(" ")).not.toContain("large primary persona")
+  })
+
   test("runs ephemeral JSONL with ignored personal config, workspace sandbox, network and no approvals", () => {
     const { args } = withCodexEffort("xhigh", () =>
       withWebSearch("1", () =>

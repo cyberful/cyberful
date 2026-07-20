@@ -9,6 +9,9 @@ it needs.
   interaction tools through a dedicated Chromium or Chrome profile.
 - [OWASP ZAP](zap.md) provides headless proxy and scanning capabilities for
   traffic-authorized phases.
+- [Local fallback inference](fallback-inference.md) optionally connects an
+  operator-owned loopback Responses server for bounded assist and policy-block
+  recovery while Codex remains the primary subsystem.
 
 Code Audit and Secure Review do not receive a target-traffic route. Assessment
 and Remediate require a host-owned runtime authorization for the exact origins

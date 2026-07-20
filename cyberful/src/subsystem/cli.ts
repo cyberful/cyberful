@@ -1,11 +1,11 @@
-// ── Codex Process And Native Skill Projection ────────────────────
-// Runs one Codex subprocess, its streaming app-server protocol, process-tree
-// cleanup, private gateway materialization, and the owner-only native skill
-// view registered for the run. Flat first-party tool notes are adapted into
-// native skills, while structured skill packages retain their references and
-// interface metadata for progressive disclosure.
+// ── Agentic Subsystem Process And App-Server Ownership ───────────
+// Runs one Codex subprocess, its bidirectional app-server protocol, host dynamic
+// tools, structured failure capture, process-tree cleanup, private gateway, and
+// owner-only native skill projection. Local fallback sessions reuse this owner
+// with a different provider binding rather than creating an untracked model path.
 // → cyberful/src/subsystem/provider.ts — supplies provider-specific argv and environment deltas.
 // → cyberful/src/util/bounded-output.ts — bounds retained provider streams.
+// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process"
@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { rm } from "node:fs/promises"
-import type { Provider, SubsystemRunSpec } from "./provider"
+import type { DynamicTool, Provider, ProviderFailure, SubsystemRunSpec } from "./provider"
 import { sanitizeMarkdownArtifacts } from "./sanitize"
 import { SubsystemCodex } from "./codex"
 import { SubsystemCodexControl } from "./codex-control"
@@ -73,6 +73,7 @@ export interface RunResult {
   timedOut: boolean
   termination?: RunTermination
   failureReason?: string
+  failure?: ProviderFailure
 }
 
 export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "provider_failed"
@@ -95,6 +96,7 @@ export interface RunInput {
   askQuestion?: AskHuman
   // One phase-owned gate pauses the process budget for every blocking human decision.
   approvalState?: ApprovalController
+  dynamicTools?: readonly DynamicTool[]
 }
 
 // ── Reap Expert Subprocesses When The Host Closes ─────────────────────
@@ -834,6 +836,31 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
           return respondError(id, error instanceof Error ? error.message : String(error))
         }
       }
+      if (message.method === "item/tool/call") {
+        if (!isRecord(message.params)) return respondError(id, "Codex supplied invalid dynamic tool parameters")
+        const params = message.params
+        if (!activeThreadID || params.threadId !== activeThreadID)
+          return respondError(id, "Dynamic tool call does not belong to the active Cyberful thread")
+        if (!activeTurnID || params.turnId !== activeTurnID)
+          return respondError(id, "Dynamic tool call does not belong to the active Cyberful turn")
+        if (typeof params.callId !== "string" || typeof params.tool !== "string")
+          return respondError(id, "Dynamic tool call is missing its identity")
+        const tool = input.dynamicTools?.find((candidate) => candidate.definition.name === params.tool)
+        if (!tool) return respondError(id, `Unknown Cyberful dynamic tool: ${params.tool}`)
+        try {
+          const output = await tool.execute(params.arguments, { signal: questionSignal })
+          const bounded = Buffer.from(output.text, "utf8").subarray(0, 16 * 1024).toString("utf8")
+          return respond(id, {
+            success: output.success,
+            contentItems: [{ type: "inputText", text: bounded }],
+          })
+        } catch (error) {
+          return respond(id, {
+            success: false,
+            contentItems: [{ type: "inputText", text: error instanceof Error ? error.message : String(error) }],
+          })
+        }
+      }
       if (message.method === "item/commandExecution/requestApproval") return respond(id, { decision: "decline" })
       if (message.method === "item/fileChange/requestApproval") return respond(id, { decision: "decline" })
       if (message.method === "execCommandApproval" || message.method === "applyPatchApproval")
@@ -902,6 +929,9 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     }
     const threadResult = await request("thread/start", {
       model: input.spec.model ?? null,
+      baseInstructions: input.spec.baseInstructions ?? null,
+      developerInstructions: input.spec.developerInstructions ?? null,
+      dynamicTools: input.dynamicTools?.map((tool) => tool.definition) ?? input.spec.dynamicTools ?? null,
       cwd: input.spec.cwd,
       runtimeWorkspaceRoots: [input.spec.cwd],
       approvalPolicy: {
@@ -1008,6 +1038,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     unregister?.()
     unregister = undefined
     const logicalExitCode = completedTurn?.status === "completed" ? 0 : 1
+    const failure = input.provider.classifyFailure(completedTurn)
     await stopAppServer(proc)
     await exitObservation
     await settleServerRequests()
@@ -1033,6 +1064,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       exitCode: logicalExitCode,
       timedOut: wasTimedOut(proc),
       termination: terminationOf(proc, logicalExitCode),
+      ...(failure ? { failure } : {}),
     }
   } catch (error) {
     unregister?.()

@@ -20,7 +20,8 @@ cyberful/builtin/
     report.md       Client report synthesis
     budgets.json            Host-enforced wall-clock ceilings
   instructions/
-    cyberful.md             Shared developer instruction appended after every phase persona
+    cyberful.md             Shared behavioral posture appended after every phase persona
+    trust-boundary.md       Host trust policy appended after all other developer instructions
   skills/*/SKILL.md         Structured security playbooks with specialist references
   skills/{ZAP,NUCLEI}.md    Flat tool contracts adapted into native Codex skills
   example/                  Development-only attachment fixtures (not embedded)
@@ -29,14 +30,17 @@ cyberful/builtin/
 ## Codex phase agents
 
 Each Markdown filename under `agents/` is the phase identifier used by the
-orchestrator. The host composes its body first and `instructions/cyberful.md`
-second into Codex `developer_instructions` for the fresh app-server context.
+orchestrator. The host composes its body, delegation policy,
+`instructions/cyberful.md`, and finally `instructions/trust-boundary.md` into
+Codex `developer_instructions` for the fresh app-server context.
 Codex's model-specific base instructions remain intact; Cyberful does not set
 `model_instructions_file`. Persona frontmatter declares a non-negative integer
 `subagents`; the Codex subsystem removes it from model prose and turns it into
 delegation instructions governed by the resolved Codex effort. The host also
 owns model and effort settings, sandbox policy, tool exposure, phase order, and
-process lifetime.
+process lifetime. Local fallback sessions receive their compact operator-owned
+base instructions followed by the same trust boundary, without the phase
+persona, delegation policy, or first-party skill catalog.
 
 The pentest chain is:
 
@@ -93,5 +97,5 @@ flat ZAP and Nuclei tool contracts. Packages retain their `references/` and
 methodology or tool workflow discoverable without injecting its full body into
 every phase. Codex initially sees discovery metadata, loads a matching
 `SKILL.md`, then reads only the specialist material required by the active
-surface. Repository-native skills under `.agents/skills/` remain available
-through the same progressive-disclosure mechanism.
+surface. Skill catalogs from audited repositories are not projected into the
+phase runtime; their files remain target-controlled evidence.
