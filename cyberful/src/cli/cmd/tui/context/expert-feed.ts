@@ -44,6 +44,7 @@ export type ExpertPhaseStatus = {
   limitMs: number
   effectiveLimitMs: number
   deadlineAt: number
+  approvalWaitMs?: number
   exitCode: number
   warnings: string[]
   handoff?: {
@@ -120,6 +121,8 @@ export function decodeExpertPhaseStatus(text: string): ExpertPhaseStatus | undef
       limitMs: value.limitMs,
       effectiveLimitMs: value.effectiveLimitMs,
       deadlineAt: value.deadlineAt,
+      approvalWaitMs:
+        typeof value.approvalWaitMs === "number" && value.approvalWaitMs >= 0 ? value.approvalWaitMs : undefined,
       exitCode: value.exitCode,
       warnings: Array.isArray(value.warnings)
         ? value.warnings.filter((warning): warning is string => typeof warning === "string")
@@ -154,12 +157,16 @@ function phaseStatusText(status: ExpertPhaseStatus): string {
   const elapsed = (status.durationMs / 1000).toFixed(1)
   const limit = (status.limitMs / 60_000).toFixed(1)
   const effective = (status.effectiveLimitMs / 60_000).toFixed(1)
+  const approvalWait = status.approvalWaitMs
+    ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}`
+    : ""
   const warning = status.warnings[0]
     ? ` · ${status.warnings[0]}${status.warnings.length > 1 ? ` (+${status.warnings.length - 1})` : ""}`
     : ""
   return (
     `completed with warnings · ${status.backend} · ${status.termination} · exit ${status.exitCode} · ${elapsed}s · ` +
-    `limit ${limit}m (effective ${effective}m) · deadline ${new Date(status.deadlineAt).toISOString()}${warning}`
+    `limit ${limit}m (effective ${effective}m) · deadline ${new Date(status.deadlineAt).toISOString()}` +
+    `${approvalWait}${warning}`
   )
 }
 

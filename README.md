@@ -156,7 +156,10 @@ and temporary test infrastructure, including new hypotheses exposed by failed
 attempts. Both offensive phases must exhaust safe first-party source provenance
 for promising primitives before accepting an unavailable fixture or out-of-scope
 system as the blocker. Hacker starts from Exploit's cleaned ledger and focuses
-on unconventional attack ideas instead of completing its routine backlog.
+on unconventional attack ideas instead of completing its routine backlog. Both
+phases autonomously run bounded reversible tests and create temporary fixtures
+on tester-controlled accounts; only the concrete irreversible, value-moving,
+disruptive, cross-scope, or uncontrolled-user action requires human approval.
 
 Code Audit adds a host gate between Index and Trace: the source preflight must
 still pass, and the current full-inventory graph snapshot and per-file coverage
@@ -418,11 +421,17 @@ independent authorized work. Disable ZAP with `CYBER_ZAP_ENABLED=0`, or keep ZAP
 while disabling browser proxying with `CYBER_BROWSER_THROUGH_ZAP=0`.
 
 While a phase is running, `Escape` immediately aborts its Codex, gateway, and
-complete descendant process tree. A full `Ctrl+C` exit also tears down the
-worker, engagement cyberful-os containers, ZAP, and disposable bridges, even
-while a question is visible. Questions are retracted when their requesting
-phase ends, so an unanswered prompt cannot remain as a stale blocker over a
-successor. The main process keeps a live fallback inventory so a
+complete descendant process tree. A blocking human question suspends the phase,
+its process group, deadline, and budget until the answer or rejection arrives;
+no successor starts during that interval. The same immutable request can be
+answered in the TUI or remotely through `cyberful approval list` followed by
+`cyberful approval reply <requestID> --select '#1'`. A remotely directed coding
+assistant may relay and apply the answer, but only after the human explicitly
+selects or rejects that specific pending request. A full `Ctrl+C` exit also
+tears down the worker, engagement cyberful-os containers, ZAP, and disposable
+bridges, even while a question is visible. Questions are retracted when their
+requesting phase is cancelled, so an unanswered prompt cannot become an
+authorization for later work. The main process keeps a live fallback inventory so a
 wedged worker cannot leave Cyberful-owned processes or Docker workloads active.
 
 ### First launch: the browser

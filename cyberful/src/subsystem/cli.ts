@@ -29,6 +29,7 @@ import { sanitizeMarkdownArtifacts } from "./sanitize"
 import { SubsystemCodex } from "./codex"
 import { SubsystemCodexControl } from "./codex-control"
 import type { AskHuman, HumanQuestion } from "./question-bridge"
+import type { Controller as ApprovalController } from "./approval-state"
 import * as Log from "@/util/log"
 import { BoundedByteTail } from "@/util/bounded-output"
 
@@ -85,6 +86,8 @@ export interface RunInput {
   sessionID?: string
   // Used by both Codex's native request_user_input request and the gateway question bridge.
   askQuestion?: AskHuman
+  // One phase-owned gate pauses the process budget for every blocking human decision.
+  approvalState?: ApprovalController
 }
 
 // ── Reap Expert Subprocesses When The Host Closes ─────────────────────
@@ -111,6 +114,7 @@ interface SpawnedProc {
   lifecycle: Promise<void>
   cleanup?: () => Promise<void>
   skillRoots?: readonly string[]
+  releaseApprovalPause?: () => void
 }
 
 const live = new Set<SpawnedProc>()
@@ -196,6 +200,7 @@ async function reapTrees(procs: readonly SpawnedProc[], reason: "shutdown"): Pro
   if (procs.length === 0) return
   for (const p of procs) {
     p.stopReason ??= reason
+    p.releaseApprovalPause?.()
     killTree(p.pid, "SIGTERM")
   }
   const graceful = await Promise.all(
@@ -267,7 +272,7 @@ function spawnCli(input: RunInput): SpawnedProc {
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     })
-    const proc = adaptChild(child, input.prompt, input.timeoutMs, input.abort)
+    const proc = adaptChild(child, input.prompt, input.timeoutMs, input.abort, input.approvalState)
     if (privateDirectory) proc.cleanup = onceAsync(() => rm(privateDirectory, { recursive: true, force: true }))
     return track(proc)
   } catch (error) {
@@ -406,7 +411,7 @@ function spawnCodexAppServer(input: RunInput): SpawnedProc {
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     })
-    const proc = adaptChildProcess(child, input.timeoutMs, input.abort)
+    const proc = adaptChildProcess(child, input.timeoutMs, input.abort, input.approvalState)
     proc.cleanup = onceAsync(() => rm(codexHome, { recursive: true, force: true }))
     proc.skillRoots = skillRoots
     return track(proc)
@@ -423,7 +428,12 @@ function spawnCodexAppServer(input: RunInput): SpawnedProc {
 // gateway descendants. Early stdin EPIPE is expected when spawn fails; any other
 // stdin error remains logged rather than crashing or disappearing silently.
 // ─────────────────────────────────────────────────────────────
-function adaptChildProcess(child: ChildProcess, timeoutMs: number, abort?: AbortSignal): SpawnedProc {
+function adaptChildProcess(
+  child: ChildProcess,
+  timeoutMs: number,
+  abort?: AbortSignal,
+  approvalState?: ApprovalController,
+): SpawnedProc {
   if (!child.stdout || !child.stderr) {
     child.kill()
     throw new Error("Expert process must expose piped stdout and stderr")
@@ -464,18 +474,63 @@ function adaptChildProcess(child: ChildProcess, timeoutMs: number, abort?: Abort
   }
   if (timeoutMs > 0 && child.pid) {
     const pid = child.pid
-    const timer = setTimeout(() => {
+    let remainingMs = timeoutMs
+    let activeSince = performance.now()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let suspended = false
+    let released = false
+
+    const clearBudgetTimer = () => {
+      if (!timer) return
+      clearTimeout(timer)
+      timer = undefined
+    }
+    const expire = () => {
+      timer = undefined
       proc.stopReason ??= "budget_exhausted"
       proc.signalCode = "SIGKILL"
       killTree(pid, "SIGKILL")
-    }, timeoutMs)
-    child.once("close", () => clearTimeout(timer))
+    }
+    const arm = () => {
+      activeSince = performance.now()
+      timer = setTimeout(expire, Math.max(0, remainingMs))
+      timer.unref?.()
+    }
+    const suspend = () => {
+      if (released || suspended) return
+      remainingMs = Math.max(0, remainingMs - Math.max(0, performance.now() - activeSince))
+      clearBudgetTimer()
+      suspended = true
+      if (process.platform !== "win32") killTree(pid, "SIGSTOP")
+    }
+    const resume = () => {
+      if (released || !suspended) return
+      if (process.platform !== "win32") killTree(pid, "SIGCONT")
+      suspended = false
+      arm()
+    }
+    arm()
+    const unsubscribe = approvalState?.subscribe((snapshot) => {
+      if (snapshot.pending) suspend()
+      else resume()
+    })
+    const release = () => {
+      if (released) return
+      released = true
+      unsubscribe?.()
+      clearBudgetTimer()
+      if (suspended && process.platform !== "win32") killTree(pid, "SIGCONT")
+      suspended = false
+    }
+    proc.releaseApprovalPause = release
+    child.once("close", release)
   }
   if (abort && child.pid) {
     const pid = child.pid
     const cancel = () => {
       proc.stopReason ??= abort.reason === "budget_exhausted" ? "budget_exhausted" : "cancelled"
       proc.signalCode = "SIGTERM"
+      proc.releaseApprovalPause?.()
       killTree(pid, "SIGTERM")
       const force = setTimeout(() => {
         proc.signalCode = "SIGKILL"
@@ -493,8 +548,14 @@ function adaptChildProcess(child: ChildProcess, timeoutMs: number, abort?: Abort
   return proc
 }
 
-function adaptChild(child: ChildProcess, prompt: string, timeoutMs: number, abort?: AbortSignal): SpawnedProc {
-  const proc = adaptChildProcess(child, timeoutMs, abort)
+function adaptChild(
+  child: ChildProcess,
+  prompt: string,
+  timeoutMs: number,
+  abort?: AbortSignal,
+  approvalState?: ApprovalController,
+): SpawnedProc {
+  const proc = adaptChildProcess(child, timeoutMs, abort, approvalState)
   child.stdin?.end(prompt)
   return proc
 }
@@ -596,6 +657,7 @@ async function beforeTimeout<T>(operation: Promise<T>, timeoutMs: number, fallba
 }
 
 async function stopAppServer(proc: SpawnedProc): Promise<number> {
+  proc.releaseApprovalPause?.()
   proc.endStdin()
   const graceful = await beforeTimeout(
     proc.exited.then((exitCode) => ({ exitCode })),

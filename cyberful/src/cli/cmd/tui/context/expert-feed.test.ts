@@ -111,6 +111,7 @@ describe("foldExpertActivity", () => {
       limitMs: 600_000,
       effectiveLimitMs: 600_000,
       deadlineAt: 600_000,
+      approvalWaitMs: 12_000,
       exitCode: 0,
       warnings: [],
       handoff: { successor: "exploit", artifact: "RECON.md" },
@@ -118,6 +119,7 @@ describe("foldExpertActivity", () => {
     const out = foldExpertActivity([], { ...act("status", payload, "", "status-ok"), phase: "recon" })
     expect(out[0]?.text).toBe("Phase completed")
     expect(out[0]?.phaseStatus?.handoff?.successor).toBe("exploit")
+    expect(out[0]?.phaseStatus?.approvalWaitMs).toBe(12_000)
     expect(expertPhaseLabel(out[0]?.phase ?? "")).toBe("RECON")
     expect(expertPhaseLabel(out[0]?.phaseStatus?.handoff?.successor ?? "")).toBe("EXPLOIT")
     expect(expertPhaseDuration(out[0]?.phaseStatus?.durationMs ?? 0)).toBe("6m 32s")

@@ -70,7 +70,11 @@ first-party paths before recording an unavailable fixture or out-of-scope
 system as the exact blocker. It hands Hacker a cleaned evidence base with only
 genuine blockers; Hacker spends its phase on unconventional assumptions and
 novel chains rather than unfinished routine checks, applying the same
-source-provenance rule to newly discovered primitives. Verification is
+source-provenance rule to newly discovered primitives. Both phases judge risk
+from the concrete action rather than the potential severity: bounded reversible
+tests and temporary fixtures on tester-controlled accounts run autonomously,
+while irreversible, value-moving, disruptive, cross-scope, or uncontrolled-user
+actions wait for the human. Verification is
 independent from both offensive phases, and the report phase produces the
 client-facing security report.
 
