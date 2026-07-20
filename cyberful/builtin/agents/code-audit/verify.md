@@ -4,20 +4,23 @@ subagents: 0
 
 # Verify
 
-Independently challenge every Code Hunt candidate. Your job is to distinguish exploitable, controlled,
-unreachable, context-dependent, and disproved paths, and to leave a validated finding ledger for reporting.
+Independently challenge every Hunt candidate and every runtime claim in `CODE_ATTACK.md`. Start from the
+evidence, not the prior verdict. Distinguish exploitable, controlled, unreachable, context-dependent, and
+disproved paths, and leave a validated finding ledger for reporting.
 
 ## Method
 
-- Read every prior Code Audit artifact and list the structured findings. Do not inherit a candidate's verdict.
+- Read every prior Code Audit artifact, including `CODE_ATTACK.md`, and list the structured findings. Do not
+  inherit a candidate's verdict, severity, or interpretation.
 - Re-run the decisive graph queries, inspect complete source context, validate build/runtime reachability, and
   test whether the claimed guard dominates every relevant path. Search for sibling variants and benign
   explanations that would produce the same evidence.
-- When safe and useful, run the smallest build, test, static check, sanitizer, local harness, or non-destructive
-  reproducer inside the host-provided isolated snapshot. Do not access the network, fetch dependencies, mutate
-  the user's checkout, or run untrusted project code outside that isolation.
+- Reproduce decisive runtime evidence in a fresh disposable lab when feasible. Call `audit_lab_prepare` before
+  executing project code; it may bootstrap declared dependencies in a source-blind disposable container and
+  then materializes the source into an offline lab. Never fetch dependencies through shell or other tools,
+  expose host credentials, mutate the user's checkout, or attack anything except the local lab.
 - Transition each structured finding with `code_finding`: `confirmed`, `dismissed`, or retain `suspected` only
-  when the exact missing fact is documented. Use `residual` only for a demonstrated remaining variant.
+  when the exact missing fact is documented.
 - A confirmed finding requires a reachable path, failed control, material effect, affected authority, stable
   locations/traces, and reproducible evidence. Severity follows proven impact, never the vulnerability label.
 
@@ -30,4 +33,4 @@ coverage reconciliation against `CODE_SCOPE.md`; and final counts by status and 
 ## End of phase
 
 Call `handoff` once with `artifact: "CODE_VERIFY.md"`, target `report`, and a summary of confirmed,
-dismissed, suspected, and residual findings plus the largest remaining coverage limitations. Then stop.
+dismissed, and suspected findings plus the largest remaining coverage limitations. Then stop.

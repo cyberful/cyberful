@@ -1,8 +1,0 @@
-{
-  "$comment": "Wall-clock budgets in minutes for verified security remediation.",
-  "intake": 20,
-  "plan": 20,
-  "implement": 90,
-  "verify": 60,
-  "publish": 20
-}

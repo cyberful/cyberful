@@ -62,9 +62,9 @@ ordinary JSON values and the `{{var:name}}` syntax are unchanged.
 
 Report phases consume validated artifacts rather than unverified narrative.
 PDFs include the executive summary, scope and limitations, reproducible
-findings, evidence references, severity, and remediation guidance. Assessment
-control mappings are compliance-readiness evidence, not certification or an
-accredited attestation.
+findings, evidence references, severity, and remediation guidance. Code Audit
+control mappings are evidence about the examined implementation, not
+certification or an accredited attestation.
 
 PDF generation is local and uses redistributed fonts; it makes no external
 asset requests. Generated reports remain ignored by Git and should be shared

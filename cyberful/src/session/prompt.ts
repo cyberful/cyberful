@@ -55,7 +55,6 @@ import {
   type ReportMeta,
 } from "@/tool/security-report-pdf"
 import { errorMessage } from "@/util/error"
-import { isRecord } from "@/util/record"
 import { Process } from "@/util/process"
 import { BoundedByteTail } from "@/util/bounded-output"
 import { ensureWorkarea, ensureWorkareaDirectory, replaceWorkareaFile, workareaAbsolutePath } from "@/workarea"
@@ -80,20 +79,11 @@ const decodeMessageInfo = Schema.decodeUnknownExit(MessageV2.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(MessageV2.Part)
 const ATTACHMENT_TEXT_LIMIT = 256_000
 const SHELL_OUTPUT_LIMIT_BYTES = 512 * 1024
-const HOST_RUNTIME_POLICY_NAME = SessionVariable.Name.make("_cyberful_host_runtime_policy")
 
 function renderShellOutput(output: BoundedByteTail) {
   const tail = output.text()
   if (!output.truncated) return tail
   return `[Earlier shell output omitted: ${output.droppedBytes} bytes. Showing the final ${output.limit} bytes.]\n${tail}`
-}
-
-interface HostRuntimeAuthorization {
-  readonly version: 1
-  readonly workflow: "assessment" | "remediate"
-  readonly origins: readonly string[]
-  readonly maxToolCalls: number
-  readonly createdAt: string
 }
 
 async function lstatIfPresent(target: string) {
@@ -105,117 +95,12 @@ async function lstatIfPresent(target: string) {
   }
 }
 
-export type ZapRuntimeLifecycle = "engagement" | "authorized-phase" | "disabled"
+export type ZapRuntimeLifecycle = "engagement" | "disabled"
 
 export function zapRuntimeLifecycle(workflow: string): ZapRuntimeLifecycle {
   if (!SubsystemPhase.hasCapability(workflow, "zap")) return "disabled"
   if (workflow === "pentest") return "engagement"
-  if (workflow === "assessment" || workflow === "remediate") return "authorized-phase"
   return "disabled"
-}
-
-export function authorizedZapPhase(workflow: string, phase: string) {
-  if (workflow === "assessment") return phase === "test"
-  if (workflow === "remediate") return phase === "plan" || phase === "verify"
-  return false
-}
-
-export function validRuntimeAuthorization(value: unknown, workflow: string): value is HostRuntimeAuthorization {
-  if ((workflow !== "assessment" && workflow !== "remediate") || !isRecord(value)) return false
-  const createdAt = typeof value.createdAt === "string" ? Date.parse(value.createdAt) : Number.NaN
-  if (
-    value.version !== 1 ||
-    value.workflow !== workflow ||
-    !Array.isArray(value.origins) ||
-    value.origins.length < 1 ||
-    value.origins.length > 20 ||
-    new Set(value.origins).size !== value.origins.length ||
-    !Number.isInteger(value.maxToolCalls) ||
-    Number(value.maxToolCalls) < 1 ||
-    Number(value.maxToolCalls) > 2_000 ||
-    typeof value.createdAt !== "string" ||
-    !Number.isFinite(createdAt) ||
-    new Date(createdAt).toISOString() !== value.createdAt
-  )
-    return false
-  return value.origins.every((origin, index, origins) => {
-    if (typeof origin !== "string" || origin.length < 1 || origin.length > 2_048) return false
-    const previous = origins[index - 1]
-    if (index > 0 && typeof previous === "string" && previous >= origin) return false
-    try {
-      const url = new URL(origin)
-      return (
-        new Set(["http:", "https:", "ws:", "wss:"]).has(url.protocol) &&
-        !url.username &&
-        !url.password &&
-        url.origin === origin
-      )
-    } catch {
-      return false
-    }
-  })
-}
-
-interface AuthorizedPhaseZapInput {
-  readonly workflow: string
-  readonly policy: unknown
-  readonly sessionID: SessionID
-  readonly workarea: string
-  readonly spec: SubsystemPhaseRunner.PhaseSpec
-}
-
-interface AuthorizedPhaseZapDeps {
-  readonly start: typeof SubsystemZapRuntime.startEngagement
-  readonly run: (spec: SubsystemPhaseRunner.PhaseSpec) => Promise<SubsystemPhaseRunner.PhaseResult>
-}
-
-// ── Runtime Authorization Precedes Every AppSec ZAP Process ─────
-// Assessment and Remediate receive runtime scope from a host-owned database row,
-// never from model-visible variables or prose. The row is re-read at the eligible
-// phase boundary so authorization granted by Intake or Brief takes effect without
-// keeping a network service alive across unrelated phases. A started runtime is
-// owned by exactly one phase and its stop path runs even when that phase rejects.
-//
-// ─────────────────────────────────────────────────────────────────
-
-export async function runAuthorizedPhaseZap(
-  input: AuthorizedPhaseZapInput,
-  deps: AuthorizedPhaseZapDeps,
-): Promise<SubsystemPhaseRunner.PhaseResult> {
-  if (
-    zapRuntimeLifecycle(input.workflow) !== "authorized-phase" ||
-    !authorizedZapPhase(input.workflow, input.spec.phase) ||
-    !validRuntimeAuthorization(input.policy, input.workflow)
-  )
-    return deps.run(input.spec)
-
-  const runtime = await deps.start({
-    sessionID: input.sessionID,
-    workarea: input.workarea,
-    objective: input.spec.objective,
-    signal: input.spec.abort,
-  })
-  try {
-    const warning = runtime.warning?.trim()
-    const result = await deps.run({
-      ...input.spec,
-      objective: warning
-        ? `${input.spec.objective}\n\n## Runtime warning\n${warning}\nContinue within scope using the remaining tools.`
-        : input.spec.objective,
-      env: {
-        ...input.spec.env,
-        ...runtime.env,
-        CYBER_ZAP_ALLOWED_ORIGINS: JSON.stringify(input.policy.origins),
-      },
-    })
-    if (!runtime.degraded) return result
-    return {
-      ...result,
-      warnings: [...result.warnings, warning || "OWASP ZAP runtime testing was unavailable for this authorized phase."],
-    }
-  } finally {
-    await runtime.stop()
-  }
 }
 
 // ── A Journal Identity, Not A Provider Choice ─────────────────────
@@ -960,10 +845,10 @@ export const layer = Layer.effect(
       const reportMeta: ReportMeta = {
         ...(input.workflow === "pentest" ? {} : { title: `${selected.title} Report` }),
         subtitle:
-          input.workflow === "pentest" || input.workflow === "assessment"
+          input.workflow === "pentest"
             ? `Audit-ready · ${standards}`
             : input.workflow === "code-audit"
-              ? "Repository security analysis · verified findings and coverage"
+              ? "Architecture, source, supply chain, and isolated runtime evidence"
               : undefined,
         target: reportVar("client_name") ?? reportVar("target_base_url"),
         reportVersion: reportVar("report_version"),
@@ -973,15 +858,10 @@ export const layer = Layer.effect(
             : (engagementStart ?? engagementEnd),
         ...(input.workflow === "code-audit"
           ? {
-              subject: "Repository source-code security audit",
-              keywords: ["code audit", "dataflow", "taint analysis", "vulnerability", "SARIF"],
+              subject: "Deep repository security audit",
+              keywords: ["code audit", "threat model", "supply chain", "runtime attack", "SARIF"],
             }
-          : input.workflow === "assessment"
-            ? {
-                subject: "Whole-project security assessment and control-readiness evidence",
-                keywords: ["security assessment", "OWASP ASVS", "NIST SSDF", "SOC 2", "ISO 27001"],
-              }
-            : {}),
+          : {}),
       }
       const unresolved: string[] = []
       const resolveReportVariables = (markdown: string) => {
@@ -1182,39 +1062,11 @@ export const layer = Layer.effect(
         )
       }
       const runPhaseWithStatus = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
-        const policy =
-          zapRuntimeLifecycle(workflow) === "authorized-phase" && authorizedZapPhase(workflow, spec.phase)
-            ? await bridge.promise(
-                variables.hostValue({
-                  sessionID: session.id,
-                  name: HOST_RUNTIME_POLICY_NAME,
-                }),
-              )
-            : undefined
-        const result = await runAuthorizedPhaseZap(
-          {
-            workflow,
-            policy,
-            sessionID: session.id,
-            workarea: workareaCwd,
-            spec,
-          },
-          {
-            start: SubsystemZapRuntime.startEngagement,
-            run: runPhaseStreaming,
-          },
-        )
+        const result = await runPhaseStreaming(spec)
         await recordPhaseResult(spec, result)
         return result
       }
       const runtime = DependencyConfig.expertRuntime()
-      const remediationProofKey =
-        workflow === "remediate"
-          ? yield* variables.hostSecret({
-              sessionID: session.id,
-              name: SessionVariable.Name.make("_cyberful_host_remediation_proof_key"),
-            })
-          : undefined
       const codeGraphLedgerKey = SubsystemPhase.hasCapability(workflow, "code-graph")
         ? yield* variables.hostSecret({
             sessionID: session.id,
@@ -1224,8 +1076,7 @@ export const layer = Layer.effect(
       const sourceStore = SubsystemPhase.hasCapability(workflow, "source")
         ? yield* Effect.promise(() => HostSourceStore.ensureSourceStore(workareaCwd))
         : undefined
-      // Pentest deliberately retains its established engagement-wide proxy/history. AppSec runtimes
-      // are instead created inside runPhaseWithStatus after its host authorization check.
+      // Pentest deliberately retains one engagement-wide proxy/history. Code Audit stays offline.
       const engagementZap =
         zapRuntimeLifecycle(workflow) === "engagement"
           ? yield* Effect.promise((signal) =>
@@ -1253,7 +1104,6 @@ export const layer = Layer.effect(
           env: {
             ...engagementZap.env,
             CYBERFUL_OS_CONTAINER: container,
-            ...(remediationProofKey ? { CYBERFUL_REMEDIATION_PROOF_KEY: remediationProofKey } : {}),
             ...(codeGraphLedgerKey ? { CYBERFUL_CODE_GRAPH_LEDGER_KEY: codeGraphLedgerKey } : {}),
             ...(sourceStore
               ? {

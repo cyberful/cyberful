@@ -1,9 +1,11 @@
 // ── TUI Home Route ───────────────────────────────────────────────
-// Renders workarea selection, the initial composer, background, feature slots,
-//   and startup prompt submission before a user enters a persisted session.
+// Renders workarea selection, the initial composer, runtime readiness, feature
+//   slots, and startup prompt submission before a persisted session exists.
+// → cyberful/src/subsystem/status.ts — supplies primary and fallback readiness.
+// @docs/user-guide/interface.md
 // ─────────────────────────────────────────────────────────────────
 
-import { TextAttributes, type MouseEvent, type RGBA, type TextareaRenderable } from "@opentui/core"
+import { RGBA, TextAttributes, type TextareaRenderable } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import { Show, createEffect, createMemo, createSignal, onMount, type ParentProps } from "solid-js"
 import { HomeSplashBackground } from "../component/home-splash-background"
@@ -15,12 +17,15 @@ import { usePromptRef } from "../context/prompt"
 import { TuiFeatureRuntime } from "@/cli/cmd/tui/feature/runtime"
 import { useProject } from "@tui/context/project"
 import { useTheme } from "@tui/context/theme"
-import { getLastWorkarea, normalizeWorkarea } from "@/workarea"
+import { getLastWorkarea, normalizeWorkarea, workareaProjectRoot } from "@/workarea"
 import { SubsystemCodex } from "@/subsystem/codex"
 import { observePromise } from "@/util/promise"
 import * as Log from "@/util/log"
 import { PROMPT_OVERLAY_Z_INDEX } from "@tui/component/prompt/autocomplete"
 import { useLocal } from "@tui/context/local"
+import { useSDK } from "@tui/context/sdk"
+import type { RuntimeStatus } from "@/server/client"
+import { ClearInput } from "@tui/component/clear-input"
 
 const log = Log.create({ service: "tui.home" })
 
@@ -35,9 +40,91 @@ const SHELL_PLACEHOLDERS = ["ls -la", "git status", "pwd"]
 
 const WORKAREA_PLACEHOLDER = "Type your workarea"
 const WORKAREA_Z_INDEX = 1000
+export const HOME_STATUS_PANEL_BACKGROUND = RGBA.fromValues(0.025, 0.025, 0.04, 0.72)
 
 // A deliberately small, unobtrusive splash note when the installed Codex differs from the pinned version.
 const codexVersionNote = SubsystemCodex.preflightNote()
+
+type RuntimeStatusValue = RuntimeStatus["primary"]["status"] | RuntimeStatus["fallback"]["status"] | "checking"
+type RuntimeStatusTone = "success" | "warning" | "error"
+
+export function homeRuntimeStatusTone(status: RuntimeStatusValue): RuntimeStatusTone {
+  if (status === "available") return "success"
+  if (status === "unavailable") return "error"
+  return "warning"
+}
+
+const RUNTIME_STATUS_LABEL: Record<RuntimeStatusValue, string> = {
+  available: "on",
+  degraded: "degraded",
+  disabled: "disabled",
+  unavailable: "off",
+  checking: "checking",
+}
+
+type RuntimeIndicatorCopy = {
+  title: string
+  identity?: string
+  status: RuntimeStatusValue
+}
+
+export function homeRuntimePanelWidth(rows: readonly RuntimeIndicatorCopy[]) {
+  const longest = Math.max(
+    ...rows.map((row) => [row.title, row.identity, RUNTIME_STATUS_LABEL[row.status]].filter(Boolean).join(" ").length),
+  )
+  return longest + 4
+}
+
+function RuntimeIndicator(props: RuntimeIndicatorCopy) {
+  const { theme } = useTheme()
+  const color = () => theme[homeRuntimeStatusTone(props.status)]
+  return (
+    <box width="100%" flexDirection="row" justifyContent="flex-start" gap={1} flexShrink={0}>
+      <text fg={theme.textMuted} selectable={false}>
+        {props.title}
+      </text>
+      <Show when={props.identity}>
+        <text fg={theme.text} attributes={TextAttributes.BOLD} selectable={false}>
+          {props.identity}
+        </text>
+      </Show>
+      <text fg={color()} selectable={false}>
+        {RUNTIME_STATUS_LABEL[props.status]}
+      </text>
+    </box>
+  )
+}
+
+export function HomeRuntimeRecap(props: { readiness: RuntimeStatus | "failed" | undefined }) {
+  const primary = () => (props.readiness === "failed" ? undefined : props.readiness?.primary)
+  const fallback = () => (props.readiness === "failed" ? undefined : props.readiness?.fallback)
+  const primaryStatus = (): RuntimeStatusValue =>
+    props.readiness === "failed" ? "unavailable" : (primary()?.status ?? "checking")
+  const fallbackStatus = (): RuntimeStatusValue =>
+    props.readiness === "failed" ? "unavailable" : (fallback()?.status ?? "checking")
+  const primaryIdentity = () => {
+    const value = primary()
+    return value ? `${value.name} · ${value.model}` : undefined
+  }
+  const rows = (): readonly [RuntimeIndicatorCopy, RuntimeIndicatorCopy] => [
+    { title: "Subsystem", identity: primaryIdentity(), status: primaryStatus() },
+    { title: "Fallback", identity: fallback()?.model, status: fallbackStatus() },
+  ]
+
+  return (
+    <box
+      width={homeRuntimePanelWidth(rows())}
+      maxWidth="100%"
+      flexDirection="column"
+      paddingLeft={2}
+      paddingRight={2}
+      backgroundColor={HOME_STATUS_PANEL_BACKGROUND}
+    >
+      <RuntimeIndicator {...rows()[0]} />
+      <RuntimeIndicator {...rows()[1]} />
+    </box>
+  )
+}
 
 function HomeCredit() {
   const { theme } = useTheme()
@@ -102,6 +189,7 @@ export function HomeWorkareaLayer(
 
 export function Home() {
   const sync = useSync()
+  const sdk = useSDK()
   const local = useLocal()
   const route = useRouteData("home")
   const promptRef = usePromptRef()
@@ -112,6 +200,7 @@ export function Home() {
   const [workarea, setWorkarea] = createSignal(safeWorkarea(args.workarea) ?? "")
   const [workareaReady, setWorkareaReady] = createSignal(Boolean(args.workarea))
   const [workareaFocused, setWorkareaFocused] = createSignal(false)
+  const [runtimeReadiness, setRuntimeReadiness] = createSignal<RuntimeStatus | "failed" | undefined>()
   const workareaLocked = createMemo(() => Boolean(safeWorkarea(args.workarea)))
   const activeWorkarea = createMemo(() => safeWorkarea(workarea()))
   const workareaValid = createMemo(() => {
@@ -130,8 +219,19 @@ export function Home() {
   let sent = false
 
   onMount(() => {
+    observePromise(sdk.client.runtime.status({}, { throwOnError: true }), {
+      fulfilled: (result) => setRuntimeReadiness(result.data),
+      rejected: (error) => {
+        setRuntimeReadiness("failed")
+        log.warn("failed to inspect subsystem readiness", { error })
+      },
+    })
     if (workareaLocked()) return
-    const directory = project.instance.path().worktree || project.instance.directory() || process.cwd()
+    const directory = workareaProjectRoot({
+      directory: project.instance.directory(),
+      worktree: project.instance.path().worktree,
+      fallback: process.cwd(),
+    })
     observePromise(getLastWorkarea(directory), {
       fulfilled: (lastWorkarea) => setWorkarea(lastWorkarea ?? ""),
       rejected: (error) => log.warn("failed to load last workarea", { error, directory }),
@@ -188,31 +288,38 @@ export function Home() {
               <Show
                 when={workareaLocked()}
                 fallback={
-                  <textarea
-                    flexGrow={1}
-                    height={1}
-                    minHeight={1}
-                    maxHeight={1}
-                    initialValue={workarea()}
-                    placeholder={WORKAREA_PLACEHOLDER}
-                    placeholderColor={theme.textMuted}
-                    textColor={theme.text}
-                    focusedTextColor={theme.text}
-                    cursorColor={theme.primary}
-                    ref={(val: TextareaRenderable) => {
-                      workareaInput = val
-                      val.traits = { status: "WORKAREA" }
-                    }}
-                    onContentChange={() => setWorkarea(workareaInput?.plainText ?? "")}
-                    onMouseDown={(event: MouseEvent) => {
-                      setWorkareaFocused(true)
-                      event.target?.focus()
-                    }}
-                    onSubmit={() => {
-                      setWorkareaFocused(false)
-                      ref()?.focus()
-                    }}
-                  />
+                  <>
+                    <textarea
+                      flexGrow={1}
+                      height={1}
+                      minHeight={1}
+                      maxHeight={1}
+                      initialValue={workarea()}
+                      placeholder={WORKAREA_PLACEHOLDER}
+                      placeholderColor={theme.textMuted}
+                      textColor={theme.text}
+                      focusedTextColor={theme.text}
+                      cursorColor={theme.primary}
+                      ref={(val: TextareaRenderable) => {
+                        workareaInput = val
+                        val.traits = { status: "WORKAREA" }
+                      }}
+                      onContentChange={() => setWorkarea(workareaInput?.plainText ?? "")}
+                      on:focused={() => setWorkareaFocused(true)}
+                      on:blurred={() => setWorkareaFocused(false)}
+                      onMouseDown={() => workareaInput?.focus()}
+                      onSubmit={() => ref()?.focus()}
+                    />
+                    <ClearInput
+                      id="home-workarea-clear"
+                      visible={workareaFocused()}
+                      onClear={() => {
+                        workareaInput?.setText("")
+                        setWorkarea("")
+                        workareaInput?.focus()
+                      }}
+                    />
+                  </>
                 }
               >
                 <text fg={theme.textMuted} wrapMode="none" truncate>
@@ -242,6 +349,9 @@ export function Home() {
         <TuiFeatureRuntime.Slot name="home_bottom" />
         <box flexGrow={1} minHeight={0} />
         <Toast />
+      </box>
+      <box width="100%" alignItems="center" flexShrink={0} zIndex={1} paddingLeft={2} paddingRight={2}>
+        <HomeRuntimeRecap readiness={runtimeReadiness()} />
       </box>
       <Show when={codexVersionNote}>
         <box width="100%" alignItems="center" flexShrink={0} zIndex={1}>

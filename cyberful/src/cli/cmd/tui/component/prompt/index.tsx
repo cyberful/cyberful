@@ -19,7 +19,7 @@ import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
 import path from "node:path"
-import { lstat, stat } from "node:fs/promises"
+import { stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { Filesystem } from "@/util/filesystem"
 import { useLocal } from "@tui/context/local"
@@ -57,9 +57,10 @@ import { DialogSkill } from "../dialog-skill"
 import { useArgs } from "@tui/context/args"
 import { CYBERFUL_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useCyberfulKeymap } from "../../keymap"
 import { useTuiConfig } from "../../context/tui-config"
-import { ensureWorkarea, setLastWorkarea, workareaAbsolutePath, workareaSystemPrompt } from "@/workarea"
+import { ensureWorkarea, setLastWorkarea, workareaProjectRoot, workareaSystemPrompt } from "@/workarea"
 import { DockerPreflight } from "@/dependency/docker-preflight"
 import * as Log from "@/util/log"
+import { ClearInput } from "@tui/component/clear-input"
 
 export type PromptProps = {
   sessionID?: string
@@ -200,6 +201,7 @@ export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable | undefined>()
+  const [inputFocused, setInputFocused] = createSignal(false)
 
   const leader = useLeaderActive()
   const local = useLocal()
@@ -1024,17 +1026,11 @@ export function Prompt(props: PromptProps) {
       // Anchor the workarea at the project directory, NOT the worktree: a non-git project sets worktree
       // to "/" (see instance-context.ts), so `worktree || directory` would create `work/<slug>` at the
       // filesystem root (EROFS). This matches the server-side engagement, which uses ctx.directory.
-      const workareaProjectPath = project.instance.directory() || project.instance.path().worktree || process.cwd()
-      if (props.workarea && selectedWorkflow?.kind === "interactive") {
-        const info = await lstat(workareaAbsolutePath(workareaProjectPath, props.workarea)).catch((error) => {
-          log.debug("selected workarea is not accessible", { error, workarea: props.workarea })
-          return undefined
-        })
-        if (!info?.isDirectory() || info.isSymbolicLink()) {
-          toast.show({ message: "Ask requires an existing workarea.", variant: "warning", duration: 5000 })
-          return true
-        }
-      }
+      const workareaProjectPath = workareaProjectRoot({
+        directory: project.instance.directory(),
+        worktree: project.instance.path().worktree,
+        fallback: process.cwd(),
+      })
       try {
         await DockerPreflight.requireDockerDaemon()
       } catch (error) {
@@ -1045,9 +1041,7 @@ export function Prompt(props: PromptProps) {
         })
         return true
       }
-      if (props.workarea && selectedWorkflow?.kind !== "interactive") {
-        await ensureWorkarea(workareaProjectPath, props.workarea)
-      }
+      if (props.workarea) await ensureWorkarea(workareaProjectPath, props.workarea)
 
       const res = await sdk.client.session.create({
         workflow: selectedWorkflow?.name,
@@ -1501,9 +1495,19 @@ export function Prompt(props: PromptProps) {
                   }, 0)
                 }}
                 onMouseDown={(r: MouseEvent) => r.target?.focus()}
+                on:focused={() => setInputFocused(true)}
+                on:blurred={() => setInputFocused(false)}
                 focusedBackgroundColor={theme.backgroundElement}
                 cursorColor={props.disabled ? theme.backgroundElement : theme.text}
                 syntaxStyle={syntax()}
+              />
+              <ClearInput
+                id="prompt-clear"
+                visible={inputFocused()}
+                onClear={() => {
+                  clearPrompt()
+                  input.focus()
+                }}
               />
             </box>
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">

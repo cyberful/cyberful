@@ -1,7 +1,8 @@
 // ── Instance Capability Endpoint Handlers ───────────────────────
 // Exposes the active instance's agents, commands, formatters, skills, repository
-// state, and capability metadata, reloading services after VCS mutations.
+// state, runtime readiness, and capability metadata, reloading after VCS mutations.
 // → cyberful/src/server/routes/instance/httpapi/groups/instance.ts — defines the public operations.
+// → cyberful/src/subsystem/status.ts — probes primary and fallback readiness.
 // ─────────────────────────────────────────────────────────────────
 
 import { Agent } from "@/agent/agent"
@@ -16,6 +17,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { ApiVcsApplyError } from "../groups/instance"
 import { markInstanceForDisposal } from "../lifecycle"
+import { SubsystemStatus } from "@/subsystem/status"
 
 export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance", (handlers) =>
   Effect.gen(function* () {
@@ -93,6 +95,11 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
       return yield* format.status()
     })
 
+    const getRuntimeStatus = Effect.fn("InstanceHttpApi.runtimeStatus")(function* () {
+      const ctx = yield* InstanceState.context
+      return yield* Effect.promise(() => SubsystemStatus.inspect(ctx.directory))
+    })
+
     return handlers
       .handle("dispose", dispose)
       .handle("path", getPath)
@@ -105,5 +112,6 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
       .handle("agent", getAgent)
       .handle("skill", getSkill)
       .handle("formatter", getFormatter)
+      .handle("runtimeStatus", getRuntimeStatus)
   }),
 )

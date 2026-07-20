@@ -751,6 +751,19 @@ export type FormatterStatus = {
     enabled: boolean;
 };
 
+export type RuntimeStatus = {
+    primary: {
+        name: string;
+        model: string;
+        version?: string;
+        status: 'available' | 'degraded' | 'unavailable';
+    };
+    fallback: {
+        model?: string;
+        status: 'available' | 'disabled' | 'unavailable';
+    };
+};
+
 export type ProjectNotFoundError = {
     _tag: 'ProjectNotFoundError';
     projectID: string;
@@ -2392,6 +2405,33 @@ export type PathGetResponses = {
 };
 
 export type PathGetResponse = PathGetResponses[keyof PathGetResponses];
+
+export type RuntimeStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        directory?: string;
+    };
+    url: '/runtime/status';
+};
+
+export type RuntimeStatusErrors = {
+    /**
+     * Bad request
+     */
+    400: BadRequestError;
+};
+
+export type RuntimeStatusError = RuntimeStatusErrors[keyof RuntimeStatusErrors];
+
+export type RuntimeStatusResponses = {
+    /**
+     * Subsystem and fallback readiness
+     */
+    200: RuntimeStatus;
+};
+
+export type RuntimeStatusResponse = RuntimeStatusResponses[keyof RuntimeStatusResponses];
 
 export type VcsGetData = {
     body?: never;

@@ -294,10 +294,10 @@ export type FindingSeverity = (typeof findingSeverities)[number]
 export const findingConfidences = ["confirmed", "high", "medium", "low"] as const
 export type FindingConfidence = (typeof findingConfidences)[number]
 
-export const findingStatuses = ["suspected", "confirmed", "dismissed", "fixed", "residual"] as const
+export const findingStatuses = ["suspected", "confirmed", "dismissed"] as const
 export type FindingStatus = (typeof findingStatuses)[number]
 
-export const findingWorkflows = ["code-audit", "assessment", "remediate", "secure-review", "pentest"] as const
+export const findingWorkflows = ["code-audit"] as const
 export type FindingWorkflow = (typeof findingWorkflows)[number]
 
 export interface FindingLocation {

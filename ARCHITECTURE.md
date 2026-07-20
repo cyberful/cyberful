@@ -41,7 +41,7 @@ Important host services under `cyberful/src` include:
 
 The session journal records user input and the public projection of subsystem
 activity. Separate fallback transcripts and host-owned runtime manifests record
-mode, trigger, adapter, model, server state, result, and recovery status without
+profile, trigger, adapter, model, server state, result, and recovery status without
 keys or the configured system prompt.
 
 ## Phase lifecycle
@@ -69,7 +69,7 @@ remaining active budget. The recovery receives a sanitized capsule capped at
 16 KiB and may own the handoff; it cannot recursively invoke fallback. Approval
 waits remain outside the active budget.
 
-Both modes use default-deny, versioned first-party tool profiles. They retain
+Both fallback profiles use default-deny, versioned first-party tool sets. They retain
 active security, shell, evidence, browser, approval, rate-limit, and
 circuit-breaker controls while omitting recon inventory and report generators
 to reduce prefill noise. `handoff` appears only in recovery. Because shell
@@ -80,10 +80,14 @@ The phase runner supplies Markdown cleanup with only the required deliverable
 path; it never traverses the complete workarea. Code Audit also verifies a
 host-keyed, full-inventory graph readiness record before accepting
 `index → trace`, binding the post-gateway source preflight, graph snapshot, and
-coverage rows to the transition.
+coverage rows to the transition. Attack and Verify can each create a separate
+mutable runtime lab. Dependency bootstrap mounts manifests only; after that
+networked container exits, the host materializes source for offline loopback
+execution in the phase-owned cyberful-os container and removes the lab after
+the container stops.
 
-The host always runs one phase process at a time. Recon, Exploit, and Hacker can
-permit native direct Codex children through persona metadata when the resolved
+The host always runs one phase process at a time. Selected Pentest and Code
+Audit personas can permit native direct Codex children when the resolved
 effort is Ultra; those children do not become host phases or own handoffs.
 The subsystem activity interface represents actor identity, parentage, state,
 and stable transitions independently of Codex. Each run owns its actor registry,
@@ -97,10 +101,11 @@ approved for that phase from cyberful-os, browser, and ZAP, and implements sessi
 variables, human questions, and the phase-specific handoff. Personal Codex MCP
 configuration and plugins do not enter the temporary runtime.
 
-The browser uses a host-managed profile and is routed through the shared,
-headless ZAP engagement container by default. Every phase owns one gateway and
-browser route. Native Codex children call through that same gateway and share
-the phase workarea, cyberful-os container, browser, ZAP state, and egress.
+Pentest uses a host-managed browser profile routed through its shared headless
+ZAP engagement by default. Code Audit has neither browser nor ZAP target
+traffic; its cyberful-os container is phase-owned and offline. Native Codex
+children call through the same phase gateway and share its workarea, containers,
+and network policy.
 
 Gateway secrets are materialized in owner-only temporary files rather than
 Codex process arguments. ZAP bridge containers are named and labelled per

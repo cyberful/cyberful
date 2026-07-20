@@ -760,7 +760,7 @@ async function importSize(root: string) {
 export async function handleSourceImport(args: Record<string, unknown>, hooks: SourceImportHooks) {
   const request = parseSourceImportRequest(args)
   const attestationKey = sourceImportAttestationKey()
-  const historyComplete = process.env.CYBERFUL_SUBSYSTEM_WORKFLOW === "secure-review"
+  const historyComplete = process.env.CYBERFUL_SUBSYSTEM_WORKFLOW === "code-audit"
   const workarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   const sourceStore = process.env.CYBERFUL_SOURCE_STORE_ROOT?.trim()
   if (!workarea || !path.isAbsolute(workarea)) throw new Error("source_import requires an absolute workarea")

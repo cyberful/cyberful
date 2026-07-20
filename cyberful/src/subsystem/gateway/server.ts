@@ -40,14 +40,8 @@ import { ToolUsageRecorder } from "./tool-usage"
 import * as Log from "@/util/log"
 import { SOURCE_TOOL_DEFS, handleSourceTool, isSourceTool, sourceToolsAvailable } from "./source-tools"
 import { SOURCE_IMPORT_TOOL_DEF, handleSourceImport, type SourceImportRequest } from "./source-import"
-import {
-  GIT_TOOL_DEFS,
-  authorizeFixedFinding,
-  gitToolsAvailable,
-  handleGitTool,
-  isGitTool,
-  type PublishCandidate,
-} from "./git-tools"
+import { GIT_TOOL_DEFS, gitToolsAvailable, handleGitTool, isGitTool } from "./git-tools"
+import { AUDIT_LAB_TOOL_DEF, auditLabAvailable, cleanupAuditLabs, prepareAuditLab } from "./audit-lab"
 import {
   CODE_GRAPH_TOOL_DEFS,
   codeGraphToolsAvailable,
@@ -189,139 +183,9 @@ function activeWorkflowPhase(workflow = selectedWorkflow(), phase = process.env.
   return Boolean(
     workflow &&
       phase &&
-      SubsystemPhase.isWorkflow(workflow) &&
+      SubsystemPhase.workflow(workflow) &&
       (SubsystemPhase.isExpertPhase(workflow, phase) || SubsystemPhase.isInteractiveAgent(workflow, phase)),
   )
-}
-
-const RUNTIME_POLICY_VARIABLE = "_cyberful_host_runtime_policy"
-const RUNTIME_USAGE_VARIABLE = "_cyberful_host_runtime_usage"
-
-interface RuntimePolicy {
-  readonly version: 1
-  readonly workflow: "assessment" | "remediate"
-  readonly origins: readonly string[]
-  readonly maxToolCalls: number
-  readonly createdAt: string
-}
-
-const RUNTIME_AUTHORIZATION_TOOL_DEF = {
-  name: "runtime_authorization",
-  description:
-    "Ask the human to authorize an exact set of HTTP(S)/WS(S) origins and a bounded number of browser/ZAP tool calls. WebSocket origins must be listed explicitly. Only the host-owned session policy enables later runtime phases; ordinary variables cannot grant access.",
-  inputSchema: {
-    type: "object" as const,
-    additionalProperties: false,
-    properties: {
-      origins: {
-        type: "array",
-        minItems: 1,
-        maxItems: 20,
-        items: { type: "string", minLength: 1, maxLength: 2_048 },
-      },
-      max_tool_calls: { type: "integer", minimum: 1, maximum: 2_000, default: 200 },
-    },
-    required: ["origins"],
-  },
-} as const
-
-function normalizedRuntimeOrigins(value: unknown) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 20)
-    throw new Error("runtime authorization requires 1-20 origins")
-  return [
-    ...new Set(
-      value.map((item) => {
-        if (typeof item !== "string" || item.length > 2_048) throw new Error("runtime origin is invalid")
-        let url: URL
-        try {
-          url = new URL(item)
-        } catch (error) {
-          if (error instanceof TypeError)
-            throw new Error(`runtime origin is not a valid URL: ${item}`, { cause: error })
-          throw error
-        }
-        if (!new Set(["http:", "https:", "ws:", "wss:"]).has(url.protocol) || url.username || url.password)
-          throw new Error("runtime origins must be credential-free HTTP(S) or WS(S) URLs")
-        return url.origin
-      }),
-    ),
-  ].sort()
-}
-
-function runtimePolicy(sessionID: SessionID, workflow = selectedWorkflow()): RuntimePolicy | undefined {
-  if (workflow !== "assessment" && workflow !== "remediate") return
-  const value = getVar(sessionID, RUNTIME_POLICY_VARIABLE)?.value
-  if (!isRecord(value) || value.version !== 1 || value.workflow !== workflow) return
-  if (
-    !Array.isArray(value.origins) ||
-    value.origins.length < 1 ||
-    value.origins.some((origin) => typeof origin !== "string") ||
-    !Number.isInteger(value.maxToolCalls) ||
-    Number(value.maxToolCalls) < 1 ||
-    typeof value.createdAt !== "string"
-  )
-    return
-  return {
-    version: 1,
-    workflow,
-    origins: value.origins,
-    maxToolCalls: Number(value.maxToolCalls),
-    createdAt: value.createdAt,
-  }
-}
-
-function consumeRuntimeToolCall(sessionID: SessionID, policy: RuntimePolicy) {
-  return Database.transaction((db) => {
-    const current = db
-      .select()
-      .from(table)
-      .where(and(eq(table.session_id, sessionID), eq(table.name, RUNTIME_USAGE_VARIABLE)))
-      .get()
-    const value = isRecord(current?.value) && current.value.policy === policy.createdAt ? current.value : undefined
-    const used = value && Number.isInteger(value.used) ? Number(value.used) : 0
-    if (used >= policy.maxToolCalls) return false
-    const next = { policy: policy.createdAt, used: used + 1, limit: policy.maxToolCalls }
-    if (current) {
-      db.update(table)
-        .set({ value: next, description: "Host-owned bounded runtime authorization usage." })
-        .where(and(eq(table.session_id, sessionID), eq(table.name, RUNTIME_USAGE_VARIABLE)))
-        .run()
-    } else {
-      db.insert(table)
-        .values({
-          session_id: sessionID,
-          name: RUNTIME_USAGE_VARIABLE,
-          source_message_id: null,
-          description: "Host-owned bounded runtime authorization usage.",
-          value: next,
-        })
-        .run()
-    }
-    return true
-  })
-}
-
-function runtimeScopeError(args: Record<string, unknown>, policy: RuntimePolicy) {
-  const values: string[] = []
-  const visit = (value: unknown) => {
-    if (typeof value === "string") {
-      if (/^(?:https?|wss?):\/\//i.test(value)) values.push(value)
-      return
-    }
-    if (Array.isArray(value)) return value.forEach(visit)
-    if (isRecord(value)) Object.values(value).forEach(visit)
-  }
-  visit(args)
-  for (const value of values) {
-    let origin: string
-    try {
-      origin = new URL(value).origin
-    } catch (error) {
-      if (error instanceof TypeError) return `runtime tool contains an invalid URL: ${value}`
-      throw error
-    }
-    if (!policy.origins.includes(origin)) return `runtime URL origin is outside the host-authorized scope: ${origin}`
-  }
 }
 
 export function runtimeCapabilityAllowed(input: {
@@ -330,30 +194,19 @@ export function runtimeCapabilityAllowed(input: {
   capability: SubsystemPhase.WorkflowCapability
   authorized: boolean
 }) {
-  if (!input.workflow || !SubsystemPhase.isWorkflow(input.workflow)) return false
-  if (input.capability !== "browser" && input.capability !== "zap") return true
-  if (input.workflow !== "assessment" && input.workflow !== "remediate") return true
-  const phaseAllowed =
-    input.workflow === "assessment" ? input.phase === "test" : input.phase === "plan" || input.phase === "verify"
-  return phaseAllowed && input.authorized
+  if (!input.workflow || !SubsystemPhase.workflow(input.workflow)) return false
+  return SubsystemPhase.hasCapability(input.workflow, input.capability)
 }
 
 export function runtimeNetworkAllowed(input: { workflow?: string; phase?: string; authorized: boolean }) {
-  if (["code-audit", "assessment", "remediate", "secure-review"].includes(input.workflow ?? "")) return false
-  return true
+  return input.workflow !== "code-audit"
 }
 
 function activeRuntimeAllowed(capability: SubsystemPhase.WorkflowCapability) {
   const workflow = selectedWorkflow()
   const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
   if (!activeWorkflowPhase(workflow, phase)) return false
-  if (capability !== "browser" && capability !== "zap") return true
-  return runtimeCapabilityAllowed({
-    workflow,
-    phase,
-    capability,
-    authorized: runtimePolicy(boundSession(), workflow) !== undefined,
-  })
+  return runtimeCapabilityAllowed({ workflow, phase, capability, authorized: false })
 }
 
 function localToolDefinitions() {
@@ -361,24 +214,14 @@ function localToolDefinitions() {
   const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
   if (!activeWorkflowPhase(workflow, phase)) return []
   const source = sourceToolsAvailable() && workflowCapability("source") ? [...SOURCE_TOOL_DEFS] : []
-  const sourceImport =
-    (workflow === "code-audit" && phase === "scope") ||
-    (workflow === "assessment" && phase === "brief") ||
-    (workflow === "secure-review" && phase === "map") ||
-    (workflow === "remediate" && phase === "intake")
-      ? [SOURCE_IMPORT_TOOL_DEF]
-      : []
-  const runtimeAuthorization =
-    (workflow === "assessment" && phase === "brief") || (workflow === "remediate" && phase === "intake")
-      ? [RUNTIME_AUTHORIZATION_TOOL_DEF]
-      : []
-  const git = !gitToolsAvailable()
-    ? []
-    : GIT_TOOL_DEFS.filter((tool) =>
-        tool.name === "review_prepare" ? workflowCapability("git-review") : workflowCapability("remediation-git"),
-      )
+  const sourceImport = workflow === "code-audit" && phase === "scope" ? [SOURCE_IMPORT_TOOL_DEF] : []
+  const git = gitToolsAvailable() && workflowCapability("audit-diff") && phase === "scope" ? [...GIT_TOOL_DEFS] : []
   const codeGraph = codeGraphToolsAvailable() && workflowCapability("code-graph") ? [...CODE_GRAPH_TOOL_DEFS] : []
-  return [...runtimeAuthorization, ...sourceImport, ...source, ...codeGraph, ...git]
+  const lab =
+    workflow === "code-audit" && (phase === "attack" || phase === "verify") && auditLabAvailable()
+      ? [AUDIT_LAB_TOOL_DEF]
+      : []
+  return [...sourceImport, ...source, ...codeGraph, ...git, ...lab]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -586,61 +429,6 @@ async function handleQuestion(
   })
 }
 
-// ── Publication Consent Is Host-Owned ─────────────────────────────
-// Remediation may prepare and commit locally without external side effects,
-// but it cannot turn model text into permission to push. The gateway itself
-// presents one fixed question and interprets the native elicitation response; only that
-// answer can unlock the Git publisher for this call.
-//
-// ─────────────────────────────────────────────────────────────────
-
-async function confirmRemediationPublish(
-  server: Server,
-  question: boolean,
-  circuit: CircuitBreakerConfig | undefined,
-  candidate: PublishCandidate,
-) {
-  if (!question) return false
-  const proofStages = candidate.proofs.reduce<Record<string, number>>((counts, proof) => {
-    counts[proof.stage] = (counts[proof.stage] ?? 0) + 1
-    return counts
-  }, {})
-  const proofSummary = Object.entries(proofStages)
-    .map(([stage, count]) => `${stage}: ${count}`)
-    .join(", ")
-  const visibleCommands = candidate.proofs
-    .slice(0, 3)
-    .map((proof) => `${proof.stage} ${JSON.stringify(proof.command)} → ${proof.exitCode}`)
-    .join("; ")
-  const hiddenCommands = Math.max(0, candidate.proofs.length - 3)
-  const remote = candidate.remoteURL ?? candidate.remote
-  const result = await handleQuestion(server, circuit, {
-    questions: [
-      {
-        header: "Publish fix",
-        question:
-          `Push ${candidate.branch} (${candidate.commit.slice(0, 12)}) to ${remote}` +
-          `${candidate.provider ? ` via ${candidate.provider}` : ""} and create a draft review? ` +
-          `${candidate.findingIDs.length} finding(s), ${candidate.changedFiles.length} changed file(s), ` +
-          `${candidate.patch.bytes} patch bytes (${candidate.patch.sha256.slice(0, 12)}). ` +
-          `Host-attested tests: ${proofSummary || "none"}. ${visibleCommands || "No command summary."}` +
-          `${hiddenCommands ? `; +${hiddenCommands} additional proof(s)` : ""}`,
-        options: [
-          { label: "Push draft", description: "Push the branch and create a draft PR or MR when possible." },
-          { label: "Keep local", description: "Keep the verified branch and commit local without network changes." },
-        ],
-        custom: false,
-      },
-    ],
-  })
-  const content = result.content[0]
-  if (!content || content.type !== "text") return false
-  const parsed = jsonRecord(content.text)
-  const answers = parsed?.answers
-  if (!Array.isArray(answers) || !isRecord(answers[0]) || !isStringArray(answers[0].answers)) return false
-  return answers[0].answers.includes("Push draft")
-}
-
 async function confirmSourceImport(
   server: Server,
   question: boolean,
@@ -671,66 +459,6 @@ async function confirmSourceImport(
   return Array.isArray(answers) && isRecord(answers[0]) && isStringArray(answers[0].answers)
     ? answers[0].answers.includes("Import repository")
     : false
-}
-
-async function authorizeRuntimeTesting(
-  sessionID: SessionID,
-  server: Server,
-  question: boolean,
-  circuit: CircuitBreakerConfig | undefined,
-  args: Record<string, unknown>,
-) {
-  const workflow = selectedWorkflow()
-  if (workflow !== "assessment" && workflow !== "remediate") throw new Error("runtime authorization is unavailable")
-  const origins = normalizedRuntimeOrigins(args.origins)
-  const maxToolCalls = Number.isInteger(args.max_tool_calls)
-    ? Math.min(2_000, Math.max(1, Number(args.max_tool_calls)))
-    : 200
-  if (!question) return { authorized: false, reason: "human-question-unavailable" }
-  const result = await handleQuestion(server, circuit, {
-    questions: [
-      {
-        header: "Runtime scope",
-        question:
-          `Authorize ${workflow} runtime testing for exactly ${origins.join(", ")} with at most ` +
-          `${maxToolCalls} browser/ZAP tool calls? cyberful-os and native shell networking remain disabled.`,
-        options: [
-          { label: "Authorize scope", description: "Permit only the displayed origins and bounded tool calls." },
-          { label: "Keep offline", description: "Continue the assessment without runtime network traffic." },
-        ],
-        custom: false,
-      },
-    ],
-  })
-  const content = result.content[0]
-  const parsed = content?.type === "text" ? jsonRecord(content.text) : undefined
-  const answers = parsed?.answers
-  const accepted =
-    Array.isArray(answers) &&
-    isRecord(answers[0]) &&
-    isStringArray(answers[0].answers) &&
-    answers[0].answers.includes("Authorize scope")
-  if (!accepted) {
-    // A visible "Keep offline" is a revocation, not merely a refusal to replace an older grant.
-    deleteVar(sessionID, RUNTIME_POLICY_VARIABLE)
-    deleteVar(sessionID, RUNTIME_USAGE_VARIABLE)
-    return { authorized: false, origins, reason: "human-declined" }
-  }
-  const policy: RuntimePolicy = {
-    version: 1,
-    workflow,
-    origins,
-    maxToolCalls,
-    createdAt: new Date().toISOString(),
-  }
-  setVar(
-    sessionID,
-    RUNTIME_POLICY_VARIABLE,
-    SessionVariable.decodeValue(policy),
-    "Host-owned runtime scope; MCP cannot modify it.",
-  )
-  deleteVar(sessionID, RUNTIME_USAGE_VARIABLE)
-  return { authorized: true, ...policy }
 }
 
 interface HandoffConfig {
@@ -1120,8 +848,8 @@ export function resolveBrowserUpstreamEnv(input: {
 // ── Upstreams Receive Least-Privilege Environments ───────────────
 // All built-in processes share the gateway as a parent but do not share the same
 // trust boundary. Only the ZAP bridge requires engagement API and MCP credentials;
-// cyberful-os exposes a shell and the browser does not need those secrets. Remediation
-// and ledger proof keys remain host-only for every upstream. Filtering a complete
+// cyberful-os exposes a shell and the browser does not need those secrets. Ledger
+// proof keys remain host-only for every upstream. Filtering a complete
 // environment here keeps each child launch explicit and independently reviewable.
 // ─────────────────────────────────────────────────────────────────
 export function upstreamProcessEnv(
@@ -1134,7 +862,6 @@ export function upstreamProcessEnv(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   )
-  delete env.CYBERFUL_REMEDIATION_PROOF_KEY
   delete env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
   if (key === "zap") return env
   delete env.CYBER_ZAP_API_KEY
@@ -1196,8 +923,6 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         for (const [k, v] of Object.entries(set)) env[k] = v
         for (const k of unset) delete env[k]
         env.CYBER_BROWSER_PROFILE_ID = String(browserProfile)
-        const policy = runtimePolicy(boundSession(), selectedWorkflow())
-        if (policy) env.CYBER_BROWSER_ALLOWED_ORIGINS = JSON.stringify(policy.origins)
       }
       if (key === "cyberful-os") {
         // ── Container Identity Includes Network Authority ──────────────────
@@ -1212,16 +937,12 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         const networkAllowed = runtimeNetworkAllowed({
           workflow,
           phase: process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim(),
-          authorized: runtimePolicy(boundSession(), workflow) !== undefined,
+          authorized: false,
         })
         const baseContainer =
           process.env.CYBERFUL_OS_CONTAINER?.trim() ||
           SubsystemPhase.expertContainerName(path.resolve(workarea), boundSession())
-        const appsecProfile =
-          workflow === "code-audit" ||
-          workflow === "assessment" ||
-          workflow === "remediate" ||
-          workflow === "secure-review"
+        const appsecProfile = workflow === "code-audit"
         const container = appsecProfile
           ? `${baseContainer.slice(0, 240)}-${networkAllowed ? "online" : "offline"}`
           : baseContainer
@@ -1229,7 +950,9 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBERFUL_OS_CONTAINER = container
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
-        if (!networkAllowed) env.CYBERFUL_OS_DOCKER_ARGS = "--network=none"
+        if (!networkAllowed)
+          env.CYBERFUL_OS_DOCKER_ARGS =
+            "--network=none --cpus=2 --memory=4g --pids-limit=512 --security-opt=no-new-privileges"
         process.env.CYBERFUL_OS_CONTAINER = container
         if (appsecProfile) bridgeContainers.add(container)
       }
@@ -1352,9 +1075,7 @@ export async function createGatewayServer(opts?: {
   const localTools = toolProfile === "full" ? localToolDefinitions() : []
   const localToolNames = new Set<string>(localTools.map((tool) => tool.name))
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name))
-    ? createCodeGraphToolHandler({
-        authorizeFixedTransition: (findingID) => authorizeFixedFinding(boundSession(), findingID),
-      })
+    ? createCodeGraphToolHandler()
     : undefined
   const handoff = handoffConfig()
   const question = questionEnabled()
@@ -1375,7 +1096,20 @@ export async function createGatewayServer(opts?: {
   // ─────────────────────────────────────────────────────────────
   const closeUpstreams = () =>
     (closing ??= settleOperations("one or more phase gateway resources failed to close", [
-      connected.close,
+      async () => {
+        const failures: unknown[] = []
+        try {
+          await connected.close()
+        } catch (error) {
+          failures.push(error)
+        }
+        try {
+          await cleanupAuditLabs()
+        } catch (error) {
+          failures.push(error)
+        }
+        if (failures.length > 0) throw new AggregateError(failures, "phase runtime and audit lab cleanup failed")
+      },
       () => usage.close(),
       ...(codeGraph ? [() => codeGraph.close()] : []),
     ]))
@@ -1423,13 +1157,6 @@ export async function createGatewayServer(opts?: {
       }
       return handleHandoff(handoff, args)
     }
-    if (localToolNames.has(name) && name === "runtime_authorization") {
-      try {
-        return text(await authorizeRuntimeTesting(sessionID, server, question, circuit, args))
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
-    }
     if (localToolNames.has(name) && name === "source_import") {
       try {
         return text(
@@ -1457,14 +1184,14 @@ export async function createGatewayServer(opts?: {
     }
     if (localToolNames.has(name) && isGitTool(name)) {
       try {
-        return text(
-          await handleGitTool(sessionID, name, args, {
-            confirmPublish: (candidate) => confirmRemediationPublish(server, question, circuit, candidate),
-            fixedFindings: (ids) =>
-              codeGraph?.fixedFindings(ids) ??
-              Promise.resolve({ ok: false, unresolved: [...ids, "Code Graph finding ledger is unavailable"] }),
-          }),
-        )
+        return text(await handleGitTool(sessionID, name, args))
+      } catch (error) {
+        return text({ error: error instanceof Error ? error.message : String(error) }, true)
+      }
+    }
+    if (localToolNames.has(name) && name === AUDIT_LAB_TOOL_DEF.name) {
+      try {
+        return text(await prepareAuditLab(args))
       } catch (error) {
         return text({ error: error instanceof Error ? error.message : String(error) }, true)
       }
@@ -1493,17 +1220,6 @@ export async function createGatewayServer(opts?: {
     }
     const upstream = selected.upstream
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
-    if (
-      (upstream.capability === "browser" || upstream.capability === "zap") &&
-      (selectedWorkflow() === "assessment" || selectedWorkflow() === "remediate")
-    ) {
-      const policy = runtimePolicy(sessionID)
-      if (!policy) return text({ error: "runtime testing lacks host authorization" }, true)
-      const scopeError = runtimeScopeError(adjusted.args, policy)
-      if (scopeError) return text({ error: scopeError }, true)
-      if (!consumeRuntimeToolCall(sessionID, policy))
-        return text({ error: "runtime testing exhausted its host-authorized tool-call budget" }, true)
-    }
     const startedAt = performance.now()
     try {
       const result = annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments)

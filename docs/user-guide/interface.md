@@ -32,8 +32,9 @@ palette.
 
 The **Workarea** field selects the durable engagement directory used for
 artifacts and evidence. Cyberful restores the last workarea asynchronously when
-one is available. A workarea supplied on the command line is displayed as a
-locked value.
+one is available and otherwise leaves the field empty. A workarea supplied on
+the command line is displayed as a locked value. While the editable field has
+focus, the white **×** at its right clears the complete value.
 
 The **Prompt** composer accepts the initial objective. Typing `/` at the start
 of the prompt opens the slash-command menu upward from the composer; typing `@`
@@ -41,6 +42,15 @@ opens reference and file suggestions. These autocomplete menus remain in the
 foreground when they overlap Workarea or another welcome-screen control.
 The empty composer shows an objective and example tailored to the currently
 selected workflow, and updates the hint immediately when the workflow changes.
+While the composer has focus, its white **×** clears all text and attachments.
+
+Near the bottom edge, the welcome screen shows a compact dark translucent panel
+centered on the screen. Its two left-aligned rows identify the active primary
+subsystem first and the optional local fallback model below it. The state text
+is green when available, yellow while checking, degraded, or deliberately
+disabled, and red when the probe could not reach a usable runtime. The snapshot
+is refreshed whenever the welcome route mounts; it does not start a phase or
+keep an additional background service alive.
 
 `Tab` cycles the available workflows before the first submission. The selected
 workflow is fixed when the session starts.

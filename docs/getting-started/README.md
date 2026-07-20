@@ -192,5 +192,5 @@ After completion, the session switches to **Ask**. You can use it to explore a
 finding, locate evidence, discuss remediation, or plan a follow-up test without
 losing the completed workarea.
 
-For the responsibilities and boundaries of every available mode, continue with
+For the responsibilities and boundaries of both security workflows, continue with
 [Application security workflows](../user-guide/workflows.md).

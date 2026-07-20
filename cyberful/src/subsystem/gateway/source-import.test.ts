@@ -323,8 +323,8 @@ describe("public source import policy", () => {
     expect(ran).toBe(false)
   })
 
-  test("imports complete history for Secure Review merge-base analysis", async () => {
-    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "secure-review"
+  test("imports complete history for Code Audit diff merge-base analysis", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "code-audit"
     const calls: string[][] = []
     const result = await handleSourceImport(
       {

@@ -1,14 +1,45 @@
-// ── TUI Home Route Layering Tests ────────────────────────────────
-// Reproduces the welcome screen's delayed workarea restore with the persistent
-//   Solid markers that previously let it repaint prompt autocomplete rows.
-// → cyberful/src/cli/cmd/tui/routes/home.tsx — keeps both layers mounted in paint order.
+// ── TUI Home Route Tests ─────────────────────────────────────────
+// Verifies welcome-screen overlay ordering and the semantic colors assigned to
+//   primary subsystem and fallback readiness states.
+// → cyberful/src/cli/cmd/tui/routes/home.tsx — owns the tested welcome surface.
 // ─────────────────────────────────────────────────────────────────
 
 import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { Show, createSignal } from "solid-js"
 import { PROMPT_OVERLAY_Z_INDEX } from "@tui/component/prompt/autocomplete"
-import { HomePromptSurface, HomeWorkareaLayer } from "./home"
+import {
+  HOME_STATUS_PANEL_BACKGROUND,
+  HomePromptSurface,
+  HomeWorkareaLayer,
+  homeRuntimePanelWidth,
+  homeRuntimeStatusTone,
+} from "./home"
+
+test("runtime indicators use green, yellow, and red semantic tones", () => {
+  expect(homeRuntimeStatusTone("available")).toBe("success")
+  expect(homeRuntimeStatusTone("checking")).toBe("warning")
+  expect(homeRuntimeStatusTone("degraded")).toBe("warning")
+  expect(homeRuntimeStatusTone("disabled")).toBe("warning")
+  expect(homeRuntimeStatusTone("unavailable")).toBe("error")
+})
+
+test("the runtime panel uses a dark translucent surface over the splash", () => {
+  expect(HOME_STATUS_PANEL_BACKGROUND.r).toBeLessThan(0.1)
+  expect(HOME_STATUS_PANEL_BACKGROUND.g).toBeLessThan(0.1)
+  expect(HOME_STATUS_PANEL_BACKGROUND.b).toBeLessThan(0.1)
+  expect(HOME_STATUS_PANEL_BACKGROUND.a).toBeGreaterThan(0)
+  expect(HOME_STATUS_PANEL_BACKGROUND.a).toBeLessThan(1)
+})
+
+test("the runtime panel adds four columns to its longest row", () => {
+  expect(
+    homeRuntimePanelWidth([
+      { title: "Subsystem", identity: "codex · gpt-5.6-sol", status: "available" },
+      { title: "Fallback", identity: "deepseek-v4-flash", status: "available" },
+    ]),
+  ).toBe("Subsystem codex · gpt-5.6-sol on".length + 4)
+})
 
 test("a workarea loaded after mount stays below slash suggestions", async () => {
   const [workareaReady, setWorkareaReady] = createSignal(false)

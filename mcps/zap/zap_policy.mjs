@@ -59,12 +59,11 @@ export function apiParameters(value) {
   )
 }
 
-// ── AppSec ZAP Calls Stay Inside The Host Authorization ────────────
-// Pentest retains its engagement-owned ZAP surface. Assessment and Remediate
-// pass an exact origin list to the bridge; in that profile, arbitrary actions,
-// OAST callbacks, redirects, and unknown official tools fail closed. Direct
-// HTTP requests are checked again after their raw request has been normalized.
-// → cyberful/src/subsystem/gateway/server.ts — also budgets every scoped call.
+// ── Scoped ZAP Calls Stay Inside Host Authorization ───────────────
+// Pentest owns its engagement ZAP surface. When the host supplies an exact
+// origin list, arbitrary actions, OAST callbacks, redirects, and unknown
+// official tools fail closed. Direct HTTP requests are checked again after
+// their raw request has been normalized.
 // ────────────────────────────────────────────────────────────────────
 
 export function parseZapAllowedOrigins(raw) {

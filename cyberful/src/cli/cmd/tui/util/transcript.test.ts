@@ -16,7 +16,7 @@ describe("session transcript completion export", () => {
       type: "completion",
       workflow: "pentest",
       outcome: "warning",
-      title: "Assessment completed with warnings",
+      title: "Pentest completed with warnings",
       summaryMarkdown: "The PDF renderer failed; the source report is available.",
       workarea: "Client Portal",
       artifacts: [{ label: "Report [source]", path: "REPORT final.md", mime: "text/markdown", primary: true }],
@@ -25,7 +25,7 @@ describe("session transcript completion export", () => {
 
     expect(formatPart(part, { thinking: false, toolDetails: false, assistantMetadata: false })).toContain(
       [
-        "## Assessment completed with warnings",
+        "## Pentest completed with warnings",
         "",
         "**Outcome:** warning",
         "",

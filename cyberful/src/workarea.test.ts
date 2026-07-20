@@ -15,6 +15,7 @@ import {
   replaceWorkareaFile,
   workareaAbsolutePath,
   workareaDirectoryName,
+  workareaProjectRoot,
 } from "./workarea"
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -38,6 +39,16 @@ describe("workarea", () => {
     expect(() => workareaDirectoryName("../lexroom")).toThrow("Workarea cannot contain")
     expect(() => workareaDirectoryName("lexroom/ai")).toThrow("Workarea cannot contain")
     expect(() => workareaDirectoryName("lexroom\\ai")).toThrow("Workarea cannot contain")
+  })
+
+  test("uses one project root for saving and restoring the latest workarea", () => {
+    expect(workareaProjectRoot({ directory: "/project", worktree: "/worktree", fallback: "/fallback" })).toBe(
+      "/project",
+    )
+    expect(workareaProjectRoot({ directory: undefined, worktree: "/worktree", fallback: "/fallback" })).toBe(
+      "/worktree",
+    )
+    expect(workareaProjectRoot({ directory: undefined, worktree: undefined, fallback: "/fallback" })).toBe("/fallback")
   })
 
   test("creates the workarea directory", async () => {

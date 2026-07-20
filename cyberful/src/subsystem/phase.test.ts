@@ -33,11 +33,11 @@ describe("Codex phase registry", () => {
     expect(SubsystemPhase.sessionUsesCodexRuntime("pentest", [{ role: "user", agent: "ordinary-agent" }])).toBe(false)
   })
 
-  test("persisted prefixed phase names resume through their renamed persona", () => {
-    expect(SubsystemPhase.canonicalPhase("pentest", "pentest-exploit")).toBe("exploit")
-    expect(SubsystemPhase.workflowOf("pentest-report")).toBe("pentest")
-    expect(SubsystemPhase.personaPath("/tmp/agents/pentest", "pentest-verify")).toBe("/tmp/agents/pentest/verify.md")
-    expect(SubsystemPhase.nextAfterExpertPhase("pentest", "pentest-hacker")).toBe("verify")
+  test("phase names are direct and workflow-scoped", () => {
+    expect(SubsystemPhase.canonicalPhase("pentest", "exploit")).toBe("exploit")
+    expect(SubsystemPhase.workflowOf("pentest-report")).toBeUndefined()
+    expect(SubsystemPhase.personaPath("/tmp/agents/pentest", "verify")).toBe("/tmp/agents/pentest/verify.md")
+    expect(SubsystemPhase.nextAfterExpertPhase("pentest", "hacker")).toBe("verify")
   })
 
   test("every pentest phase is Expert-owned", () => {
@@ -102,33 +102,25 @@ describe("Codex phase registry", () => {
     expect(() => SubsystemPhase.expertContainerName("/projects/alpha/work/security", "")).toThrow("session id")
   })
 
-  test("workflows are atomic named chains with one kickoff phase", () => {
-    expect(SubsystemPhase.listWorkflows().map((m) => m.name)).toEqual([
-      "pentest",
-      "code-audit",
-      "assessment",
-      "remediate",
-      "secure-review",
-      "ask",
-    ]) // selector source
+  test("the two selectable workflows are atomic named chains with one kickoff phase", () => {
+    expect(SubsystemPhase.listWorkflows().map((m) => m.name)).toEqual(["pentest", "code-audit"])
     expect(SubsystemPhase.isWorkflow("pentest")).toBe(true)
     expect(SubsystemPhase.isWorkflow("code-audit")).toBe(true)
+    expect(SubsystemPhase.isWorkflow("ask")).toBe(false)
+    expect(SubsystemPhase.workflow("ask")?.kind).toBe("interactive")
     expect(SubsystemPhase.workflowKickoffPhase("pentest")).toBe("brief") // TUI maps a workflow to its kickoff agent
     expect(SubsystemPhase.workflowKickoffPhase("code-audit")).toBe("scope")
-    expect(SubsystemPhase.workflowKickoffPhase("assessment")).toBe("brief")
-    expect(SubsystemPhase.workflowKickoffPhase("remediate")).toBe("intake")
-    expect(SubsystemPhase.workflowKickoffPhase("secure-review")).toBe("map")
-    expect(SubsystemPhase.workflowKickoffPhase("ask")).toBe("ask")
+    expect(SubsystemPhase.workflowKickoffPhase("ask")).toBe("ask") // internal post-completion follow-up
     expect(SubsystemPhase.workflowKickoffPhase("nope")).toBeUndefined()
     expect(SubsystemPhase.workflowOf("recon")).toBe("pentest") // globally unique phases can infer their workflow
-    for (const shared of ["brief", "map", "verify", "report"]) expect(SubsystemPhase.workflowOf(shared)).toBeUndefined()
+    expect(SubsystemPhase.workflowOf("brief")).toBe("pentest")
+    expect(SubsystemPhase.workflowOf("attack")).toBe("code-audit")
+    for (const shared of ["verify", "report"]) expect(SubsystemPhase.workflowOf(shared)).toBeUndefined()
     expect(SubsystemPhase.workflowOf("pentest-recon")).toBeUndefined()
     expect(SubsystemPhase.workflowOf("small-worker")).toBeUndefined() // a non-phase agent belongs to no workflow
     // workflowForKickoffAgent considers only a workflow's first phase, unlike workflowOf.
-    expect(SubsystemPhase.workflowForKickoffAgent("brief")).toBeUndefined() // Pentest and Assessment share it
+    expect(SubsystemPhase.workflowForKickoffAgent("brief")).toBe("pentest")
     expect(SubsystemPhase.workflowForKickoffAgent("scope")).toBe("code-audit")
-    expect(SubsystemPhase.workflowForKickoffAgent("intake")).toBe("remediate")
-    expect(SubsystemPhase.workflowForKickoffAgent("map")).toBe("secure-review")
     expect(SubsystemPhase.workflowForKickoffAgent("ask")).toBe("ask")
     expect(SubsystemPhase.workflowForKickoffAgent("recon")).toBeUndefined() // in the chain but not the kickoff
     expect(SubsystemPhase.workflowForKickoffAgent("pentest-recon")).toBeUndefined()
@@ -542,7 +534,7 @@ describe("phase orchestration (runAndAdvance)", () => {
             handoff: {
               ...handoff,
               completion: {
-                title: "Authorized assessment completed",
+                title: "Pentest completed",
                 summaryMarkdown: "The report is ready.",
                 artifacts: [{ label: "Report", path: "reports/security-report.pdf" }],
               },
@@ -552,7 +544,7 @@ describe("phase orchestration (runAndAdvance)", () => {
       }),
     )
     expect(out.completion).toEqual({
-      title: "Authorized assessment completed",
+      title: "Pentest completed",
       summaryMarkdown: "The report is ready.",
       artifacts: [{ label: "Report", path: "reports/security-report.pdf" }],
     })

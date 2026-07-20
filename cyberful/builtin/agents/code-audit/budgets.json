@@ -1,9 +1,10 @@
 {
-  "$comment": "Wall-clock budgets in minutes for the graph-assisted code-audit workflow.",
+  "$comment": "Wall-clock budgets in minutes for the deep code-audit workflow.",
   "scope": 30,
   "index": 60,
-  "trace": 60,
-  "hunt": 60,
-  "verify": 60,
-  "report": 30
+  "trace": 75,
+  "hunt": 90,
+  "attack": 90,
+  "verify": 75,
+  "report": 45
 }

@@ -29,6 +29,32 @@ const EXCLUDED_DIRECTORIES = new Set([
   "target",
   "work",
 ])
+const AUDIT_LAB_MANIFESTS = new Set([
+  "Cargo.lock",
+  "Cargo.toml",
+  "Gemfile",
+  "Gemfile.lock",
+  "Pipfile",
+  "Pipfile.lock",
+  "bun.lock",
+  "bun.lockb",
+  "composer.json",
+  "composer.lock",
+  "go.mod",
+  "go.sum",
+  "npm-shrinkwrap.json",
+  "package-lock.json",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "poetry.lock",
+  "pom.xml",
+  "pyproject.toml",
+  "requirements-dev.txt",
+  "requirements.txt",
+  "uv.lock",
+  "yarn.lock",
+])
 
 export const SOURCE_TOOL_DEFS = [
   {
@@ -390,6 +416,70 @@ async function candidateFiles(root: string, relativePrefix = "") {
     }
   }
   return files.sort((left, right) => left.localeCompare(right))
+}
+
+// ── Disposable Lab Copies Never Become Authoritative Source ─────────
+// Attack and Verify need a mutable runtime tree, while every static decision is
+// anchored to the sealed source. The host alone materializes that tree beneath
+// the workarea. A manifest-only pass supports dependency bootstrap without
+// exposing project code to a networked container; the complete pass follows
+// only after that container exits.
+// ────────────────────────────────────────────────────────────────────
+export async function materializeSourceForAuditLab(
+  destinationRoot: string,
+  prefix = "",
+  options: { readonly manifestsOnly?: boolean } = {},
+) {
+  const context = sourceRoots()
+  if (!context) throw new Error("audit lab requires absolute source, workarea, and source-store roots")
+  const workareaRoot = await realpath(context.workareaRoot)
+  const destination = path.resolve(destinationRoot)
+  if (!isContained(workareaRoot, destination) || destination === workareaRoot)
+    throw new Error("audit lab destination must be a child of the workarea")
+  const relativePrefix = requestedRelativePath(prefix)
+  const effective = await resolveEffectiveSource(context.sourceRoot, workareaRoot)
+  const sourceBase = await containedExistingPath(effective.root, relativePrefix)
+  if (!(await lstat(sourceBase)).isDirectory()) throw new Error("audit lab source path must be a directory")
+  await mkdir(destination, { recursive: true, mode: 0o700 })
+  const destinationMetadata = await lstat(destination)
+  if (!destinationMetadata.isDirectory() || destinationMetadata.isSymbolicLink())
+    throw new Error("audit lab destination is unsafe")
+  if (!isContained(workareaRoot, await realpath(destination))) throw new Error("audit lab destination escapes workarea")
+  const candidates = await candidateFiles(effective.root, relativePrefix)
+  const selected = candidates.filter(
+    (file) => !options.manifestsOnly || AUDIT_LAB_MANIFESTS.has(path.basename(file)),
+  )
+  const digest = createHash("sha256")
+  for (const source of selected) {
+    const relative = path.relative(sourceBase, source)
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue
+    const target = path.join(destination, relative)
+    if (!isContained(destination, target)) throw new Error("audit lab file escapes its destination")
+    let parent = destination
+    for (const segment of path.dirname(relative).split(path.sep).filter((item) => item && item !== ".")) {
+      parent = path.join(parent, segment)
+      const existing = await optionalEntry(parent)
+      if (!existing) await mkdir(parent, { mode: 0o700 })
+      const metadata = await lstat(parent)
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error("audit lab dependency bootstrap created an unsafe source parent")
+      if (!isContained(destination, await realpath(parent))) throw new Error("audit lab source parent escapes its root")
+    }
+    const existingTarget = await optionalEntry(target)
+    if (existingTarget && (!existingTarget.isFile() || existingTarget.isSymbolicLink()))
+      throw new Error("audit lab dependency bootstrap created an unsafe source target")
+    await copyFile(source, target)
+    const bytes = await readFile(source)
+    digest.update(createHash("sha256").update(bytes).digest("hex")).update("  ").update(relative).update("\n")
+  }
+  return {
+    source_kind: effective.kind,
+    source_prefix: relativePrefix.replaceAll(path.sep, "/") || ".",
+    file_count: selected.length,
+    sha256: digest.digest("hex"),
+    manifests_only: options.manifestsOnly === true,
+    files: selected.map((file) => path.relative(sourceBase, file).replaceAll(path.sep, "/")),
+  }
 }
 
 async function mapBounded<T, R>(items: readonly T[], operation: (item: T) => Promise<R>) {

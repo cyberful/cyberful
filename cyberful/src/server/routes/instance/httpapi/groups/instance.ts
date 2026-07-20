@@ -1,7 +1,8 @@
 // ── Instance Capability Endpoint Contracts ──────────────────────
 // Declares directory-scoped routes for agents, commands, formatting, skills,
-// repository state, and experimental instance capability discovery.
+// repository state, runtime readiness, and instance capability discovery.
 // → cyberful/src/server/routes/instance/httpapi/handlers/instance.ts — serves these capabilities.
+// → cyberful/src/subsystem/status.ts — supplies the runtime readiness contract values.
 // ─────────────────────────────────────────────────────────────────
 
 import { Agent } from "@/agent/agent"
@@ -27,6 +28,19 @@ const PathInfo = Schema.Struct({
   worktree: Schema.String,
   directory: Schema.String,
 }).annotate({ identifier: "Path" })
+
+export const RuntimeStatus = Schema.Struct({
+  primary: Schema.Struct({
+    name: Schema.String,
+    model: Schema.String,
+    version: Schema.optional(Schema.String),
+    status: Schema.Literals(["available", "degraded", "unavailable"]),
+  }),
+  fallback: Schema.Struct({
+    model: Schema.optional(Schema.String),
+    status: Schema.Literals(["available", "disabled", "unavailable"]),
+  }),
+}).annotate({ identifier: "RuntimeStatus" })
 
 export const VcsDiffQuery = Schema.Struct({
   ...DirectoryRoutingQueryFields,
@@ -57,6 +71,7 @@ export const InstancePaths = {
   agent: "/agent",
   skill: "/skill",
   formatter: "/formatter",
+  runtimeStatus: "/runtime/status",
 } as const
 
 export const InstanceApi = HttpApi.make("instance")
@@ -178,6 +193,16 @@ export const InstanceApi = HttpApi.make("instance")
             identifier: "formatter.status",
             summary: "Get formatter status",
             description: "Get formatter status",
+          }),
+        ),
+        HttpApiEndpoint.get("runtimeStatus", InstancePaths.runtimeStatus, {
+          query: DirectoryRoutingQuery,
+          success: described(RuntimeStatus, "Subsystem and fallback readiness"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "runtime.status",
+            summary: "Get runtime status",
+            description: "Probe the active subsystem and optional local fallback server.",
           }),
         ),
       )

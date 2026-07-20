@@ -305,7 +305,7 @@ describe("finding ledger exports", () => {
         weakness: "CWE-78",
         severity: "high",
         confidence: "high",
-        status: "fixed",
+        status: "confirmed",
         locations: [{ path: "execute.ts", startLine: 4, message: "Untrusted value reaches exec." }],
         evidence: [{ kind: "code", description: "Interprocedural taint path from request.body to exec." }],
         remediation: "Use a fixed executable and pass validated arguments without a shell.",

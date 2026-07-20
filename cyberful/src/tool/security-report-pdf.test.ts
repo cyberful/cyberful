@@ -183,8 +183,8 @@ describe("renderMarkdownReportToPdf", () => {
     const workareaCwd = await temporaryDirectory("cyb-empty-report-test-")
     const options = {
       workareaCwd,
-      sourcePath: "ASSESSMENT_REPORT.md",
-      outputPath: "reports/security-assessment.pdf",
+      sourcePath: "CODE_AUDIT_REPORT.md",
+      outputPath: "reports/code-audit-report.pdf",
     }
 
     expect(await renderMarkdownReportToPdf(options)).toBeUndefined()
@@ -227,14 +227,14 @@ describe("renderMarkdownReportToPdf", () => {
       }),
     ).rejects.toThrow("sourcePath must be a regular Markdown file")
 
-    await writeFile(path.join(workareaCwd, "ASSESSMENT_REPORT.md"), "# Assessment\n")
+    await writeFile(path.join(workareaCwd, "REPORT.md"), "# Pentest\n")
     await mkdir(path.join(outside, "reports"))
     await symlink(path.join(outside, "reports"), path.join(workareaCwd, "reports"), "dir")
     await expect(
       renderMarkdownReportToPdf({
         workareaCwd,
-        sourcePath: "ASSESSMENT_REPORT.md",
-        outputPath: "reports/security-assessment.pdf",
+        sourcePath: "REPORT.md",
+        outputPath: "reports/security-report.pdf",
       }),
     ).rejects.toThrow("outputPath resolves outside the workarea")
   })

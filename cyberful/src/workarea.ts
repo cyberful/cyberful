@@ -57,6 +57,22 @@ export function workareaAbsolutePath(projectPath: string, input: string) {
   return path.join(path.resolve(projectPath), workareaRelativePath(input))
 }
 
+// ── Workarea State Uses The Server Project Root ─────────────────
+// TUI project contexts expose both a project directory and a VCS worktree, but
+// non-Git projects may report a synthetic root worktree. Session submission and
+// home-screen restoration must therefore prefer the server project directory,
+// or they can write and read the persisted selection under different keys. The
+// process fallback applies only when neither project path is available.
+// ─────────────────────────────────────────────────────────────────
+
+export function workareaProjectRoot(input: {
+  directory: string | undefined
+  worktree: string | undefined
+  fallback: string
+}) {
+  return input.directory || input.worktree || input.fallback
+}
+
 // ── Every Workarea Segment Must Be A Plain Directory ─────────────
 // A lexical `project/work/name` check is insufficient because either directory
 // may already be a symlink into an unrelated location. Create only one segment

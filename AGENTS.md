@@ -24,9 +24,18 @@ When working under `mcps/`, follow [`mcps/AGENTS.md`](mcps/AGENTS.md).
 
 ## Runtime contract
 
-Pentest mode uses Codex as its primary backend. The active chain is:
+Pentest uses Codex as its primary backend. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
+
+Code Audit is read-only with respect to the user checkout. Its chain is:
+
+`scope -> index -> trace -> hunt -> attack -> verify -> report`
+
+Code Audit keeps external target traffic disabled. Attack and Verify may use a
+phase-owned disposable lab: dependency bootstrap sees manifests only, project
+execution is offline and loopback-only, and the mutable lab is destroyed when
+the gateway closes.
 
 Each sequential phase owns one fresh Codex app-server process and a private
 host gateway. Phase advancement requires a validated `handoff`; the current

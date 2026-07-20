@@ -76,17 +76,18 @@ readiness record with the current Code Graph snapshot and coverage rows. The
 check runs only after the phase gateway is proven stopped. Failure keeps Trace
 closed, including for a budget-generated handoff.
 
-Pentest uses the fixed chain `brief → recon → exploit → hacker → verify →
-report`; the other phase sequences are documented in the
-[workflow guide](../user-guide/workflows.md).
+Pentest uses `brief → recon → exploit → hacker → verify → report`. Code Audit
+uses `scope → index → trace → hunt → attack → verify → report`. The
+[workflow guide](../user-guide/workflows.md) defines every artifact and gate.
 
 ## Tools and network access
 
 The private gateway combines first-party host tools, bounded Code Graph
 queries, cyberful-os, the isolated browser, and ZAP where the phase is eligible.
-Keys and dynamic ports remain host-owned. Code Audit and Secure Review receive
-no target-traffic route; Assessment and Remediate require an explicit,
-origin-scoped runtime authorization.
+Keys and dynamic ports remain host-owned. Pentest receives the live-target
+traffic route recorded by its mission. Code Audit remains offline: its Attack
+and Verify phases can bootstrap dependencies in a source-blind disposable
+container, then execute and attack the project on loopback inside cyberful-os.
 
 The gateway stops before the next phase starts, so tool registrations, traffic
 grants, and ephemeral credentials do not leak across phases.

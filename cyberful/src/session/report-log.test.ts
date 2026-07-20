@@ -23,9 +23,6 @@ describe("phase transcript paths", () => {
     expect(expertTranscriptFile(location, "ses_1", "verify", "code-audit")).toBe(
       path.join("/project", "logs", "session-logs", "session-ses_1.expert-code-audit-verify.jsonl"),
     )
-    expect(expertTranscriptFile(location, "ses_1", "verify", "assessment")).toBe(
-      path.join("/project", "logs", "session-logs", "session-ses_1.expert-assessment-verify.jsonl"),
-    )
     expect(expertTranscriptFile(location, "ses_1", "verify", "pentest")).toBe(
       path.join("/project", "logs", "session-logs", "session-ses_1.expert-verify.jsonl"),
     )

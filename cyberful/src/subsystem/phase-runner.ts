@@ -901,7 +901,7 @@ async function executeFallback(input: {
       permission: { kind: "autonomous" },
       model: input.config.model,
       baseInstructions: `${input.config.systemPrompt}\n\n${input.trustBoundaryInstructions}`,
-      networkAccess: !["code-audit", "assessment", "remediate", "secure-review"].includes(input.spec.workflow ?? ""),
+      networkAccess: input.spec.workflow !== "code-audit",
       env: {
         TMPDIR: temporaryDirectory,
         TMPPREFIX: path.join(temporaryDirectory, "zsh"),
@@ -1291,7 +1291,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       cwd: spec.workareaCwd,
       permission: { kind: "autonomous" },
       model: spec.model,
-      networkAccess: !["code-audit", "assessment", "remediate", "secure-review"].includes(spec.workflow ?? ""),
+      networkAccess: spec.workflow !== "code-audit",
       env: {
         TMPDIR: shellTemporaryDirectory,
         TMPPREFIX: path.join(shellTemporaryDirectory, "zsh"),

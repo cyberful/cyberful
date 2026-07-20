@@ -7,7 +7,7 @@
 import { buildClientParams } from './core/params.gen';
 import type { Client, Options as Options2, TDataShape } from './client/types.gen';
 import { client } from './client.gen';
-import type { AppAgentsErrors, AppAgentsResponses, AppLogErrors, AppLogResponses, AppSkillsErrors, AppSkillsResponses, CommandListErrors, CommandListResponses, Config as Config3, ConfigGetErrors, ConfigGetResponses, ConfigUpdateErrors, ConfigUpdateResponses, EventSubscribeResponses, EventTuiCommandExecute2, EventTuiPromptAppend2, EventTuiSessionSelect2, EventTuiToastShow2, FileListErrors, FileListResponses, FilePartInput, FileReadErrors, FileReadResponses, FileStatusErrors, FileStatusResponses, FindFilesErrors, FindFilesResponses, FindTextErrors, FindTextResponses, FormatterStatusErrors, FormatterStatusResponses, GlobalConfigGetErrors, GlobalConfigGetResponses, GlobalConfigUpdateErrors, GlobalConfigUpdateResponses, GlobalDisposeErrors, GlobalDisposeResponses, GlobalEventErrors, GlobalEventResponses, GlobalHealthErrors, GlobalHealthResponses, InstanceDisposeErrors, InstanceDisposeResponses, Part as Part2, PartDeleteErrors, PartDeleteResponses, PartUpdateErrors, PartUpdateResponses, PathGetErrors, PathGetResponses, ProjectCurrentErrors, ProjectCurrentResponses, ProjectInitGitErrors, ProjectInitGitResponses, ProjectListErrors, ProjectListResponses, ProjectUpdateErrors, ProjectUpdateResponses, PtyConnectErrors, PtyConnectResponses, PtyConnectTokenErrors, PtyConnectTokenResponses, PtyCreateErrors, PtyCreateResponses, PtyGetErrors, PtyGetResponses, PtyListErrors, PtyListResponses, PtyRemoveErrors, PtyRemoveResponses, PtyShellsErrors, PtyShellsResponses, PtyUpdateErrors, PtyUpdateResponses, QuestionAnswer, QuestionListErrors, QuestionListResponses, QuestionRejectErrors, QuestionRejectResponses, QuestionReplyErrors, QuestionReplyResponses, SessionAbortErrors, SessionAbortResponses, SessionChildrenErrors, SessionChildrenResponses, SessionCommandErrors, SessionCommandResponses, SessionCreateErrors, SessionCreateResponses, SessionDeleteErrors, SessionDeleteMessageErrors, SessionDeleteMessageResponses, SessionDeleteResponses, SessionDelivery, SessionDiffErrors, SessionDiffResponses, SessionForkErrors, SessionForkResponses, SessionGetErrors, SessionGetResponses, SessionListErrors, SessionListResponses, SessionMessageErrors, SessionMessageResponses, SessionMessagesErrors, SessionMessagesResponses, SessionPromptAsyncErrors, SessionPromptAsyncResponses, SessionPromptErrors, SessionPromptResponses, SessionRevertErrors, SessionRevertResponses, SessionShellErrors, SessionShellResponses, SessionStatusErrors, SessionStatusResponses, SessionTodoErrors, SessionTodoResponses, SessionUnrevertErrors, SessionUnrevertResponses, SessionUpdateErrors, SessionUpdateResponses, TextPartInput, TuiAppendPromptErrors, TuiAppendPromptResponses, TuiClearPromptErrors, TuiClearPromptResponses, TuiExecuteCommandErrors, TuiExecuteCommandResponses, TuiOpenHelpErrors, TuiOpenHelpResponses, TuiOpenSessionsErrors, TuiOpenSessionsResponses, TuiPublishErrors, TuiPublishResponses, TuiSelectSessionErrors, TuiSelectSessionResponses, TuiShowToastErrors, TuiShowToastResponses, TuiSubmitPromptErrors, TuiSubmitPromptResponses, VcsApplyErrors, VcsApplyResponses, VcsDiffErrors, VcsDiffRawErrors, VcsDiffRawResponses, VcsDiffResponses, VcsGetErrors, VcsGetResponses, VcsStatusErrors, VcsStatusResponses } from './types.gen';
+import type { AppAgentsErrors, AppAgentsResponses, AppLogErrors, AppLogResponses, AppSkillsErrors, AppSkillsResponses, CommandListErrors, CommandListResponses, Config as Config3, ConfigGetErrors, ConfigGetResponses, ConfigUpdateErrors, ConfigUpdateResponses, EventSubscribeResponses, EventTuiCommandExecute2, EventTuiPromptAppend2, EventTuiSessionSelect2, EventTuiToastShow2, FileListErrors, FileListResponses, FilePartInput, FileReadErrors, FileReadResponses, FileStatusErrors, FileStatusResponses, FindFilesErrors, FindFilesResponses, FindTextErrors, FindTextResponses, FormatterStatusErrors, FormatterStatusResponses, GlobalConfigGetErrors, GlobalConfigGetResponses, GlobalConfigUpdateErrors, GlobalConfigUpdateResponses, GlobalDisposeErrors, GlobalDisposeResponses, GlobalEventErrors, GlobalEventResponses, GlobalHealthErrors, GlobalHealthResponses, InstanceDisposeErrors, InstanceDisposeResponses, Part as Part2, PartDeleteErrors, PartDeleteResponses, PartUpdateErrors, PartUpdateResponses, PathGetErrors, PathGetResponses, ProjectCurrentErrors, ProjectCurrentResponses, ProjectInitGitErrors, ProjectInitGitResponses, ProjectListErrors, ProjectListResponses, ProjectUpdateErrors, ProjectUpdateResponses, PtyConnectErrors, PtyConnectResponses, PtyConnectTokenErrors, PtyConnectTokenResponses, PtyCreateErrors, PtyCreateResponses, PtyGetErrors, PtyGetResponses, PtyListErrors, PtyListResponses, PtyRemoveErrors, PtyRemoveResponses, PtyShellsErrors, PtyShellsResponses, PtyUpdateErrors, PtyUpdateResponses, QuestionAnswer, QuestionListErrors, QuestionListResponses, QuestionRejectErrors, QuestionRejectResponses, QuestionReplyErrors, QuestionReplyResponses, RuntimeStatusErrors, RuntimeStatusResponses, SessionAbortErrors, SessionAbortResponses, SessionChildrenErrors, SessionChildrenResponses, SessionCommandErrors, SessionCommandResponses, SessionCreateErrors, SessionCreateResponses, SessionDeleteErrors, SessionDeleteMessageErrors, SessionDeleteMessageResponses, SessionDeleteResponses, SessionDelivery, SessionDiffErrors, SessionDiffResponses, SessionForkErrors, SessionForkResponses, SessionGetErrors, SessionGetResponses, SessionListErrors, SessionListResponses, SessionMessageErrors, SessionMessageResponses, SessionMessagesErrors, SessionMessagesResponses, SessionPromptAsyncErrors, SessionPromptAsyncResponses, SessionPromptErrors, SessionPromptResponses, SessionRevertErrors, SessionRevertResponses, SessionShellErrors, SessionShellResponses, SessionStatusErrors, SessionStatusResponses, SessionTodoErrors, SessionTodoResponses, SessionUnrevertErrors, SessionUnrevertResponses, SessionUpdateErrors, SessionUpdateResponses, TextPartInput, TuiAppendPromptErrors, TuiAppendPromptResponses, TuiClearPromptErrors, TuiClearPromptResponses, TuiExecuteCommandErrors, TuiExecuteCommandResponses, TuiOpenHelpErrors, TuiOpenHelpResponses, TuiOpenSessionsErrors, TuiOpenSessionsResponses, TuiPublishErrors, TuiPublishResponses, TuiSelectSessionErrors, TuiSelectSessionResponses, TuiShowToastErrors, TuiShowToastResponses, TuiSubmitPromptErrors, TuiSubmitPromptResponses, VcsApplyErrors, VcsApplyResponses, VcsDiffErrors, VcsDiffRawErrors, VcsDiffRawResponses, VcsDiffResponses, VcsGetErrors, VcsGetResponses, VcsStatusErrors, VcsStatusResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -369,6 +369,24 @@ export class Path extends HeyApiClient {
         const params = buildClientParams([parameters], [{ args: [{ in: 'query', key: 'directory' }] }]);
         return (options?.client ?? this.client).get<PathGetResponses, PathGetErrors, ThrowOnError>({
             url: '/path',
+            ...options,
+            ...params
+        });
+    }
+}
+
+export class Runtime extends HeyApiClient {
+    /**
+     * Get runtime status
+     *
+     * Probe the active subsystem and optional local fallback server.
+     */
+    public status<ThrowOnError extends boolean = false>(parameters?: {
+        directory?: string;
+    }, options?: Options<never, ThrowOnError>) {
+        const params = buildClientParams([parameters], [{ args: [{ in: 'query', key: 'directory' }] }]);
+        return (options?.client ?? this.client).get<RuntimeStatusResponses, RuntimeStatusErrors, ThrowOnError>({
+            url: '/runtime/status',
             ...options,
             ...params
         });
@@ -1621,6 +1639,11 @@ export class ControlPlaneClient extends HeyApiClient {
     private _path?: Path;
     get path(): Path {
         return this._path ??= new Path({ client: this.client });
+    }
+
+    private _runtime?: Runtime;
+    get runtime(): Runtime {
+        return this._runtime ??= new Runtime({ client: this.client });
     }
     
     private _vcs?: Vcs;

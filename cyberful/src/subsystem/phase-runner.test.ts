@@ -779,19 +779,19 @@ describe("runPhase transcript persistence", () => {
   test("workflow-scopes shared phase artifact paths", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "phase-workflow-scope-")))
     try {
-      const assessment = SubsystemPhaseRunner.artifactManifestPath({
-        workflow: "assessment",
+      const codeAudit = SubsystemPhaseRunner.artifactManifestPath({
+        workflow: "code-audit",
         phase: "verify",
         workareaCwd: root,
       })
-      const remediate = SubsystemPhaseRunner.artifactManifestPath({
-        workflow: "remediate",
+      const pentest = SubsystemPhaseRunner.artifactManifestPath({
+        workflow: "pentest",
         phase: "verify",
         workareaCwd: root,
       })
-      expect(assessment).toBe(join(root, "raw", "phase-manifests", "assessment", "verify.sha256"))
-      expect(remediate).toBe(join(root, "raw", "phase-manifests", "remediate", "verify.sha256"))
-      expect(assessment).not.toBe(remediate)
+      expect(codeAudit).toBe(join(root, "raw", "phase-manifests", "code-audit", "verify.sha256"))
+      expect(pentest).toBe(join(root, "raw", "phase-manifests", "pentest", "verify.sha256"))
+      expect(codeAudit).not.toBe(pentest)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

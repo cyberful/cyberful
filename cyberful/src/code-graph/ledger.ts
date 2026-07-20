@@ -194,10 +194,8 @@ export function parseFindingTransition(value: unknown): FindingTransition {
 
 const allowedTransitions: Readonly<Record<FindingStatus, readonly FindingStatus[]>> = {
   suspected: ["confirmed", "dismissed"],
-  confirmed: ["fixed", "residual", "dismissed"],
+  confirmed: ["dismissed"],
   dismissed: ["suspected"],
-  fixed: ["residual"],
-  residual: ["confirmed", "fixed", "dismissed"],
 }
 
 function resultLevel(severity: FindingSeverity): "error" | "warning" | "note" {
@@ -215,8 +213,7 @@ function precision(confidence: FindingConfidence): "very-high" | "high" | "mediu
 // Recording the same root cause enriches its evidence without resetting a
 // verifier's decision. Lifecycle changes instead use a constrained state
 // machine and an immutable reasoned transition. This prevents a repeated model
-// proposal from silently reviving, dismissing, or fixing an authoritative
-// finding and preserves remediation provenance for later assessment.
+// proposal from silently reviving or dismissing an authoritative finding.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class FindingLedger {
@@ -281,9 +278,7 @@ export class FindingLedger {
   }
 
   sarif(sourceFindings: readonly SecurityFinding[] = this.#store.findings()): SarifExport {
-    const findings = sourceFindings.filter(
-      (finding) => finding.status === "confirmed" || finding.status === "fixed" || finding.status === "residual",
-    )
+    const findings = sourceFindings.filter((finding) => finding.status === "confirmed")
     const weaknesses = [...new Set(findings.map((finding) => finding.weakness))].toSorted()
     const rules = weaknesses.map((weakness) => ({
       id: weakness,

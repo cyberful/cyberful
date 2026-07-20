@@ -1,101 +1,82 @@
 # Cyberful built-in configuration
 
-This directory is the first-party contract for Cyberful's Codex-only
-application-security workflow. Source runs use it directly; `make build`
-embeds its text configuration into every binary. It contains the phase agents,
-phase budgets, security skills, and shared developer instructions used by
-the TUI.
+This directory is the first-party contract for Cyberful's Codex-backed
+security workflows. Source runs read it directly; `make build` embeds it into
+every binary.
 
 ## Structure
 
 ```text
 cyberful/builtin/
-  cyberful.json             Phase entry configuration
+  cyberful.json
   agents/
-    brief.md                Engagement framing and mission contract
-    recon.md                Whole-surface reconnaissance
-    exploit.md              Autonomous PoC-driven exploitation
-    hacker.md               Unconventional breakthrough pass
-    verify.md       Independent adversarial verification
-    report.md       Client report synthesis
-    budgets.json            Host-enforced wall-clock ceilings
+    pentest/       brief, recon, exploit, hacker, verify, report, budgets
+    code-audit/    scope, index, trace, hunt, attack, verify, report, budgets
+    ask/           interactive follow-up persona and budget
   instructions/
-    cyberful.md             Shared behavioral posture appended after every phase persona
-    trust-boundary.md       Host trust policy appended after all other developer instructions
-  skills/*/SKILL.md         Structured security playbooks with specialist references
-  skills/{ZAP,NUCLEI}.md    Flat tool contracts adapted into native Codex skills
-  example/                  Development-only attachment fixtures (not embedded)
+    cyberful.md
+    trust-boundary.md
+  skills/*/SKILL.md
+  skills/{ZAP,NUCLEI}.md
+  example/         development-only attachment fixtures
 ```
 
-## Codex phase agents
+## Persona contract
 
-Each Markdown filename under `agents/` is the phase identifier used by the
-orchestrator. The host composes its body, delegation policy,
-`instructions/cyberful.md`, and finally `instructions/trust-boundary.md` into
-Codex `developer_instructions` for the fresh app-server context.
-Codex's model-specific base instructions remain intact; Cyberful does not set
-`model_instructions_file`. Persona frontmatter declares a non-negative integer
-`subagents`; the Codex subsystem removes it from model prose and turns it into
-delegation instructions governed by the resolved Codex effort. The host also
-owns model and effort settings, sandbox policy, tool exposure, phase order, and
-process lifetime. Local fallback sessions receive their compact operator-owned
-base instructions followed by the same trust boundary, without the phase
-persona, delegation policy, or first-party skill catalog.
+Each Markdown filename below a workflow or follow-up namespace is a phase or
+persona identifier used by the orchestrator. The host composes the persona, delegation policy, shared
+behavioral instructions, and final trust boundary into one fresh Codex
+app-server context. Codex's model-specific base instructions remain intact.
 
-The pentest chain is:
+Persona frontmatter declares a non-negative integer `subagents`. The host
+removes it from model-visible prose and permits native delegation only when the
+resolved reasoning effort is `ultra` and the value is positive. Children remain
+inside the owning phase's workarea, private gateway, traffic policy, active-time
+budget, and transcript boundary.
+
+The Pentest chain is:
 
 ```text
-brief -> recon -> exploit -> hacker
-      -> verify -> report -> complete
+brief → recon → exploit → hacker → verify → report → complete
 ```
 
-Every stage persists a named workarea artifact: `MISSION.md`, `RECON.md`,
-`EXPLOIT.md`, `HACKER.md`, `VERIFY.md`, and `REPORT.md`. `budgets.json` defines
-the wall-clock ceiling for each phase process; Recon has one 60-minute budget.
-Exploit owns systematic validation through PoC construction and execution,
-including short-lived local test infrastructure and adjacent hypotheses exposed
-by failed attempts. Promising primitives require source-provenance closure across
-safe first-party paths before an external boundary is accepted as the blocker.
-Hacker receives the cleaned evidence ledger, applies the same rule to new
-primitives, and concentrates on novel attack ideas rather than unfinished
-routine checks.
+Its required artifacts are `MISSION.md`, `RECON.md`, `EXPLOIT.md`,
+`HACKER.md`, `VERIFY.md`, and `REPORT.md`.
 
-The constrained `handoff` tool accepts only the successor configured by the
-host. Calling it records a request; it does not launch the next phase. The host
-waits for the current Codex process and gateway tree to exit, validates the
-deliverable and handoff record, and only then starts a fresh successor context.
-If the wall-clock budget expires before that call, the host may synthesize the
-configured handoff and advance in degraded mode only after it seals the required
-partial deliverable and proves the old process and gateway are gone. Invalid
-handoffs and failed deliverable or lifecycle gates still halt the chain.
-Report terminates through `handoff` with target `complete`.
+The Code Audit chain is:
 
-## Tools and interaction
+```text
+scope → index → trace → hunt → attack → verify → report → complete
+```
 
-Every phase reaches the authorized cyberful-os, browser, ZAP, session-variable,
-human-question, and workarea capabilities through one host-owned MCP gateway.
-Host tool implementations live in the TUI package rather than this project
-configuration directory.
-Native Codex children, when the persona and attested effort permit them, share
-their root phase's filesystem, container, browser, ZAP state, egress, and
-transcript. Personas determine which available capabilities are relevant;
-Report performs no active testing.
+Its required artifacts are `CODE_SCOPE.md`, `CODE_GRAPH.md`, `CODE_TRACE.md`,
+`CODE_HUNT.md`, `CODE_ATTACK.md`, `CODE_VERIFY.md`, and
+`CODE_AUDIT_REPORT.md`.
 
-Messages submitted from the TUI steer the one live root Codex turn; a message
-submitted between phases waits for the successor. The composer shows steering as pending until the active
-subsystem acknowledges it, and the session journal records it only after that
-acknowledgement. Blocking Codex questions use the gateway's TUI-backed question
-bridge. Public progress updates divide live phase activity into readable turns
-without exposing private reasoning.
+`budgets.json` in each persona directory defines host-enforced wall-clock
+ceilings. A constrained `handoff` accepts only the configured successor. The
+host waits for the current process and gateway to exit, validates and seals the
+required artifact, and only then starts the successor. A budget cutoff advances
+in degraded mode only when a partial artifact can be sealed and cleanup is
+complete.
 
-## Security skills
+## Tools and trust
 
-The structured playbooks under `skills/*/SKILL.md` are projected into a
-temporary owner-only native Codex skill root at phase launch together with the
-flat ZAP and Nuclei tool contracts. Packages retain their `references/` and
-`agents/` trees. Accurate `agents/openai.yaml` metadata makes each specialized
-methodology or tool workflow discoverable without injecting its full body into
-every phase. Codex initially sees discovery metadata, loads a matching
-`SKILL.md`, then reads only the specialist material required by the active
-surface. Skill catalogs from audited repositories are not projected into the
-phase runtime; their files remain target-controlled evidence.
+Every phase receives only the gateway capabilities registered for its workflow
+and phase. Pentest can use cyberful-os, the isolated browser, and ZAP within its
+mission. Code Audit uses bounded source and Code Graph tools, an offline Git
+diff tool in Scope, and a disposable runtime lab in Attack and Verify. It has
+no external target-traffic route and never edits the user's checkout.
+
+Messages from the TUI steer the active root Codex turn. Blocking questions use
+the gateway's human-input bridge. Repository files, web content, tool output,
+and persisted target data remain untrusted evidence under
+`instructions/trust-boundary.md`.
+
+## Skills
+
+Structured playbooks under `skills/*/SKILL.md` are projected into an owner-only
+native Codex skill root at phase launch together with the flat ZAP and Nuclei
+contracts. Packages retain their relevant `references/` and `agents/` trees.
+Repository-provided skills or prompts are never projected into the phase
+runtime.

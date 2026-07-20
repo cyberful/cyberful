@@ -263,29 +263,21 @@ describe("expert-gateway variable tool", () => {
 })
 
 describe("expert-gateway workflow capability policy", () => {
-  test("traffic-capable assessment and remediation phases require the recorded authorization", () => {
+  test("keeps Code Audit offline while Pentest owns target traffic", () => {
     expect(
       runtimeCapabilityAllowed({
-        workflow: "assessment",
-        phase: "test",
+        workflow: "code-audit",
+        phase: "attack",
         capability: "browser",
+        authorized: true,
+      }),
+    ).toBe(false)
+    expect(
+      runtimeCapabilityAllowed({
+        workflow: "code-audit",
+        phase: "scope",
+        capability: "audit-diff",
         authorized: false,
-      }),
-    ).toBe(false)
-    expect(
-      runtimeCapabilityAllowed({
-        workflow: "assessment",
-        phase: "controls",
-        capability: "zap",
-        authorized: true,
-      }),
-    ).toBe(false)
-    expect(
-      runtimeCapabilityAllowed({
-        workflow: "remediate",
-        phase: "verify",
-        capability: "zap",
-        authorized: true,
       }),
     ).toBe(true)
     expect(
@@ -294,16 +286,12 @@ describe("expert-gateway workflow capability policy", () => {
     expect(
       runtimeCapabilityAllowed({ workflow: "unknown", phase: "test", capability: "browser", authorized: true }),
     ).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "code-audit", phase: "verify", authorized: true })).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "secure-review", phase: "audit", authorized: true })).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "assessment", phase: "controls", authorized: true })).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "assessment", phase: "test", authorized: true })).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "remediate", phase: "verify", authorized: true })).toBe(false)
-    expect(runtimeNetworkAllowed({ workflow: "remediate", phase: "verify", authorized: false })).toBe(false)
+    expect(runtimeNetworkAllowed({ workflow: "code-audit", phase: "attack", authorized: true })).toBe(false)
     expect(runtimeNetworkAllowed({ workflow: "pentest", phase: "recon", authorized: false })).toBe(true)
+    expect(runtimeNetworkAllowed({ workflow: "ask", phase: "ask", authorized: false })).toBe(true)
   })
 
-  test("publishes source and Git tools only to workflows that own them", async () => {
+  test("publishes diff and lab tools only to their Code Audit phases", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-workflow-tools-"))
     const source = path.join(directory, "source")
     const workarea = path.join(directory, "workarea")
@@ -341,28 +329,17 @@ describe("expert-gateway workflow capability policy", () => {
       expect(audit).toContain("source_inventory")
       expect(audit).toContain("source_import")
       expect(audit).toContain("code_graph_index")
-      expect(audit).not.toContain("review_prepare")
-      expect(audit).not.toContain("remediation_prepare")
-      expect(await toolNames("code-audit", "index")).not.toContain("source_import")
-
-      const review = await toolNames("secure-review", "map")
-      expect(review).toContain("source_read")
-      expect(review).toContain("source_import")
-      expect(review).toContain("review_prepare")
-      expect(review).not.toContain("remediation_publish")
-
-      const remediate = await toolNames("remediate", "intake")
-      expect(remediate).toContain("runtime_authorization")
-      expect(remediate).toContain("source_import")
-      expect(remediate).toContain("remediation_prepare")
-      expect(remediate).toContain("remediation_publish")
-      expect(remediate).not.toContain("review_prepare")
-
-      const assessment = await toolNames("assessment", "brief")
-      expect(assessment).toContain("runtime_authorization")
-      expect(assessment).toContain("source_import")
-
-      expect(await toolNames("assessment", "missing")).toEqual(["variable"])
+      expect(audit).toContain("audit_diff_prepare")
+      expect(audit).not.toContain("audit_lab_prepare")
+      const index = await toolNames("code-audit", "index")
+      expect(index).not.toContain("source_import")
+      expect(index).not.toContain("audit_diff_prepare")
+      expect(index).not.toContain("audit_lab_prepare")
+      const attack = await toolNames("code-audit", "attack")
+      expect(attack).toContain("source_read")
+      expect(attack).toContain("code_finding")
+      expect(attack).toContain("audit_lab_prepare")
+      expect(await toolNames("code-audit", "missing")).toEqual(["variable"])
       expect(await toolNames("unknown", "brief")).toEqual(["variable"])
 
       expect(await toolNames("pentest", "recon")).toEqual(["variable"])

@@ -1,8 +1,7 @@
 // ── Code Graph Gateway Tool Adapter ──────────────────────────────
 // Projects the host-owned Code Graph and finding ledger into one phase gateway
-// with lazy service creation, canonical source selection, fixed workflow-specific
-// exports, and explicit lifecycle cleanup. Snapshot and remediation sources are
-// accepted only after every workarea path component is proven plain.
+// with lazy service creation, canonical source selection, fixed Code Audit
+// exports, and explicit lifecycle cleanup.
 // → cyberful/src/code-graph/service.ts — owns indexing, queries, ledger, and exports.
 // → cyberful/src/subsystem/gateway/server.ts — owns one adapter per gateway lifecycle.
 // ─────────────────────────────────────────────────────────────────
@@ -17,12 +16,12 @@ import { findingIdentity } from "../../code-graph/store"
 import type { FindingTransitionRecord, SecurityFinding } from "../../code-graph/types"
 import { resolveEffectiveSource } from "./source-tools"
 
-const CODE_GRAPH_WORKFLOWS = ["code-audit", "assessment", "remediate", "secure-review"] as const
+const CODE_GRAPH_WORKFLOWS = ["code-audit"] as const
 type CodeGraphWorkflow = (typeof CODE_GRAPH_WORKFLOWS)[number]
 
-const findingStatuses = ["suspected", "confirmed", "dismissed", "fixed", "residual"] as const
+const findingStatuses = ["suspected", "confirmed", "dismissed"] as const
 const findingSeverities = ["critical", "high", "medium", "low", "info"] as const
-const findingWorkflows = ["code-audit", "assessment", "remediate", "secure-review", "pentest"] as const
+const findingWorkflows = ["code-audit"] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -324,21 +323,20 @@ type ServiceFactory = typeof createCodeGraphService
 
 export interface CodeGraphToolHandler {
   handle(name: CodeGraphToolName, args: Record<string, unknown>): Promise<unknown>
-  fixedFindings(ids: readonly string[]): Promise<{ ok: boolean; unresolved: readonly string[] }>
   close(): Promise<void>
 }
 
 export interface CodeGraphToolHandlerOptions {
   readonly environment?: Environment
   readonly serviceFactory?: ServiceFactory
-  readonly authorizeFixedTransition?: (findingId: string) => Promise<{ readonly ok: boolean; readonly reason?: string }>
 }
 
 interface ResolvedContext {
   readonly workflow: CodeGraphWorkflow
+  readonly phase: string
   readonly sourceRoot: string
   readonly workareaRoot: string
-  readonly sourceKind: "project-source" | "source-import" | "source-snapshot" | "remediation-checkout"
+  readonly sourceKind: "project-source" | "source-import" | "source-snapshot"
 }
 
 interface Runtime {
@@ -369,30 +367,9 @@ async function canonicalPlainDirectory(input: string, label: string) {
   return realpath(input)
 }
 
-async function optionalPlainDirectory(root: string, relative: string) {
-  let current = root
-  for (const segment of relative.split("/").filter(Boolean)) {
-    current = path.join(current, segment)
-    let metadata
-    try {
-      metadata = await lstat(current)
-    } catch (error) {
-      if (nodeErrorCode(error) === "ENOENT") return
-      throw error
-    }
-    if (!metadata.isDirectory() || metadata.isSymbolicLink())
-      throw new Error(`preferred Code Graph source contains a non-directory or symlink: ${relative}`)
-    const canonical = await realpath(current)
-    if (!isContained(root, canonical)) throw new Error(`preferred Code Graph source escapes the workarea: ${relative}`)
-    current = canonical
-  }
-  return current
-}
-
-// ── Analysis Uses The Most Specific Verified Source ──────────────
-// Remediation must analyze the isolated checkout that receives fixes. Otherwise
-// the source boundary selects a verified host-owned import or snapshot before
-// project source. Mutable legacy copies inside the workarea fail closed.
+// ── Analysis Uses The Verified Source ────────────────────────────
+// The source boundary selects a verified host-owned import or snapshot before
+// project source. Mutable copies inside the workarea fail closed.
 // Import manifests and snapshots are revalidated before a SQLite service opens,
 // so no graph state is created for an ambiguous or unauthenticated source.
 //
@@ -400,17 +377,14 @@ async function optionalPlainDirectory(root: string, relative: string) {
 
 async function resolveContext(environment: Environment): Promise<ResolvedContext> {
   const workflow = workflowFrom(environment)
+  const phase = environment.CYBERFUL_SUBSYSTEM_PHASE?.trim()
   const roots = configuredRoots(environment)
-  if (!workflow || !roots)
-    throw new Error("Code Graph tools require an AppSec workflow and absolute source/workarea roots")
+  if (!workflow || !phase || !roots)
+    throw new Error("Code Graph tools require an active Code Audit phase and absolute source/workarea roots")
   const sourceRoot = await canonicalPlainDirectory(roots.sourceRoot, "Code Graph source root")
   const workareaRoot = await canonicalPlainDirectory(roots.workareaRoot, "Code Graph workarea root")
-  if (workflow === "remediate") {
-    const checkout = await optionalPlainDirectory(workareaRoot, "remediation/checkout")
-    if (checkout) return { workflow, sourceRoot: checkout, workareaRoot, sourceKind: "remediation-checkout" }
-  }
   const effective = await resolveEffectiveSource(sourceRoot, workareaRoot, environment)
-  return { workflow, sourceRoot: effective.root, workareaRoot, sourceKind: effective.kind }
+  return { workflow, phase, sourceRoot: effective.root, workareaRoot, sourceKind: effective.kind }
 }
 
 interface FindingAttestationPayload {
@@ -550,7 +524,7 @@ async function writeCodeGraphReadiness(context: ResolvedContext, service: CodeGr
 function parseCodeGraphReadiness(value: unknown): CodeGraphReadinessAttestation | undefined {
   if (!isRecord(value)) return
   const workflow = CODE_GRAPH_WORKFLOWS.find((candidate) => candidate === value.workflow)
-  const sourceKind = ["project-source", "source-import", "source-snapshot", "remediation-checkout"].find(
+  const sourceKind = ["project-source", "source-import", "source-snapshot"].find(
     (candidate) => candidate === value.source_kind,
   ) as ResolvedContext["sourceKind"] | undefined
   if (
@@ -783,16 +757,11 @@ async function exportFindings(runtime: Runtime, integrity: FindingIntegrityState
       path: path.relative(runtime.context.workareaRoot, completed.path).replaceAll(path.sep, "/"),
     }
   }
-  switch (runtime.context.workflow) {
-    case "code-audit":
-      return result("sarif", runtime.service.exportSarif("reports/code-audit.sarif", integrity))
-    case "secure-review":
-      return result("sarif", runtime.service.exportSarif("reports/secure-review.sarif", integrity))
-    case "assessment":
-      return result("evidence", runtime.service.exportEvidence("reports/assessment-evidence.json", integrity))
-    case "remediate":
-      return result("evidence", runtime.service.exportEvidence("reports/remediation-evidence.json", integrity))
-  }
+  const exports = [
+    await result("sarif", runtime.service.exportSarif("reports/code-audit.sarif", integrity)),
+    await result("evidence", runtime.service.exportEvidence("reports/code-audit-evidence.json", integrity)),
+  ]
+  return { workflow: runtime.context.workflow, exports }
 }
 
 export function codeGraphToolsAvailable(environment: Environment = process.env) {
@@ -868,6 +837,8 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
         case "code_finding": {
           switch (findingAction(args)) {
             case "record":
+              if (active.context.phase !== "hunt" && active.context.phase !== "attack")
+                throw new Error("Only Code Audit Hunt and Attack may record suspected candidates")
               if (args.workflow !== active.context.workflow)
                 throw new Error(`code_finding workflow must match the active ${active.context.workflow} workflow`)
               if (args.status !== undefined) throw new Error("New Code Graph findings always start as suspected")
@@ -875,8 +846,8 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
                 const key = ledgerKey(environment)
                 const input = parseSecurityFindingInput(findingPayload(args))
                 const existing = active.service.getFinding(findingIdentity(input))
-                if (existing?.status === "fixed")
-                  throw new Error("A fixed finding cannot be changed or re-attested without a residual transition")
+                if (existing?.status === "confirmed")
+                  throw new Error("A confirmed finding cannot be changed by a new candidate record")
                 const finding = active.service.recordFinding(input)
                 await writeFindingAttestation(
                   active.context,
@@ -892,18 +863,9 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
               return active.service.listFindings(findingPayload(args))
             case "transition":
               return mutate(async () => {
+                if (active.context.phase !== "verify")
+                  throw new Error("Only Code Audit Verify may transition candidate dispositions")
                 const key = ledgerKey(environment)
-                if (args.status === "fixed") {
-                  if (active.context.workflow !== "remediate")
-                    throw new Error("Only the remediation workflow may transition a finding to fixed")
-                  if (typeof args.id !== "string" || !/^[a-f0-9]{64}$/.test(args.id))
-                    throw new Error("Fixed transition requires a valid finding id")
-                  const authorization = await options.authorizeFixedTransition?.(args.id)
-                  if (!authorization?.ok)
-                    throw new Error(
-                      authorization?.reason ?? "Fixed transition requires host-attested pre-fix and post-fix proof",
-                    )
-                }
                 const finding = active.service.transitionFinding({
                   id: args.id,
                   status: args.status,
@@ -918,6 +880,7 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
                 return finding
               })
             case "export":
+              if (active.context.phase !== "report") throw new Error("Only Code Audit Report may export findings")
               assertExportHasNoCallerPath(args)
               return exportFindings(active, await assertAttestedFindingIntegrity(active, environment))
             default:
@@ -925,28 +888,6 @@ export function createCodeGraphToolHandler(options: CodeGraphToolHandlerOptions 
           }
         }
       }
-    },
-    async fixedFindings(ids) {
-      if (ids.length === 0) return { ok: false, unresolved: ["at least one fixed finding is required"] }
-      await mutationTail
-      const active = await runtime()
-      const unresolved: string[] = []
-      const key = ledgerKey(environment)
-      const integrity = active.service.findingIntegrityState()
-      for (const id of [...new Set(ids)]) {
-        try {
-          const finding = integrity.findings.find((candidate) => candidate.id === id)
-          if (
-            finding?.status !== "fixed" ||
-            !(await findingIsAttested(active.context, finding, integrity.transitions, key))
-          )
-            unresolved.push(id)
-        } catch (error) {
-          if (nodeErrorCode(error) === "ENOENT") unresolved.push(id)
-          else throw error
-        }
-      }
-      return { ok: unresolved.length === 0, unresolved }
     },
     async close() {
       if (closed) return
