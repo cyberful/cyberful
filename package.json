@@ -105,7 +105,7 @@
   },
   "dependencies": {
     "lowlight": "3.3.0",
-    "marked": "18.0.5",
+    "marked": "18.0.6",
     "pdfkit": "0.19.1"
   }
 }
