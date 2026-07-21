@@ -187,7 +187,7 @@ const handlers = {
           error: error instanceof Error ? error.message : error,
         })
       }),
-      SubsystemContainer.removeAll().catch((error) => {
+      SubsystemContainer.removeForShutdown().catch((error) => {
         Log.Default.warn("expert container shutdown failed", {
           error: error instanceof Error ? error.message : error,
         })

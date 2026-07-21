@@ -27,6 +27,7 @@ import { BrowserPreflight } from "@/dependency/browser-preflight"
 import { CYBERFUL_PROCESS_ROLE, CYBERFUL_RUN_ID, ensureRunID, sanitizedProcessEnv } from "@/util/cyberful-process"
 import { validateSession } from "./validate-session"
 import { TuiRpcContract, type DockerResource } from "./rpc-contract"
+import { SubsystemContainer } from "@/subsystem/container"
 
 declare global {
   const CYBERFUL_WORKER_PATH: string
@@ -86,6 +87,38 @@ function reapDockerResourcesSync(resources: Iterable<DockerResource>) {
         action: resource.action,
       })
     }
+  }
+}
+
+// ── Run Labels Recover Containers Missing From RPC Inventory ────────────
+// A gateway can dispatch `docker run` immediately before it is killed, allowing
+// the daemon to create a container after the worker's last live snapshot. The
+// terminal process waits for worker termination and then queries the immutable
+// run labels, keeping this fallback isolated from concurrent Cyberful runs.
+// ────────────────────────────────────────────────────────────────
+function reapRunOwnedDockerResourcesSync(runID: string) {
+  const filters = SubsystemContainer.ownerFilterArguments(runID)
+  if (filters.length === 0) return
+  try {
+    const listed = Bun.spawnSync(["docker", "ps", "--all", "--quiet", ...filters], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: DOCKER_EXIT_CLEANUP_TIMEOUT_MS,
+      maxBuffer: DOCKER_EXIT_CLEANUP_OUTPUT_BYTES,
+    })
+    if (listed.exitCode !== 0) {
+      Log.Default.warn("failed to list TUI run-owned Docker resources")
+      return
+    }
+    const resources = new TextDecoder()
+      .decode(listed.stdout)
+      .trim()
+      .split("\n")
+      .filter((id) => /^[a-f0-9]{12,64}$/i.test(id))
+      .map((name): DockerResource => ({ name, action: "remove", kind: "expert" }))
+    reapDockerResourcesSync(resources)
+  } catch (error) {
+    Log.Default.warn("failed to reap TUI run-owned Docker resources", { error })
   }
 }
 
@@ -207,9 +240,10 @@ export const TuiThreadCommand = cmd({
       const codexSubsystem = await SubsystemCodex.preflight()
 
       const cwd = Filesystem.resolve(process.cwd())
+      const runID = ensureRunID()
       const env = sanitizedProcessEnv({
         [CYBERFUL_PROCESS_ROLE]: "worker",
-        [CYBERFUL_RUN_ID]: ensureRunID(),
+        [CYBERFUL_RUN_ID]: runID,
         ...SubsystemCodex.workerEnv(codexSubsystem),
       })
 
@@ -251,6 +285,7 @@ export const TuiThreadCommand = cmd({
       process.once("exit", () => {
         for (const pid of liveSubsystemPids) SubsystemCli.killTree(pid, "SIGKILL")
         reapDockerResourcesSync(liveDockerResources.values())
+        reapRunOwnedDockerResourcesSync(runID)
       })
 
       const error = (e: unknown) => {
@@ -285,9 +320,10 @@ export const TuiThreadCommand = cmd({
           })
         })
         client.close()
-        worker.terminate()
+        await worker.terminate()
         for (const pid of liveSubsystemPids) SubsystemCli.killTree(pid, "SIGKILL")
         reapDockerResourcesSync(liveDockerResources.values())
+        reapRunOwnedDockerResourcesSync(runID)
         liveSubsystemPids.clear()
         liveDockerResources.clear()
       }

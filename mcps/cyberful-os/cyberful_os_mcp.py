@@ -75,6 +75,10 @@ NUCLEI_MAX_RATE = 5
 NUCLEI_EXCLUDED_TAGS = "dos,fuzz,bruteforce,headless,oast,interactsh,intrusive"
 STRICT_PREFLIGHT_ENV = "CYBERFUL_OS_STRICT_PREFLIGHT"
 WORKAREA_ROOT_ENV = "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
+RUN_ID_ENV = "CYBERFUL_RUN_ID"
+OWNER_LABEL = "org.cyberful.run-owner"
+RUNTIME_LABEL = "org.cyberful.runtime"
+EXPERT_RUNTIME = "expert"
 ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)")
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_SINGLE_RE = re.compile(r"\x1b[@-Z\\-_]")
@@ -231,6 +235,19 @@ def image_name() -> str:
 def docker_extra_args() -> list[str]:
     raw = os.environ.get("CYBERFUL_OS_DOCKER_ARGS", "")
     return shlex.split(raw) if raw else []
+
+
+def container_owner_args() -> list[str]:
+    run_id = os.environ.get(RUN_ID_ENV, "").strip()
+    if not run_id:
+        return []
+    owner = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    return [
+        "--label",
+        f"{OWNER_LABEL}={owner}",
+        "--label",
+        f"{RUNTIME_LABEL}={EXPERT_RUNTIME}",
+    ]
 
 
 # ── Preserve The User's Docker Endpoint Choice ────────────────────────
@@ -425,6 +442,7 @@ def ensure_container(timeout_seconds: int) -> None:
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_PTRACE",
         *docker_extra_args(),
+        *container_owner_args(),
         image_name(),
         "sleep",
         "infinity",

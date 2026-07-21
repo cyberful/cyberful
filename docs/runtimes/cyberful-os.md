@@ -73,6 +73,13 @@ and process exit before the successor starts. Offline phases add
 `--network=none`, and all tool output is bounded and sanitized before it reaches
 the MCP client.
 
+Containers created for an engagement carry an internal, one-way run-ownership
+label. Normal session completion removes the deterministic container name. On
+TUI shutdown, Cyberful waits for the worker to terminate and then also sweeps
+containers bearing that run label, covering a late Docker creation that was not
+present in the worker's final in-memory inventory. The ownership filter prevents
+cleanup from affecting containers belonging to another concurrent Cyberful run.
+
 The image build pins its base and installed capability catalog in
 `mcps/cyberful-os/Dockerfile`. Runtime code and user-facing metadata refer only
 to the `cyberful-os` identity.

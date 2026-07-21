@@ -42,7 +42,7 @@ Pentest tests a live target within an explicit authorization boundary.
 
 | Phase | Responsibility | Required artifact |
 | --- | --- | --- |
-| **Brief** | Fix targets, exclusions, identities, access, rules, and traffic limits | `MISSION.md` |
+| **Brief** | Fix targets, exclusions, identities, access, rules, and traffic limits; preflight supplied browser accounts and operational origins | `MISSION.md` |
 | **Recon** | Map the authorized surface and produce testable leads | `RECON.md` |
 | **Exploit** | Systematically reproduce candidates with bounded PoCs and controls | `EXPLOIT.md` |
 | **Hacker** | Investigate unconventional assumptions, chains, and adjacent hypotheses | `HACKER.md` |
@@ -67,7 +67,7 @@ boundary and the supplied program policy.
 
 | Phase | Responsibility | Required artifact |
 | --- | --- | --- |
-| **Brief** | Record program provenance, safe harbor, exact scope, eligibility, prohibited testing, data handling, disclosure, and missing policy | `MISSION.md` |
+| **Brief** | Record program provenance and exact policy; preflight supplied browser accounts, ZAP routing, and ambiguous operational origins | `MISSION.md` |
 | **Recon** | Run the shared Pentest surface-mapping policy | `RECON.md` |
 | **Exploit** | Run the shared Pentest systematic validation policy | `EXPLOIT.md` |
 | **Hacker** | Run the shared Pentest unconventional attack policy | `HACKER.md` |
@@ -75,10 +75,19 @@ boundary and the supplied program policy.
 | **Report** | Create one portable Markdown submission per ready finding and a navigation index | `BUG_BOUNTY_REPORT.md` |
 
 Supply the official policy as text, an attachment, or an exact public URL. Brief
-may read an explicitly supplied public policy page but does not test target
-assets. Missing rules remain `Not provided` or `Not assessed`; Cyberful does not
-infer authorization, eligibility, duplicate status, platform acceptance, or a
-reward.
+may read an explicitly supplied public policy page and, when existing accounts
+were declared, make one normal target visit per profile for readiness only. It
+requires the target session, distinct account identity where promised, and ZAP
+routing before Recon. A failed profile opens an **OK, retry** question and stays
+blocked without a final `MISSION.md` until the repaired state passes. This
+preflight does not run payloads, replay requests, or test a vulnerability.
+
+Brief also inventories the first-party origins needed by that ordinary journey.
+An unlisted operational backend is recorded separately from the portal and third
+parties; ambiguous policy coverage is resolved through one blocking question for
+that origin before Recon. Missing rules remain `Not provided` or `Not assessed`;
+Cyberful does not infer authorization, eligibility, duplicate status, platform
+acceptance, or a reward.
 
 Verify assigns stable `BBP-###` IDs and one of `SUBMISSION_READY`,
 `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report emits only ready findings:

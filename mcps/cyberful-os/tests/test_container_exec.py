@@ -4,6 +4,7 @@
 # → mcps/cyberful-os/cyberful_os_mcp.py — owns container creation and bounded exec.
 # ─────────────────────────────────────────────────────────────────────
 
+import hashlib
 import importlib.util
 import os
 import pathlib
@@ -250,6 +251,39 @@ class EnsureContainerStaleMountTest(unittest.TestCase):
         self.assertNotIn("exec", kinds)  # nothing to probe
         self.assertIn("run", kinds)  # created fresh
         self.assertTrue(cyberful_os_mcp._mount_verified)
+
+    def test_created_container_is_labelled_for_its_host_run(self):
+        calls = []
+
+        def responder(argv, **_options):
+            calls.append(list(argv))
+            if argv[0] == "container":
+                return _completed(1, stderr=b"No such container")
+            if argv[0] == "run":
+                return _completed(0, stdout=b"freshid")
+            raise AssertionError(f"unexpected docker call: {argv}")
+
+        configured_owner = f"{cyberful_os_mcp.OWNER_LABEL}=configured-value"
+        with mock.patch.dict(
+             os.environ,
+             {
+                 cyberful_os_mcp.RUN_ID_ENV: "run-alpha",
+                 "CYBERFUL_OS_DOCKER_ARGS": f"--label {configured_owner}",
+             },
+             clear=False,
+        ), \
+             mock.patch.object(cyberful_os_mcp, "docker", responder):
+            cyberful_os_mcp.ensure_container(60)
+
+        run = next(call for call in calls if call[0] == "run")
+        owner = hashlib.sha256(b"run-alpha").hexdigest()
+        host_owner = f"{cyberful_os_mcp.OWNER_LABEL}={owner}"
+        self.assertIn(host_owner, run)
+        self.assertIn(
+            f"{cyberful_os_mcp.RUNTIME_LABEL}={cyberful_os_mcp.EXPERT_RUNTIME}",
+            run,
+        )
+        self.assertGreater(run.index(host_owner), run.index(configured_owner))
 
     def test_failed_creation_removes_the_partial_named_container(self):
         calls = []

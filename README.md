@@ -58,9 +58,13 @@ Pentest uses one authorized mission across six fresh Codex processes:
 brief → recon → exploit → hacker → verify → report
 ```
 
-Brief fixes the authorization boundary. Recon maps the target. Exploit performs
-systematic, reproducible validation. Hacker investigates unconventional chains
-and assumptions. Verify independently retests claims. Report produces the
+Brief fixes the authorization boundary. When existing browser accounts were
+supplied, it first verifies each target session, distinct identity, and ZAP
+routing; failed profiles remain behind an **OK, retry** question and prevent a
+final `MISSION.md`. It also keeps an observed operational backend separate from
+the portal and resolves ambiguous scope before Recon. Recon maps the target. Exploit performs systematic,
+reproducible validation. Hacker investigates unconventional chains and
+assumptions. Verify independently retests claims. Report produces the
 client-facing PDF.
 
 The workflow can use cyberful-os, the isolated browser, and headless OWASP ZAP.
@@ -159,7 +163,9 @@ If a phase exhausts its active-time budget, Cyberful advances in degraded mode
 only when the required partial artifact can be sealed and cleanup succeeds.
 Missing artifacts, invalid handoffs, failed integrity gates, and incomplete
 cleanup halt the chain. Blocking human questions pause the phase deadline and
-process group until answered or rejected.
+process group until answered or rejected. Authorities that differ by host,
+method, identity, credential, effect, risk, or traffic bound use separate
+questions, so one answer cannot authorize or reject unrelated work.
 
 Durable context lives in the workarea, transcripts, and Code Graph—not hidden
 conversation state. Repository instructions, documentation, comments, web

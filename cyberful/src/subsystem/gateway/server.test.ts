@@ -1016,6 +1016,9 @@ describe("expert-gateway question tool", () => {
       const c = connected.client
       const { tools } = await c.listTools()
       expect(tools.map((tool) => tool.name).sort()).toEqual(["question", "variable"])
+      expect(tools.find((tool) => tool.name === "question")?.description).toContain(
+        "each independent authority requires a separate call",
+      )
 
       const result = await c.callTool({
         name: "question",

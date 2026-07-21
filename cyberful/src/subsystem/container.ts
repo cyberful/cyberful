@@ -12,6 +12,12 @@
 // host shutdown funnel reap every survivor; process exit retains a synchronous
 // last resort. Removing the container never removes its host workarea bind mount.
 // ─────────────────────────────────────────────────────────────────
+import { createHash } from "node:crypto"
+
+export const OWNER_LABEL = "org.cyberful.run-owner"
+export const RUNTIME_LABEL = "org.cyberful.runtime"
+export const EXPERT_RUNTIME = "expert"
+
 const live = new Set<string>()
 const REAP_CONCURRENCY = 8
 const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
@@ -43,6 +49,54 @@ async function dockerRm(name: string): Promise<void> {
 }
 
 let reaper: (name: string) => Promise<void> = dockerRm
+
+// ── Run Ownership Survives A Lost In-Memory Registry ──────────────
+// A Docker request can finish after the launching gateway has been interrupted.
+// Such a late container never reaches `remember`, so normal name-based cleanup
+// cannot discover it. The MCP stamps a one-way digest of the host run identity;
+// shutdown can then find only this run's Expert containers without publishing the
+// raw identifier or touching another concurrent Cyberful process.
+// ────────────────────────────────────────────────────────────────
+export function ownerToken(runID = process.env.CYBERFUL_RUN_ID?.trim()): string | undefined {
+  if (!runID) return
+  return createHash("sha256").update(runID).digest("hex")
+}
+
+export function ownerFilterArguments(runID = process.env.CYBERFUL_RUN_ID?.trim()): string[] {
+  const owner = ownerToken(runID)
+  if (!owner) return []
+  return ["--filter", `label=${OWNER_LABEL}=${owner}`, "--filter", `label=${RUNTIME_LABEL}=${EXPERT_RUNTIME}`]
+}
+
+async function dockerOwnedContainers(runID?: string): Promise<string[]> {
+  const filters = ownerFilterArguments(runID)
+  if (filters.length === 0 || !Bun.which("docker")) return []
+  const proc = Bun.spawn(["docker", "ps", "--all", "--quiet", ...filters], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: DOCKER_CLEANUP_TIMEOUT_MS,
+    maxBuffer: DOCKER_CLEANUP_OUTPUT_BYTES,
+  })
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  if (code !== 0) {
+    const detail = stderr.trim()
+    throw new Error(`failed to list run-owned Cyberful containers (exit ${code})${detail ? `: ${detail}` : ""}`)
+  }
+  return stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((id) => {
+      if (!/^[a-f0-9]{12,64}$/i.test(id)) throw new Error("Docker returned an invalid owned container id")
+      return id
+    })
+}
+
+let ownedContainerLister: (runID?: string) => Promise<string[]> = dockerOwnedContainers
 
 // ── Force-Fresh Reaping Preserves Future Ownership ───────────────
 // A new engagement removes any survivor before recreating its deterministic
@@ -118,6 +172,31 @@ export async function removeAll(): Promise<void> {
   if (failures.length > 0) throw new AggregateError(failures, "one or more Cyberful containers could not be removed")
 }
 
+export async function removeOwned(runID = process.env.CYBERFUL_RUN_ID?.trim()): Promise<void> {
+  const names = await ownedContainerLister(runID)
+  const failures: unknown[] = []
+  for (let offset = 0; offset < names.length; offset += REAP_CONCURRENCY) {
+    const outcomes = await Promise.allSettled(names.slice(offset, offset + REAP_CONCURRENCY).map(reaper))
+    failures.push(...outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : [])))
+  }
+  if (failures.length > 0)
+    throw new AggregateError(failures, "one or more run-owned Cyberful containers could not be removed")
+}
+
+// ── Shutdown Rechecks Docker After Registry Cleanup ───────────────────
+// The first pass handles known containers. The label sweep then catches a
+// container created by an already-dispatched Docker request after that pass.
+// A final registry pass converts transient failures into idempotent success once
+// discovery removed the underlying object, while retaining real failures.
+// ────────────────────────────────────────────────────────────────
+export async function removeForShutdown(runID = process.env.CYBERFUL_RUN_ID?.trim()): Promise<void> {
+  await removeAll().catch(() => {})
+  const failures: unknown[] = []
+  await removeOwned(runID).catch((error) => failures.push(error))
+  await removeAll().catch((error) => failures.push(error))
+  if (failures.length > 0) throw new AggregateError(failures, "Cyberful Expert container shutdown failed")
+}
+
 export function liveCount(): number {
   return live.size
 }
@@ -139,6 +218,10 @@ export function setReaperForTests(fn: (name: string) => Promise<void>): void {
   reaper = fn
   live.clear()
   notifyLive()
+}
+
+export function setOwnedContainerListerForTests(fn: (runID?: string) => Promise<string[]>): void {
+  ownedContainerLister = fn
 }
 
 export * as SubsystemContainer from "./container"

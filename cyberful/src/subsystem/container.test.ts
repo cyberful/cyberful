@@ -20,6 +20,7 @@ describe("SubsystemContainer reaping", () => {
     SubsystemContainer.setReaperForTests(async (name) => {
       reaped.push(name)
     })
+    SubsystemContainer.setOwnedContainerListerForTests(async () => [])
   })
 
   test("removeAll reaps every remembered container and clears the registry", async () => {
@@ -151,5 +152,31 @@ describe("SubsystemContainer reaping", () => {
     } finally {
       unsubscribe()
     }
+  })
+
+  test("shutdown discovers a container recreated after the registry pass", async () => {
+    const name = "cyberful-os-expert-alpha"
+    SubsystemContainer.remember(name)
+    SubsystemContainer.setOwnedContainerListerForTests(async (runID) => {
+      expect(runID).toBe("run-alpha")
+      return [name]
+    })
+
+    await SubsystemContainer.removeForShutdown("run-alpha")
+
+    expect(reaped).toEqual([name, name])
+    expect(SubsystemContainer.liveCount()).toBe(0)
+  })
+
+  test("derives scoped Docker filters from a non-reversible run token", () => {
+    const filters = SubsystemContainer.ownerFilterArguments("run-alpha")
+
+    expect(filters).toEqual([
+      "--filter",
+      `label=${SubsystemContainer.OWNER_LABEL}=${SubsystemContainer.ownerToken("run-alpha")}`,
+      "--filter",
+      `label=${SubsystemContainer.RUNTIME_LABEL}=${SubsystemContainer.EXPERT_RUNTIME}`,
+    ])
+    expect(filters.join(" ")).not.toContain("run-alpha")
   })
 })

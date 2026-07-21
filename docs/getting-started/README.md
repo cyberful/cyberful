@@ -122,9 +122,19 @@ Include exact URLs, account roles, expected security boundaries, and any steps
 needed to reproduce the behavior you want tested. Type `@` in the composer to
 attach an existing scope file or other engagement material.
 
-Brief does not send traffic to the target. It turns your request into
-`MISSION.md`, records the rules of engagement, and asks a question when a
-missing decision prevents it from fixing the scope.
+Brief does not run security tests. When you declare one or more existing browser
+accounts, it makes one normal application visit per supplied profile to verify
+that the target session is authenticated, visibly distinct where promised, and
+routed through ZAP. A failed login, unavailable profile, or degraded proxy opens
+a blocking question: repair the named profile and select **OK, retry**. Brief
+rechecks it and does not create the required `MISSION.md` or advance to Recon
+while declared access remains broken.
+
+The same normal journey identifies first-party operational origins. Brief keeps
+the listed portal, its backend, and third-party services separate. If a required
+origin is not listed and its policy coverage is ambiguous, Cyberful asks about
+that one origin before Recon; an observed dependency never silently inherits
+scope.
 
 When the mission is clear, submit the message with `Enter`.
 
@@ -145,6 +155,11 @@ and completes a valid handoff:
 The activity feed shows the current phase, public reasoning updates, tool use,
 warnings, and saved evidence. If Cyberful needs a blocking decision, it opens a
 question panel in the TUI.
+
+Independent approvals are presented separately. Each approval identifies the
+host, method, browser identity or credential, expected effect, risk, and traffic
+bound when applicable, so accepting or declining one request cannot decide an
+unrelated backend, OAuth, MCP, or credential action.
 
 You can send a message while a phase is running to correct an endpoint, clarify
 an account state, or tighten a traffic constraint. Submitted input steers the

@@ -292,7 +292,7 @@ try {
     SubsystemZapRuntime.removeAll().catch((error) => {
       Log.Default.warn("ZAP container shutdown failed", { error: errorMessage(error) })
     }),
-    SubsystemContainer.removeAll().catch((error) => {
+    SubsystemContainer.removeForShutdown().catch((error) => {
       Log.Default.warn("expert container shutdown failed", { error: errorMessage(error) })
     }),
     DependencyStartup.stopStarted().catch((error) => {

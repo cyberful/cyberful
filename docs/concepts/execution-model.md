@@ -34,6 +34,14 @@ gateway resumes the original tool call after `accept`, returns a non-authorizing
 result after `decline`, and cancels it during phase shutdown. There is no
 separate file-based question transport.
 
+One approval envelope must not decide independent authorities. Requests that
+differ by host, method, browser identity, credential, effect, risk, or traffic
+bound use separate question calls and state those fields when applicable. A
+tightly coupled informational batch may still share one envelope; backend,
+OAuth, MCP, and credential permissions that can be accepted independently may
+not. This keeps a single accept or decline from silently changing unrelated
+scope or execution rights.
+
 The app-server thread uses a granular approval policy that enables only MCP
 elicitations. Sandbox escalation, rules, skill approval, and standalone
 permission requests remain disabled and continue to fail closed at the host
