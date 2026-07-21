@@ -263,7 +263,7 @@ describe("expert-gateway variable tool", () => {
 })
 
 describe("expert-gateway workflow capability policy", () => {
-  test("keeps Code Audit offline while Pentest owns target traffic", () => {
+  test("keeps Code Audit offline while live-target workflows own target traffic", () => {
     expect(
       runtimeCapabilityAllowed({
         workflow: "code-audit",
@@ -284,10 +284,19 @@ describe("expert-gateway workflow capability policy", () => {
       runtimeCapabilityAllowed({ workflow: "pentest", phase: "recon", capability: "browser", authorized: false }),
     ).toBe(true)
     expect(
+      runtimeCapabilityAllowed({
+        workflow: "bug-bounty",
+        phase: "recon",
+        capability: "browser",
+        authorized: false,
+      }),
+    ).toBe(true)
+    expect(
       runtimeCapabilityAllowed({ workflow: "unknown", phase: "test", capability: "browser", authorized: true }),
     ).toBe(false)
     expect(runtimeNetworkAllowed({ workflow: "code-audit", phase: "attack", authorized: true })).toBe(false)
     expect(runtimeNetworkAllowed({ workflow: "pentest", phase: "recon", authorized: false })).toBe(true)
+    expect(runtimeNetworkAllowed({ workflow: "bug-bounty", phase: "recon", authorized: false })).toBe(true)
     expect(runtimeNetworkAllowed({ workflow: "ask", phase: "ask", authorized: false })).toBe(true)
   })
 

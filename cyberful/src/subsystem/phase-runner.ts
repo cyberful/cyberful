@@ -739,7 +739,7 @@ async function loadPhaseDeveloperInstructions(
   fallbackAvailable: boolean,
 ) {
   const paths = [
-    SubsystemPhase.personaPath(spec.home, spec.phase),
+    SubsystemPhase.personaPath(spec.home, spec.phase, spec.workflow),
     SubsystemPhase.cyberfulInstructionPath(spec.home),
     SubsystemPhase.trustBoundaryInstructionPath(spec.home),
   ]

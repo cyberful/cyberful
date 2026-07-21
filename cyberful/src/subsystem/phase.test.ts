@@ -102,24 +102,26 @@ describe("Codex phase registry", () => {
     expect(() => SubsystemPhase.expertContainerName("/projects/alpha/work/security", "")).toThrow("session id")
   })
 
-  test("the two selectable workflows are atomic named chains with one kickoff phase", () => {
-    expect(SubsystemPhase.listWorkflows().map((m) => m.name)).toEqual(["pentest", "code-audit"])
+  test("the selectable workflows are atomic named chains with one kickoff phase", () => {
+    expect(SubsystemPhase.listWorkflows().map((m) => m.name)).toEqual(["pentest", "bug-bounty", "code-audit"])
     expect(SubsystemPhase.isWorkflow("pentest")).toBe(true)
+    expect(SubsystemPhase.isWorkflow("bug-bounty")).toBe(true)
     expect(SubsystemPhase.isWorkflow("code-audit")).toBe(true)
     expect(SubsystemPhase.isWorkflow("ask")).toBe(false)
     expect(SubsystemPhase.workflow("ask")?.kind).toBe("interactive")
     expect(SubsystemPhase.workflowKickoffPhase("pentest")).toBe("brief") // TUI maps a workflow to its kickoff agent
+    expect(SubsystemPhase.workflowKickoffPhase("bug-bounty")).toBe("brief")
     expect(SubsystemPhase.workflowKickoffPhase("code-audit")).toBe("scope")
     expect(SubsystemPhase.workflowKickoffPhase("ask")).toBe("ask") // internal post-completion follow-up
     expect(SubsystemPhase.workflowKickoffPhase("nope")).toBeUndefined()
-    expect(SubsystemPhase.workflowOf("recon")).toBe("pentest") // globally unique phases can infer their workflow
+    expect(SubsystemPhase.workflowOf("recon")).toBe("pentest") // legacy Pentest-only rows keep their old inference
     expect(SubsystemPhase.workflowOf("brief")).toBe("pentest")
     expect(SubsystemPhase.workflowOf("attack")).toBe("code-audit")
     for (const shared of ["verify", "report"]) expect(SubsystemPhase.workflowOf(shared)).toBeUndefined()
     expect(SubsystemPhase.workflowOf("pentest-recon")).toBeUndefined()
     expect(SubsystemPhase.workflowOf("small-worker")).toBeUndefined() // a non-phase agent belongs to no workflow
     // workflowForKickoffAgent considers only a workflow's first phase, unlike workflowOf.
-    expect(SubsystemPhase.workflowForKickoffAgent("brief")).toBe("pentest")
+    expect(SubsystemPhase.workflowForKickoffAgent("brief")).toBe("pentest") // legacy agent-only session creation
     expect(SubsystemPhase.workflowForKickoffAgent("scope")).toBe("code-audit")
     expect(SubsystemPhase.workflowForKickoffAgent("ask")).toBe("ask")
     expect(SubsystemPhase.workflowForKickoffAgent("recon")).toBeUndefined() // in the chain but not the kickoff

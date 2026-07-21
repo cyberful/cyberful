@@ -14,6 +14,8 @@ export type PhaseOwner = "expert" | "unknown"
 
 export type SourcePolicy = "none" | "read"
 
+export type ZapLifecycle = "engagement" | "disabled"
+
 export type WorkflowCapability =
   | "source"
   | "code-graph"
@@ -22,16 +24,23 @@ export type WorkflowCapability =
   | "browser"
   | "zap"
 
-// ── Deliverables Are Host-Enforced Phase Contracts ───────────────
+// ── Phase Deliverable And Persona Contracts ─────────────────────
 // Each workflow phase names the one structured artifact it must leave in the
 // workarea. The phase runner includes that exact name in the prompt and rejects
 // completion when the file is absent, so a persona cannot substitute an
-// improvised filename that its successor will never read. Extra evidence remains
-// allowed; this field identifies only the mandatory handoff artifact.
+// improvised filename that its successor will never read. A phase may also name
+// one first-party persona from another workflow, allowing Bug Bounty to reuse
+// Pentest execution policy without copied prompts that can silently drift.
+// Extra evidence remains allowed; the deliverable identifies only the mandatory
+// handoff artifact.
 // ───────────────────────────────────────────────────────────────
 interface PhaseDef {
   readonly name: string
   readonly deliverable?: string
+  readonly persona?: {
+    readonly workflow: string
+    readonly phase: string
+  }
 }
 
 // A selectable TUI workflow recorded on the session: `name` is the id and `title` the display label.
@@ -46,6 +55,7 @@ interface WorkflowBase {
   readonly personas: string
   readonly sourcePolicy: SourcePolicy
   readonly capabilities: readonly WorkflowCapability[]
+  readonly zapLifecycle: ZapLifecycle
   readonly completionTitle: string
   readonly nextWorkflow?: string
 }
@@ -71,7 +81,7 @@ export interface InteractiveWorkflow extends WorkflowBase {
 
 export type EngagementWorkflow = SequentialWorkflow | InteractiveWorkflow
 
-// The registry is the single source for the two selectable security workflows.
+// The registry is the single source for the selectable security workflows.
 const WORKFLOWS: Record<string, SequentialWorkflow> = {
   pentest: {
     name: "pentest",
@@ -89,6 +99,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     personas: "pentest",
     sourcePolicy: "none",
     capabilities: ["isolated-exec", "browser", "zap"],
+    zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
     phases: [
@@ -102,6 +113,44 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     report: { source: "REPORT.md", path: "reports/security-report.pdf", mime: "application/pdf" },
     terminalArtifacts: [
       { label: "Security report", path: "reports/security-report.pdf", mime: "application/pdf", primary: true },
+    ],
+  },
+  "bug-bounty": {
+    name: "bug-bounty",
+    title: "Bug Bounty Program",
+    description:
+      "Authorized live-target testing under a bug bounty program, ending in portable per-finding submissions.",
+    promptPlaceholder: {
+      lead: "Bug bounty objective",
+      examples: [
+        "Assess the assets allowed by this public bug bounty program",
+        "Test the authorized web scope and prepare submission-ready findings",
+        "Validate exploitable vulnerabilities under the supplied program policy",
+      ],
+    },
+    kind: "workflow",
+    personas: "bug-bounty",
+    sourcePolicy: "none",
+    capabilities: ["isolated-exec", "browser", "zap"],
+    zapLifecycle: "engagement",
+    completionTitle: "Bug bounty assessment completed",
+    nextWorkflow: "ask",
+    phases: [
+      { name: "brief", deliverable: "MISSION.md" },
+      { name: "recon", deliverable: "RECON.md", persona: { workflow: "pentest", phase: "recon" } },
+      { name: "exploit", deliverable: "EXPLOIT.md", persona: { workflow: "pentest", phase: "exploit" } },
+      { name: "hacker", deliverable: "HACKER.md", persona: { workflow: "pentest", phase: "hacker" } },
+      { name: "verify", deliverable: "BUG_BOUNTY_VERIFY.md" },
+      { name: "report", deliverable: "BUG_BOUNTY_REPORT.md" },
+    ],
+    report: { source: "BUG_BOUNTY_REPORT.md", path: "BUG_BOUNTY_REPORT.md", mime: "text/markdown" },
+    terminalArtifacts: [
+      {
+        label: "Bug bounty submissions",
+        path: "BUG_BOUNTY_REPORT.md",
+        mime: "text/markdown",
+        primary: true,
+      },
     ],
   },
   "code-audit": {
@@ -123,6 +172,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     personas: "code-audit",
     sourcePolicy: "read",
     capabilities: ["source", "code-graph", "isolated-exec", "audit-diff"],
+    zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
     phases: [
@@ -162,6 +212,7 @@ const FOLLOW_UP: InteractiveWorkflow = {
   personas: "ask",
   sourcePolicy: "none",
   capabilities: ["isolated-exec", "browser", "zap"],
+  zapLifecycle: "disabled",
   completionTitle: "Answer completed",
   persona: "ask",
   requiresExistingWorkarea: true,
@@ -193,7 +244,7 @@ function def(workflowName: string, agent: string): PhaseDef | undefined {
   return selected.phases.find((phase) => phase.name === canonical)
 }
 
-// The two security workflows a session can start from the welcome screen.
+// The security workflows a session can start from the welcome screen.
 // Interactive follow-up surfaces remain addressable by the completed session
 // but never appear as another selectable workflow.
 export function listWorkflows(): readonly SequentialWorkflow[] {
@@ -221,14 +272,20 @@ export function workflowOf(phase: string): string | undefined {
     if (workflow.kind === "interactive" && workflow.persona === canonical) return [name]
     return []
   })
-  return matches.length === 1 ? matches[0] : undefined
+  if (matches.length === 1) return matches[0]
+  // Bug Bounty introduced deliberate aliases for formerly Pentest-unique names. Preserve the old
+  // inference for persisted rows that predate workflow storage without changing already-ambiguous phases.
+  const pentestCompatible = matches.length === 2 && matches.includes("pentest") && matches.includes("bug-bounty")
+  return pentestCompatible ? "pentest" : undefined
 }
 
 export function workflowForKickoffAgent(agent: string): string | undefined {
   const matches = runtimeEntries().map(([, definition]) => definition).filter(
     (workflow) => workflowKickoffPhase(workflow.name) === canonicalPhase(workflow.name, agent),
   )
-  return matches.length === 1 ? matches[0]?.name : undefined
+  if (matches.length === 1) return matches[0]?.name
+  // Agent-only session creation predates selectable workflows; `brief` retains its Pentest meaning.
+  return matches.find((workflow) => workflow.name === "pentest")?.name
 }
 
 // Unknown names are never reclassified as another runtime.
@@ -279,10 +336,15 @@ export function expertHome(): string {
   return workflowHome("pentest")
 }
 
-export function personaPath(home: string, phase: string): string {
+export function personaPath(home: string, phase: string, workflowName?: string): string {
   const personas = path.basename(home)
-  const selected = runtimeEntries().map(([, definition]) => definition).find((workflow) => workflow.personas === personas)
-  return path.join(home, `${selected ? canonicalPhase(selected.name, phase) : phase}.md`)
+  const selected = workflowName
+    ? runtimeDefinition(workflowName)
+    : runtimeEntries().map(([, definition]) => definition).find((workflow) => workflow.personas === personas)
+  const canonical = selected ? canonicalPhase(selected.name, phase) : phase
+  const shared = selected?.kind === "workflow" ? def(selected.name, canonical)?.persona : undefined
+  if (!shared) return path.join(home, `${canonical}.md`)
+  return path.join(rootForHome(home), "agents", shared.workflow, `${shared.phase}.md`)
 }
 
 function rootForHome(home: string) {
@@ -333,6 +395,10 @@ export function capabilitiesFor(workflowName: string): readonly WorkflowCapabili
 
 export function hasCapability(workflowName: string, capability: WorkflowCapability): boolean {
   return capabilitiesFor(workflowName).includes(capability)
+}
+
+export function zapLifecycleFor(workflowName: string): ZapLifecycle {
+  return runtimeDefinition(workflowName)?.zapLifecycle ?? "disabled"
 }
 
 export function completionTitleFor(workflowName: string): string | undefined {

@@ -5,6 +5,7 @@
 ## Start
 
 - [What you need](getting-started/requirements.md)
+- [Install Cyberful](getting-started/install.md)
 - [Your first penetration test](getting-started/README.md)
 
 ## Use Cyberful

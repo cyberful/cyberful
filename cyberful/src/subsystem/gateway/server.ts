@@ -929,7 +929,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         // AppSec execution derives its container identity from both engagement
         // ownership and the resolved network policy. An offline container can
         // therefore never be reused later with ordinary Docker networking.
-        // Pentest retains engagement scope, while phase-owned AppSec containers
+        // Live-target workflows retain engagement scope, while phase-owned AppSec containers
         // are registered for removal when their gateway closes.
         // ──────────────────────────────────────────────────────────────
         const workarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim() || process.cwd()

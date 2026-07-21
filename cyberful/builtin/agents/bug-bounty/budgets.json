@@ -1,0 +1,9 @@
+{
+  "$comment": "Wall-clock budgets in minutes for Bug Bounty Program phase processes. Shared phases intentionally match Pentest.",
+  "brief": 10,
+  "recon": 60,
+  "exploit": 120,
+  "hacker": 90,
+  "verify": 45,
+  "report": 30
+}

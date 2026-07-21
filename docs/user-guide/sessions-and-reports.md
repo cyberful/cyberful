@@ -66,6 +66,13 @@ findings, evidence references, severity, and remediation guidance. Code Audit
 control mappings are evidence about the examined implementation, not
 certification or an accredited attestation.
 
+Bug Bounty Program produces Markdown instead of a consolidated PDF. Its
+`BUG_BOUNTY_REPORT.md` index links one portable report per submission-ready
+finding under `reports/bug-bounty/`. Held and non-reportable candidates remain
+visible in the index without becoming submission files. Duplicate lookup,
+platform acceptance, reward estimation, and automatic submission are outside
+the workflow.
+
 PDF generation is local and uses redistributed fonts; it makes no external
 asset requests. Generated reports remain ignored by Git and should be shared
 only through the engagement's approved delivery channel.

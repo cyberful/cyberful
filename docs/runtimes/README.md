@@ -13,8 +13,8 @@ it needs.
   operator-owned loopback Responses server for bounded assist and policy-block
   recovery while Codex remains the primary subsystem.
 
-Pentest receives browser and ZAP traffic only inside its recorded mission. Code
-Audit receives no external target-traffic route. Its runtime lab uses a
+Pentest and Bug Bounty Program receive browser and ZAP traffic only inside their
+recorded mission. Code Audit receives no external target-traffic route. Its runtime lab uses a
 source-blind dependency-bootstrap container followed by offline project
 execution and loopback attack inside cyberful-os.
 
@@ -22,7 +22,7 @@ Each sequential phase receives a fresh private gateway. The host injects
 ephemeral keys, loopback ports, mounts, and network policy; agents cannot turn
 an environment setting into broader authorization.
 
-Exposed tools are callable directly under gateway phase policy, the Pentest
+Exposed tools are callable directly under gateway phase policy, the live-target
 mission, traffic budgets, and the visible-CAPTCHA interlock. Individual HTTP
 rejections do not globally disable independent authorized work. Actual calls are recorded in the
 workarea's metadata-only `raw/operations/tool-usage.csv`; raw phase transcripts

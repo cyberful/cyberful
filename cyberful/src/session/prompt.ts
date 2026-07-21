@@ -98,9 +98,7 @@ async function lstatIfPresent(target: string) {
 export type ZapRuntimeLifecycle = "engagement" | "disabled"
 
 export function zapRuntimeLifecycle(workflow: string): ZapRuntimeLifecycle {
-  if (!SubsystemPhase.hasCapability(workflow, "zap")) return "disabled"
-  if (workflow === "pentest") return "engagement"
-  return "disabled"
+  return SubsystemPhase.zapLifecycleFor(workflow)
 }
 
 // ── A Journal Identity, Not A Provider Choice ─────────────────────
@@ -1076,7 +1074,7 @@ export const layer = Layer.effect(
       const sourceStore = SubsystemPhase.hasCapability(workflow, "source")
         ? yield* Effect.promise(() => HostSourceStore.ensureSourceStore(workareaCwd))
         : undefined
-      // Pentest deliberately retains one engagement-wide proxy/history. Code Audit stays offline.
+      // Live-target workflows deliberately retain one engagement-wide proxy/history. Code Audit stays offline.
       const engagementZap =
         zapRuntimeLifecycle(workflow) === "engagement"
           ? yield* Effect.promise((signal) =>

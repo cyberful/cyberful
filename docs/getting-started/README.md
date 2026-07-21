@@ -1,37 +1,25 @@
 # Your first penetration test
 
-This walkthrough takes you from installing Cyberful to completing a first
-penetration test in the terminal interface.
+This walkthrough takes you from a working Cyberful installation to completing
+a first penetration test in the terminal interface.
 
 > Use Cyberful only against systems you are authorized to test. Before you
 > begin, know the exact targets, exclusions, test window, and traffic limits for
 > the engagement.
 
-## 1. Install Cyberful
+## 1. Confirm the installation
 
-Cyberful is distributed as a global npm package:
-
-```sh
-npm install --global @cyberful/cli
-```
-
-Confirm that the command is available:
+Complete [Install Cyberful](install.md) and confirm that Cyberful, Codex, and
+Docker are ready:
 
 ```sh
 cyberful --version
+codex --version
+docker version
 ```
 
-Cyberful also requires Codex CLI. Install the version currently validated by
-Cyberful, then sign in:
-
-```sh
-npm install --global @openai/codex@0.144.5
-codex login
-```
-
-Docker must be installed and running because Cyberful uses isolated containers
-for cyberful-os and OWASP ZAP. A complete Pentest also requires Python 3 and
-Node.js on the host.
+If a check fails, return to [What you need](requirements.md) before creating the
+engagement directory.
 
 ## 2. Create an engagement directory
 
@@ -192,5 +180,5 @@ After completion, the session switches to **Ask**. You can use it to explore a
 finding, locate evidence, discuss remediation, or plan a follow-up test without
 losing the completed workarea.
 
-For the responsibilities and boundaries of both security workflows, continue with
+For the responsibilities and boundaries of all three security workflows, continue with
 [Application security workflows](../user-guide/workflows.md).

@@ -9,14 +9,15 @@ penetration testing and deep source-code auditing.
 
 Cyberful combines Codex-driven security reasoning with isolated offensive
 tooling, a local Code Graph, independent verification, durable evidence, and
-report-ready outputs. It has two security workflows:
+report-ready outputs. It has three security workflows:
 
 | Workflow | Use it for | Phase chain | Primary result |
 | --- | --- | --- | --- |
 | **Pentest** | An authorized live target | Brief → Recon → Exploit → Hacker → Verify → Report | `reports/security-report.pdf` |
+| **Bug Bounty Program** | An authorized target governed by a supplied bounty policy | Brief → Recon → Exploit → Hacker → Verify → Report | `BUG_BOUNTY_REPORT.md` and per-finding submissions |
 | **Code Audit** | A repository, branch diff, architecture, controls, dependencies, build, and local runtime | Scope → Index → Trace → Hunt → Attack → Verify → Report | `reports/code-audit-report.pdf` |
 
-After either workflow completes, **Ask** provides follow-up answers against the
+After any workflow completes, **Ask** provides follow-up answers against the
 same workarea and evidence without expanding its scope.
 
 ## Getting started
@@ -39,10 +40,12 @@ make deps
 make run
 ```
 
-Choose a workarea, select Pentest or Code Audit, and describe the objective.
-Pentest requests must include the exact authorized targets, exclusions, and
-traffic constraints. Code Audit requests may name the complete repository or
-explicitly request review of a branch, commit range, or current Git changes.
+Choose a workarea, select Pentest, Bug Bounty Program, or Code Audit, and
+describe the objective. Pentest requests must include the exact authorized targets, exclusions, and
+traffic constraints. Bug Bounty requests should also supply the official program
+policy as text, an attachment, or an exact public URL. Code Audit requests may
+name the complete repository or explicitly request review of a branch, commit
+range, or current Git changes.
 
 See [Your first penetration test](docs/getting-started/README.md) and
 [Choose a workflow](docs/user-guide/workflows.md).
@@ -64,6 +67,20 @@ The workflow can use cyberful-os, the isolated browser, and headless OWASP ZAP.
 Bounded reversible tests inside the recorded mission run autonomously;
 irreversible, disruptive, value-moving, cross-scope, or uncontrolled-user
 actions require a human decision.
+
+## Bug Bounty Program
+
+Bug Bounty Program uses the same live-target Recon, Exploit, and Hacker phases
+as Pentest. Its dedicated Brief records the supplied program policy, safe
+harbor, eligible assets and vulnerability classes, prohibited testing, data
+handling, and disclosure rules in the compatible `MISSION.md` contract.
+
+Verify independently retests every candidate and classifies it as
+`SUBMISSION_READY`, `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report creates
+one portable Markdown submission per ready finding under
+`reports/bug-bounty/BBP-###.md` and a terminal `BUG_BOUNTY_REPORT.md` index. It
+does not submit to a platform, search private duplicate databases, predict
+acceptance, or estimate rewards.
 
 ## Code Audit
 
@@ -161,7 +178,7 @@ evidence from the validated ledger.
   skills, and MCP policy.
 - `mcps/cyberful-os/` — isolated offensive and analysis toolchain.
 - `mcps/browser/` — dedicated Chromium automation.
-- `mcps/zap/` — headless OWASP ZAP runtime and bridge for Pentest.
+- `mcps/zap/` — headless OWASP ZAP runtime and bridge for live-target workflows.
 
 Codex is the primary backend. An operator may attach a pre-started loopback
 Responses server as an optional local delegate. The primary can invoke it

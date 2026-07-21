@@ -1,10 +1,11 @@
 # Choose a security workflow
 
-Cyberful has two security workflows. Choose by the subject you need to test:
+Cyberful has three security workflows. Choose by the subject and delivery format you need:
 
 | Workflow | Subject | Traffic policy | Primary result |
 | --- | --- | --- | --- |
 | **Pentest** | An authorized running target | Only the recorded mission | `reports/security-report.pdf` |
+| **Bug Bounty Program** | An authorized running target under a supplied bounty policy | Only the recorded mission and program rules | `BUG_BOUNTY_REPORT.md` plus per-finding Markdown submissions |
 | **Code Audit** | Repository, explicit Git diff, architecture, dependencies, build, controls, and local runtime | External target traffic disabled | `reports/code-audit-report.pdf` |
 
 Use `/workflow` or `/workflows` on the welcome screen to select one. `Tab`
@@ -54,6 +55,43 @@ value-moving, disruptive, cross-scope, or uncontrolled-user actions require a
 human decision. Tool availability never expands the mission.
 
 The terminal result is `reports/security-report.pdf`.
+
+## Bug Bounty Program
+
+```text
+brief → recon → exploit → hacker → verify → report
+```
+
+Bug Bounty Program tests a live target under both an explicit authorization
+boundary and the supplied program policy.
+
+| Phase | Responsibility | Required artifact |
+| --- | --- | --- |
+| **Brief** | Record program provenance, safe harbor, exact scope, eligibility, prohibited testing, data handling, disclosure, and missing policy | `MISSION.md` |
+| **Recon** | Run the shared Pentest surface-mapping policy | `RECON.md` |
+| **Exploit** | Run the shared Pentest systematic validation policy | `EXPLOIT.md` |
+| **Hacker** | Run the shared Pentest unconventional attack policy | `HACKER.md` |
+| **Verify** | Independently retest and classify technical verdict plus submission readiness | `BUG_BOUNTY_VERIFY.md` |
+| **Report** | Create one portable Markdown submission per ready finding and a navigation index | `BUG_BOUNTY_REPORT.md` |
+
+Supply the official policy as text, an attachment, or an exact public URL. Brief
+may read an explicitly supplied public policy page but does not test target
+assets. Missing rules remain `Not provided` or `Not assessed`; Cyberful does not
+infer authorization, eligibility, duplicate status, platform acceptance, or a
+reward.
+
+Verify assigns stable `BBP-###` IDs and one of `SUBMISSION_READY`,
+`NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report emits only ready findings:
+
+```text
+BUG_BOUNTY_REPORT.md
+reports/bug-bounty/BBP-001.md
+reports/bug-bounty/BBP-002.md
+```
+
+The index is always produced, including when no finding is ready. Cyberful does
+not call HackerOne, Bugcrowd, or another program API and never submits reports
+automatically.
 
 ## Code Audit
 

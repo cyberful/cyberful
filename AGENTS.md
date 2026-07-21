@@ -28,6 +28,11 @@ Pentest uses Codex as its primary backend. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
 
+Bug Bounty Program also uses Codex, with a dedicated Brief, Verify, and Report around the shared
+Pentest Recon, Exploit, and Hacker personas. Its chain is:
+
+`brief -> recon -> exploit -> hacker -> verify -> report`
+
 Code Audit is read-only with respect to the user checkout. Its chain is:
 
 `scope -> index -> trace -> hunt -> attack -> verify -> report`

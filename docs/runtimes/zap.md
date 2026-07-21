@@ -15,8 +15,9 @@ CYBER_BROWSER_THROUGH_ZAP=1
 
 Set `CYBER_ZAP_ENABLED=0` to disable ZAP or
 `CYBER_BROWSER_THROUGH_ZAP=0` to keep scanning available without browser
-proxying. Ordinary environment settings cannot grant target access: Pentest is
-bounded by `MISSION.md`, while Code Audit remains offline and never starts ZAP.
+proxying. Ordinary environment settings cannot grant target access: Pentest and
+Bug Bounty Program are bounded by `MISSION.md`, while Code Audit remains offline
+and never starts ZAP.
 
 Build and exercise the real integration with `make test-zap`. Cyberful cleans
 up phase bridges and owned runtimes on handoff, abort, and shutdown.
