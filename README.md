@@ -258,6 +258,6 @@ cyberful run --session <id>
 
 ## License and responsible use
 
-Cyberful is released under the [Apache License 2.0](LICENSE). Use it only on
-systems and source you are authorized to assess. You are responsible for scope,
-authorization, legal compliance, and safe operation.
+Cyberful is released under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). Use it only on systems and source you are authorized to assess.
+You are responsible for scope, authorization, legal compliance, and safe operation.
