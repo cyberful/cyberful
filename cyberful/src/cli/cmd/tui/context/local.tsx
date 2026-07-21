@@ -5,7 +5,7 @@
 
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { useRoute } from "@tui/context/route"
@@ -20,8 +20,10 @@ import { Filesystem } from "@/util/filesystem"
 import { isRecord } from "@/util/record"
 import { useExit } from "./exit"
 import * as Log from "@/util/log"
+import { useKV } from "./kv"
 
 const log = Log.create({ service: "tui.local" })
+const WORKFLOW_PREFERENCE_KEY = "engagement_workflow"
 type AgentThemeColor = "primary" | "secondary" | "accent" | "success" | "warning" | "error" | "info"
 const AgentThemeColors: ReadonlySet<string> = new Set([
   "primary",
@@ -43,6 +45,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const toast = useToast()
     const exit = useExit()
+    const kv = useKV()
 
     const agent = iife(() => {
       const agents = createMemo(() => sync.data.agent.filter((x) => !x.hidden))
@@ -113,15 +116,47 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     // ── Engagement Workflow Is Chosen Before Session Ownership ────
     // A workflow names an atomic phase chain whose kickoff becomes a new session's
     // first agent. Workflows come from the static runtime registry rather than project
-    // configuration, so selection cannot invent an unsupported chain. Cycling a
-    // single registered workflow is intentionally a no-op.
+    // configuration, so selection cannot invent an unsupported chain. The choice
+    // survives a TUI restart; otherwise a restarted Bug Bounty engagement silently
+    // falls back to the first registry entry (Pentest) before creating its session.
+    // Submission waits for KV readiness, so an auto-submitted launch prompt cannot
+    // race the persisted selection. Cycling a single workflow remains a no-op.
     // ─────────────────────────────────────────────────────────────────
     const workflow = iife(() => {
       const workflows = SubsystemPhase.listWorkflows()
-      const [workflowStore, setWorkflowStore] = createStore<{ current: string | undefined }>({
+      const [workflowStore, setWorkflowStore] = createStore<{ current: string | undefined; ready: boolean }>({
         current: workflows[0]?.name,
+        ready: false,
       })
+      let selectedBeforeRestore = false
+
+      const select = (name: string) => {
+        if (!workflows.some((candidate) => candidate.name === name)) return
+        selectedBeforeRestore = true
+        setWorkflowStore("current", name)
+        if (kv.ready) kv.set(WORKFLOW_PREFERENCE_KEY, name)
+      }
+
+      createEffect(() => {
+        if (!kv.ready) return
+        if (selectedBeforeRestore) {
+          const selected = workflowStore.current
+          if (selected) kv.set(WORKFLOW_PREFERENCE_KEY, selected)
+          setWorkflowStore("ready", true)
+          return
+        }
+        const persisted = kv.get(WORKFLOW_PREFERENCE_KEY)
+        batch(() => {
+          if (typeof persisted === "string" && workflows.some((candidate) => candidate.name === persisted))
+            setWorkflowStore("current", persisted)
+          setWorkflowStore("ready", true)
+        })
+      })
+
       return {
+        get ready() {
+          return workflowStore.ready
+        },
         list() {
           return workflows
         },
@@ -129,7 +164,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return workflows.find((candidate) => candidate.name === workflowStore.current) ?? workflows[0]
         },
         set(name: string) {
-          if (workflows.some((candidate) => candidate.name === name)) setWorkflowStore("current", name)
+          select(name)
         },
         move(direction: 1 | -1) {
           if (workflows.length === 0) return
@@ -137,7 +172,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           let next = workflows.findIndex((candidate) => candidate.name === cur?.name) + direction
           if (next < 0) next = workflows.length - 1
           if (next >= workflows.length) next = 0
-          setWorkflowStore("current", workflows[next]?.name)
+          const name = workflows[next]?.name
+          if (name) select(name)
         },
       }
     })

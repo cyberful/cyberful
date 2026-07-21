@@ -790,9 +790,16 @@ describe("runPhase transcript persistence", () => {
         phase: "verify",
         workareaCwd: root,
       })
+      const bugBounty = SubsystemPhaseRunner.artifactManifestPath({
+        workflow: "bug-bounty",
+        phase: "verify",
+        workareaCwd: root,
+      })
       expect(codeAudit).toBe(join(root, "raw", "phase-manifests", "code-audit", "verify.sha256"))
       expect(pentest).toBe(join(root, "raw", "phase-manifests", "pentest", "verify.sha256"))
+      expect(bugBounty).toBe(join(root, "raw", "phase-manifests", "bug-bounty", "verify.sha256"))
       expect(codeAudit).not.toBe(pentest)
+      expect(bugBounty).not.toBe(pentest)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

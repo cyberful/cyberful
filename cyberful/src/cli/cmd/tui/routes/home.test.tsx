@@ -12,9 +12,16 @@ import {
   HOME_STATUS_PANEL_BACKGROUND,
   HomePromptSurface,
   HomeWorkareaLayer,
+  homePromptCanSubmit,
   homeRuntimePanelWidth,
   homeRuntimeStatusTone,
 } from "./home"
+
+test("a launch prompt waits for both workarea and persisted workflow selection", () => {
+  expect(homePromptCanSubmit(true, true)).toBe(true)
+  expect(homePromptCanSubmit(true, false)).toBe(false)
+  expect(homePromptCanSubmit(false, true)).toBe(false)
+})
 
 test("runtime indicators use green, yellow, and red semantic tones", () => {
   expect(homeRuntimeStatusTone("available")).toBe("success")

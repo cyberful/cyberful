@@ -75,6 +75,10 @@ export function homeRuntimePanelWidth(rows: readonly RuntimeIndicatorCopy[]) {
   return longest + 4
 }
 
+export function homePromptCanSubmit(workareaValid: boolean, workflowReady: boolean) {
+  return workareaValid && workflowReady
+}
+
 function RuntimeIndicator(props: RuntimeIndicatorCopy) {
   const { theme } = useTheme()
   const color = () => theme[homeRuntimeStatusTone(props.status)]
@@ -259,7 +263,7 @@ export function Home() {
     if (sent) return
     if (!r) return
     if (!sync.ready) return
-    if (!workareaValid()) return
+    if (!homePromptCanSubmit(workareaValid(), local.workflow.ready)) return
     if (!args.prompt) return
     if (r.current.input !== args.prompt) return
     sent = true
@@ -334,7 +338,7 @@ export function Home() {
             <Prompt
               ref={bind}
               autoFocus={!workareaFocused()}
-              canSubmit={workareaValid()}
+              canSubmit={homePromptCanSubmit(workareaValid(), local.workflow.ready)}
               workarea={workareaValid() ? activeWorkarea() : undefined}
               label="Prompt"
               right={<TuiFeatureRuntime.Slot name="home_prompt_right" />}
