@@ -86,6 +86,7 @@ export type PhaseActivityActor = {
   id: string
   label?: string
   parentID?: string
+  role?: "fallback"
 }
 
 export type PhaseActivityActorState = "started" | "active" | "interacted" | "completed" | "interrupted" | "failed"

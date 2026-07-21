@@ -4,8 +4,9 @@ The terminal application is a local control plane around Codex as its primary
 model executor. Session storage, orchestration, policy, MCP lifecycle, and
 reporting are host responsibilities; primary model reasoning occurs in one
 ephemeral Codex process per phase. An optional operator-owned loopback Responses
-server can run a bounded helper or one-shot recovery through the same subsystem
-contract.
+server can run bounded delegated operations or a one-shot recovery through the
+same subsystem contract. Delegations are serialized and may repeat while phase
+budget remains.
 
 ## Runtime shape
 
@@ -20,9 +21,9 @@ TUI input
   -> workarea artifacts
   -> validated successor
 
-Structured terminal cyberPolicy failure
-  -> primary process and gateway fully reaped
-  -> one local fallback recovery with an aggressive-recovery gateway
+Recoverable primary failure or incomplete output contract
+  -> primary process and gateway fully reaped and outputs collected
+  -> one local fallback recovery with a fallback-recovery gateway
   -> validated deliverable and handoff, or preserved dual failure
 ```
 
@@ -59,22 +60,31 @@ For each sequential phase the orchestrator:
 8. proves the process and gateway tree have exited, then seals the final artifact with a host-generated
    SHA-256 manifest before launching the successor.
 
-When configured, one voluntary helper may temporarily suspend the primary turn,
-use an `aggressive-assist` gateway, and return a compact result without owning
-the phase handoff. Only a terminal failed turn classified structurally as
-`codexErrorInfo === "cyberPolicy"` can trigger automatic recovery. Cyberful
-first collects the primary process and gateway, then starts one fresh local
-process, nonce, gateway, and transcript in the same phase, workarea, scope, and
-remaining active budget. The recovery receives a sanitized capsule capped at
-16 KiB and may own the handoff; it cannot recursively invoke fallback. Approval
-waits remain outside the active budget.
+When configured and reachable, the primary receives a conditional nudge and may
+call `delegate_to_fallback_inference` whenever an authorized action needs a more
+aggressive approach that it cannot execute. Calls are serialized, have distinct
+attempt numbers, gateways, and transcripts, and have no numeric cap while phase
+budget remains. A `fallback-assist` returns a compact result without owning the
+phase handoff or seeing the delegation tool itself.
 
-Both fallback profiles use default-deny, versioned first-party tool sets. They retain
-active security, shell, evidence, browser, approval, rate-limit, and
-circuit-breaker controls while omitting recon inventory and report generators
-to reduce prefill noise. `handoff` appears only in recovery. Because shell
-remains general, this selection is an interface reduction rather than a
-security boundary.
+After collecting the complete primary result, Cyberful may start one automatic
+recovery for a provider failure, empty effective summary, missing deliverable,
+or missing/invalid handoff. Cancellation, shutdown, exhausted budget, spawn or
+setup failure, a live primary gateway, and host cleanup, sealing, or readiness
+failures do not qualify. The fresh `fallback-recovery` session inherits the
+phase, workarea, scope, approval ledger, controls, and remaining active budget;
+it receives a sanitized 16 KiB capsule, may own handoff, and cannot recurse.
+Structured `cyberPolicy` blocks remain one provider-failure use case rather than
+the only trigger. Approval waits remain outside the active budget.
+
+Both fallback profiles use default-deny, versioned first-party tool sets. Assist
+eagerly receives shell plus compact evidence/discovery, browser, approval,
+rate-limit, and circuit-breaker controls; it discovers dedicated container
+commands through a narrow `tool_inventory` query only when needed. Recovery
+also receives active security tools because it may own the interrupted phase.
+Both omit recon inventory and report generators, and `handoff` appears only in
+recovery. Because shell remains general, this selection is an interface
+reduction rather than a security boundary.
 
 The phase runner supplies Markdown cleanup with only the required deliverable
 path; it never traverses the complete workarea. Code Audit also verifies a

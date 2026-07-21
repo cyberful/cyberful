@@ -89,6 +89,10 @@ export function expertActorTextLabel(label: string): string {
   return `@${label} → `
 }
 
+export function expertActorTone(actor: PhaseActivityActor | undefined): "default" | "warning" {
+  return actor?.role === "fallback" ? "warning" : "default"
+}
+
 export function isExpertSemanticProgress(text: string): boolean {
   try {
     const value: unknown = JSON.parse(text)
@@ -157,9 +161,7 @@ function phaseStatusText(status: ExpertPhaseStatus): string {
   const elapsed = (status.durationMs / 1000).toFixed(1)
   const limit = (status.limitMs / 60_000).toFixed(1)
   const effective = (status.effectiveLimitMs / 60_000).toFixed(1)
-  const approvalWait = status.approvalWaitMs
-    ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}`
-    : ""
+  const approvalWait = status.approvalWaitMs ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}` : ""
   const warning = status.warnings[0]
     ? ` · ${status.warnings[0]}${status.warnings.length > 1 ? ` (+${status.warnings.length - 1})` : ""}`
     : ""

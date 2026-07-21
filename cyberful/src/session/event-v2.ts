@@ -49,6 +49,7 @@ export const PhaseActivityActor = Schema.Struct({
   id: Schema.String,
   label: Schema.String.pipe(Schema.optional),
   parentID: Schema.String.pipe(Schema.optional),
+  role: Schema.Literal("fallback").pipe(Schema.optional),
 }).annotate({
   identifier: "Session.PhaseActivityActor",
 })

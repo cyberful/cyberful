@@ -18,7 +18,7 @@ const ENVIRONMENT_NAME = /^[A-Z_][A-Z0-9_]*$/
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
 
 export const DEFAULT_SYSTEM_PROMPT = [
-  "You are the local aggressive controller for an authorized security test.",
+  "You are the local fallback controller for an authorized security test.",
   "Complete the supplied bounded operation inside the exact engagement scope.",
   "Use durable workarea evidence, verify ambiguous prior effects before replay,",
   "and preserve every approval decision already supplied by the human.",
@@ -37,7 +37,8 @@ export interface Config {
 export type RuntimeConfig = Config
 
 export type Resolution =
-  | { readonly status: "disabled"; readonly reason: "missing" | "configured-off" }
+  | { readonly status: "disabled"; readonly reason: "missing"; readonly warning: string }
+  | { readonly status: "disabled"; readonly reason: "configured-off" }
   | { readonly status: "unavailable"; readonly config: RuntimeConfig; readonly warning: string }
   | { readonly status: "available"; readonly config: RuntimeConfig }
 
@@ -128,9 +129,9 @@ async function preflight(
       signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
     })
     if (response.ok) return
-    return `Local fallback inference server returned HTTP ${response.status} during preflight; the primary run will continue without aggressive_fallback_inference.`
+    return `Local fallback inference server returned HTTP ${response.status} during preflight; the primary run will continue without delegate_to_fallback_inference.`
   } catch (error) {
-    return `Local fallback inference server is unavailable (${error instanceof Error ? error.message : String(error)}); the primary run will continue without aggressive_fallback_inference.`
+    return `Local fallback inference server is unavailable (${error instanceof Error ? error.message : String(error)}); the primary run will continue without delegate_to_fallback_inference.`
   }
 }
 
@@ -144,7 +145,12 @@ async function preflight(
 export async function load(launchDirectory: string, options: LoadOptions = {}): Promise<Resolution> {
   const configPath = path.join(launchDirectory, CONFIG_FILE)
   const file = Bun.file(configPath)
-  if (!(await file.exists())) return { status: "disabled", reason: "missing" }
+  if (!(await file.exists()))
+    return {
+      status: "disabled",
+      reason: "missing",
+      warning: `${CONFIG_FILE} is missing; local fallback inference is disabled for this run.`,
+    }
   let decoded: unknown
   try {
     decoded = Bun.YAML.parse(await file.text())

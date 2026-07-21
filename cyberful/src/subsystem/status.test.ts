@@ -39,7 +39,11 @@ describe("subsystem readiness", () => {
       runtime,
       inspectVersion: async () => ({ status: "mismatch", version: "2.0.0" }),
       inspectLogin: async () => true,
-      inspectFallback: async () => ({ status: "disabled", reason: "missing" }),
+      inspectFallback: async () => ({
+        status: "disabled",
+        reason: "missing",
+        warning: "fallback-server.yaml is missing; local fallback inference is disabled for this run.",
+      }),
     })
     expect(degraded).toEqual({
       primary: { name: "codex", model: "gpt-test", version: "2.0.0", status: "degraded" },

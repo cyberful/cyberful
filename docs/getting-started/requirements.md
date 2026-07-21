@@ -36,7 +36,8 @@ dedicated engagement directory and keep Docker running for the full session.
 The local Responses server is optional and operator-owned. Start it before
 Cyberful, place `fallback-server.yaml` in the launch directory, and use a build
 whose Responses API and tool calling are known to work. An unavailable server
-only disables fallback for that run; an unsafe configuration stops startup.
+only disables fallback for that run; a missing file emits one run-level warning,
+while `enabled: false` disables it silently. An unsafe configuration stops startup.
 See [Local fallback inference](../runtimes/fallback-inference.md).
 
 For a source checkout:

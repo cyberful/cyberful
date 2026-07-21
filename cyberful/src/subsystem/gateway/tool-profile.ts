@@ -11,7 +11,7 @@
 import type { SubsystemPhase } from "../phase"
 import { isRecord } from "@/util/record"
 
-export type ToolProfile = "full" | "aggressive-assist" | "aggressive-recovery"
+export type ToolProfile = "full" | "fallback-assist" | "fallback-recovery"
 
 const BROWSER_TOOLS = new Set([
   "browser_artifact_list",
@@ -57,7 +57,7 @@ function metadataRoles(metadata: unknown): readonly string[] {
 
 export function parse(value: string | undefined): ToolProfile {
   if (!value) return "full"
-  if (value === "full" || value === "aggressive-assist" || value === "aggressive-recovery") return value
+  if (value === "full" || value === "fallback-assist" || value === "fallback-recovery") return value
   throw new Error(`Unknown Cyberful gateway tool profile '${value}'.`)
 }
 
@@ -72,12 +72,13 @@ export function allowsUpstream(input: {
   if (input.capability === "zap") return ZAP_TOOLS.has(input.name)
   if (input.capability !== "isolated-exec") return false
   const roles = metadataRoles(input.metadata)
-  return roles.includes("aggressive") || roles.includes("shell") || roles.includes("evidence")
+  if (input.profile === "fallback-assist") return roles.includes("shell") || roles.includes("evidence")
+  return roles.includes("active") || roles.includes("shell") || roles.includes("evidence")
 }
 
 export function allowsLifecycle(profile: ToolProfile, name: "variable" | "question" | "handoff"): boolean {
   if (profile === "full") return true
-  if (name === "handoff") return profile === "aggressive-recovery"
+  if (name === "handoff") return profile === "fallback-recovery"
   return true
 }
 

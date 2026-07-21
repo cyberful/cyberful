@@ -11,11 +11,11 @@ import { GatewayToolProfile } from "./tool-profile"
 
 const metadata = (roles: string[]) => ({ "cyberful.dev/tool-profile": { version: 1, roles } })
 
-describe("aggressive fallback tool profiles", () => {
-  test("isolated tools require explicit first-party aggressive metadata", () => {
+describe("fallback tool profiles", () => {
+  test("assist exposes compact discovery while recovery retains active isolated tools", () => {
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-assist",
+        profile: "fallback-assist",
         name: "shell",
         capability: "isolated-exec",
         metadata: metadata(["shell"]),
@@ -23,7 +23,31 @@ describe("aggressive fallback tool profiles", () => {
     ).toBe(true)
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-assist",
+        profile: "fallback-assist",
+        name: "tool_inventory",
+        capability: "isolated-exec",
+        metadata: metadata(["evidence"]),
+      }),
+    ).toBe(true)
+    expect(
+      GatewayToolProfile.allowsUpstream({
+        profile: "fallback-assist",
+        name: "sqlmap",
+        capability: "isolated-exec",
+        metadata: metadata(["active"]),
+      }),
+    ).toBe(false)
+    expect(
+      GatewayToolProfile.allowsUpstream({
+        profile: "fallback-recovery",
+        name: "sqlmap",
+        capability: "isolated-exec",
+        metadata: metadata(["active"]),
+      }),
+    ).toBe(true)
+    expect(
+      GatewayToolProfile.allowsUpstream({
+        profile: "fallback-assist",
         name: "nmap",
         capability: "isolated-exec",
         metadata: metadata(["recon"]),
@@ -31,7 +55,7 @@ describe("aggressive fallback tool profiles", () => {
     ).toBe(false)
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-assist",
+        profile: "fallback-assist",
         name: "unclassified",
         capability: "isolated-exec",
       }),
@@ -41,28 +65,28 @@ describe("aggressive fallback tool profiles", () => {
   test("browser interaction and active ZAP are explicit while catalogs and reports are absent", () => {
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-recovery",
+        profile: "fallback-recovery",
         name: "browser_evaluate",
         capability: "browser",
       }),
     ).toBe(true)
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-recovery",
+        profile: "fallback-recovery",
         name: "zap_http_request",
         capability: "zap",
       }),
     ).toBe(true)
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-recovery",
+        profile: "fallback-recovery",
         name: "zap_api_catalog",
         capability: "zap",
       }),
     ).toBe(false)
     expect(
       GatewayToolProfile.allowsUpstream({
-        profile: "aggressive-recovery",
+        profile: "fallback-recovery",
         name: "zap_generate_scoped_report",
         capability: "zap",
       }),
@@ -70,9 +94,9 @@ describe("aggressive fallback tool profiles", () => {
   })
 
   test("handoff belongs only to deterministic recovery", () => {
-    expect(GatewayToolProfile.allowsLifecycle("aggressive-assist", "variable")).toBe(true)
-    expect(GatewayToolProfile.allowsLifecycle("aggressive-assist", "question")).toBe(true)
-    expect(GatewayToolProfile.allowsLifecycle("aggressive-assist", "handoff")).toBe(false)
-    expect(GatewayToolProfile.allowsLifecycle("aggressive-recovery", "handoff")).toBe(true)
+    expect(GatewayToolProfile.allowsLifecycle("fallback-assist", "variable")).toBe(true)
+    expect(GatewayToolProfile.allowsLifecycle("fallback-assist", "question")).toBe(true)
+    expect(GatewayToolProfile.allowsLifecycle("fallback-assist", "handoff")).toBe(false)
+    expect(GatewayToolProfile.allowsLifecycle("fallback-recovery", "handoff")).toBe(true)
   })
 })

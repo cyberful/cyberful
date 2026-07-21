@@ -43,12 +43,13 @@ process and gateway must exit before the successor starts. Native Codex
 delegation is persona-controlled: only Ultra plus a positive `subagents`
 frontmatter value permits direct children, which remain inside the phase's
 workarea and gateway. An optional operator-owned loopback Responses server may
-provide one bounded helper and one security-policy recovery per phase through
-the `AgenticSubsystemAdapter` contract. It must inherit the same scope,
-workarea, controls, approval ledger, and remaining budget; it is not a
+provide serialized, model-initiated assistance and one recovery for each
+recoverable primary execution through the `AgenticSubsystemAdapter` contract.
+Calls have no numeric cap but must inherit the same scope, workarea, controls,
+approval ledger, and remaining budget; fallback cannot recurse and is not a
 user-selectable replacement for the primary chain. Do not introduce host-owned
-phase fan-out, hidden delegation, or another unconstrained production model
-path. See [`docs/runtimes/fallback-inference.md`](docs/runtimes/fallback-inference.md).
+phase fan-out, hidden delegation, or another unconstrained production model path.
+See [`docs/runtimes/fallback-inference.md`](docs/runtimes/fallback-inference.md).
 
 ## Operational constraints
 

@@ -925,8 +925,8 @@ export const layer = Layer.effect(
       if (userMessage.info.role !== "user") throw new Error("Codex engagement requires a user message")
       const ctx = yield* InstanceState.context
       const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
-      if (fallback.status === "unavailable")
-        yield* elog.warn("local fallback inference preflight failed", {
+      if (fallback.status === "unavailable" || (fallback.status === "disabled" && fallback.reason === "missing"))
+        yield* elog.warn("local fallback inference unavailable", {
           sessionID: session.id,
           warning: fallback.warning,
         })
@@ -1205,8 +1205,8 @@ export const layer = Layer.effect(
       if (userMessage.info.role !== "user") throw new Error("Ask requires a user message")
       const ctx = yield* InstanceState.context
       const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
-      if (fallback.status === "unavailable")
-        yield* elog.warn("local fallback inference preflight failed", {
+      if (fallback.status === "unavailable" || (fallback.status === "disabled" && fallback.reason === "missing"))
+        yield* elog.warn("local fallback inference unavailable", {
           sessionID: session.id,
           warning: fallback.warning,
         })

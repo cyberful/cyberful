@@ -98,9 +98,8 @@ export interface PhaseResult {
   recovered?: boolean
 }
 
-export interface FallbackAttemptStatus {
-  readonly mode: "assist" | "recovery"
-  readonly trigger: "voluntary" | "security_policy_block"
+interface FallbackAttemptStatusBase {
+  readonly attempt: number
   readonly adapter: string
   readonly model: string
   readonly instructionMode: "system" | "developer" | "unsupported"
@@ -108,10 +107,30 @@ export interface FallbackAttemptStatus {
   readonly transcript?: string
 }
 
+export type FallbackRecoveryReason =
+  | "provider_failure"
+  | "empty_summary"
+  | "missing_deliverable"
+  | "missing_handoff"
+  | "invalid_handoff"
+
+export type FallbackAssistStatus = FallbackAttemptStatusBase & {
+  readonly mode: "assist"
+  readonly trigger: "model_delegation"
+}
+
+export type FallbackRecoveryStatus = FallbackAttemptStatusBase & {
+  readonly mode: "recovery"
+  readonly trigger: "primary_failure"
+  readonly reasons: readonly FallbackRecoveryReason[]
+}
+
+export type FallbackAttemptStatus = FallbackAssistStatus | FallbackRecoveryStatus
+
 export interface FallbackPhaseStatus {
   readonly server: ReturnType<typeof SubsystemFallback.publicDescriptor>
-  readonly assists: readonly FallbackAttemptStatus[]
-  readonly recovery?: FallbackAttemptStatus
+  readonly assists: readonly FallbackAssistStatus[]
+  readonly recovery?: FallbackRecoveryStatus
 }
 
 export interface SemanticProgress {
@@ -265,7 +284,7 @@ export async function writeArtifactManifest(manifestPath: string, artifactPath: 
 export async function writeRuntimeManifest(manifestPath: string, workarea: string, result: PhaseResult) {
   const relativeManifest = containedArtifactPath(workarea, manifestPath, "phase-manifests", [3, 4])
   const payload = {
-    version: 1,
+    version: 2,
     phase: result.phase,
     termination: result.termination,
     backend: result.backend,
@@ -696,16 +715,29 @@ function failedBeforeSpawn(input: {
   }
 }
 
+const FALLBACK_DELEGATION_INSTRUCTIONS = [
+  "<CYBERFUL FALLBACK DELEGATION>",
+  "A configured local fallback is available through `delegate_to_fallback_inference`.",
+  "When an authorized, in-scope operation requires a more aggressive approach and you cannot proceed with the primary subsystem, delegate that bounded operation autonomously.",
+  "Keep work the primary subsystem can complete in this session. You may delegate multiple distinct operations while active phase budget remains.",
+  "Pass only workarea-relative paths in relevant_artifacts. Do not ask the operator merely to authorize use of the fallback.",
+  "</CYBERFUL FALLBACK DELEGATION>",
+].join("\n")
+
 // ── Target Evidence Policy Is A Separate Final Instruction Layer ─────
 // Phase personas and behavioral posture define how the model works, while the
-// trust boundary defines which observed content may issue instructions. The host
-// loads that reviewed built-in file independently and appends it last for every
-// primary phase, then reuses the exact text in compact fallback base instructions.
-// A missing or empty layer fails phase setup before any provider process starts.
+// optional fallback nudge describes one available host capability. The trust
+// boundary still defines which observed content may issue instructions, so the
+// host appends that reviewed built-in file last for every primary phase and reuses
+// its exact text in fallback base instructions. Missing layers fail before spawn.
 //
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
-async function loadPhaseDeveloperInstructions(spec: PhaseSpec, read: PhaseDeps["readFile"]) {
+async function loadPhaseDeveloperInstructions(
+  spec: PhaseSpec,
+  read: PhaseDeps["readFile"],
+  fallbackAvailable: boolean,
+) {
   const paths = [
     SubsystemPhase.personaPath(spec.home, spec.phase),
     SubsystemPhase.cyberfulInstructionPath(spec.home),
@@ -716,6 +748,7 @@ async function loadPhaseDeveloperInstructions(spec: PhaseSpec, read: PhaseDeps["
   return {
     ...SubsystemCodex.composeDeveloperInstructions(instructions[0] ?? "", [
       instructions[1] ?? "",
+      ...(fallbackAvailable ? [FALLBACK_DELEGATION_INSTRUCTIONS] : []),
       trustBoundaryInstructions,
     ]),
     trustBoundaryInstructions: trustBoundaryInstructions.trim(),
@@ -758,13 +791,14 @@ function recoveryCapsule(input: {
   readonly primary: SubsystemCli.RunResult
   readonly primarySummary: string
   readonly approvals: SubsystemApprovalLedger.Snapshot
+  readonly reasons: readonly FallbackRecoveryReason[]
 }): string {
   const deliverable = phaseDeliverable(input.spec)
   const checkpoint = deliverable ? path.relative(input.spec.workareaCwd, artifactCheckpointPath(input.spec)) : undefined
   return boundedUtf8(
     capsuleText(
       [
-        "## Deterministic security-policy recovery",
+        "## Deterministic primary-failure recovery",
         `Complete the interrupted ${input.spec.phase} phase inside the existing authorized scope and workarea.`,
         "Read durable workarea artifacts directly; this capsule intentionally does not copy transcripts or raw payloads.",
         "If an incomplete operation may already have taken effect, verify its observable state before repeating it.",
@@ -782,6 +816,7 @@ function recoveryCapsule(input: {
         "### Durable state",
         checkpoint ? `Latest host checkpoint: ${checkpoint}` : "No named checkpoint is configured.",
         `Approval ledger: ${input.approvals.accepted} accepted, ${input.approvals.rejected} rejected; values remain host-side.`,
+        `Recovery reasons: ${input.reasons.join(", ")}.`,
         `Primary provider error: ${input.primary.failure?.providerCode ?? input.primary.failure?.kind ?? "unknown"}.`,
         "Last public provider state:",
         input.primarySummary || "(none)",
@@ -792,10 +827,10 @@ function recoveryCapsule(input: {
 }
 
 function assistArguments(value: unknown, workarea: string) {
-  if (!isRecord(value)) throw new Error("aggressive_fallback_inference expects an object")
+  if (!isRecord(value)) throw new Error("delegate_to_fallback_inference expects an object")
   const allowed = new Set(["task", "success_criteria", "relevant_artifacts"])
   const unknown = Object.keys(value).filter((key) => !allowed.has(key))
-  if (unknown.length) throw new Error(`unsupported aggressive fallback field: ${unknown.join(", ")}`)
+  if (unknown.length) throw new Error(`unsupported fallback delegation field: ${unknown.join(", ")}`)
   if (typeof value.task !== "string" || !value.task.trim() || value.task.length > 8_000)
     throw new Error("task must be a non-empty string of at most 8000 characters")
   if (
@@ -831,7 +866,9 @@ function fallbackPrompt(input: {
     [
       `You are a local ${input.mode === "assist" ? "helper/controller" : "recovery owner"} for an authorized Cyberful phase.`,
       `Work only inside the exact existing scope and workarea (${input.workarea}).`,
-      "Use the exposed aggressive tools where useful. Read durable artifacts instead of asking for copied context.",
+      input.mode === "assist"
+        ? "Use the compact gateway surface. Query a narrow tool_inventory category only when needed, then use shell or the exposed browser/ZAP tools. Read durable artifacts instead of asking for copied context."
+        : "Use the exposed active security tools where useful. Read durable artifacts instead of asking for copied context.",
       input.mode === "assist"
         ? "Do not call handoff. Return a concise result and evidence paths to the suspended primary session."
         : "Own the interrupted phase deliverable and its required handoff. Do not invoke another fallback.",
@@ -845,12 +882,14 @@ function fallbackPrompt(input: {
 
 async function executeFallback(input: {
   readonly mode: "assist" | "recovery"
+  readonly attempt: number
   readonly spec: PhaseSpec
   readonly deps: PhaseDeps
   readonly config: SubsystemFallback.RuntimeConfig
   readonly trustBoundaryInstructions: string
   readonly timeoutMs: number
   readonly prompt: string
+  readonly abort?: AbortSignal
   readonly askQuestion?: AskHuman
   readonly approvalState: SubsystemApprovalState.Controller
   readonly circuitBreakerPath: string
@@ -858,22 +897,26 @@ async function executeFallback(input: {
 }): Promise<FallbackExecution> {
   const nonce = randomUUID()
   const safeRunKey = input.spec.sessionID.replace(/[^a-zA-Z0-9_.-]/g, "-")
-  const signalKey = `${safeRunKey}-fallback-${input.mode}-${process.pid}-${nonce}`
+  const signalKey = `${safeRunKey}-fallback-${input.mode}-${input.attempt}-${process.pid}-${nonce}`
   const gatewayPidPath = path.join(os.tmpdir(), `expert-phase-gateway-pid-${signalKey}.json`)
   const handoffPath =
     input.mode === "recovery" && input.spec.handoff
       ? path.join(os.tmpdir(), `expert-phase-handoff-${signalKey}.json`)
       : undefined
-  const temporaryDirectory = path.join(input.spec.workareaCwd, ".cyberful-tmp", `fallback-${input.mode}-${nonce}`)
-  const transcriptPath = fallbackTranscriptPath(input.spec.transcriptPath, input.mode)
+  const temporaryDirectory = path.join(
+    input.spec.workareaCwd,
+    ".cyberful-tmp",
+    `fallback-${input.mode}-${input.attempt}-${nonce}`,
+  )
+  const transcriptPath = fallbackTranscriptPath(input.spec.transcriptPath, input.mode, input.attempt)
   const gateway = SubsystemGateway.gatewayMcpServer(input.spec.sessionID, {
     proxy: true,
     phase: input.spec.phase,
-    toolProfile: input.mode === "assist" ? "aggressive-assist" : "aggressive-recovery",
+    toolProfile: input.mode === "assist" ? "fallback-assist" : "fallback-recovery",
     env: {
       ...input.spec.env,
       CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: input.spec.workareaCwd,
-      CYBERFUL_SUBSYSTEM_LABEL: `${input.spec.phase}.fallback-${input.mode}`,
+      CYBERFUL_SUBSYSTEM_LABEL: `${input.spec.phase}.fallback-${input.mode}-${input.attempt}`,
       ...(input.spec.workflow ? { CYBERFUL_SUBSYSTEM_WORKFLOW: input.spec.workflow } : {}),
       ...(input.spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: input.spec.sourceRoot } : {}),
       ...(transcriptPath ? { CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT: path.dirname(transcriptPath) } : {}),
@@ -919,19 +962,40 @@ async function executeFallback(input: {
     command: input.deps.command,
     prompt: input.prompt,
     timeoutMs: input.timeoutMs,
-    abort: input.spec.abort,
-    sessionID: `${input.spec.sessionID}.fallback-${input.mode}-${nonce}`,
+    abort: input.abort ?? input.spec.abort,
+    sessionID: `${input.spec.sessionID}.fallback-${input.mode}-${input.attempt}-${nonce}`,
     askQuestion: input.askQuestion,
     approvalState: input.approvalState,
     spec: bound,
   }
-  const actorProjection = SubsystemProvider.createActivityActorProjection()
+  const fallbackActor = {
+    id: `${input.spec.sessionID}:fallback-${input.mode}-${input.attempt}`,
+    label: `Fallback ${input.mode} #${input.attempt}`,
+    role: "fallback",
+  } as const satisfies SubsystemProvider.PhaseActivityActor
+  input.onActivity?.({
+    kind: "agent",
+    actor: fallbackActor,
+    state: "started",
+    transitionID: `${fallbackActor.id}:started`,
+  })
+  let fallbackActive = false
   const run = await input.deps
     .runStreaming(runInput, (event) => {
       if (!input.onActivity) return
       for (const activity of input.deps.provider.streamActivities(event)) {
-        const projected = actorProjection(activity)
-        if (projected) input.onActivity(projected)
+        if (activity.kind === "agent") {
+          if (activity.state !== "active" || fallbackActive) continue
+          fallbackActive = true
+          input.onActivity({
+            kind: "agent",
+            actor: fallbackActor,
+            state: "active",
+            transitionID: `${fallbackActor.id}:active`,
+          })
+          continue
+        }
+        input.onActivity({ ...activity, actor: fallbackActor })
       }
     })
     .catch(
@@ -971,6 +1035,7 @@ async function executeFallback(input: {
       type: "cyberful.fallback.status",
       phase: input.spec.phase,
       mode: input.mode,
+      attempt: input.attempt,
       adapter: input.deps.provider.name,
       model: input.config.model,
       result: processTermination(run),
@@ -982,6 +1047,18 @@ async function executeFallback(input: {
       `${run.stdout}${run.stdout && !run.stdout.endsWith("\n") ? "\n" : ""}${status}\n`,
     )
   }
+  const termination = processTermination(run)
+  input.onActivity?.({
+    kind: "agent",
+    actor: fallbackActor,
+    state:
+      termination === "completed" && gatewayExit
+        ? "completed"
+        : termination === "budget_exhausted" || termination === "shutdown"
+          ? "interrupted"
+          : "failed",
+    transitionID: `${fallbackActor.id}:terminal`,
+  })
   return {
     run,
     summary,
@@ -1000,15 +1077,19 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const fallbackMinutes = spec.timeoutMs > 0 ? spec.timeoutMs / 60_000 : SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES
   const budget = await readBudget(deps.readFile, SubsystemPhase.budgetsPath(spec.home), spec.phase, fallbackMinutes)
   const limitMs = Math.round(budget.minutes * 60_000)
+  const fallbackResolution = spec.fallback
+  const fallbackConfig = fallbackResolution?.status === "available" ? fallbackResolution.config : undefined
+  const fallbackAvailable =
+    fallbackConfig !== undefined && deps.provider.capabilities.localResponses && deps.provider.capabilities.dynamicTools
   const budgetWarnings = [
     budget.warning,
-    ...(spec.fallback?.status === "unavailable" ? [spec.fallback.warning] : []),
+    ...(fallbackResolution?.status === "unavailable" ? [fallbackResolution.warning] : []),
   ].filter((item): item is string => Boolean(item))
   const beforeSetup = now()
   const initialDeadline = beforeSetup + limitMs
   const initialEffectiveLimitMs = limitMs
 
-  const instructionLoad = await loadPhaseDeveloperInstructions(spec, deps.readFile).then(
+  const instructionLoad = await loadPhaseDeveloperInstructions(spec, deps.readFile, fallbackAvailable).then(
     (value) => ({ ok: true as const, value }),
     (error) => ({ ok: false as const, error }),
   )
@@ -1171,20 +1252,17 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const writeTranscript = deps.writeTranscript
   const persist = Boolean(spec.transcriptPath) && Boolean(writeTranscript) && DependencyConfig.expertTranscriptEnabled()
   const stream = Boolean(onActivity) || persist
-  const fallbackAttempts: FallbackAttemptStatus[] = []
-  let assistUsed = false
-  const fallbackResolution = spec.fallback
-  const fallbackConfig = fallbackResolution?.status === "available" ? fallbackResolution.config : undefined
-  const fallbackAvailable =
-    fallbackConfig !== undefined && deps.provider.capabilities.localResponses && deps.provider.capabilities.dynamicTools
+  const fallbackAttempts: FallbackAssistStatus[] = []
+  let assistAttempt = 0
+  let assistQueue = Promise.resolve()
   const remainingBudgetMs = () => Math.max(0, limitMs - Math.max(0, now() - startedAt - approvalState.pausedMs()))
   const assistTool: DynamicTool | undefined = fallbackAvailable
     ? {
         definition: {
           type: "function",
-          name: "aggressive_fallback_inference",
+          name: "delegate_to_fallback_inference",
           description:
-            "Pause this session and ask the configured local aggressive controller to complete one bounded helper task, then return its concise result and evidence paths.",
+            "Delegate one authorized operation that the primary subsystem cannot complete to the configured local fallback, then return its concise result and evidence paths.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1193,87 +1271,109 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
               success_criteria: { type: "string", minLength: 1, maxLength: 4_000 },
               relevant_artifacts: {
                 type: "array",
+                description:
+                  "Workarea-relative paths only. Absolute paths and paths that escape the workarea are rejected.",
                 maxItems: 20,
-                items: { type: "string", minLength: 1, maxLength: 1_024 },
+                items: {
+                  type: "string",
+                  description: "A path relative to the current phase workarea.",
+                  minLength: 1,
+                  maxLength: 1_024,
+                },
               },
             },
             required: ["task", "success_criteria"],
           },
         },
-        execute: async (value) => {
-          if (assistUsed)
-            return { success: false, text: "Only one aggressive fallback assist is allowed in this phase." }
-          assistUsed = true
+        execute: async (value, context) => {
+          // Validate before the call enters the serialized owner. A malformed request consumes neither
+          // an attempt index nor phase budget and can therefore be corrected by the primary immediately.
           const args = assistArguments(value, spec.workareaCwd)
-          const remaining = remainingBudgetMs()
-          if (remaining <= 0) return { success: false, text: "The phase budget is exhausted." }
-          const body = [
-            "## Helper task",
-            args.task,
-            "",
-            "## Success criteria",
-            args.successCriteria,
-            "",
-            "## Relevant durable artifacts",
-            args.relevantArtifacts.length
-              ? args.relevantArtifacts.map((item) => `- ${item}`).join("\n")
-              : "Read the workarea.",
-          ].join("\n")
-          let execution: FallbackExecution
-          try {
-            execution = await executeFallback({
-              mode: "assist",
-              spec,
-              deps,
-              config: fallbackConfig,
-              trustBoundaryInstructions: instructionLoad.value.trustBoundaryInstructions,
-              timeoutMs: remaining,
-              prompt: fallbackPrompt({
+          const pending = assistQueue.then(async () => {
+            if (context.signal.aborted || spec.abort?.aborted)
+              return { success: false, text: "The fallback delegation was cancelled." }
+            const remaining = remainingBudgetMs()
+            if (remaining <= 0) return { success: false, text: "The phase budget is exhausted." }
+            const attempt = ++assistAttempt
+            const body = [
+              "## Helper task",
+              args.task,
+              "",
+              "## Success criteria",
+              args.successCriteria,
+              "",
+              "## Relevant durable artifacts",
+              args.relevantArtifacts.length
+                ? args.relevantArtifacts.map((item) => `- ${item}`).join("\n")
+                : "Read the workarea.",
+            ].join("\n")
+            let execution: FallbackExecution
+            try {
+              execution = await executeFallback({
                 mode: "assist",
-                body,
-                workarea: spec.workareaCwd,
-                minutes: Number((remaining / 60_000).toFixed(2)),
-              }),
-              askQuestion,
-              approvalState,
-              circuitBreakerPath: engagementCircuitBreakerPath,
-              onActivity,
-            })
-          } catch (error) {
+                attempt,
+                spec,
+                deps,
+                config: fallbackConfig,
+                trustBoundaryInstructions: instructionLoad.value.trustBoundaryInstructions,
+                timeoutMs: remaining,
+                abort: context.signal,
+                prompt: fallbackPrompt({
+                  mode: "assist",
+                  body,
+                  workarea: spec.workareaCwd,
+                  minutes: Number((remaining / 60_000).toFixed(2)),
+                }),
+                askQuestion,
+                approvalState,
+                circuitBreakerPath: engagementCircuitBreakerPath,
+                onActivity,
+              })
+            } catch (error) {
+              fallbackAttempts.push({
+                mode: "assist",
+                trigger: "model_delegation",
+                attempt,
+                adapter: deps.provider.name,
+                model: fallbackConfig.model,
+                instructionMode: deps.provider.capabilities.baseInstructions,
+                result: "fallback_unavailable",
+              })
+              return { success: false, text: `fallback_unavailable: ${errorDetail(error)}` }
+            }
+            const completed =
+              processTermination(execution.run) === "completed" &&
+              execution.run.exitCode === 0 &&
+              execution.gatewayExited &&
+              execution.summary.trim().length > 0
             fallbackAttempts.push({
               mode: "assist",
-              trigger: "voluntary",
+              trigger: "model_delegation",
+              attempt,
               adapter: deps.provider.name,
               model: fallbackConfig.model,
               instructionMode: deps.provider.capabilities.baseInstructions,
-              result: "fallback_unavailable",
+              result: completed
+                ? "completed"
+                : execution.run.failure?.kind === "transport" || processTermination(execution.run) === "spawn_failed"
+                  ? "fallback_unavailable"
+                  : "failed",
+              ...(execution.transcriptPath ? { transcript: path.basename(execution.transcriptPath) } : {}),
             })
-            return { success: false, text: `fallback_unavailable: ${errorDetail(error)}` }
-          }
-          const completed =
-            processTermination(execution.run) === "completed" &&
-            execution.run.exitCode === 0 &&
-            execution.gatewayExited &&
-            execution.summary.trim().length > 0
-          fallbackAttempts.push({
-            mode: "assist",
-            trigger: "voluntary",
-            adapter: deps.provider.name,
-            model: fallbackConfig.model,
-            instructionMode: deps.provider.capabilities.baseInstructions,
-            result: completed
-              ? "completed"
-              : execution.run.failure?.kind === "transport" || processTermination(execution.run) === "spawn_failed"
-                ? "fallback_unavailable"
-                : "failed",
-            ...(execution.transcriptPath ? { transcript: path.basename(execution.transcriptPath) } : {}),
+            return {
+              success: completed,
+              text: completed
+                ? execution.summary
+                : `${execution.run.failure?.kind === "transport" ? "fallback_unavailable" : "fallback_failed"}: ${
+                    execution.run.stderr || execution.summary || "local helper failed"
+                  }`,
+            }
           })
-          return {
-            success: completed,
-            text: completed
-              ? execution.summary
-              : `fallback_unavailable: ${execution.run.stderr || execution.summary || "local helper failed"}`,
-          }
+          assistQueue = pending.then(
+            () => {},
+            () => {},
+          )
+          return pending
         },
       }
     : undefined
@@ -1335,6 +1435,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       termination: "spawn_failed",
     }),
   )
+  await assistQueue
   queueSemanticProgressCapture()
   await checkpointQueue
   const approvalWaitMs = Math.round(approvalState.pausedMs())
@@ -1366,32 +1467,60 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ])),
   )
   const primarySummary = deps.provider.extractResultText(primaryRun.stdout)
+  const deliverable = phaseDeliverable(spec)
+  const inspectDeliverable = async (): Promise<{ exists: boolean; warning?: string }> =>
+    deliverable && deps.fileExists
+      ? deps.fileExists(path.join(spec.workareaCwd, deliverable)).then(
+          (exists) => ({ exists }),
+          (error) => ({
+            exists: false,
+            warning: `Could not inspect the required deliverable '${deliverable}': ${errorDetail(error)}`,
+          }),
+        )
+      : { exists: true }
+  let deliverableCheck = await inspectDeliverable()
   let finalRun = primaryRun
   let rawTermination = primaryTermination
   let gatewayExited = primaryGatewayExited
   let handoff = primaryHandoff
   let providerSummary = primarySummary
-  let recoveryStatus: FallbackAttemptStatus | undefined
+  let recoveryStatus: FallbackRecoveryStatus | undefined
   let recovered = false
 
-  // ── Structured Policy Failure Gets One Local Recovery ─────────────
-  // Recovery starts only after the primary process and gateway are collected,
-  // and only from the adapter's terminal structured classification. The local
-  // attempt owns a new process, nonce, gateway, transcript, and handoff signal,
-  // but keeps the exact workarea, scope, circuit breaker, approval ledger, and
-  // remaining active phase budget. A failed recovery never recurses.
-  // ─────────────────────────────────────────────────────────────────
+  const recoveryReasons: FallbackRecoveryReason[] = []
   if (
-    primaryRun.failure?.kind === "security_policy_block" &&
-    fallbackConfig &&
-    deps.provider.capabilities.localResponses &&
-    primaryGatewayExited
-  ) {
+    primaryRun.failure ||
+    primaryTermination === "provider_failed" ||
+    (primaryTermination === "completed" && primaryRun.exitCode !== 0)
+  )
+    recoveryReasons.push("provider_failure")
+  if (!(primaryHandoff.value?.summary ?? primarySummary).trim()) recoveryReasons.push("empty_summary")
+  if (deliverable && !deliverableCheck.exists && !deliverableCheck.warning) recoveryReasons.push("missing_deliverable")
+  if (spec.handoff && primaryHandoff.missing) recoveryReasons.push("missing_handoff")
+  else if (spec.handoff && !primaryHandoff.value) recoveryReasons.push("invalid_handoff")
+
+  // ── Completed Primary Collection Defines Recovery Eligibility ──────
+  // Provider and output-contract failures are recoverable only after the primary
+  // process, gateway, handoff, summary, and deliverable have all been observed.
+  // Setup, cancellation, budget, and host lifecycle failures stay with the host;
+  // they never launch another model. One recovery owns a fresh process and gateway
+  // but inherits the exact workarea, scope, approvals, and remaining active budget.
+  // ─────────────────────────────────────────────────────────────────
+  const recoveryEligible =
+    recoveryReasons.length > 0 &&
+    (primaryTermination === "completed" || primaryTermination === "provider_failed") &&
+    !spec.abort?.aborted &&
+    primaryGatewayExited &&
+    !gatewayExit.warning &&
+    !deliverableCheck.warning &&
+    lifecycleWarnings.length === 0
+  if (recoveryEligible && fallbackConfig && deps.provider.capabilities.localResponses) {
     const remaining = remainingBudgetMs()
     if (remaining > 0) {
       try {
         const execution = await executeFallback({
           mode: "recovery",
+          attempt: 1,
           spec,
           deps,
           config: fallbackConfig,
@@ -1404,6 +1533,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
               primary: primaryRun,
               primarySummary,
               approvals: approvalLedger?.snapshot() ?? { accepted: 0, rejected: 0, pending: 0 },
+              reasons: recoveryReasons,
             }),
             workarea: spec.workareaCwd,
             minutes: Number((remaining / 60_000).toFixed(2)),
@@ -1414,15 +1544,21 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
           onActivity,
         })
         lifecycleWarnings.push(...execution.warnings)
+        deliverableCheck = await inspectDeliverable()
+        const recoverySummary = execution.handoff?.summary ?? execution.summary
         const recoveryCompleted =
           processTermination(execution.run) === "completed" &&
           execution.run.exitCode === 0 &&
           execution.gatewayExited &&
-          execution.summary.trim().length > 0 &&
+          recoverySummary.trim().length > 0 &&
+          deliverableCheck.exists &&
+          !deliverableCheck.warning &&
           (!spec.handoff || (execution.handoff !== undefined && !execution.handoffWarning))
         recoveryStatus = {
           mode: "recovery",
-          trigger: "security_policy_block",
+          trigger: "primary_failure",
+          attempt: 1,
+          reasons: recoveryReasons,
           adapter: deps.provider.name,
           model: fallbackConfig.model,
           instructionMode: deps.provider.capabilities.baseInstructions,
@@ -1446,13 +1582,15 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
           recovered = true
         } else {
           lifecycleWarnings.push(
-            `Local fallback recovery failed after the primary ${primaryRun.failure.providerCode ?? "security policy"} block.`,
+            `Local fallback recovery failed after primary failure (${recoveryReasons.join(", ")}).`,
           )
         }
       } catch (error) {
         recoveryStatus = {
           mode: "recovery",
-          trigger: "security_policy_block",
+          trigger: "primary_failure",
+          attempt: 1,
+          reasons: recoveryReasons,
           adapter: deps.provider.name,
           model: fallbackConfig.model,
           instructionMode: deps.provider.capabilities.baseInstructions,
@@ -1461,28 +1599,11 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
         lifecycleWarnings.push(`fallback_unavailable: ${errorDetail(error)}`)
       }
     } else {
-      recoveryStatus = {
-        mode: "recovery",
-        trigger: "security_policy_block",
-        adapter: deps.provider.name,
-        model: fallbackConfig.model,
-        instructionMode: deps.provider.capabilities.baseInstructions,
-        result: "failed",
-      }
-      lifecycleWarnings.push("The primary security policy block left no active phase budget for local recovery.")
+      lifecycleWarnings.push(
+        `Primary failure (${recoveryReasons.join(", ")}) left no active phase budget for local recovery.`,
+      )
     }
   }
-  const deliverable = phaseDeliverable(spec)
-  const deliverableCheck =
-    deliverable && deps.fileExists
-      ? await deps.fileExists(path.join(spec.workareaCwd, deliverable)).then(
-          (exists) => ({ exists, warning: undefined }),
-          (error) => ({
-            exists: false,
-            warning: `Could not inspect the required deliverable '${deliverable}': ${errorDetail(error)}`,
-          }),
-        )
-      : ({ exists: true, warning: undefined } as const)
   const deliverableExists = deliverableCheck.exists
   // REPORT.md is intentionally finalized later by the host's variable-resolution/PDF boundary. Its
   // manifest is written there; hashing it here would become stale after that authorized host mutation.
@@ -1578,6 +1699,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     deliverableExists &&
     !manifestWarning &&
     gatewayExited &&
+    (!recoveryStatus || recoveryStatus.result === "completed") &&
     !handoffWarning &&
     !readinessWarning
   const warnings = [

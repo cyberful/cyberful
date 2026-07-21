@@ -21,9 +21,10 @@ not permission to place a real credential in Git history even briefly.
 `make test-all` adds network, ZAP, and Codex contracts.
 
 The fallback network tier starts a real loopback Responses fixture, confirms
-preflight and tool calling, injects a terminal `cyberPolicy` failure, and checks
-that local recovery completes the phase. It is kept out of the default Bun tier
-because restricted sandboxes may forbid binding a loopback socket.
+preflight and multiple serialized tool calls, injects a non-`cyberPolicy`
+provider failure, and checks that local recovery completes the phase. It is kept
+out of the default Bun tier because restricted sandboxes may forbid binding a
+loopback socket.
 
 GitHub CI/CD is temporarily disabled. Until it is activated, maintainers run the
 relevant commands above locally and record which checks passed. The workflow

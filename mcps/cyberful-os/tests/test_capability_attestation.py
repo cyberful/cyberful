@@ -91,11 +91,12 @@ class CapabilityReportTest(unittest.TestCase):
 
     def test_fallback_profiles_use_versioned_first_party_roles(self):
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("shell"), ["shell"])
-        self.assertIn("aggressive", cyberful_os_mcp._fallback_tool_roles("requests"))
+        self.assertEqual(cyberful_os_mcp._fallback_tool_roles("tool_inventory"), ["evidence"])
+        self.assertIn("active", cyberful_os_mcp._fallback_tool_roles("requests"))
         self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("requests"))
         self.assertIn("recon", cyberful_os_mcp._fallback_tool_roles("nmap"))
-        self.assertNotIn("aggressive", cyberful_os_mcp._fallback_tool_roles("nmap"))
-        self.assertIn("aggressive", cyberful_os_mcp._fallback_tool_roles("afl_fuzz"))
+        self.assertNotIn("active", cyberful_os_mcp._fallback_tool_roles("nmap"))
+        self.assertIn("active", cyberful_os_mcp._fallback_tool_roles("afl_fuzz"))
         self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("tcpdump"))
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("wordlists"), [])
 
