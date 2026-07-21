@@ -90,17 +90,6 @@ injects tokens, or automates CAPTCHA challenges.
 - Profile: `~/.local/state/cyberful-os/mcp/browser/profile`
 - Artifacts: `~/.local/state/cyberful-os/mcp/browser/artifacts`
 
-An engagement can additionally set `CYBER_BROWSER_ALLOWED_ORIGINS` to a JSON
-string array of exact origins, for example
-`["https://app.example.test","https://api.example.test","wss://api.example.test"]`.
-When present, the browser blocks HTTP(S) requests, redirects, subresources, and
-WS(S) connections whose canonical origin is not listed. Scheme, host, and port
-must match; entries cannot contain credentials, paths, queries, fragments, or
-wildcards. Chromium contexts launched under this policy also block service
-workers so they cannot bypass Playwright routing. `about:blank`, `about:srcdoc`,
-and `data:` documents remain available for browser internals; a `blob:` URL is
-accepted only when its inherited origin is listed.
-
 Useful environment overrides:
 
 - `CYBER_BROWSER_BROWSERS_PATH`
@@ -111,7 +100,6 @@ Useful environment overrides:
 - `CYBER_BROWSER_HEADLESS=true`
 - `CYBER_BROWSER_EXECUTABLE`
 - `CYBER_BROWSER_PROXY`
-- `CYBER_BROWSER_ALLOWED_ORIGINS` as a private JSON string array of exact HTTP(S)/WS(S) origins
 
 `browser_status` reports the configured and resolved browser channel, actual
 browser version/driver, connection mode, and proxy state. In Recon, the

@@ -118,7 +118,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("target `recon`")
   })
 
-  test("brief blocks Recon until supplied accounts and application scope are ready", () => {
+  test("brief gates broken supplied accounts without blocking on observed dependencies", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
 
     expect(brief).toContain("Account, proxy, and application preflight")
@@ -127,11 +127,10 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("`browser_network_log`")
     expect(brief).toContain("`OK, retry`")
     expect(brief).toMatch(/Do not hand off to Recon while declared access remains\s+broken/i)
-    expect(brief).toMatch(/operational backend, and third-party services separately/i)
-    expect(brief).toMatch(/Never combine different origins or independent authorities in one question/i)
-    expect(brief).toMatch(/cannot override an explicit program exclusion/i)
-    expect(brief).toMatch(/Do not create the required `MISSION\.md` or call `handoff` until every declared profile/i)
-    expect(brief).toMatch(/keeps the host's phase gate closed/i)
+    expect(brief).toMatch(/Never ask a blocking scope question or withhold `MISSION\.md` solely because/i)
+    expect(brief).toMatch(/passively observed dependency relationships/i)
+    expect(brief).toMatch(/active testing remains confined to the assets authorized by the supplied program policy/i)
+    expect(brief).not.toMatch(/every operational-origin ambiguity is resolved/i)
   })
 
   test("verify gates readiness and report emits only portable ready submissions", () => {

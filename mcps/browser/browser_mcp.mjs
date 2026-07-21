@@ -7,7 +7,6 @@
 // → mcps/browser/browser_context_ownership.mjs — protects shared CDP contexts during teardown.
 // → mcps/browser/browser_download.mjs — confines and bounds downloaded artifacts.
 // → mcps/browser/browser_launch_policy.mjs — defines background-network isolation.
-// → mcps/browser/browser_origin_policy.mjs — confines opt-in engagement traffic by exact origin.
 // ────────────────────────────────────────────────────────────────────
 
 import fs from "node:fs"
@@ -22,12 +21,6 @@ import {
   PATCHRIGHT_DISABLED_FEATURES_ARG,
   prepareBackgroundNetworkingProfile,
 } from "./browser_launch_policy.mjs"
-import {
-  browserOriginContextOptions,
-  browserUrlAllowed,
-  installBrowserOriginPolicy,
-  parseBrowserAllowedOrigins,
-} from "./browser_origin_policy.mjs"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -79,7 +72,6 @@ const USER_DATA_DIR =
   process.env.CYBER_BROWSER_USER_DATA_DIR || path.join(STATE_HOME, "cyberful-os", "mcp", "browser", "profile")
 const ARTIFACTS_DIR =
   process.env.CYBER_BROWSER_ARTIFACTS_DIR || path.join(STATE_HOME, "cyberful-os", "mcp", "browser", "artifacts")
-const ALLOWED_ORIGINS = parseBrowserAllowedOrigins(process.env.CYBER_BROWSER_ALLOWED_ORIGINS)
 const PROFILE_ID = envInt("CYBER_BROWSER_PROFILE_ID", 1, 1, 5)
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
@@ -90,7 +82,6 @@ let playwrightModule = null
 let loadedDriverName = null
 let context = null
 let contextOwnership = "none"
-let originPolicyFailure = null
 let activePage = null
 let cachedExecutablePath = null
 const attachedPages = new WeakSet()
@@ -535,7 +526,6 @@ function resolveBrowserChannel() {
 // ─────────────────────────────────────────────────────────────────────
 
 async function ensureBrowser() {
-  if (originPolicyFailure) throw originPolicyFailure
   if (context) return context
 
   ensureDir(BROWSERS_PATH)
@@ -557,7 +547,6 @@ async function ensureBrowser() {
   const clearCookiesAfterLaunch = prepareStartupCookieCleanup()
 
   const options = {
-    ...browserOriginContextOptions(ALLOWED_ORIGINS),
     headless: envBool("CYBER_BROWSER_HEADLESS", false),
     viewport: launchViewport(),
     acceptDownloads: true,
@@ -657,18 +646,6 @@ async function ensureBrowser() {
     }
   }
   contextOwnership = "persistent"
-  try {
-    await installBrowserOriginPolicy(context, ALLOWED_ORIGINS)
-  } catch (error) {
-    originPolicyFailure = error
-    const failedContext = context
-    context = null
-    contextOwnership = "none"
-    await bestEffortBrowserOperation("origin-policy context cleanup", () => failedContext.close(), undefined, {
-      allowClosed: true,
-    })
-    throw error
-  }
   if (clearCookiesAfterLaunch) {
     await context.clearCookies()
     startupCookieCleanup.context_cleared = true
@@ -726,18 +703,7 @@ async function attachOverCdp(chromium, endpoint) {
     connection: "cdp-attached",
   }
   const existingContext = browser.contexts()[0] || null
-  const attached = existingContext || (await browser.newContext(browserOriginContextOptions(ALLOWED_ORIGINS)))
-  try {
-    await installBrowserOriginPolicy(attached, ALLOWED_ORIGINS)
-  } catch (error) {
-    originPolicyFailure = error
-    if (!existingContext) {
-      await bestEffortBrowserOperation("CDP attachment context cleanup", () => attached.close(), undefined, {
-        allowClosed: true,
-      })
-    }
-    throw error
-  }
+  const attached = existingContext || (await browser.newContext())
   attached.setDefaultTimeout(DEFAULT_TIMEOUT_MS)
   attached.setDefaultNavigationTimeout(DEFAULT_TIMEOUT_MS)
   attached.on("page", (page) => {
@@ -1757,10 +1723,6 @@ registerTool(
         headless: envBool("CYBER_BROWSER_HEADLESS", false),
         clear_cookies_on_start: envBool("CYBER_BROWSER_CLEAR_COOKIES_ON_START", false),
         startup_cookie_cleanup: startupCookieCleanup,
-        origin_policy: {
-          enabled: ALLOWED_ORIGINS !== null,
-          origin_count: ALLOWED_ORIGINS?.length ?? 0,
-        },
         proxy: proxyStatus,
         runtime: browserRuntime,
         launched: Boolean(context),
@@ -1795,10 +1757,6 @@ registerTool(
   },
   async (args) => {
     const targetUrl = normalizeUrl(args.url)
-    if (!browserUrlAllowed(ALLOWED_ORIGINS, targetUrl)) {
-      throw new Error("navigation blocked: URL origin is outside the Cyberful engagement scope")
-    }
-
     const page = await currentPage()
     const timeoutMs = timeoutArg(args)
     const normalized = normalizeLoadStateForNavigation(args.wait_until)
@@ -2579,7 +2537,6 @@ Isolation defaults:
 - profile/user data: \`${USER_DATA_DIR}\`
 - artifacts/downloads: \`${ARTIFACTS_DIR}\`
 - launch mode: ${envBool("CYBER_BROWSER_HEADLESS", false) ? "headless" : "headed"}
-- exact-origin request policy: ${ALLOWED_ORIGINS === null ? "disabled" : `enabled (${ALLOWED_ORIGINS.length} origin(s))`}
 - existing target cookies persist in the dedicated Cyberful profile; set \`CYBER_BROWSER_CLEAR_COOKIES_ON_START=true\` for an intentionally clean engagement
 
 Install Chromium:
@@ -2595,7 +2552,6 @@ Environment variables:
 - \`CYBER_BROWSER_EXECUTABLE\`: use a specific Chromium-compatible executable.
 - \`CYBER_BROWSER_PROXY\`: route browser traffic through the engagement proxy.
 - \`CYBER_BROWSER_PROXY_CA_SPKI\`: trust only the engagement proxy's generated MITM CA.
-- \`CYBER_BROWSER_ALLOWED_ORIGINS\`: private JSON string array of exact HTTP(S)/WS(S) origins; when present, all other browser request origins are blocked.
 - \`CYBER_BROWSER_STEALTH=false\`: disable the stealth driver and channel selection (default on).
 - \`CYBER_BROWSER_CHANNEL\`: \`chromium\` (default; bundled Chrome-for-Testing, no infobars), \`auto\` (prefer real Chrome if present), or \`chrome\` (force real Chrome).
 - \`CYBER_BROWSER_SANDBOX=false\`: launch with --no-sandbox (only if the OS sandbox can't start in your environment).

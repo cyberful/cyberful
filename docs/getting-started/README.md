@@ -130,11 +130,10 @@ a blocking question: repair the named profile and select **OK, retry**. Brief
 rechecks it and does not create the required `MISSION.md` or advance to Recon
 while declared access remains broken.
 
-The same normal journey identifies first-party operational origins. Brief keeps
-the listed portal, its backend, and third-party services separate. If a required
-origin is not listed and its policy coverage is ambiguous, Cyberful asks about
-that one origin before Recon; an observed dependency never silently inherits
-scope.
+The same normal journey inventories application dependencies for downstream
+reasoning. Automatically contacted CDNs, backends, status services, and third
+parties do not block Recon, but they remain passive evidence rather than direct
+testing targets unless the supplied authorization independently covers them.
 
 When the mission is clear, submit the message with `Enter`.
 

@@ -61,8 +61,8 @@ brief → recon → exploit → hacker → verify → report
 Brief fixes the authorization boundary. When existing browser accounts were
 supplied, it first verifies each target session, distinct identity, and ZAP
 routing; failed profiles remain behind an **OK, retry** question and prevent a
-final `MISSION.md`. It also keeps an observed operational backend separate from
-the portal and resolves ambiguous scope before Recon. Recon maps the target. Exploit performs systematic,
+final `MISSION.md`. It records passively observed application dependencies for
+downstream reasoning without treating them as direct testing targets or blocking Recon. Recon maps the target. Exploit performs systematic,
 reproducible validation. Hacker investigates unconventional chains and
 assumptions. Verify independently retests claims. Report produces the
 client-facing PDF.

@@ -42,22 +42,16 @@ supplied, record that fact and skip it. This is readiness validation, not securi
    repair. After the answer, repeat the failed checks. Do not hand off to Recon while declared access remains
    broken; a declined or cancelled repair is a blocking preflight failure, not permission to continue without
    that account.
-4. After each normal application load, inspect `browser_network_log` only to inventory the first-party origins
-   required by that ordinary journey. Do not replay, mutate, enumerate, or follow third-party traffic.
+4. After each normal application load, inspect `browser_network_log` only to inventory the origins required by
+   that ordinary journey and preserve application-dependency evidence for downstream reasoning. An
+   automatically contacted CDN, backend, status service, or third-party origin is not an additional testing
+   target. Record its observed role and policy status in `MISSION.md`; do not replay, mutate, enumerate, or
+   directly test it unless the supplied policy independently authorizes that origin.
 
-Compare every observed operational origin with the supplied asset list and policy. Classify the listed portal,
-its operational backend, and third-party services separately. If an apparently first-party backend or other
-required origin is not explicitly listed and the policy does not unambiguously include or exclude it, stop at
-the observed request and ask one blocking scope question for that origin before Recon. State the exact origin,
-the ordinary application action that revealed it, the intended methods/actions, identity, expected effect,
-risk, and traffic bound. Never combine different origins or independent authorities in one question. A human
-clarification may resolve ambiguous supplied policy; it cannot override an explicit program exclusion or add
-an asset the official program does not authorize.
-
-Do not create the required `MISSION.md` or call `handoff` until every declared profile passes this preflight
-and every operational-origin ambiguity is resolved. Keep interim policy and readiness notes under `raw/` if
-needed. Withholding the required artifact is intentional: it keeps the host's phase gate closed after a
-declined, cancelled, or otherwise unresolved repair.
+Never ask a blocking scope question or withhold `MISSION.md` solely because a normal application journey
+contacts an unlisted or ambiguously classified origin. Continue to Recon once every declared profile passes
+the account and proxy preflight. Downstream phases may reason about passively observed dependency relationships,
+but active testing remains confined to the assets authorized by the supplied program policy.
 
 ## What you produce
 
@@ -79,7 +73,7 @@ can consume it unchanged. Include:
   rules when supplied. Record reward tables as policy facts only; they never authorize a payout estimate.
 - **Provided access** — what supplied accounts or tokens unlock, with secret values stored only as variables.
 - **Preflight readiness** — each supplied profile's target-authentication, distinctness, and ZAP-routing result,
-  plus any unresolved account or application-dependency blocker.
+  plus passively observed application dependencies and their supplied-policy classification.
 - **Protocol-critical inputs** — preserve exact non-secret URLs, request lines, headers, bodies, markers, and
   ordered test steps needed downstream. Replace secret values with saved `{{var:name}}` references.
 - **Open questions and missing policy** — say `Not provided` or `Not assessed` rather than inventing a rule.
