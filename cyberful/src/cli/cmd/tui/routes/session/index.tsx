@@ -27,6 +27,7 @@ import {
   expertActorCardLabel,
   expertActorStateText,
   expertActorTextLabel,
+  expertActorTone,
   expertPhaseDuration,
   expertPhaseLabel,
   isExpertSemanticProgress,
@@ -1264,11 +1265,13 @@ function ExpertPhaseRow(props: {
     props.workflow ? SubsystemPhase.phaseOwner(props.workflow, props.entry.phase) === "expert" : false
   const markerColor = () => (isExpert() ? theme.info : theme.textMuted)
   const actorLabel = () => props.entry.actor?.label
-  const actorLabelColor = () => tint(theme.textMuted, theme.text, 0.12)
+  const fallbackActor = () => expertActorTone(props.entry.actor) === "warning"
+  const actorLabelColor = () => (fallbackActor() ? theme.warning : tint(theme.textMuted, theme.text, 0.12))
   const actorStateColor = (state: PhaseActivityActorState) => {
     if (state === "completed") return theme.success
     if (state === "interrupted") return theme.warning
     if (state === "failed") return theme.error
+    if (fallbackActor()) return theme.warning
     return theme.info
   }
   const actorStateIcon = (state: PhaseActivityActorState) => {

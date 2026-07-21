@@ -18,8 +18,8 @@ fresh Codex app-server ── private phase gateway
         │                         └── headless OWASP ZAP
         └── validated handoff ── next fresh process
 
-terminal structured security-policy block
-        └── reap primary ── one local recovery ── validate the same phase handoff
+recoverable primary or output-contract failure
+        └── reap and collect primary ── one local recovery ── validate the same phase handoff
 ```
 
 Every sequential phase gets a new Codex process and private gateway. Advancement
@@ -32,10 +32,11 @@ published only through bounded read-only gateway operations.
 
 The optional fallback is loaded once from `fallback-server.yaml` in the launch
 directory and enabled only after a loopback preflight. It is not another normal
-workflow route: a phase may use one voluntary helper, and only a structured
-terminal provider security-policy block may start one automatic recovery. Both
-inherit the phase scope, workarea, active budget, approval decisions, gateway
-controls, rate limits, and circuit breakers. Details are in
+workflow route: the primary may make serialized autonomous delegations without
+a numeric cap while budget remains, and the host may start one recovery after a
+recoverable primary execution fails or leaves its output contract incomplete.
+Both inherit phase scope, workarea, active budget, approval decisions, gateway
+controls, rate limits, and circuit breakers; neither may recurse. Details are in
 [Local fallback inference](../runtimes/fallback-inference.md).
 
 The workarea remains model-writable evidence space, but ownership is narrow:

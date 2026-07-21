@@ -598,7 +598,7 @@ describe("Expert subprocess lifecycle", () => {
             threadId: "thread-fixture",
             turnId: "turn-fixture",
             callId: "call-fallback",
-            tool: "aggressive_fallback_inference",
+            tool: "delegate_to_fallback_inference",
             arguments: {
               task: "verify the bounded operation",
               success_criteria: "durable evidence exists",
@@ -620,7 +620,7 @@ describe("Expert subprocess lifecycle", () => {
           {
             definition: {
               type: "function",
-              name: "aggressive_fallback_inference",
+              name: "delegate_to_fallback_inference",
               description: "Run one bounded local helper.",
               inputSchema: {
                 type: "object",

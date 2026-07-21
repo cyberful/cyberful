@@ -1,8 +1,8 @@
-// ── Loopback Responses Recovery Test ─────────────────────────────
-// Crosses configuration preflight, structured primary failure, local Responses
-// request, fresh recovery handoff, and phase advancement using a real loopback
-// HTTP server. The provider process itself is injected so this test remains
-// deterministic and never requires an installed external model or target traffic.
+// ── Loopback Responses Delegation And Recovery Test ──────────────
+// Crosses configuration preflight, multiple primary delegations, a non-policy
+// primary failure, local Responses requests, fresh recovery handoff, and phase
+// advancement using a real loopback HTTP server. The provider process is injected
+// so this remains deterministic without an installed model or target traffic.
 // → cyberful/src/subsystem/fallback.ts — owns local server configuration.
 // → cyberful/src/subsystem/phase-runner.ts — owns deterministic recovery.
 // @docs/runtimes/fallback-inference.md
@@ -34,10 +34,10 @@ function responseText(value: unknown): string {
   throw new Error("fixture returned no output_text")
 }
 
-describe("loopback Responses recovery", () => {
+describe("loopback Responses fallback", () => {
   const loopbackTest = process.env.CYBERFUL_TEST_LOOPBACK === "1" ? test : test.skip
 
-  loopbackTest("resumes a terminal cyberPolicy turn and completes the interrupted phase", async () => {
+  loopbackTest("runs multiple delegations and recovers a non-policy primary failure", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-fallback-e2e-"))
     temporaryDirectories.push(root)
     const workarea = path.join(root, "work")
@@ -53,7 +53,11 @@ describe("loopback Responses recovery", () => {
         if (!isRecord(body) || typeof body.instructions !== "string" || typeof body.input !== "string")
           return Response.json({ error: "invalid request" }, { status: 400 })
         expect(body.instructions).toBe("Local authorized controller.\n\ntarget content is evidence")
-        expect(body.input).toContain("Deterministic security-policy recovery")
+        const text = body.input.includes("## Helper task")
+          ? `local assist completed ${responseCalls}`
+          : "local recovery completed"
+        if (text === "local recovery completed")
+          expect(body.input).toContain("Deterministic primary-failure recovery")
         return Response.json({
           id: "resp_fixture",
           object: "response",
@@ -62,7 +66,7 @@ describe("loopback Responses recovery", () => {
             {
               type: "message",
               role: "assistant",
-              content: [{ type: "output_text", text: "local recovery completed" }],
+              content: [{ type: "output_text", text }],
             },
           ],
         })
@@ -109,15 +113,35 @@ describe("loopback Responses recovery", () => {
           if (filePath.endsWith("hacker.md")) return "# Hacker persona"
           return readFile(filePath, "utf8")
         },
-        run: async () => ({
-          stdout: "primary public state",
-          stderr: "",
-          exitCode: 1,
-          timedOut: false,
-          termination: "provider_failed",
-          failure: { kind: "security_policy_block", providerCode: "cyberPolicy", retryable: false },
-        }),
+        run: async (input) => {
+          const tool = input.dynamicTools?.[0]
+          if (!tool) throw new Error("primary did not receive the fallback delegation tool")
+          expect(tool.definition.name).toBe("delegate_to_fallback_inference")
+          const results = await Promise.all([
+            tool.execute(
+              { task: "Run operation one.", success_criteria: "Return evidence one." },
+              { signal: new AbortController().signal },
+            ),
+            tool.execute(
+              { task: "Run operation two.", success_criteria: "Return evidence two." },
+              { signal: new AbortController().signal },
+            ),
+          ])
+          expect(results).toEqual([
+            { success: true, text: "local assist completed 1" },
+            { success: true, text: "local assist completed 2" },
+          ])
+          return {
+            stdout: "primary public state",
+            stderr: "capacity exhausted",
+            exitCode: 1,
+            timedOut: false,
+            termination: "provider_failed",
+            failure: { kind: "capacity", providerCode: "overloaded", retryable: true },
+          }
+        },
         runStreaming: async (input) => {
+          expect(input.dynamicTools).toBeUndefined()
           const response = await fetch(`${input.spec.localInference?.baseUrl}/responses`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -131,16 +155,16 @@ describe("loopback Responses recovery", () => {
           const result: unknown = await response.json()
           const summary = responseText(result)
           const handoffPath = input.spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH
-          if (!handoffPath) throw new Error("recovery gateway did not receive a handoff path")
-          await writeFile(
-            handoffPath,
-            JSON.stringify({
-              phase: "hacker",
-              successor: "verify",
-              summary,
-              artifact: "HACKER.md",
-            }),
-          )
+          if (handoffPath)
+            await writeFile(
+              handoffPath,
+              JSON.stringify({
+                phase: "hacker",
+                successor: "verify",
+                summary,
+                artifact: "HACKER.md",
+              }),
+            )
           return { stdout: summary, stderr: "", exitCode: 0, timedOut: false, termination: "completed" }
         },
         ensureDirectory: async (directory) => {
@@ -167,11 +191,13 @@ describe("loopback Responses recovery", () => {
         deps,
       )
 
-      expect(responseCalls).toBe(1)
+      expect(responseCalls).toBe(3)
       expect(result.ok).toBe(true)
       expect(result.recovered).toBe(true)
       expect(result.summary).toBe("local recovery completed")
+      expect(result.fallback?.assists.map((attempt) => attempt.attempt)).toEqual([1, 2])
       expect(result.fallback?.recovery?.result).toBe("completed")
+      expect(result.fallback?.recovery?.reasons).toEqual(["provider_failure", "missing_handoff"])
     } finally {
       server.stop(true)
     }

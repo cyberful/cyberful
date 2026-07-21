@@ -44,7 +44,7 @@ describe("fallback-server.yaml", () => {
     })
   })
 
-  test("a missing file disables fallback without probing the network", async () => {
+  test("a missing file warns and disables fallback without probing the network", async () => {
     const directory = await temporaryDirectory()
     let calls = 0
     const result = await SubsystemFallback.load(directory, {
@@ -53,7 +53,11 @@ describe("fallback-server.yaml", () => {
         return new Response(null, { status: 200 })
       },
     })
-    expect(result).toEqual({ status: "disabled", reason: "missing" })
+    expect(result).toEqual({
+      status: "disabled",
+      reason: "missing",
+      warning: "fallback-server.yaml is missing; local fallback inference is disabled for this run.",
+    })
     expect(calls).toBe(0)
   })
 

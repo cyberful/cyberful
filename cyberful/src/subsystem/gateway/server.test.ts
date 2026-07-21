@@ -405,7 +405,8 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     expect(closes).toBe(1)
   })
 
-  test("applies aggressive metadata at listing and direct-call boundaries", async () => {
+  test("keeps active tools recovery-only at listing and direct-call boundaries", async () => {
+    let activeCalls = 0
     let deniedCalls = 0
     const upstreams: UpstreamTool[] = [
       {
@@ -413,9 +414,21 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         def: {
           name: "active_http_mutation",
           inputSchema: { type: "object" },
-          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["aggressive"] } },
+          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["active"] } },
         },
-        call: async () => ({ content: [{ type: "text", text: "mutated" }] }),
+        call: async () => {
+          activeCalls += 1
+          return { content: [{ type: "text", text: "mutated" }] }
+        },
+      },
+      {
+        capability: "isolated-exec",
+        def: {
+          name: "tool_inventory",
+          inputSchema: { type: "object" },
+          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["evidence"] } },
+        },
+        call: async () => ({ content: [{ type: "text", text: "inventory" }] }),
       },
       {
         capability: "isolated-exec",
@@ -430,23 +443,42 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         },
       },
     ]
-    const server = await createGatewayServer({ upstreams, toolProfile: "aggressive-assist" })
+    const server = await createGatewayServer({ upstreams, toolProfile: "fallback-assist" })
     const [ct, st] = InMemoryTransport.createLinkedPair()
     await server.connect(st)
     const c = new Client({ name: "fallback-profile-test", version: "0" })
     await c.connect(ct)
     try {
-      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-        "active_http_mutation",
-        "variable",
-      ])
-      expect(textContent(await c.callTool({ name: "active_http_mutation", arguments: {} }))).toBe("mutated")
+      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["tool_inventory", "variable"])
+      const activeDenied = await c.callTool({ name: "active_http_mutation", arguments: {} })
+      expect(textContent(activeDenied)).toContain("unknown tool")
       const denied = await c.callTool({ name: "nmap", arguments: {} })
       expect(textContent(denied)).toContain("unknown tool")
+      expect(activeCalls).toBe(0)
       expect(deniedCalls).toBe(0)
     } finally {
       await c.close()
       await server.closeGateway()
+    }
+
+    const recovery = await createGatewayServer({ upstreams, toolProfile: "fallback-recovery" })
+    const [recoveryClientTransport, recoveryServerTransport] = InMemoryTransport.createLinkedPair()
+    await recovery.connect(recoveryServerTransport)
+    const recoveryClient = new Client({ name: "fallback-recovery-profile-test", version: "0" })
+    await recoveryClient.connect(recoveryClientTransport)
+    try {
+      expect((await recoveryClient.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+        "active_http_mutation",
+        "tool_inventory",
+        "variable",
+      ])
+      expect(textContent(await recoveryClient.callTool({ name: "active_http_mutation", arguments: {} }))).toBe(
+        "mutated",
+      )
+      expect(activeCalls).toBe(1)
+    } finally {
+      await recoveryClient.close()
+      await recovery.closeGateway()
     }
   })
 

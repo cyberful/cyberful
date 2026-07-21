@@ -1583,6 +1583,7 @@ export type SessionPhaseActivityActor = {
     id: string;
     label?: string;
     parentID?: string;
+    role?: 'fallback';
 };
 
 export type EventSessionNextSubsystemPhaseActivity = {

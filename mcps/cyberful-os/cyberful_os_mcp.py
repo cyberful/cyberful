@@ -793,7 +793,7 @@ ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 ToolEntry = tuple[str, str, dict[str, Any], ToolHandler]
 TOOL_REGISTRY: list[ToolEntry] = []
 
-AGGRESSIVE_CLI_CATEGORIES = frozenset(
+ACTIVE_CLI_CATEGORIES = frozenset(
     {
         "active-directory",
         "credentials",
@@ -805,7 +805,7 @@ AGGRESSIVE_CLI_CATEGORIES = frozenset(
         "windows",
     }
 )
-AGGRESSIVE_CLI_TOOLS = frozenset(
+ACTIVE_CLI_TOOLS = frozenset(
     {
         "bettercap",
         "commix",
@@ -837,26 +837,29 @@ RECON_CLI_TOOLS = frozenset(
 
 
 # ── Fallback Roles Are Catalog Metadata, Not Prompt Heuristics ─────────
-# A local recovery session should see active tools without paying the prefill
-# cost of the entire reconnaissance catalog. Roles are derived from the verified
-# first-party registry and emitted in MCP metadata, never guessed from prose.
-# Unknown and passive tools receive no aggressive role and are therefore denied
-# by the gateway's default-deny fallback profile at both listing and call time.
+# A local assist should discover the catalog on demand and use the general shell
+# without paying the prefill cost of every dedicated command schema. Recovery
+# retains active tools because it may own the whole interrupted phase. Roles are
+# derived from the verified first-party registry and emitted in MCP metadata,
+# never guessed from prose; the gateway applies the mode-specific allowlist at
+# both listing and call time.
 # ──────────────────────────────────────────────────────────────────────
 def _fallback_tool_roles(name: str) -> list[str]:
     if name == "shell":
         return ["shell"]
+    if name == "tool_inventory":
+        return ["evidence"]
     if name in {"requests", "bs4", "lxml"}:
-        return ["aggressive", "evidence"]
+        return ["active", "evidence"]
     spec = next((candidate for candidate in CLI_TOOL_SPECS if candidate.name == name), None)
     if spec is None:
         return []
     if name in RECON_CLI_TOOLS or spec.category in {"dns", "osint"}:
         return ["recon"]
     if name in EVIDENCE_CLI_TOOLS:
-        return ["aggressive", "evidence"]
-    if name in AGGRESSIVE_CLI_TOOLS or spec.category in AGGRESSIVE_CLI_CATEGORIES:
-        return ["aggressive"]
+        return ["active", "evidence"]
+    if name in ACTIVE_CLI_TOOLS or spec.category in ACTIVE_CLI_CATEGORIES:
+        return ["active"]
     return []
 
 

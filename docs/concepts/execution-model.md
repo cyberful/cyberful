@@ -95,29 +95,38 @@ grants, and ephemeral credentials do not leak across phases.
 ## Local fallback sessions
 
 When `fallback-server.yaml` passes its startup preflight, the primary subsystem
-can call one `aggressive_fallback_inference` helper per phase. Cyberful suspends
-the primary session while a new local controller works through a reduced,
-default-deny `aggressive-assist` gateway. The helper cannot request handoff or
-invoke itself; it returns a concise result and evidence references to the
-primary session, which retains responsibility for the deliverable.
+receives `delegate_to_fallback_inference` and a conditional nudge. When an
+authorized operation requires a more aggressive approach but the primary cannot
+proceed, it delegates autonomously; ordinary executable work remains primary.
+Calls are serialized and have no numeric cap while active phase budget remains.
+Each starts a fresh local controller through a reduced, default-deny
+`fallback-assist` gateway and owns a distinct attempt number and transcript.
+Arguments are validated before an attempt is reserved, and `relevant_artifacts`
+accepts only workarea-relative paths. An assist cannot request handoff or see the
+delegation tool, so it cannot recurse; the primary retains phase responsibility.
 
-Automatic recovery is narrower. It runs once only after the terminal provider
-failure is structurally classified as `security_policy_block`; buffering,
-matching prose, and generic provider errors do not qualify. Cyberful first
-collects the primary process and gateway, then starts a fresh local session and
-`aggressive-recovery` gateway in the same run, phase, workarea, scope, and
-remaining active budget. A sanitized recovery capsule describes the incomplete
-operation and durable artifacts without copying the transcript, reasoning,
-credentials, or raw payloads. Recovery can complete the phase handoff but
-cannot recurse. Local sessions receive the configured compact system prompt
-followed by the same embedded trust boundary; Cyberful does not forward the
-primary phase persona or skill catalog.
+Automatic recovery runs once after Cyberful has collected the primary process,
+gateway, effective summary, deliverable state, and handoff. It applies to any
+provider failure, an empty effective summary, a missing deliverable, or a missing
+or invalid handoff. A structured `security_policy_block` such as `cyberPolicy`
+is one provider-failure case, not the sole trigger. Cancellation, shutdown,
+budget exhaustion, setup or spawn failure, a primary gateway that is still live,
+and host cleanup, sealing, or readiness failures never start recovery.
+
+An eligible failure starts one fresh `fallback-recovery` session in the same run,
+phase, workarea, scope, and remaining active budget. A sanitized capsule describes
+the deterministic reasons and durable state without copying transcript, reasoning,
+credentials, or raw payloads. Recovery may complete handoff, cannot see the
+delegation tool, and is never retried automatically. Local sessions receive the
+configured compact system prompt followed by the same embedded trust boundary;
+Cyberful does not forward the primary phase persona or skill catalog.
 
 Accepted and declined approvals are matched by their exact request envelope and
 automatically reused only inside the same run and phase. A genuinely new action
-still asks the human. Fallback sessions receive distinct transcripts, while a
-host-owned runtime manifest records their public outcome without API keys or
-the configured system prompt. See
+still asks the human. Fallback sessions receive distinct transcripts, while
+runtime manifest version 2 records each attempt, its discriminated trigger and
+recovery reasons, and its public outcome without API keys or the configured
+system prompt. See
 [Local fallback inference](../runtimes/fallback-inference.md).
 
 For repository workflows, imported source and durable source snapshots live in

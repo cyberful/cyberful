@@ -164,9 +164,11 @@ evidence from the validated ledger.
 - `mcps/zap/` — headless OWASP ZAP runtime and bridge for Pentest.
 
 Codex is the primary backend. An operator may attach a pre-started loopback
-Responses server as one bounded helper and one security-policy recovery attempt
-per phase. It inherits the same scope, workarea, controls, approval ledger, and
-remaining budget; it is not a replacement backend or an independent workflow.
+Responses server as an optional local delegate. The primary can invoke it
+serially whenever an authorized operation needs a more aggressive approach that
+the primary cannot execute; the host may also run one automatic recovery after
+a recoverable primary failure. It inherits the same scope, workarea, controls,
+approval ledger, and remaining budget, and is not a replacement backend.
 
 Cyberful emits no outbound telemetry, metrics, or analytics.
 
