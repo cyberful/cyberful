@@ -1,13 +1,13 @@
 # Cyberful
 
-Cyberful is an open-source application-security workbench for authorized
-penetration testing and deep source-code auditing.
+Cyberful turns your AI coding agent into an ethical hacker for authorized
+penetration testing, deep code auditing, and bug bounty hunting.
 
 <p align="center">
   <img src="docs/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
 </p>
 
-Cyberful combines Codex-driven security reasoning with isolated offensive
+Cyberful combines coding agent-driven security reasoning with isolated offensive
 tooling, a local Code Graph, independent verification, durable evidence, and
 report-ready outputs. It has three security workflows:
 
