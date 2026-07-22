@@ -71,22 +71,21 @@ brief → recon → exploit → hacker → verify → report
 Bug Bounty Program tests a live target under both an explicit authorization
 boundary and the supplied program policy.
 
-| Phase       | Responsibility                                                                                                                     | Required artifact      |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| **Brief**   | Record program provenance and exact policy; preflight supplied browser accounts and ZAP routing, then record observed dependencies | `MISSION.md`           |
-| **Recon**   | Run the shared calibrated Pentest surface-mapping policy                                                                           | `RECON.md`             |
-| **Exploit** | Run the shared Pentest systematic validation policy                                                                                | `EXPLOIT.md`           |
-| **Hacker**  | Run the shared Pentest unconventional attack policy                                                                                | `HACKER.md`            |
-| **Verify**  | Independently retest and classify technical verdict plus submission readiness                                                      | `BUG_BOUNTY_VERIFY.md` |
-| **Report**  | Create one portable Markdown submission per ready finding and a navigation index                                                   | `BUG_BOUNTY_REPORT.md` |
+| Phase       | Responsibility                                                                      | Required artifact      |
+| ----------- | ----------------------------------------------------------------------------------- | ---------------------- |
+| **Brief**   | Record program provenance, exact policy, supplied access, and binding restrictions  | `MISSION.md`           |
+| **Recon**   | Run the shared calibrated Pentest surface mapping, including authenticated journeys | `RECON.md`             |
+| **Exploit** | Run the shared Pentest systematic validation policy                                 | `EXPLOIT.md`           |
+| **Hacker**  | Run the shared Pentest unconventional attack policy                                 | `HACKER.md`            |
+| **Verify**  | Independently retest and classify technical verdict plus submission readiness       | `BUG_BOUNTY_VERIFY.md` |
+| **Report**  | Create one portable Markdown submission per ready finding and a navigation index    | `BUG_BOUNTY_REPORT.md` |
 
 Supply the official policy as text, an attachment, or an exact public URL. Brief
-may read an explicitly supplied public policy page and, when existing accounts
-were declared, make one normal target visit per profile for readiness only. It
-requires the target session, distinct account identity where promised, and ZAP
-routing before Recon. A failed profile opens an **OK, retry** question and stays
-blocked without a final `MISSION.md` until the repaired state passes. This
-preflight does not run payloads, replay requests, or test a vulnerability.
+may read that explicitly supplied public policy page and records declared browser
+profiles, accounts, and other access in `MISSION.md` without opening the target or
+gating the handoff on session readiness. Recon consumes that access context and
+owns login, authenticated target navigation, profile comparison, and observed
+application-dependency mapping within the recorded policy.
 
 Verify assigns stable `BBP-###` IDs and one of `SUBMISSION_READY`,
 `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report emits only ready findings:

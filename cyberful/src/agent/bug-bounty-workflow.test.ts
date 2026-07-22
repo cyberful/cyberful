@@ -90,9 +90,8 @@ describe("built-in Bug Bounty Program workflow", () => {
       Object.fromEntries(
         PHASES.map(([phase]) => [
           phase,
-          SubsystemCodex.parsePersona(
-            fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
-          ).subagents,
+          SubsystemCodex.parsePersona(fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"))
+            .subagents,
         ]),
       ),
     ).toEqual({ brief: 0, recon: 3, exploit: 2, hacker: 2, verify: 0, report: 0 })
@@ -118,19 +117,21 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("target `recon`")
   })
 
-  test("brief gates broken supplied accounts without blocking on observed dependencies", () => {
+  test("brief records supplied access without preflighting target accounts", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
 
-    expect(brief).toContain("Account, proxy, and application preflight")
-    expect(brief).toContain("`browser_status`")
-    expect(brief).toContain("`proxy.mode=zap`")
-    expect(brief).toContain("`browser_network_log`")
-    expect(brief).toContain("`OK, retry`")
-    expect(brief).toMatch(/Do not hand off to Recon while declared access remains\s+broken/i)
-    expect(brief).toMatch(/Never ask a blocking scope question or withhold `MISSION\.md` solely because/i)
-    expect(brief).toMatch(/passively observed dependency relationships/i)
-    expect(brief).toMatch(/active testing remains confined to the assets authorized by the supplied program policy/i)
-    expect(brief).not.toMatch(/every operational-origin ambiguity is resolved/i)
+    expect(brief).toContain("Provided access")
+    expect(brief).toContain("target `recon`")
+    for (const obsoletePreflightInstruction of [
+      "Account, proxy, and application preflight",
+      "`browser_status`",
+      "`proxy.mode=zap`",
+      "`browser_network_log`",
+      "`OK, retry`",
+      "completed preflight",
+    ]) {
+      expect(brief).not.toContain(obsoletePreflightInstruction)
+    }
   })
 
   test("verify gates readiness and report emits only portable ready submissions", () => {
@@ -138,8 +139,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     const report = fs.readFileSync(path.join(home, "report.md"), "utf8")
 
     for (const verdict of ["SURVIVES", "REVISE", "DEMOTE"]) expect(verify).toContain(verdict)
-    for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"])
-      expect(verify).toContain(status)
+    for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"]) expect(verify).toContain(status)
     expect(verify).toContain("Not assessed")
     expect(verify).toContain('artifact: "BUG_BOUNTY_VERIFY.md"')
 
