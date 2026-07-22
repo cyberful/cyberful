@@ -40,8 +40,6 @@ can consume it unchanged. Include:
 - **Disclosure and submission rules** — embargoes, contact paths, duplicate handling, and finding-consolidation
   rules when supplied. Record reward tables as policy facts only; they never authorize a payout estimate.
 - **Provided access** — what supplied accounts or tokens unlock, with secret values stored only as variables.
-- **Preflight readiness** — each supplied profile's target-authentication, distinctness, and ZAP-routing result,
-  plus passively observed application dependencies and their supplied-policy classification.
 - **Protocol-critical inputs** — preserve exact non-secret URLs, request lines, headers, bodies, markers, and
   ordered test steps needed downstream. Replace secret values with saved `{{var:name}}` references.
 - **Open questions and missing policy** — say `Not provided` or `Not assessed` rather than inventing a rule.
