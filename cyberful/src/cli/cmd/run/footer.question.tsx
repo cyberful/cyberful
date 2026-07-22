@@ -13,12 +13,14 @@ import {
   createQuestionBodyState,
   questionConfirm,
   questionCustom,
+  questionDecline,
   questionExitKey,
   questionInfo,
   questionInput,
   questionMove,
   questionOther,
   questionPicked,
+  questionReady,
   questionReject,
   questionSave,
   questionSelect,
@@ -117,6 +119,7 @@ export function RunQuestionBody(props: {
   }
 
   const beginReply = (input: QuestionReply) => {
+    if (!questionReady(state(), performance.now())) return
     beginSubmission(input.requestID, "reply", () => props.onReply(input))
   }
 
@@ -176,7 +179,9 @@ export function RunQuestionBody(props: {
   }
 
   const reject = () => {
-    beginReject(questionReject(props.request))
+    const next = questionDecline(state(), performance.now())
+    setState(next.state)
+    if (next.confirmed) beginReject(questionReject(props.request))
   }
 
   useKeyboard((event) => {
@@ -195,6 +200,11 @@ export function RunQuestionBody(props: {
       if (props.onExitRequest()) {
         event.preventDefault()
       }
+      return
+    }
+
+    if (!questionReady(state(), performance.now())) {
+      event.preventDefault()
       return
     }
 
@@ -605,7 +615,10 @@ export function RunQuestionBody(props: {
                 enter <span style={{ fg: props.theme.muted }}>{verb()}</span>
               </text>
               <text fg={props.theme.text}>
-                esc <span style={{ fg: props.theme.muted }}>dismiss</span>
+                esc{" "}
+                <span style={{ fg: state().declineArmedAt === undefined ? props.theme.muted : props.theme.error }}>
+                  {state().declineArmedAt === undefined ? "dismiss" : "again to dismiss"}
+                </span>
               </text>
             </Show>
           </box>

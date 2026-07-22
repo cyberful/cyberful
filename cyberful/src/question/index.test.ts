@@ -17,6 +17,7 @@ import { ProjectID } from "@/project/schema"
 import { SessionID } from "@/session/schema"
 import { Question } from "."
 import { ApprovalMailbox } from "./mailbox"
+import { QUESTION_INTERACTION_MIN_MS } from "./interaction"
 
 const context = {
   directory: "/question-cancellation-test",
@@ -33,9 +34,7 @@ const mailboxRoot = path.join(os.tmpdir(), `question-mailbox-test-${process.pid}
 const questionLayer = Layer.merge(
   busLayer,
   Question.layer.pipe(Layer.provide(busLayer), Layer.provide(ApprovalMailbox.layer(mailboxRoot))),
-).pipe(
-  Layer.provide(InstanceDisposalRegistry.layer),
-)
+).pipe(Layer.provide(InstanceDisposalRegistry.layer))
 
 beforeEach(() => rm(mailboxRoot, { recursive: true, force: true }))
 afterEach(() => rm(mailboxRoot, { recursive: true, force: true }))
@@ -130,6 +129,59 @@ test("an external mailbox selection resumes the live question", async () => {
           expect(replies).toHaveLength(1)
           expect(yield* question.list()).toEqual([])
           expect(yield* Effect.promise(() => mailbox.list())).toEqual([])
+        } finally {
+          unsubscribe()
+        }
+      }).pipe(Effect.provideService(InstanceRef, context), Effect.provide(questionLayer), Effect.scoped),
+    )
+  } finally {
+    stderr.mockRestore()
+  }
+})
+
+test("immediate UI input cannot decide a question before it is visible", async () => {
+  const asked = Promise.withResolvers<void>()
+  const stderr = spyOn(process.stderr, "write").mockImplementation(() => true)
+
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const bus = yield* Bus.Service
+        const question = yield* Question.Service
+        const unsubscribe = yield* bus.subscribeAllCallback((event) => {
+          if (event.type === "question.asked") asked.resolve()
+        })
+
+        try {
+          const fiber = yield* question
+            .ask({
+              sessionID: SessionID.make("ses_question_presentation_floor"),
+              questions: [
+                {
+                  header: "Re-authenticate",
+                  question: "Is the authenticated app visible again?",
+                  options: [
+                    { label: "Visible", description: "The authenticated app is visible." },
+                    { label: "Unavailable", description: "Authentication could not be completed." },
+                  ],
+                },
+              ],
+            })
+            .pipe(Effect.forkChild)
+
+          yield* Effect.promise(() => asked.promise)
+          const [request] = yield* question.list()
+          expect(request).toBeDefined()
+          yield* question.reply({ requestID: request!.id, answers: [["Visible"]] })
+          yield* question.reject(request!.id)
+          yield* Effect.sleep("25 millis")
+          expect(yield* question.list()).toHaveLength(1)
+
+          yield* Effect.sleep(`${QUESTION_INTERACTION_MIN_MS} millis`)
+          yield* question.reject(request!.id)
+          const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+          expect(error).toBeInstanceOf(Question.RejectedError)
+          expect(yield* question.list()).toEqual([])
         } finally {
           unsubscribe()
         }

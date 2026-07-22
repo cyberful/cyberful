@@ -13,6 +13,7 @@ import { SessionID, MessageID } from "@/session/schema"
 import * as Log from "@/util/log"
 import { QuestionID } from "./schema"
 import { ApprovalMailbox } from "./mailbox"
+import { questionInteractionReady } from "./interaction"
 
 const log = Log.create({ service: "question" })
 
@@ -115,6 +116,7 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
 
 interface PendingEntry {
   info: Request
+  presentedAt?: number
 }
 
 interface State {
@@ -167,7 +169,7 @@ export const layer = Layer.effect(
         questions: input.questions,
         tool: input.tool,
       }
-      const entry = { info }
+      const entry: PendingEntry = { info }
       pending.set(id, entry)
       let published = false
 
@@ -192,6 +194,7 @@ export const layer = Layer.effect(
             }),
           )
           yield* bus.publish(Event.Asked, info)
+          entry.presentedAt = performance.now()
           published = true
           const decision = yield* Effect.promise((signal) => mailbox.wait(String(id), signal))
           if (pending.get(id) !== entry) return yield* new RejectedError()
@@ -229,9 +232,14 @@ export const layer = Layer.effect(
       answers: ReadonlyArray<Answer>
     }) {
       const pending = (yield* InstanceState.get(state)).pending
-      if (!pending.has(input.requestID)) {
+      const entry = pending.get(input.requestID)
+      if (!entry) {
         log.warn("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
+      }
+      if (entry.presentedAt === undefined || !questionInteractionReady(entry.presentedAt, performance.now())) {
+        log.warn("ignored reply before question presentation floor", { requestID: input.requestID })
+        return
       }
       log.info("replied", { requestID: input.requestID, answers: input.answers })
       yield* Effect.promise(() => mailbox.answer(String(input.requestID), input.answers))
@@ -239,9 +247,14 @@ export const layer = Layer.effect(
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
       const pending = (yield* InstanceState.get(state)).pending
-      if (!pending.has(requestID)) {
+      const entry = pending.get(requestID)
+      if (!entry) {
         log.warn("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
+      }
+      if (entry.presentedAt === undefined || !questionInteractionReady(entry.presentedAt, performance.now())) {
+        log.warn("ignored rejection before question presentation floor", { requestID })
+        return
       }
       log.info("rejected", { requestID })
       yield* Effect.promise(() => mailbox.reject(String(requestID)))

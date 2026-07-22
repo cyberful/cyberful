@@ -1,6 +1,6 @@
 // ── Phase Approval Ledger Tests ──────────────────────────────────
-// Proves exact approvals and refusals survive subsystem session replacement,
-// while adjacent operations still reach the human decision boundary.
+// Proves exact approvals survive subsystem session replacement, while refusals
+// and adjacent operations still reach a visible human decision boundary.
 // → cyberful/src/subsystem/approval-ledger.ts — implements the memory-only ledger.
 // ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ describe("phase approval ledger", () => {
     expect(ledger.snapshot()).toEqual({ accepted: 1, rejected: 0, pending: 0 })
   })
 
-  test("preserves a refusal and keeps a new operation subject to approval", async () => {
+  test("never replays a refusal without a new human prompt", async () => {
     let calls = 0
     const ledger = SubsystemApprovalLedger.create({
       askHuman: async (questions) => {
@@ -60,7 +60,7 @@ describe("phase approval ledger", () => {
         new AbortController().signal,
       ),
     ).toEqual([["Approve once"]])
-    expect(calls).toBe(2)
-    expect(ledger.snapshot()).toEqual({ accepted: 1, rejected: 1, pending: 0 })
+    expect(calls).toBe(3)
+    expect(ledger.snapshot()).toEqual({ accepted: 1, rejected: 2, pending: 0 })
   })
 })

@@ -31,8 +31,9 @@ a versioned Cyberful approval envelope. Codex pauses the gateway tool's active
 timer while the elicitation is pending, so the normal 600-second MCP tool limit
 still bounds operational work but does not bound human response time. The same
 gateway resumes the original tool call after `accept`, returns a non-authorizing
-result after `decline`, and cancels it during phase shutdown. There is no
-separate file-based question transport.
+result after an explicit `decline`, and cancels it during phase shutdown. The
+owner-only mailbox below mirrors that same request; it is not a second
+phase-private question protocol.
 
 One approval envelope must not decide independent authorities. Requests that
 differ by host, method, browser identity, credential, effect, risk, or traffic
@@ -131,9 +132,10 @@ delegation tool, and is never retried automatically. Local sessions receive the
 configured compact system prompt followed by the same embedded trust boundary;
 Cyberful does not forward the primary phase persona or skill catalog.
 
-Accepted and declined approvals are matched by their exact request envelope and
-automatically reused only inside the same run and phase. A genuinely new action
-still asks the human. Fallback sessions receive distinct transcripts, while
+Accepted approvals are matched by their exact request envelope and may be reused
+only inside the same run and phase. Declines are counted but never replayed: a
+retried request returns to the visible human boundary. A genuinely new action
+also asks the human. Fallback sessions receive distinct transcripts, while
 runtime manifest version 2 records each attempt, its discriminated trigger and
 recovery reasons, and its public outcome without API keys or the configured
 system prompt. See
@@ -155,10 +157,13 @@ the owning phase's workarea, gateway, browser/ZAP state, and traffic policy.
 They are attributed in the activity feed but do not become host phases or
 separate Cyberful sessions.
 
-`Escape` aborts the active process and descendants. `Ctrl+C` performs a full
-shutdown and cleans up Cyberful-owned workers, gateways, containers, and
-bridges, including while a blocking question is visible. A question belongs to
-the phase that requested it; while pending it blocks that phase and its
+`Escape` aborts the active process and descendants. While a blocking question
+owns focus, one `Escape` only arms dismissal and a second deliberate press after
+the prompt is visible confirms the decline; a carried or repeated input event
+cannot decide it. `Ctrl+C` performs a full shutdown instead of being translated
+into a decline, and cleans up Cyberful-owned workers, gateways, containers, and
+bridges. A question belongs to the phase that requested it; while pending it
+blocks that phase and its
 successors without consuming execution budget. If the phase is cancelled before
 an answer arrives, Cyberful retracts the question so it cannot authorize later
 work.

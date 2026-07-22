@@ -145,7 +145,7 @@ and completes a valid handoff:
 | Phase       | What it does                                                  |
 | ----------- | ------------------------------------------------------------- |
 | **Brief**   | Records scope, authorization, access, and rules of engagement |
-| **Recon**   | Maps the authorized surface and records suspected leads       |
+| **Recon**   | Maps the surface and calibrates evidence-backed candidates    |
 | **Exploit** | Confirms candidates with controlled, reproducible evidence    |
 | **Hacker**  | Investigates attack chains and higher-order hypotheses        |
 | **Verify**  | Independently retests every confirmed claim                   |

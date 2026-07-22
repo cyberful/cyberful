@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { createStore } from "solid-js/store"
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
@@ -17,6 +17,7 @@ import { useToast } from "../../ui/toast"
 import { errorMessage } from "@/util/error"
 import { observePromise } from "@/util/promise"
 import * as Log from "@/util/log"
+import { createQuestionBodyState, questionDecline, questionReady, questionSync } from "../../../run/question.shared"
 
 const QUESTION_MODE = "question"
 const log = Log.create({ service: "tui.question" })
@@ -33,6 +34,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
+  const [decline, setDecline] = createSignal(createQuestionBodyState(props.request.id))
   const [store, setStore] = createStore<{
     tab: number
     answers: QuestionAnswer[]
@@ -67,7 +69,12 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
     return store.answers[store.tab]?.includes(value) ?? false
   })
 
+  createEffect(() => {
+    setDecline((current) => questionSync(current, props.request.id))
+  })
+
   function submit() {
+    if (!questionReady(decline(), performance.now())) return
     const answers = questions().map((_, i) => store.answers[i] ?? [])
     observePromise(
       sdk.client.question.reply({
@@ -79,6 +86,9 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   }
 
   function reject() {
+    const next = questionDecline(decline(), performance.now())
+    setDecline(next.state)
+    if (!next.confirmed) return
     observePromise(
       sdk.client.question.reject({
         requestID: props.request.id,
@@ -88,6 +98,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   }
 
   function pick(answer: string, custom: boolean = false) {
+    if (!questionReady(decline(), performance.now())) return
     const answers = [...store.answers]
     answers[store.tab] = [answer]
     setStore("answers", answers)
@@ -242,16 +253,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
     return {
       mode: QUESTION_MODE,
       enabled: !store.editing,
-      commands: [
-        {
-          name: "app.exit",
-          title: "Reject question",
-          category: "Question",
-          run() {
-            reject()
-          },
-        },
-      ],
+      commands: [],
       bindings: [
         {
           key: "left",
@@ -278,8 +280,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
         ...(confirm()
           ? [
               { key: "return", desc: "Submit answer", group: "Question", cmd: () => submit() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
-              ...tuiConfig.keybinds.get("app.exit"),
+              { key: "escape", desc: "Confirm question dismissal", group: "Question", cmd: () => reject() },
             ]
           : [
               ...Array.from({ length: max }, (_, index) => ({
@@ -306,8 +307,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
               { key: "down", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
               { key: "j", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
               { key: "return", desc: "Select answer", group: "Question", cmd: () => selectOption() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
-              ...tuiConfig.keybinds.get("app.exit"),
+              { key: "escape", desc: "Confirm question dismissal", group: "Question", cmd: () => reject() },
             ]),
       ],
     }
@@ -533,7 +533,10 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
           </text>
 
           <text fg={theme.text}>
-            esc <span style={{ fg: theme.textMuted }}>dismiss</span>
+            esc{" "}
+            <span style={{ fg: decline().declineArmedAt === undefined ? theme.textMuted : theme.error }}>
+              {decline().declineArmedAt === undefined ? "dismiss" : "again to dismiss"}
+            </span>
           </text>
         </box>
       </box>

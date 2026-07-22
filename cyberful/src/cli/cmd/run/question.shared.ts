@@ -6,6 +6,7 @@
 
 import type { QuestionInfo, QuestionRequest } from "@/server/client"
 import type { QuestionReject, QuestionReply } from "./types"
+import { advanceRejectionConfirmation, questionInteractionReady } from "@/question/interaction"
 
 export type QuestionBodyState = {
   requestID: string
@@ -15,6 +16,8 @@ export type QuestionBodyState = {
   selected: number
   editing: boolean
   submitting: boolean
+  presentedAt: number
+  declineArmedAt?: number
 }
 
 export type QuestionStep = {
@@ -32,7 +35,7 @@ export function questionExitKey(event: {
   return event.name === "c" && event.ctrl === true && !event.meta && !event.shift && !event.super
 }
 
-export function createQuestionBodyState(requestID: string): QuestionBodyState {
+export function createQuestionBodyState(requestID: string, presentedAt = performance.now()): QuestionBodyState {
   return {
     requestID,
     tab: 0,
@@ -41,7 +44,28 @@ export function createQuestionBodyState(requestID: string): QuestionBodyState {
     selected: 0,
     editing: false,
     submitting: false,
+    presentedAt,
+    declineArmedAt: undefined,
   }
+}
+
+// ── Dismissal Requires Two Deliberate Key Events ─────────────────
+// A question can mount while the terminal is still dispatching input from the
+// previous surface. One Escape therefore only arms dismissal; a later Escape
+// confirms it after the prompt has had time to render. Very fast repeats and
+// expired confirmations remain pending and can never impersonate a human decline.
+// ─────────────────────────────────────────────────────────────────
+export function questionDecline(
+  state: QuestionBodyState,
+  now: number,
+): { state: QuestionBodyState; confirmed: boolean } {
+  const next = advanceRejectionConfirmation(state.declineArmedAt, now)
+  if (next.armedAt === state.declineArmedAt) return { state, confirmed: next.confirmed }
+  return { state: { ...state, declineArmedAt: next.armedAt }, confirmed: next.confirmed }
+}
+
+export function questionReady(state: QuestionBodyState, now: number) {
+  return questionInteractionReady(state.presentedAt, now)
 }
 
 export function questionSync(state: QuestionBodyState, requestID: string): QuestionBodyState {

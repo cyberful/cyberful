@@ -2,11 +2,11 @@
 
 Cyberful has three security workflows. Choose by the subject and delivery format you need:
 
-| Workflow | Subject | Traffic policy | Primary result |
-| --- | --- | --- | --- |
-| **Pentest** | An authorized running target | Only the recorded mission | `reports/security-report.pdf` |
-| **Bug Bounty Program** | An authorized running target under a supplied bounty policy | Only the recorded mission and program rules | `BUG_BOUNTY_REPORT.md` plus per-finding Markdown submissions |
-| **Code Audit** | Repository, explicit Git diff, architecture, dependencies, build, controls, and local runtime | External target traffic disabled | `reports/code-audit-report.pdf` |
+| Workflow               | Subject                                                                                       | Traffic policy                              | Primary result                                               |
+| ---------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------ |
+| **Pentest**            | An authorized running target                                                                  | Only the recorded mission                   | `reports/security-report.pdf`                                |
+| **Bug Bounty Program** | An authorized running target under a supplied bounty policy                                   | Only the recorded mission and program rules | `BUG_BOUNTY_REPORT.md` plus per-finding Markdown submissions |
+| **Code Audit**         | Repository, explicit Git diff, architecture, dependencies, build, controls, and local runtime | External target traffic disabled            | `reports/code-audit-report.pdf`                              |
 
 Use `/workflow` or `/workflows` on the welcome screen to select one. `Tab`
 cycles the same choices before the session begins. The selection is fixed once
@@ -40,14 +40,14 @@ brief → recon → exploit → hacker → verify → report
 
 Pentest tests a live target within an explicit authorization boundary.
 
-| Phase | Responsibility | Required artifact |
-| --- | --- | --- |
-| **Brief** | Fix targets, exclusions, identities, access, rules, and traffic limits; preflight supplied browser accounts and record observed dependencies | `MISSION.md` |
-| **Recon** | Map the authorized surface and produce testable leads | `RECON.md` |
-| **Exploit** | Systematically reproduce candidates with bounded PoCs and controls | `EXPLOIT.md` |
-| **Hacker** | Investigate unconventional assumptions, chains, and adjacent hypotheses | `HACKER.md` |
-| **Verify** | Independently retest every material claim | `VERIFY.md` |
-| **Report** | Produce the client-facing security report | `REPORT.md` |
+| Phase       | Responsibility                                                                                                                               | Required artifact |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| **Brief**   | Fix targets, exclusions, identities, access, rules, and traffic limits; preflight supplied browser accounts and record observed dependencies | `MISSION.md`      |
+| **Recon**   | Map the surface; calibrate anomalies, hypotheses, applicability, and retained coverage ideas                                                 | `RECON.md`        |
+| **Exploit** | Systematically reproduce candidates with bounded PoCs and controls                                                                           | `EXPLOIT.md`      |
+| **Hacker**  | Investigate unconventional assumptions, chains, and adjacent hypotheses                                                                      | `HACKER.md`       |
+| **Verify**  | Independently retest every material claim                                                                                                    | `VERIFY.md`       |
+| **Report**  | Produce the client-facing security report                                                                                                    | `REPORT.md`       |
 
 Pentest can use cyberful-os, isolated Chromium, and headless OWASP ZAP. Bounded,
 reversible tests inside the mission run autonomously. Irreversible,
@@ -55,6 +55,12 @@ value-moving, disruptive, cross-scope, or uncontrolled-user actions require a
 human decision. Tool availability never expands the mission.
 
 The terminal result is `reports/security-report.pdf`.
+
+`RECON.md` does not equate a sensitive feature or familiar architecture pattern with a vulnerability. Each
+active candidate records probability separately from impact, positive and contrary evidence, missing
+evidence, and one discriminating test with secure and vulnerable oracles. Target-relevant ideas that lack a
+concrete signal remain visible in a deduplicated coverage backlog instead of being discarded or presented as
+equally likely suspected failures. Exploit inherits this calibration and must reconcile the backlog explicitly.
 
 ## Bug Bounty Program
 
@@ -65,14 +71,14 @@ brief → recon → exploit → hacker → verify → report
 Bug Bounty Program tests a live target under both an explicit authorization
 boundary and the supplied program policy.
 
-| Phase | Responsibility | Required artifact |
-| --- | --- | --- |
-| **Brief** | Record program provenance and exact policy; preflight supplied browser accounts and ZAP routing, then record observed dependencies | `MISSION.md` |
-| **Recon** | Run the shared Pentest surface-mapping policy | `RECON.md` |
-| **Exploit** | Run the shared Pentest systematic validation policy | `EXPLOIT.md` |
-| **Hacker** | Run the shared Pentest unconventional attack policy | `HACKER.md` |
-| **Verify** | Independently retest and classify technical verdict plus submission readiness | `BUG_BOUNTY_VERIFY.md` |
-| **Report** | Create one portable Markdown submission per ready finding and a navigation index | `BUG_BOUNTY_REPORT.md` |
+| Phase       | Responsibility                                                                                                                     | Required artifact      |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| **Brief**   | Record program provenance and exact policy; preflight supplied browser accounts and ZAP routing, then record observed dependencies | `MISSION.md`           |
+| **Recon**   | Run the shared calibrated Pentest surface-mapping policy                                                                           | `RECON.md`             |
+| **Exploit** | Run the shared Pentest systematic validation policy                                                                                | `EXPLOIT.md`           |
+| **Hacker**  | Run the shared Pentest unconventional attack policy                                                                                | `HACKER.md`            |
+| **Verify**  | Independently retest and classify technical verdict plus submission readiness                                                      | `BUG_BOUNTY_VERIFY.md` |
+| **Report**  | Create one portable Markdown submission per ready finding and a navigation index                                                   | `BUG_BOUNTY_REPORT.md` |
 
 Supply the official policy as text, an attachment, or an exact public URL. Brief
 may read an explicitly supplied public policy page and, when existing accounts
@@ -81,7 +87,6 @@ requires the target session, distinct account identity where promised, and ZAP
 routing before Recon. A failed profile opens an **OK, retry** question and stays
 blocked without a final `MISSION.md` until the repaired state passes. This
 preflight does not run payloads, replay requests, or test a vulnerability.
-
 
 Verify assigns stable `BBP-###` IDs and one of `SUBMISSION_READY`,
 `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report emits only ready findings:
@@ -107,15 +112,15 @@ architecture, identities, dataflows, controls, dependencies, build and release
 authority, deployment, and a disposable local runtime. It never edits the
 user's checkout.
 
-| Phase | Responsibility | Required artifact |
-| --- | --- | --- |
-| **Scope** | Fix snapshot and audit lens; inventory architecture, threats, trust, dependency and release authority | `CODE_SCOPE.md` |
-| **Index** | Build and quality-check the full semantic Code Graph | `CODE_GRAPH.md` |
-| **Trace** | Map sources, sinks, guards, control ownership, negative tests, and producer-to-runtime paths | `CODE_TRACE.md` |
-| **Hunt** | Create a complete suspected-candidate and variant ledger | `CODE_HUNT.md` |
-| **Attack** | Build and attack a disposable local lab; retain controlled runtime evidence | `CODE_ATTACK.md` |
-| **Verify** | Independently refute or confirm every candidate in a fresh context and lab | `CODE_VERIFY.md` |
-| **Report** | Synthesize verified risk, coverage, limitations, remediation, and structured exports | `CODE_AUDIT_REPORT.md` |
+| Phase      | Responsibility                                                                                        | Required artifact      |
+| ---------- | ----------------------------------------------------------------------------------------------------- | ---------------------- |
+| **Scope**  | Fix snapshot and audit lens; inventory architecture, threats, trust, dependency and release authority | `CODE_SCOPE.md`        |
+| **Index**  | Build and quality-check the full semantic Code Graph                                                  | `CODE_GRAPH.md`        |
+| **Trace**  | Map sources, sinks, guards, control ownership, negative tests, and producer-to-runtime paths          | `CODE_TRACE.md`        |
+| **Hunt**   | Create a complete suspected-candidate and variant ledger                                              | `CODE_HUNT.md`         |
+| **Attack** | Build and attack a disposable local lab; retain controlled runtime evidence                           | `CODE_ATTACK.md`       |
+| **Verify** | Independently refute or confirm every candidate in a fresh context and lab                            | `CODE_VERIFY.md`       |
+| **Report** | Synthesize verified risk, coverage, limitations, remediation, and structured exports                  | `CODE_AUDIT_REPORT.md` |
 
 Terminal outputs are:
 

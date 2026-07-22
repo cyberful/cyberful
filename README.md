@@ -11,11 +11,11 @@ Cyberful combines coding agent-driven security reasoning with isolated offensive
 tooling, a local Code Graph, independent verification, durable evidence, and
 report-ready outputs. It has three security workflows:
 
-| Workflow | Use it for | Phase chain | Primary result |
-| --- | --- | --- | --- |
-| **Pentest** | An authorized live target | Brief → Recon → Exploit → Hacker → Verify → Report | `reports/security-report.pdf` |
-| **Bug Bounty Program** | An authorized target governed by a supplied bounty policy | Brief → Recon → Exploit → Hacker → Verify → Report | `BUG_BOUNTY_REPORT.md` and per-finding submissions |
-| **Code Audit** | A repository, branch diff, architecture, controls, dependencies, build, and local runtime | Scope → Index → Trace → Hunt → Attack → Verify → Report | `reports/code-audit-report.pdf` |
+| Workflow               | Use it for                                                                                | Phase chain                                             | Primary result                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------- |
+| **Pentest**            | An authorized live target                                                                 | Brief → Recon → Exploit → Hacker → Verify → Report      | `reports/security-report.pdf`                      |
+| **Bug Bounty Program** | An authorized target governed by a supplied bounty policy                                 | Brief → Recon → Exploit → Hacker → Verify → Report      | `BUG_BOUNTY_REPORT.md` and per-finding submissions |
+| **Code Audit**         | A repository, branch diff, architecture, controls, dependencies, build, and local runtime | Scope → Index → Trace → Hunt → Attack → Verify → Report | `reports/code-audit-report.pdf`                    |
 
 After any workflow completes, **Ask** provides follow-up answers against the
 same workarea and evidence without expanding its scope.
@@ -50,6 +50,38 @@ range, or current Git changes.
 See [Your first penetration test](docs/getting-started/README.md) and
 [Choose a workflow](docs/user-guide/workflows.md).
 
+## Motivation
+
+Large language models have brought powerful new capabilities into software
+creation and analysis, but also a persistent sense of uncertainty around
+cybersecurity. Their behavior can feel opaque, their dual-use potential is real,
+and the conversation often collapses into extremes: harmless assistants on one
+side, uncontrollable offensive systems on the other. That ambiguity leaves many
+people unable to judge what is secure, what is merely plausible, and what
+evidence should be trusted.
+
+Fear grows when security knowledge, tools, and validation methods remain
+accessible only to a small group of specialists. Attackers do not wait for the
+rest of the ecosystem to become comfortable with new technology; defenders,
+maintainers, researchers, and smaller teams need practical ways to understand
+their exposure now. We believe **democratizing cybersecurity** is therefore part
+of mitigating the risks created or amplified by widespread AI adoption. The
+same technology that raises concern can help close the defensive gap when it is
+placed inside explicit boundaries and rigorous workflows.
+
+Broader access to security capabilities helps more people ask better questions,
+reproduce findings, distinguish suspicion from a verified vulnerability, and
+act on evidence rather than mystique. Making it easier to understand why a
+system is secure—or why it is not—is essential to informed decisions, effective
+remediation, and justified trust.
+
+Democratization does not mean unrestricted automation or lower safety standards.
+It means making advanced security work understandable, inspectable, and usable
+within explicit authorization and policy constraints. Cyberful pursues that
+goal through open-source code, visible orchestration, isolated execution,
+durable evidence, and independent verification gates. The aim is not to make
+cybersecurity look simple, but to make its complexity navigable.
+
 ## Pentest
 
 Pentest uses one authorized mission across six fresh Codex processes:
@@ -62,8 +94,10 @@ Brief fixes the authorization boundary. When existing browser accounts were
 supplied, it first verifies each target session, distinct identity, and ZAP
 routing; failed profiles remain behind an **OK, retry** question and prevent a
 final `MISSION.md`. It records passively observed application dependencies for
-downstream reasoning without treating them as direct testing targets or blocking Recon. Recon maps the target. Exploit performs systematic,
-reproducible validation. Hacker investigates unconventional chains and
+downstream reasoning without treating them as direct testing targets or blocking Recon. Recon maps the target,
+separates concrete anomalies and target-specific seams from retained coverage ideas, and records probability,
+impact, positive evidence, contrary evidence, and discriminating tests independently. Exploit performs
+systematic, reproducible validation. Hacker investigates unconventional chains and
 assumptions. Verify independently retests claims. Report produces the
 client-facing PDF.
 
@@ -163,7 +197,9 @@ If a phase exhausts its active-time budget, Cyberful advances in degraded mode
 only when the required partial artifact can be sealed and cleanup succeeds.
 Missing artifacts, invalid handoffs, failed integrity gates, and incomplete
 cleanup halt the chain. Blocking human questions pause the phase deadline and
-process group until answered or rejected. Authorities that differ by host,
+process group until answered or explicitly rejected. Accepted exact authorities
+may be reused within the phase; rejections are never replayed, so a retried
+request returns to the visible question boundary. Authorities that differ by host,
 method, identity, credential, effect, risk, or traffic bound use separate
 questions, so one answer cannot authorize or reject unrelated work.
 

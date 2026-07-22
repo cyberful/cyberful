@@ -51,7 +51,8 @@ brief → recon → exploit → hacker → verify → report → complete
 ```
 
 Its dedicated Brief writes the Pentest-compatible `MISSION.md`; Recon, Exploit,
-and Hacker resolve directly to the Pentest personas. Dedicated Verify and Report
+and Hacker resolve directly to the Pentest personas, including Recon's calibrated
+candidate and retained-coverage contract. Dedicated Verify and Report
 write `BUG_BOUNTY_VERIFY.md`, portable submissions under
 `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
 

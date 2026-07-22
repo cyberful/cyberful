@@ -659,6 +659,27 @@ describe("Expert subprocess lifecycle", () => {
     expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"decline"')
   })
 
+  test("keeps MCP elicitation pending until the human selector decides", async () => {
+    const selectorStarted = Promise.withResolvers<void>()
+    const answer = Promise.withResolvers<ReadonlyArray<ReadonlyArray<string>>>()
+    let settled = false
+    const running = runFixtureElicitation(elicitationParams(), async () => {
+      selectorStarted.resolve()
+      return answer.promise
+    }).finally(() => {
+      settled = true
+    })
+
+    await selectorStarted.promise
+    await Bun.sleep(25)
+    expect(settled).toBe(false)
+
+    answer.resolve([["Proceed"]])
+    const result = await running
+    expect(result.termination).toBe("completed")
+    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
+  })
+
   test("cancels an elicitation when no human selector belongs to the run", async () => {
     const result = await runFixtureElicitation(elicitationParams())
 
