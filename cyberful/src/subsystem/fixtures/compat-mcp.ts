@@ -7,6 +7,7 @@
 import { appendFileSync } from "node:fs"
 
 const marker = process.env.MCP_MARKER
+const useCyberfulApproval = process.env.MCP_CYBERFUL_APPROVAL === "1"
 const mark = (s: string) => {
   if (!marker) return
   appendFileSync(marker, s + "\n")
@@ -16,6 +17,51 @@ mark("spawned")
 
 function respond(id: unknown, result: unknown) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n")
+}
+
+function elicitationParams(): Record<string, unknown> {
+  if (!useCyberfulApproval)
+    return {
+      mode: "form",
+      message: "Continue the compatibility probe?",
+      requestedSchema: {
+        type: "object",
+        properties: { answer: { type: "string", enum: ["continue"] } },
+        required: ["answer"],
+      },
+    }
+
+  const question = {
+    question: "Continue the compatibility probe?",
+    header: "Compatibility",
+    options: [{ label: "Proceed", description: "Continue the compatibility probe." }],
+    multiple: false,
+    custom: false,
+  }
+  return {
+    mode: "form",
+    message: question.question,
+    requestedSchema: {
+      type: "object",
+      properties: {
+        q0: {
+          type: "string",
+          title: question.header,
+          description: `${question.question} Return a JSON array of selected labels or allowed custom values.`,
+          minLength: 2,
+          maxLength: 161_024,
+        },
+      },
+      required: ["q0"],
+    },
+    _meta: {
+      "cyberful.dev/approval": {
+        version: 1,
+        kind: "approval",
+        questions: [question],
+      },
+    },
+  }
 }
 
 let pendingElicitationCall: unknown
@@ -73,15 +119,7 @@ process.stdin.on("data", (d: string) => {
             jsonrpc: "2.0",
             id: "elicitation-1",
             method: "elicitation/create",
-            params: {
-              mode: "form",
-              message: "Continue the compatibility probe?",
-              requestedSchema: {
-                type: "object",
-                properties: { answer: { type: "string", enum: ["continue"] } },
-                required: ["answer"],
-              },
-            },
+            params: elicitationParams(),
           }) + "\n",
         )
       } else if (msg.params?.name === "slow") {

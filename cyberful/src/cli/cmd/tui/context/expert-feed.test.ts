@@ -12,7 +12,6 @@ import {
   expertActorCardLabel,
   expertActorStateText,
   expertActorTextLabel,
-  expertActorTone,
   expertPhaseDuration,
   expertPhaseLabel,
   foldExpertActivity,
@@ -188,8 +187,6 @@ describe("foldExpertActivity", () => {
       status: "completed",
     })
     expect(expertActorStateText("interacted")).toBe("received follow-up")
-    expect(expertActorTone(actor)).toBe("default")
-    expect(expertActorTone({ id: "fallback-assist-1", role: "fallback" })).toBe("warning")
   })
 
   test("equal native call ids from simultaneous subsystems do not merge", () => {

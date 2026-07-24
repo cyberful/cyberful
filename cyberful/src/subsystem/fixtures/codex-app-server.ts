@@ -1,8 +1,8 @@
 // ── Codex App-Server Contract Fixture ────────────────────────────
-// Emulates the JSON-RPC approval policy, settings, skill registration, turn,
-// and steering surface exercised by subsystem tests. Skill registration checks both a
-// structured security package with a progressively loaded reference and the
-// retained flat ZAP contract, proving that the runtime projects both formats.
+// Emulates the JSON-RPC approval policy, settings, parent and child turns, skill
+// registration, and steering surface exercised by subsystem tests. Skill
+// registration checks a structured package with a progressively loaded reference
+// and the retained flat ZAP contract, proving both projection formats.
 // → cyberful/src/subsystem/cli.test.ts — drives this fixture as a subprocess.
 // ─────────────────────────────────────────────────────────────────
 
@@ -18,6 +18,23 @@ const elicitationParams: unknown = process.env.CYBERFUL_FIXTURE_ELICITATION_PARA
 const dynamicToolParams: unknown = process.env.CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS
   ? JSON.parse(process.env.CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS)
   : undefined
+const activeTurnsValue: unknown = process.env.CYBERFUL_FIXTURE_ACTIVE_TURNS
+  ? JSON.parse(process.env.CYBERFUL_FIXTURE_ACTIVE_TURNS)
+  : []
+const activeTurns = Array.isArray(activeTurnsValue)
+  ? activeTurnsValue.flatMap((turn) =>
+      isRecord(turn) && typeof turn.threadId === "string" && typeof turn.turnId === "string"
+        ? [{ threadId: turn.threadId, turnId: turn.turnId }]
+        : [],
+    )
+  : []
+
+if (
+  process.env.CYBERFUL_FIXTURE_EXPECT_SANITIZED_IDENTITY === "1" &&
+  (process.env.CYBERFUL_RUN_ID !== undefined || process.env.CYBERFUL_PROCESS_ROLE !== undefined)
+) {
+  throw new Error("model app-server inherited the host run cleanup identity")
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -92,6 +109,15 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (message.method === "thread/start") {
     const params = isRecord(message.params) ? message.params : {}
+    const expectedBaseInstructions = process.env.CYBERFUL_FIXTURE_EXPECT_BASE_INSTRUCTIONS
+    if (expectedBaseInstructions && params.baseInstructions !== expectedBaseInstructions) {
+      write({ id: message.id, error: { code: -32000, message: "Expected Cyberful base instructions" } })
+      continue
+    }
+    if (params.developerInstructions !== null) {
+      write({ id: message.id, error: { code: -32000, message: "Cyberful developer instructions must be null" } })
+      continue
+    }
     const policy = isRecord(params.approvalPolicy) ? params.approvalPolicy : {}
     const granular = isRecord(policy.granular) ? policy.granular : {}
     if (
@@ -130,8 +156,8 @@ for await (const line of createInterface({ input: process.stdin })) {
         coverage.includes("## Control families") &&
         coverage.includes("## Exit criteria") &&
         zap.includes("name: zap") &&
-        zap.includes("browser_status") &&
-        zap.includes("zap_http_request")
+        zap.toLowerCase().includes("history") &&
+        zap.toLowerCase().includes("active-scan")
     }
     write({ id: message.id, result: {} })
     continue
@@ -176,6 +202,15 @@ for await (const line of createInterface({ input: process.stdin })) {
       })
     }
     write({ id: message.id, result: { turn: { id: "turn-fixture", status: "inProgress" } } })
+    for (const activeTurn of activeTurns) {
+      write({
+        method: "turn/started",
+        params: {
+          threadId: activeTurn.threadId,
+          turn: { id: activeTurn.turnId, status: "inProgress", items: [] },
+        },
+      })
+    }
     if (process.env.CYBERFUL_FIXTURE_TURN_FAILURE) {
       write({
         method: "turn/completed",

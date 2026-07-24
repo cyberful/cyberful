@@ -15,7 +15,16 @@ Record cryptographic hash, source/provenance, format, architecture/subarchitectu
 
 Map entry points, initialization/finalization, exported interfaces, IPC/network/file/parser boundaries, privilege transitions, cryptographic and verification APIs, dynamic loading, dangerous memory/process functions, error/log paths, and embedded configuration. Use strings only as cross-reference seeds.
 
-Run Ghidra headless for reproducible imports, analysis options, scripts, and exports. Use radare2 and platform tools to independently confirm sections, functions, references, and instructions at critical sites.
+Use the persistent Ghidra MCP as the primary semantic workspace:
+
+1. call `ghidra_import` with a relative workarea path and retain its SHA-256;
+2. poll the returned identifier with `ghidra_job` instead of blocking on analysis;
+3. use `ghidra_search`, `ghidra_xrefs`, and `ghidra_call_graph` to narrow the boundary;
+4. confirm decisive sites with `ghidra_listing` and `ghidra_decompile`;
+5. preserve hypotheses and confidence with `ghidra_annotations`;
+6. create a `ghidra_project` checkpoint before handoff.
+
+The project, analysis, names, comments, bookmarks, and job history survive phase and runtime replacement. Cite the automatically captured `raw/ghidra/` evidence paths in handoffs and reports. Never request arbitrary scripts or binary patching through the MCP; use radare2 and platform tools to independently confirm sections, functions, references, and instructions at critical sites.
 
 Read [references/binary-analysis-fieldbook.md](references/binary-analysis-fieldbook.md) when reconstructing optimized code or patch-diffing.
 

@@ -1,4 +1,4 @@
-.PHONY: all help deps subsystems install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-codex test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
+.PHONY: all help deps subsystems install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-ghidra test-codex test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
 
 PYTHON ?= python3
 
@@ -16,6 +16,7 @@ help:
 	@echo "  make test-cyberful-os Build and verify the real cyberful-os image, MCP, and gateway"
 	@echo "  make test-network Run loopback/socket integration tests"
 	@echo "  make test-zap     Run the real Docker ZAP, bridge, browser, scan, and cleanup suite"
+	@echo "  make test-ghidra  Run Ghidra host/MCP tests plus real persistence and restart checks"
 	@echo "  make test-codex   Verify the installed Codex satisfies cyberful's contract (no account needed)"
 	@echo "  make test-all     Run local, network, ZAP, and Codex contract suites"
 	@echo "  make build        Build standalone binaries for all platforms (gated on test-codex)"
@@ -74,13 +75,21 @@ test-network:
 test-zap:
 	bun run --cwd cyberful test:zap
 
+test-ghidra:
+	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make test-ghidra; start Docker and retry." >&2; exit 1)
+	docker build --tag cyberful-ghidra:12.1.2 --file mcps/ghidra/Dockerfile mcps/ghidra
+	docker build --tag cyberful-ghidra-bridge:0.1.0 --file mcps/ghidra/Dockerfile.bridge mcps/ghidra
+	bun --cwd cyberful test --isolate src/ghidra-store.test.ts src/dependency/config.test.ts src/subsystem/upstream.test.ts src/subsystem/gateway/phase-policy.test.ts src/subsystem/gateway/ghidra-evidence.test.ts
+	$(PYTHON) -m unittest discover -s mcps/ghidra/tests -p 'test_*.py' -v
+	$(PYTHON) mcps/ghidra/tests/integration_test.py -v
+
 # Verify the installed Codex CLI satisfies cyberful's phase contract: the pinned version, the
 # `--strict-config` config keys, the app-server JSON-RPC handshake, and the MCP spawn->connect->tools/list
 # round-trip. Needs Codex on PATH but NOT a logged-in account. `make build`/`make install` run it too.
 test-codex:
 	bun run --cwd cyberful test-codex
 
-test-all: test test-network test-zap test-codex
+test-all: test test-network test-zap test-ghidra test-codex
 
 # Build standalone binaries for every supported platform (macOS, Linux, Windows).
 build:

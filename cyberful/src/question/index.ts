@@ -6,8 +6,8 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { Effect, Layer, Schema, Context } from "effect"
-import { Bus } from "@/bus"
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventSystem } from "@/event"
+import { Event as EventDefinition } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID, MessageID } from "@/session/schema"
 import * as Log from "@/util/log"
@@ -99,9 +99,9 @@ const Rejected = Schema.Struct({
 }).annotate({ identifier: "QuestionRejected" })
 
 export const Event = {
-  Asked: BusEvent.define("question.asked", Request),
-  Replied: BusEvent.define("question.replied", Replied),
-  Rejected: BusEvent.define("question.rejected", Rejected),
+  Asked: EventDefinition.define("question.asked", Request),
+  Replied: EventDefinition.define("question.replied", Replied),
+  Rejected: EventDefinition.define("question.rejected", Rejected),
 }
 
 export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("QuestionRejectedError", {}) {
@@ -144,7 +144,7 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Qu
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
     const mailbox = yield* ApprovalMailbox.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
@@ -193,21 +193,21 @@ export const layer = Layer.effect(
               ownerPID: process.pid,
             }),
           )
-          yield* bus.publish(Event.Asked, info)
+          yield* events.publish(Event.Asked, info)
           entry.presentedAt = performance.now()
           published = true
           const decision = yield* Effect.promise((signal) => mailbox.wait(String(id), signal))
           if (pending.get(id) !== entry) return yield* new RejectedError()
           pending.delete(id)
           if (decision.status === "rejected") {
-            yield* bus.publish(Event.Rejected, {
+            yield* events.publish(Event.Rejected, {
               sessionID: info.sessionID,
               requestID: id,
             })
             return yield* new RejectedError()
           }
           const answers = decision.answers.map((answer) => [...answer])
-          yield* bus.publish(Event.Replied, {
+          yield* events.publish(Event.Replied, {
             sessionID: info.sessionID,
             requestID: id,
             answers,
@@ -219,7 +219,7 @@ export const layer = Layer.effect(
           if (unresolved) pending.delete(id)
           yield* Effect.promise(() => mailbox.remove(String(id)))
           if (unresolved && published)
-            yield* bus.publish(Event.Rejected, {
+            yield* events.publish(Event.Rejected, {
               sessionID: info.sessionID,
               requestID: id,
             })
@@ -269,6 +269,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer), Layer.provide(ApprovalMailbox.defaultLayer))
+export const defaultLayer = layer.pipe(Layer.provide(EventSystem.defaultLayer), Layer.provide(ApprovalMailbox.defaultLayer))
 
 export * as Question from "."

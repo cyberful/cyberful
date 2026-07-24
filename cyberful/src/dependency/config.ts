@@ -8,6 +8,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
+import { dockerOwnershipLabels } from "@/util/container-ownership"
 
 const SIBLING_CYBERFUL_OS_DIR = "../../../cyberful-os"
 const SIBLING_MCPS_DIR = "../../../mcps"
@@ -150,6 +151,86 @@ export function cyberZapBridgeBuildCommand() {
     : []
 }
 
+export function cyberGhidraDir() {
+  return envPath("CYBER_GHIDRA_DIR") ?? existingDir(path.resolve(import.meta.dirname, SIBLING_MCPS_DIR, "ghidra"))
+}
+
+export function shouldEnableCyberGhidra() {
+  return !disabled("CYBER_GHIDRA_ENABLED")
+}
+
+export function cyberGhidraImage() {
+  return envValue("CYBER_GHIDRA_IMAGE") ?? "cyberful-ghidra:12.1.2"
+}
+
+export function cyberGhidraBridgeImage() {
+  return envValue("CYBER_GHIDRA_BRIDGE_IMAGE") ?? "cyberful-ghidra-bridge:0.1.0"
+}
+
+export function cyberGhidraStartupTimeoutSeconds() {
+  return envInt("CYBER_GHIDRA_STARTUP_TIMEOUT_SECONDS", 300, { minimum: 30, maximum: 3_600 })
+}
+
+export function cyberGhidraBuildCommand() {
+  const dir = cyberGhidraDir()
+  return dir ? ["docker", "build", "--tag", cyberGhidraImage(), "--file", path.join(dir, "Dockerfile"), dir] : []
+}
+
+export function cyberGhidraBridgeBuildCommand() {
+  const dir = cyberGhidraDir()
+  return dir
+    ? ["docker", "build", "--tag", cyberGhidraBridgeImage(), "--file", path.join(dir, "Dockerfile.bridge"), dir]
+    : []
+}
+
+// ── Ghidra Bridges Share Only The Runtime Loopback ───────────────
+// The persistent service has no published port and no target network. A fresh
+// bridge joins its network namespace for one phase, receives only the opaque MCP
+// key, and disappears when the gateway closes. It mounts neither the protected
+// project store nor the engagement workarea, so protocol forwarding cannot
+// become a second filesystem authority.
+// ─────────────────────────────────────────────────────────────────
+export function cyberGhidraBridgeContainerName() {
+  const container = envValue("CYBER_GHIDRA_CONTAINER")
+  if (!container) return
+  return `cyberful-ghidra-bridge-${dockerIdentifier(envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)}-${process.pid}`
+}
+
+export function cyberGhidraBridgeCommand(options?: {
+  container?: string
+  name?: string
+  session?: string
+  ownerPID?: number
+}) {
+  const container = options?.container ?? envValue("CYBER_GHIDRA_CONTAINER")
+  if (!container) return []
+  const session = dockerIdentifier(options?.session ?? envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)
+  const name = options?.name ?? `cyberful-ghidra-bridge-${session}-${options?.ownerPID ?? process.pid}`
+  const ownershipLabels = dockerOwnershipLabels({
+    managed: "ghidra-bridge",
+    runtime: "ghidra-bridge",
+    session,
+    ownerPID: options?.ownerPID,
+  })
+  return [
+    "docker",
+    "run",
+    "--rm",
+    "-i",
+    "--pull=never",
+    "--name",
+    name,
+    ...ownershipLabels.flatMap((label) => ["--label", label]),
+    "--label",
+    `org.cyberful.ghidra-container=${container}`,
+    "--network",
+    `container:${container}`,
+    "--env",
+    "CYBER_GHIDRA_MCP_KEY",
+    cyberGhidraBridgeImage(),
+  ]
+}
+
 export function shouldChainBrowserThroughZap() {
   return shouldEnableCyberBrowserMcp() && shouldEnableCyberZap() && !disabled("CYBER_BROWSER_THROUGH_ZAP")
 }
@@ -192,6 +273,12 @@ export function cyberZapBridgeCommand(
   if (!container) return []
   const session = dockerIdentifier(options?.session ?? envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)
   const name = options?.name ?? `cyberful-zap-bridge-${session}-${options?.ownerPID ?? process.pid}`
+  const ownershipLabels = dockerOwnershipLabels({
+    managed: "zap-bridge",
+    runtime: "zap-bridge",
+    session,
+    ownerPID: options?.ownerPID,
+  })
   return [
     "docker",
     "run",
@@ -200,12 +287,7 @@ export function cyberZapBridgeCommand(
     "--pull=never",
     "--name",
     name,
-    "--label",
-    "org.cyberful.managed=zap-bridge",
-    "--label",
-    `org.cyberful.session=${session}`,
-    "--label",
-    `org.cyberful.owner-pid=${options?.ownerPID ?? process.pid}`,
+    ...ownershipLabels.flatMap((label) => ["--label", label]),
     "--label",
     `org.cyberful.zap-container=${container}`,
     "--network",
@@ -253,7 +335,7 @@ export function cyberfulOsImage() {
 // constants rather than configuration, so environment input may tune model
 // policy but cannot select a second inference path. The backend literal remains
 // in events and transcripts as provenance, never as a runtime selector. Session
-// journal markers describe this executor without registering a second provider.
+// journal markers describe this executor without registering a second subsystem.
 // ─────────────────────────────────────────────────────────────────
 
 export type ExpertBackend = "codex"
@@ -264,14 +346,14 @@ export interface ExpertRuntime {
   model?: string
 }
 
-export const EXPERT_SESSION_PROVIDER_ID = "codex-cli"
+export const EXPERT_SESSION_SUBSYSTEM_ID = "codex-cli"
 
 export function expertSessionModel() {
-  return { providerID: EXPERT_SESSION_PROVIDER_ID, modelID: expertRuntime().model ?? "codex" }
+  return { subsystemID: EXPERT_SESSION_SUBSYSTEM_ID, modelID: expertRuntime().model ?? "codex" }
 }
 
-export function isExpertSessionModel(model: { providerID: string; modelID?: string } | undefined) {
-  return model?.providerID === EXPERT_SESSION_PROVIDER_ID
+export function isExpertSessionModel(model: { subsystemID: string; modelID?: string } | undefined) {
+  return model?.subsystemID === EXPERT_SESSION_SUBSYSTEM_ID
 }
 
 export function expertModel() {

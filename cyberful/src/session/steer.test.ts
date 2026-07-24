@@ -4,10 +4,10 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { MessageID, SessionID } from "./schema"
 import { MessageV2 } from "./message-v2"
-import { carryEngagementStatus, steerHeadFields } from "./prompt"
+import { carryEngagementStatus, steerHeadFields } from "./prompt-policy"
 
 const lastUser = (over: Partial<MessageV2.User> = {}): MessageV2.User => ({
   id: MessageID.make("msg_last_user"),
@@ -16,7 +16,7 @@ const lastUser = (over: Partial<MessageV2.User> = {}): MessageV2.User => ({
   time: { created: 1 },
   agent: "exploit",
   model: {
-    providerID: ProviderID.make("codex-cli"),
+    subsystemID: SubsystemID.make("codex-cli"),
     modelID: ModelID.make("codex"),
   },
   metadata: { workarea: "target-2026" },

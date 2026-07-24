@@ -3,6 +3,7 @@
 //   for a session through completion.
 // → cyberful/src/subsystem/orchestrator.ts — advances workflow phases.
 // → cyberful/src/subsystem/zap/runtime.ts — owns authorized runtime-test resources.
+// → cyberful/src/subsystem/ghidra/runtime.ts — owns persistent binary-analysis resources.
 // → cyberful/src/util/bounded-output.ts — bounds retained user shell output.
 // ─────────────────────────────────────────────────────────────────
 
@@ -21,7 +22,6 @@ import { Cause, Context, Effect, Exit, Latch, Layer, Option, Schema } from "effe
 import * as DateTime from "effect/DateTime"
 import * as Stream from "effect/Stream"
 import { ulid } from "ulid"
-import { Bus } from "../bus"
 import { Command } from "../command"
 import { Config } from "@/config/config"
 import { ConfigMarkdown } from "@/config/markdown"
@@ -29,23 +29,26 @@ import { DependencyConfig } from "@/dependency/config"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { EventV2Bridge } from "@/event-v2-bridge"
+import { Event } from "@/event"
 import { SubsystemCodex } from "@/subsystem/codex"
 import { SubsystemControl } from "@/subsystem/control"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemCompletion } from "@/subsystem/completion"
-import { SubsystemFallback } from "@/subsystem/fallback"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { SubsystemOrchestrator } from "@/subsystem/orchestrator"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
-import type { PhaseActivityActor, PhaseActivityActorState } from "@/subsystem/provider"
+import type { PhaseActivityActor, PhaseActivityActorState } from "@/subsystem/subsystem"
 import { SubsystemUsage } from "@/subsystem/usage"
+import { SubsystemVerdict } from "@/subsystem/verdict"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
+import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
+import { SubsystemGhidraRuntime } from "@/subsystem/ghidra/runtime"
+import { HostGhidraStore } from "@/ghidra-store"
 import { HostSourceStore } from "@/source-store"
 import { Question } from "@/question"
 import { Reference } from "@/reference/reference"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { Shell } from "@/shell/shell"
 import { ShellID } from "@/tool/shell/id"
 import {
@@ -56,9 +59,8 @@ import {
 } from "@/tool/security-report-pdf"
 import { errorMessage } from "@/util/error"
 import { Process } from "@/util/process"
-import { BoundedByteTail } from "@/util/bounded-output"
 import { ensureWorkarea, ensureWorkareaDirectory, replaceWorkareaFile, workareaAbsolutePath } from "@/workarea"
-import { SessionEvent } from "@/session/event-v2"
+import { SessionEvent } from "@/session/event"
 import { EngagementStatus } from "./engagement-status"
 import { MessageV2 } from "./message-v2"
 import { referencePromptMetadata, referenceTextPart } from "./prompt/reference"
@@ -72,19 +74,20 @@ import { SessionReportLog } from "./report-log"
 import { SessionVariable } from "./variable"
 import { SessionCompletion } from "./completion"
 import { SessionAskContext } from "./ask-context"
+import { FindingRegistry } from "@/finding/registry"
+import { SessionFinding } from "./finding"
+import { createCodeGraphService } from "@/code-graph/service"
+import { findingHandoffWarning, findingWorkflow } from "./finding-handoff"
+import type { CommandInput, LoopInput, PromptInput, ShellInput } from "./prompt-input"
+import { carryEngagementStatus, steerHeadFields, zapRuntimeLifecycle } from "./prompt-policy"
+import { ATTACHMENT_TEXT_LIMIT, attachmentText, objectiveFromMessage, textMime } from "./prompt-content"
+import { createShellOutputTail, renderShellOutput } from "./shell-output"
 
 const log = Log.create({ service: "session.prompt" })
 const elog = EffectLogger.create({ service: "session.prompt" })
 const decodeMessageInfo = Schema.decodeUnknownExit(MessageV2.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(MessageV2.Part)
-const ATTACHMENT_TEXT_LIMIT = 256_000
-const SHELL_OUTPUT_LIMIT_BYTES = 512 * 1024
-
-function renderShellOutput(output: BoundedByteTail) {
-  const tail = output.text()
-  if (!output.truncated) return tail
-  return `[Earlier shell output omitted: ${output.droppedBytes} bytes. Showing the final ${output.limit} bytes.]\n${tail}`
-}
+const FINDING_WRITE_PHASES = new Set(["recon", "exploit", "hacker", "verify"])
 
 async function lstatIfPresent(target: string) {
   try {
@@ -95,38 +98,12 @@ async function lstatIfPresent(target: string) {
   }
 }
 
-export type ZapRuntimeLifecycle = "engagement" | "disabled"
-
-export function zapRuntimeLifecycle(workflow: string): ZapRuntimeLifecycle {
-  return SubsystemPhase.zapLifecycleFor(workflow)
-}
-
-// ── A Journal Identity, Not A Provider Choice ─────────────────────
+// ── A Journal Identity, Not A Subsystem Choice ─────────────────────
 // Session rows require a model-shaped identity. Every writer in this module
 // stamps the immutable Codex marker, so no request field can select a model,
-// provider, variant, or reasoning policy for inference.
+// subsystem, variant, or reasoning policy for inference.
 // The marker identifies journal provenance only; execution policy remains host-owned.
 // ──────────────────────────────────────────────────────────────────
-
-export function steerHeadFields(lastUser: MessageV2.User | undefined) {
-  return {
-    agent: lastUser?.agent,
-    workarea: typeof lastUser?.metadata?.workarea === "string" ? lastUser.metadata.workarea : undefined,
-    metadata: lastUser ? MessageV2.continuationMetadata(lastUser.metadata) : undefined,
-  }
-}
-
-export function carryEngagementStatus(input: {
-  metadata: MessageV2.User["metadata"]
-  delivery: "immediate" | "deferred" | undefined
-  previousMetadata: MessageV2.User["metadata"]
-}): NonNullable<MessageV2.User["metadata"]> {
-  const inherit = input.delivery === "immediate" && EngagementStatus.isDegraded(input.previousMetadata)
-  return {
-    ...(input.metadata ?? {}),
-    ...EngagementStatus.metadata(EngagementStatus.isDegraded(input.metadata) || inherit),
-  }
-}
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -155,10 +132,9 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Se
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
-    const events = yield* EventV2Bridge.Service
+    const events = yield* Event.Service
     const flags = yield* RuntimeFlags.Service
     const fsys = yield* AppFileSystem.Service
     const question = yield* Question.Service
@@ -269,10 +245,13 @@ export const layer = Layer.effect(
     const currentPhase = Effect.fn("SessionPrompt.currentPhase")(function* (sessionID: SessionID, requested?: string) {
       const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
       const completion = yield* sessions
-        .findMessage(sessionID, (message) => message.parts.some((part) => part.type === "completion" && part.nextWorkflow))
+        .findMessage(sessionID, (message) =>
+          message.parts.some((part) => part.type === "completion" && part.nextWorkflow),
+        )
         .pipe(Effect.orDie)
       const nextWorkflow = Option.isSome(completion)
-        ? completion.value.parts.find((part): part is MessageV2.CompletionPart => part.type === "completion")?.nextWorkflow
+        ? completion.value.parts.find((part): part is MessageV2.CompletionPart => part.type === "completion")
+            ?.nextWorkflow
         : undefined
       if (nextWorkflow && nextWorkflow !== session.workflow) {
         const nextAgent = SubsystemPhase.workflowKickoffPhase(nextWorkflow)
@@ -285,13 +264,14 @@ export const layer = Layer.effect(
       const activeAgent = activeWorkflow ? SubsystemPhase.workflowKickoffPhase(activeWorkflow) : undefined
       if (activeWorkflow && SubsystemPhase.workflow(activeWorkflow)?.kind === "interactive" && activeAgent)
         return activeAgent
-      const requestedPhase = activeWorkflow && requested ? SubsystemPhase.canonicalPhase(activeWorkflow, requested) : undefined
+      const requestedPhase =
+        activeWorkflow && requested ? SubsystemPhase.canonicalPhase(activeWorkflow, requested) : undefined
       if (activeWorkflow && requestedPhase && SubsystemPhase.isExpertPhase(activeWorkflow, requestedPhase))
         return requestedPhase
       if (activeAgent) return activeAgent
       if (!activeWorkflow) {
         const error = new NamedError.Unknown({ message: "A workflow is required to resolve this phase." })
-        yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
+        yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
         throw error
       }
       const match = yield* sessions
@@ -305,7 +285,7 @@ export const layer = Layer.effect(
       if (session.agent && SubsystemPhase.isExpertPhase(activeWorkflow, session.agent))
         return SubsystemPhase.canonicalPhase(activeWorkflow, session.agent)
       const error = new NamedError.Unknown({ message: "This build accepts only Codex engagement phases." })
-      yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
+      yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
       throw error
     })
 
@@ -373,7 +353,7 @@ export const layer = Layer.effect(
     })
 
     // ── Attachments Cross The Boundary As Files Or Text ──────────────
-    // Text is read directly without a provider/model lookup. Binary data is
+    // Text is read directly without a subsystem/model lookup. Binary data is
     // copied into the workarea and named in the Codex objective, so the phase
     // process can inspect it through its ordinary filesystem tools.
     // No attachment grants a path outside the phase-owned workarea.
@@ -512,7 +492,7 @@ export const layer = Layer.effect(
       })
       const configuredMarker = DependencyConfig.expertSessionModel()
       const marker = {
-        providerID: ProviderID.make(configuredMarker.providerID),
+        subsystemID: SubsystemID.make(configuredMarker.subsystemID),
         modelID: ModelID.make(configuredMarker.modelID),
       }
       const info: MessageV2.User = {
@@ -755,7 +735,7 @@ export const layer = Layer.effect(
         role: "assistant",
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         modelID: input.user.model.modelID,
-        providerID: input.user.model.providerID,
+        subsystemID: input.user.model.subsystemID,
       } satisfies MessageV2.Assistant)
     })
 
@@ -922,12 +902,6 @@ export const layer = Layer.effect(
     ) {
       if (userMessage.info.role !== "user") throw new Error("Codex engagement requires a user message")
       const ctx = yield* InstanceState.context
-      const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
-      if (fallback.status === "unavailable" || (fallback.status === "disabled" && fallback.reason === "missing"))
-        yield* elog.warn("local fallback inference unavailable", {
-          sessionID: session.id,
-          warning: fallback.warning,
-        })
       const user = userMessage.info
       const workflow = session.workflow ?? SubsystemPhase.workflowOf(user.agent)
       if (!workflow) throw new Error(`A workflow is required to resolve phase '${user.agent}'`)
@@ -945,6 +919,19 @@ export const layer = Layer.effect(
       yield* Effect.promise(() => SubsystemContainer.reap(container))
 
       const bridge = yield* EffectBridge.make()
+      const registryWorkflow = findingWorkflow(workflow)
+      const findingStore = new FindingRegistry.Store(workareaCwd, {
+        workarea,
+        onUpdated: (revision) =>
+          bridge.promise(
+            events.publish(SessionFinding.Event.Updated, {
+              sessionID: session.id,
+              workarea,
+              revision,
+            }).pipe(Effect.asVoid),
+          ),
+      })
+      yield* Effect.promise((signal) => findingStore.startRun({ id: session.id, workflow: registryWorkflow }, signal))
       const subsystem = SubsystemCodex.runtimeDescriptor()
       const generatedTokens = SubsystemUsage.createSessionCounter()
       const persistedOutputTokens = session.tokens?.output ?? 0
@@ -980,6 +967,24 @@ export const layer = Layer.effect(
           )
           return await SubsystemPhaseRunner.runPhase(spec, {
             ...SubsystemPhaseRunner.defaultDeps(),
+            dynamicTools:
+              spec.phase === "report"
+                ? [
+                    SessionFinding.dynamicTool(
+                      findingStore,
+                      { runID: session.id, workflow: registryWorkflow, phase: spec.phase },
+                      { readonly: true },
+                    ),
+                  ]
+                : registryWorkflow !== "code-audit" && FINDING_WRITE_PHASES.has(spec.phase)
+                  ? [
+                      SessionFinding.dynamicTool(
+                        findingStore,
+                        { runID: session.id, workflow: registryWorkflow, phase: spec.phase },
+                        { readonly: false },
+                      ),
+                    ]
+                  : undefined,
             askQuestion: (questions, signal) =>
               Effect.runPromise(
                 bridge.run(
@@ -998,6 +1003,13 @@ export const layer = Layer.effect(
               ),
             onActivity: (activity) => {
               if (spec.abort?.aborted) return
+              // ── Reasoning Metadata Stays Inside The Runtime ─────────────
+              // Reasoning observations describe subsystem payload shape rather than
+              // engagement progress. The phase runner may use them for its final
+              // observability summary, but publishing them would expose diagnostic
+              // JSON as a user-facing TUI status row. Drop them at the event boundary.
+              // ─────────────────────────────────────────────────────────────────
+              if (activity.kind === "reasoning") return
               bridge.fork(
                 publishPhase(
                   spec.phase,
@@ -1044,13 +1056,20 @@ export const layer = Layer.effect(
               deadlineAt: result.deadlineAt,
               approvalWaitMs: result.approvalWaitMs,
               exitCode: result.exitCode,
-              providerFailure: result.providerFailure,
-              fallback: result.fallback,
-              recovered: result.recovered,
+              subsystemFailure: result.subsystemFailure,
               warnings: result.warnings,
               handoff: result.handoff
-                ? { successor: result.handoff.successor, artifact: result.handoff.artifact }
+                ? {
+                    successor: result.handoff.successor,
+                    artifact: result.handoff.artifact,
+                    verdicts: result.handoff.verdicts ? SubsystemVerdict.counts(result.handoff.verdicts) : undefined,
+                  }
                 : undefined,
+              usage: result.usage,
+              contextChurn: result.contextChurn,
+              reasoningObservability: result.reasoningObservability,
+              codexSettings: result.codexSettings,
+              noveltyContract: result.noveltyContract,
               artifactManifest: result.artifactManifest,
               runtimeManifest: result.runtimeManifest,
               semanticCheckpoints: result.semanticCheckpoints,
@@ -1059,8 +1078,22 @@ export const layer = Layer.effect(
           ),
         )
       }
+      let syncCodeGraphLedger = (_phase: string) => Promise.resolve()
       const runPhaseWithStatus = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
-        const result = await runPhaseStreaming(spec)
+        let result = await runPhaseStreaming(spec)
+        await syncCodeGraphLedger(spec.phase)
+        const registryWarning = await findingHandoffWarning(findingStore, {
+          runID: session.id,
+          workflow: registryWorkflow,
+          phase: spec.phase,
+          verdicts: result.handoff?.verdicts,
+        })
+        if (registryWarning)
+          result = {
+            ...result,
+            ok: false,
+            warnings: [...result.warnings, registryWarning],
+          }
         await recordPhaseResult(spec, result)
         return result
       }
@@ -1074,6 +1107,83 @@ export const layer = Layer.effect(
       const sourceStore = SubsystemPhase.hasCapability(workflow, "source")
         ? yield* Effect.promise(() => HostSourceStore.ensureSourceStore(workareaCwd))
         : undefined
+      const ghidraStore = SubsystemPhase.hasCapability(workflow, "ghidra")
+        ? yield* Effect.promise(() => HostGhidraStore.ensureGhidraStore(workareaCwd))
+        : undefined
+      if (registryWorkflow === "code-audit") {
+        syncCodeGraphLedger = async (phase: string) => {
+          const service = await createCodeGraphService({
+            sourceRoot: sourceStore?.root ?? ctx.directory,
+            workareaRoot: workareaCwd,
+          })
+          try {
+            const integrity = service.findingIntegrityState()
+            await findingStore.syncCodeGraph(
+              integrity.findings.map((finding) => ({
+                id: finding.id,
+                title: finding.title,
+                weakness: finding.weakness,
+                severity: finding.severity,
+                confidence: finding.confidence,
+                status: finding.status,
+                updatedAt: finding.updatedAt,
+                evidence: finding.evidence,
+                transitionReason: integrity.transitions
+                  .filter((transition) => transition.findingId === finding.id)
+                  .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
+                  .at(-1)?.reason,
+              })),
+              { runID: session.id, workflow: registryWorkflow, phase },
+            )
+          } finally {
+            await service.close()
+          }
+        }
+        yield* Effect.promise(async () => {
+          const service = await createCodeGraphService({
+            sourceRoot: sourceStore?.root ?? ctx.directory,
+            workareaRoot: workareaCwd,
+          })
+          try {
+            const integrity = service.findingIntegrityState()
+            await findingStore.syncCodeGraph(
+              integrity.findings.map((finding) => ({
+                id: finding.id,
+                title: finding.title,
+                weakness: finding.weakness,
+                severity: finding.severity,
+                confidence: finding.confidence,
+                status: finding.status,
+                updatedAt: finding.updatedAt,
+                evidence: finding.evidence,
+                transitionReason: integrity.transitions
+                  .filter((transition) => transition.findingId === finding.id)
+                  .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
+                  .at(-1)?.reason,
+              })),
+              { runID: session.id, workflow: registryWorkflow, phase: "legacy-import" },
+              { historical: true },
+            )
+          } finally {
+            await service.close()
+          }
+        })
+      }
+      const engagementEvm = SubsystemPhase.hasCapability(workflow, "evm-lab")
+        ? yield* Effect.promise(() =>
+            SubsystemEvmRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd }),
+          )
+        : { env: {}, stop: () => Promise.resolve() }
+      const engagementGhidra = ghidraStore
+        ? yield* Effect.promise((signal) =>
+            SubsystemGhidraRuntime.startEngagement({
+              sessionID: session.id,
+              workarea: workareaCwd,
+              store: ghidraStore.root,
+              signal,
+            }),
+          )
+        : { env: {}, degraded: false, stop: () => Promise.resolve() }
       // Live-target workflows deliberately retain one engagement-wide proxy/history. Code Audit stays offline.
       const engagementZap =
         zapRuntimeLifecycle(workflow) === "engagement"
@@ -1081,9 +1191,14 @@ export const layer = Layer.effect(
               SubsystemZapRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd, objective, signal }),
             )
           : { env: {}, degraded: false, stop: () => Promise.resolve() }
-      const engagementObjective = engagementZap.warning
-        ? `${objective}\n\n## Runtime warning\n${engagementZap.warning}\nContinue within scope using the remaining tools.`
-        : objective
+      const runtimeWarnings = [engagementZap.warning, engagementGhidra.warning].filter(
+        (warning): warning is string => Boolean(warning),
+      )
+      const engagementObjective =
+        runtimeWarnings.length > 0
+          ? `${objective}\n\n## Runtime warning\n${runtimeWarnings.join("\n")}\nContinue within scope using the remaining tools.`
+          : objective
+      let findingRunStatus: Exclude<FindingRegistry.RunStatus, "RUNNING"> = "FAILED"
       const outcome = yield* SubsystemOrchestrator.runAndAdvance(
         {
           sessionID: session.id,
@@ -1096,11 +1211,13 @@ export const layer = Layer.effect(
           path: { cwd: ctx.directory, root: ctx.worktree },
           expertModel: runtime.model,
           expertBackend: runtime.backend,
-          fallback,
           timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
-          degraded: EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded,
+          degraded:
+            EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded || engagementGhidra.degraded,
           env: {
             ...engagementZap.env,
+            ...engagementEvm.env,
+            ...engagementGhidra.env,
             CYBERFUL_OS_CONTAINER: container,
             ...(codeGraphLedgerKey ? { CYBERFUL_CODE_GRAPH_LEDGER_KEY: codeGraphLedgerKey } : {}),
             ...(sourceStore
@@ -1113,6 +1230,16 @@ export const layer = Layer.effect(
         },
         { runPhase: runPhaseWithStatus },
       ).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            findingRunStatus = result.terminal ? "COMPLETED" : "BLOCKED"
+          }),
+        ),
+        Effect.ensuring(
+          Effect.promise((signal) => findingStore.finishRun({ id: session.id, status: findingRunStatus }, signal)),
+        ),
+        Effect.ensuring(Effect.promise(engagementEvm.stop)),
+        Effect.ensuring(Effect.promise(engagementGhidra.stop)),
         Effect.ensuring(Effect.promise(engagementZap.stop)),
         Effect.ensuring(
           Effect.promise(() =>
@@ -1163,7 +1290,7 @@ export const layer = Layer.effect(
         ? outcome.status === "completed_with_warnings" || !terminalReportPath || missingTerminalArtifacts.length > 0
           ? "warning"
           : "success"
-        : outcome.termination === "provider_failed" || outcome.termination === "spawn_failed"
+        : outcome.termination === "subsystem_failed" || outcome.termination === "spawn_failed"
           ? "failed"
           : "blocked"
       const nextWorkflow = SubsystemPhase.nextWorkflow(workflow)
@@ -1181,7 +1308,7 @@ export const layer = Layer.effect(
           ),
           summaryMarkdown: SubsystemCompletion.normalizeSummary(
             outcome.completion?.summaryMarkdown,
-            outcome.summary || "The run ended without a provider summary.",
+            outcome.summary || "The run ended without a subsystem summary.",
           ),
           workarea,
           artifacts,
@@ -1190,8 +1317,7 @@ export const layer = Layer.effect(
       })
       if (nextWorkflow) {
         const nextAgent = SubsystemPhase.workflowKickoffPhase(nextWorkflow)
-        if (nextAgent)
-          yield* sessions.setWorkflow({ sessionID: session.id, workflow: nextWorkflow, agent: nextAgent })
+        if (nextAgent) yield* sessions.setWorkflow({ sessionID: session.id, workflow: nextWorkflow, agent: nextAgent })
       }
       return finished
     })
@@ -1202,12 +1328,6 @@ export const layer = Layer.effect(
     ) {
       if (userMessage.info.role !== "user") throw new Error("Ask requires a user message")
       const ctx = yield* InstanceState.context
-      const fallback = yield* Effect.promise(() => SubsystemFallback.load(ctx.directory))
-      if (fallback.status === "unavailable" || (fallback.status === "disabled" && fallback.reason === "missing"))
-        yield* elog.warn("local fallback inference unavailable", {
-          sessionID: session.id,
-          warning: fallback.warning,
-        })
       const user = userMessage.info
       const workarea = typeof user.metadata?.workarea === "string" ? user.metadata.workarea : undefined
       if (!workarea) throw new Error("Ask requires an existing workarea")
@@ -1271,7 +1391,6 @@ export const layer = Layer.effect(
             home: SubsystemPhase.workflowHome("ask"),
             objective: runtimeObjective,
             model: runtimeConfig.model,
-            fallback,
             timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
             abort,
             env: runtime.env,
@@ -1300,6 +1419,13 @@ export const layer = Layer.effect(
                 { signal },
               ),
             onActivity: (activity) => {
+              // ── Reasoning Metadata Stays Inside The Runtime ─────────────
+              // Ask shares the phase activity envelope, so it must enforce the same
+              // presentation boundary as workflow phases. Subsystem reasoning shape
+              // remains available to the runner, while the public event stream carries
+              // only progress that the operator can act on or meaningfully inspect.
+              // ─────────────────────────────────────────────────────────────────
+              if (activity.kind === "reasoning") return
               bridge.fork(
                 publish(
                   activity.kind,
@@ -1361,7 +1487,7 @@ export const layer = Layer.effect(
           }
           if (!workflow || !SubsystemPhase.isExpertPhase(workflow, user.agent)) {
             const error = new NamedError.Unknown({ message: `Unsupported non-Codex phase: ${user.agent}` })
-            yield* bus.publish(Session.Event.Error, { sessionID, error: error.toObject() })
+            yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
           const result = yield* runEngagement(session, userMessage)
@@ -1390,7 +1516,7 @@ export const layer = Layer.effect(
             const phase = yield* currentPhase(input.sessionID, input.agent)
             const configuredMarker = DependencyConfig.expertSessionModel()
             const marker = {
-              providerID: ProviderID.make(configuredMarker.providerID),
+              subsystemID: SubsystemID.make(configuredMarker.subsystemID),
               modelID: ModelID.make(configuredMarker.modelID),
             }
             const user = yield* sessions.updateMessage({
@@ -1420,7 +1546,7 @@ export const layer = Layer.effect(
               role: "assistant",
               tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
               modelID: marker.modelID,
-              providerID: marker.providerID,
+              subsystemID: marker.subsystemID,
             }
             const assistant = yield* sessions.updateMessage(assistantInfo)
             const started = Date.now()
@@ -1458,7 +1584,7 @@ export const layer = Layer.effect(
           // The session scope, rather than an arbitrary wall deadline, owns
           // cancellation because user commands may intentionally run for a while.
           // ─────────────────────────────────────────────────────────────────
-          const retainedOutput = new BoundedByteTail(SHELL_OUTPUT_LIMIT_BYTES)
+          const retainedOutput = createShellOutputTail()
           let output = ""
           let aborted = false
           const exit = yield* restore(
@@ -1527,7 +1653,7 @@ export const layer = Layer.effect(
         const available = (yield* commands.list()).map((item) => item.name)
         const hint = available.length ? ` Available commands: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
-        yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
       const raw = input.arguments.match(argsRegex) ?? []
@@ -1567,7 +1693,7 @@ export const layer = Layer.effect(
         workarea: input.workarea,
         parts,
       })
-      yield* bus.publish(Command.Event.Executed, {
+      yield* events.publish(Command.Event.Executed, {
         name: input.command,
         sessionID: input.sessionID,
         arguments: input.arguments,
@@ -1592,88 +1718,11 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(SessionVariable.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
     Layer.provide(Reference.defaultLayer),
-    Layer.provide(EventV2Bridge.defaultLayer),
-    Layer.provide(Bus.layer),
+    Layer.provide(Event.defaultLayer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
   ),
 )
-
-export const Delivery = Schema.Literals(["immediate", "deferred"]).annotate({ identifier: "Session.Delivery" })
-export type Delivery = Schema.Schema.Type<typeof Delivery>
-
-export const PromptInput = Schema.Struct({
-  sessionID: SessionID,
-  messageID: Schema.optional(MessageID),
-  agent: Schema.optional(Schema.String),
-  delivery: Schema.optional(Delivery),
-  noReply: Schema.optional(Schema.Boolean),
-  system: Schema.optional(Schema.String),
-  workarea: Schema.optional(Schema.String),
-  parts: Schema.Array(
-    Schema.Union([MessageV2.TextPartInput, MessageV2.FilePartInput]).annotate({ discriminator: "type" }),
-  ),
-})
-export type PromptInput = Schema.Schema.Type<typeof PromptInput>
-
-export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({ sessionID: SessionID }) {}
-
-export const ShellInput = Schema.Struct({
-  sessionID: SessionID,
-  messageID: Schema.optional(MessageID),
-  agent: Schema.String,
-  command: Schema.String,
-})
-export type ShellInput = Schema.Schema.Type<typeof ShellInput>
-
-export const CommandInput = Schema.Struct({
-  messageID: Schema.optional(MessageID),
-  sessionID: SessionID,
-  agent: Schema.optional(Schema.String),
-  delivery: Schema.optional(Delivery),
-  arguments: Schema.String,
-  command: Schema.String,
-  system: Schema.optional(Schema.String),
-  workarea: Schema.optional(Schema.String),
-  parts: Schema.optional(Schema.Array(MessageV2.FilePartInput)),
-})
-export type CommandInput = Schema.Schema.Type<typeof CommandInput>
-
-function textMime(mime: string) {
-  return (
-    mime.startsWith("text/") ||
-    /^(application\/(json|xml|yaml|toml|javascript|x-javascript|graphql|sql|x-httpd-php))$/.test(mime)
-  )
-}
-
-function attachmentText(name: string | undefined, text: string) {
-  const clipped = text.length > ATTACHMENT_TEXT_LIMIT
-  const body = clipped ? text.slice(0, ATTACHMENT_TEXT_LIMIT) : text
-  return [`Attached text file ${name ?? "file"}:`, body, clipped ? "[Attachment truncated by the journal limit.]" : ""]
-    .filter(Boolean)
-    .join("\n")
-}
-
-function objectiveFromMessage(message: MessageV2.WithParts) {
-  const text = message.parts
-    .flatMap((part) => {
-      if (part.type === "text" && !part.ignored && part.text.trim()) return [part.text.trim()]
-      if (part.type === "file") {
-        const location = part.url.startsWith("data:") ? "embedded in the journal text above" : part.url
-        return [`Attachment: ${part.filename ?? "file"} (${part.mime}); ${location}`]
-      }
-      return []
-    })
-    .join("\n\n")
-    .trim()
-  const system = message.info.role === "user" ? message.info.system?.trim() : undefined
-  return [
-    system ? `Additional session constraints:\n${system}` : undefined,
-    text || "Complete the requested engagement.",
-  ]
-    .filter((part): part is string => typeof part === "string")
-    .join("\n\n")
-}
 
 function validateJournalMessage(info: MessageV2.User, parts: MessageV2.Part[]) {
   const parsed = decodeMessageInfo(info, { errors: "all", propertyOrder: "original" })
@@ -1699,4 +1748,5 @@ const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
 
+export { CommandInput, Delivery, LoopInput, PromptInput, ShellInput } from "./prompt-input"
 export * as SessionPrompt from "./prompt"

@@ -26,7 +26,7 @@ Cyberful requires an authenticated Codex CLI and Docker. Install the validated
 Codex version, authenticate, then launch Cyberful:
 
 ```sh
-npm install --global @openai/codex@0.144.5
+npm install --global @openai/codex@0.145.0
 codex login
 
 npm install --global @cyberful/cli
@@ -101,10 +101,15 @@ systematic, reproducible validation. Hacker investigates unconventional chains a
 assumptions. Verify independently retests claims. Report produces the
 client-facing PDF.
 
-The workflow can use cyberful-os, the isolated browser, and headless OWASP ZAP.
-Bounded reversible tests inside the recorded mission run autonomously;
-irreversible, disruptive, value-moving, cross-scope, or uncontrolled-user
-actions require a human decision.
+The workflow can use cyberful-os, the isolated browser, headless OWASP ZAP, and
+a persistent headless Ghidra project during Recon through Verify.
+Bounded tests using tester-owned or uniquely marked synthetic state inside the
+recorded mission run autonomously. Cleanup is attempted when the target exposes
+a supported mechanism; the absence of cleanup for one residual synthetic record
+does not by itself require a human decision. Persistent code or retained reusable
+access, disruptive, value-moving, cross-scope, or uncontrolled-user actions do.
+Exploit and Hacker subagents inherit that same authority and own their bounded
+tests through a verdict; they are not passive-only advisory workers.
 
 ## Bug Bounty Program
 
@@ -112,6 +117,30 @@ Bug Bounty Program uses the same live-target Recon, Exploit, and Hacker phases
 as Pentest. Its dedicated Brief records the supplied program policy, safe
 harbor, eligible assets and vulnerability classes, prohibited testing, data
 handling, and disclosure rules in the compatible `MISSION.md` contract.
+
+Its three research phases reserve part of their reasoning budget for
+target-specific unknown-unknown exploration. A host-owned novelty ledger counts
+semantic root-cause families rather than endpoint variations, detects local
+convergence, and requires a final contrarian synthesis. Exploit and Hacker also
+hand off a structured verdict inventory that distinguishes positive-evidence
+`SUSPECTED`, tested-but-ambiguous `INCONCLUSIVE`, and never-ran `UNTESTABLE`.
+
+The Bug Bounty ceilings are deliberately long: 30 minutes for Brief, 240 for
+Recon, 360 each for Exploit and Hacker, 180 for Verify, and 90 for Report.
+Novelty remains qualitative: convergence triggers a contrarian pivot, not a
+quota, while browser surface coverage steers the phases toward unvisited real
+journeys without making click or route counts into handoff gates.
+
+Bug Bounty can also import up to eight approved HTTPS repositories at exact
+commits during Brief or Recon, including recursive submodules at their Gitlink
+commits. Recon through Verify can preserve binary imports, analysis, decompiled
+functions, call graphs, names, comments, and bookmarks in one headless Ghidra
+project across phase handoffs. Those phases may also prepare one engagement-owned fresh or forked
+Anvil chain and use the pinned Foundry `v1.7.1` Forge, Cast, Anvil, and Chisel
+binaries in cyberful-os. The lab provides snapshots, mutable source copies, and
+synthetic account variables; candidate EVM evidence is indexed under `raw/evm/`.
+Cyberful does not proxy, rewrite, or filter JSON-RPC methods: `MISSION.md` and
+the program policy remain the authority for public-network activity.
 
 Verify independently retests every candidate and classifies it as
 `SUBMISSION_READY`, `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report creates
@@ -134,7 +163,8 @@ scope → index → trace → hunt → attack → verify → report
   deployment variants, dependencies, build and release authority.
 - **Index** builds and quality-checks the complete local Code Graph. Diff audits
   still index the repository so callers, callees, guards, schemas, tests, and
-  release paths remain in the blast radius.
+  release paths remain in the blast radius. Native artifacts can enter the
+  persistent Ghidra project here and remain available through Verify.
 - **Trace** converts threats and unacceptable outcomes into sources, sinks,
   controls, negative tests, and producer-to-runtime paths.
 - **Hunt** examines application, native, cryptographic, smart-contract,
@@ -197,20 +227,30 @@ If a phase exhausts its active-time budget, Cyberful advances in degraded mode
 only when the required partial artifact can be sealed and cleanup succeeds.
 Missing artifacts, invalid handoffs, failed integrity gates, and incomplete
 cleanup halt the chain. Blocking human questions pause the phase deadline and
-process group until answered or explicitly rejected. Accepted exact authorities
-may be reused within the phase; rejections are never replayed, so a retried
-request returns to the visible question boundary. Authorities that differ by host,
-method, identity, credential, effect, risk, or traffic bound use separate
-questions, so one answer cannot authorize or reject unrelated work.
+process group until answered or explicitly rejected. Authorities that differ by
+host, method, identity, credential, effect, risk, or traffic bound use separate
+questions, so one answer cannot authorize or reject unrelated work. Parent and
+native-child requests share this contract, and Cyberful attributes a decline to
+the operator only when its human selector attests that decision.
 
 Durable context lives in the workarea, transcripts, and Code Graph—not hidden
 conversation state. Repository instructions, documentation, comments, web
 content, and tool output are treated as untrusted evidence.
 
-Code Audit candidates enter a host-attested ledger as `suspected`. Hunt and
-Attack may create candidates; Verify owns transitions to `confirmed` or
-`dismissed`; Report is read-only. The host exports both SARIF and structured
-evidence from the validated ledger.
+All three workflows persist supported findings and their per-run history in
+`raw/findings/registry.json`. The TUI presents that live registry in an optional
+scrollable findings sidebar, using three fifths of the row for the feed and two
+fifths for findings. Findings are ordered by descending severity; unverified
+ratings are visibly provisional, historical entries are marked **TO BE
+REVIEWED**, and disproved entries remain in a final section. `Ctrl+X`, then
+`F`, `/findings`, the command palette, and the composer indicator toggle the
+view.
+
+Code Audit candidates still enter the specialized host-attested Code Graph
+ledger as `suspected`. Hunt and Attack may create candidates; Verify owns
+transitions to `confirmed` or `dismissed`; Report is read-only. Cyberful mirrors
+that structured state into the common workarea registry and exports both SARIF
+and structured evidence from the validated Code Graph ledger.
 
 ## Architecture
 
@@ -221,13 +261,10 @@ evidence from the validated ledger.
 - `mcps/cyberful-os/` — isolated offensive and analysis toolchain.
 - `mcps/browser/` — dedicated Chromium automation.
 - `mcps/zap/` — headless OWASP ZAP runtime and bridge for live-target workflows.
+- `mcps/ghidra/` — persistent headless PyGhidra runtime and disposable phase bridge.
 
-Codex is the primary backend. An operator may attach a pre-started loopback
-Responses server as an optional local delegate. The primary can invoke it
-serially whenever an authorized operation needs a more aggressive approach that
-the primary cannot execute; the host may also run one automatic recovery after
-a recoverable primary failure. It inherits the same scope, workarea, controls,
-approval ledger, and remaining budget, and is not a replacement backend.
+Codex is the model backend. Each phase runs in one ephemeral app-server process
+with a private gateway, and only a validated handoff can advance the chain.
 
 Cyberful emits no outbound telemetry, metrics, or analytics.
 
@@ -250,7 +287,8 @@ From the repository root:
 make deps        # install workspace and MCP dependencies
 make typecheck   # run source policy checks and TypeScript checks
 make test        # run Bun/Python tests and live container contracts
-make test-all    # include loopback, ZAP, and Codex contracts
+make test-ghidra # real binary import, decompilation, call graph, annotation, and restart
+make test-all    # include loopback, ZAP, Ghidra, and Codex contracts
 make build       # build standalone binaries
 make install     # build and install for the current system
 make run         # launch from source
@@ -268,10 +306,11 @@ variables take precedence over a `.env` in the launch directory, which takes
 precedence over build defaults.
 
 Workareas live under `work/<name>/`; session transcripts live under
-`logs/session-logs/`. Imported repositories and authoritative snapshots live in
-an owner-only host source store outside the model-writable workarea. Never place
-secrets directly in prompts or commit generated workareas, transcripts, browser
-profiles, ZAP state, or reports.
+`logs/session-logs/`. Imported repositories, authoritative snapshots, and
+persistent Ghidra projects live in owner-only host stores outside the
+model-writable workarea. Never place secrets directly in prompts or commit
+generated workareas, transcripts, browser profiles, ZAP state, Ghidra state, or
+reports.
 
 Resume from the same launch directory:
 

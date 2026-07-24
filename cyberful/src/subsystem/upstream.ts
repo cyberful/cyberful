@@ -1,5 +1,5 @@
 // ── Built-In Gateway Upstream Registry ──────────────────────────
-// Constructs the local cyberful-os, isolated browser, and optional ZAP bridge
+// Constructs the local cyberful-os, isolated browser, ZAP, and Ghidra bridge
 // process descriptors from validated dependency configuration for one gateway.
 // → cyberful/src/subsystem/gateway/server.ts — starts and proxies these upstreams.
 // ─────────────────────────────────────────────────────────────────
@@ -9,10 +9,13 @@ import {
   cyberBrowserMcpCommand,
   cyberfulOsDir,
   cyberfulOsMcpCommand,
+  cyberGhidraBridgeCommand,
+  cyberGhidraBridgeContainerName,
   cyberZapBridgeCommand,
   cyberZapBridgeContainerName,
   shouldChainBrowserThroughZap,
   shouldEnableCyberBrowserMcp,
+  shouldEnableCyberGhidra,
   shouldEnableCyberfulOsMcp,
   shouldEnableCyberZap,
 } from "@/dependency/config"
@@ -67,6 +70,21 @@ export function builtin() {
       command: cyberZapBridgeCommand(),
       container: cyberZapBridgeContainerName(),
       enabled: shouldEnableCyberZap() && Boolean(process.env.CYBER_ZAP_CONTAINER?.trim()),
+      timeout: 305_000,
+      environment: {},
+    },
+    // ── Ghidra Exposure Requires The Engagement JVM ────────────────
+    // The bridge has no project or workarea mounts of its own. It can exist only
+    // while the parent runtime publishes a concrete container descriptor and
+    // capability key, and it shares only that container's loopback namespace.
+    // Closing the phase gateway removes this bridge while the JVM and durable
+    // project remain available to the next authorized analysis phase.
+    // ───────────────────────────────────────────────────────────────
+    ghidra: {
+      type: "local" as const,
+      command: cyberGhidraBridgeCommand(),
+      container: cyberGhidraBridgeContainerName(),
+      enabled: shouldEnableCyberGhidra() && Boolean(process.env.CYBER_GHIDRA_CONTAINER?.trim()),
       timeout: 305_000,
       environment: {},
     },

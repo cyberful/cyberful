@@ -1,6 +1,6 @@
 // ── Runtime Dependency Policy Tests ──────────────────────────────
 // Exercises the environment-driven dependency policy users encounter when
-// enabling browser, ZAP, and Codex phase execution in normal engagements.
+// enabling browser, ZAP, Ghidra, and Codex phase execution in normal engagements.
 // → cyberful/src/dependency/config.ts — implements the policy under test.
 // ─────────────────────────────────────────────────────────────────
 
@@ -8,6 +8,10 @@ import { describe, expect, test } from "bun:test"
 import {
   cyberBrowserMcpCommand,
   cyberBrowserZapChainEnv,
+  cyberGhidraBridgeCommand,
+  cyberGhidraBridgeImage,
+  cyberGhidraImage,
+  cyberGhidraStartupTimeoutSeconds,
   cyberZapBridgeCommand,
   cyberZapBridgeImage,
   cyberZapImage,
@@ -19,6 +23,7 @@ import {
   isExpertSessionModel,
   shouldChainBrowserThroughZap,
   shouldEnableCyberBrowserMcp,
+  shouldEnableCyberGhidra,
   shouldEnableCyberZap,
   webSearchMode,
 } from "./config"
@@ -39,6 +44,12 @@ const ENV_KEYS = [
   "CYBER_ZAP_WORKAREA",
   "CYBER_ZAP_MCP_KEY",
   "CYBER_ZAP_API_KEY",
+  "CYBER_GHIDRA_ENABLED",
+  "CYBER_GHIDRA_IMAGE",
+  "CYBER_GHIDRA_BRIDGE_IMAGE",
+  "CYBER_GHIDRA_STARTUP_TIMEOUT_SECONDS",
+  "CYBER_GHIDRA_CONTAINER",
+  "CYBER_GHIDRA_MCP_KEY",
   "CYBER_BROWSER_PROXY_CA_SPKI",
   "CYBERFUL_SUBSYSTEM_MODEL",
   "CYBERFUL_SUBSYSTEM_EFFORT",
@@ -70,10 +81,10 @@ async function withEnv<T>(values: Partial<Record<(typeof ENV_KEYS)[number], stri
 }
 
 describe("Codex runtime config", () => {
-  test("defaults to Codex with gpt-5.6-sol and xhigh reasoning", async () => {
+  test("defaults to Codex with gpt-5.6-sol and ultra reasoning", async () => {
     await withEnv({}, () => {
       expect(expertRuntime()).toEqual({ backend: "codex", command: "codex", model: "gpt-5.6-sol" })
-      expect(SubsystemCodex.effort()).toBe("xhigh")
+      expect(SubsystemCodex.effort()).toBe("ultra")
     })
   })
 
@@ -81,9 +92,9 @@ describe("Codex runtime config", () => {
     await withEnv({ CYBERFUL_SUBSYSTEM_MODEL: "custom-model", CYBERFUL_SUBSYSTEM_EFFORT: "high" }, () => {
       expect(expertRuntime()).toEqual({ backend: "codex", command: "codex", model: "custom-model" })
       expect(SubsystemCodex.effort()).toBe("high")
-      expect(expertSessionModel()).toEqual({ providerID: "codex-cli", modelID: "custom-model" })
+      expect(expertSessionModel()).toEqual({ subsystemID: "codex-cli", modelID: "custom-model" })
       expect(isExpertSessionModel(expertSessionModel())).toBe(true)
-      expect(isExpertSessionModel({ providerID: "openai", modelID: "gpt" })).toBe(false)
+      expect(isExpertSessionModel({ subsystemID: "openai", modelID: "gpt" })).toBe(false)
     })
   })
 
@@ -208,9 +219,13 @@ describe("ZAP dependency config", () => {
         "--label",
         "org.cyberful.managed=zap-bridge",
         "--label",
+        "org.cyberful.owner-pid=123",
+        "--label",
         "org.cyberful.session=ses-test",
         "--label",
-        "org.cyberful.owner-pid=123",
+        "org.cyberful.runtime=zap-bridge",
+        "--label",
+        "org.cyberful.run-owner=unowned",
         "--label",
         "org.cyberful.zap-container=zap-run",
         "--network",
@@ -234,5 +249,64 @@ describe("ZAP dependency config", () => {
     await withEnv({ CYBER_ZAP_CONTAINER: "zap-run", CYBER_ZAP_WORKAREA: "/tmp/engagement-root" }, () => {
       expect(cyberZapBridgeCommand()).toContain("type=bind,source=/tmp/engagement-root,target=/zap/wrk")
     })
+  })
+})
+
+describe("Ghidra dependency config", () => {
+  test("uses pinned headless images and a five-minute JVM startup window by default", async () => {
+    await withEnv({}, () => {
+      expect(shouldEnableCyberGhidra()).toBe(true)
+      expect(cyberGhidraImage()).toBe("cyberful-ghidra:12.1.2")
+      expect(cyberGhidraBridgeImage()).toBe("cyberful-ghidra-bridge:0.1.0")
+      expect(cyberGhidraStartupTimeoutSeconds()).toBe(300)
+      expect(cyberGhidraBridgeCommand()).toEqual([])
+    })
+  })
+
+  test("creates a private bridge only for a live engagement container", async () => {
+    await withEnv({ CYBER_GHIDRA_CONTAINER: "ghidra-run" }, () => {
+      expect(
+        cyberGhidraBridgeCommand({
+          name: "ghidra-bridge-test",
+          session: "ses-test",
+          ownerPID: 123,
+        }),
+      ).toEqual([
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--pull=never",
+        "--name",
+        "ghidra-bridge-test",
+        "--label",
+        "org.cyberful.managed=ghidra-bridge",
+        "--label",
+        "org.cyberful.owner-pid=123",
+        "--label",
+        "org.cyberful.session=ses-test",
+        "--label",
+        "org.cyberful.runtime=ghidra-bridge",
+        "--label",
+        "org.cyberful.run-owner=unowned",
+        "--label",
+        "org.cyberful.ghidra-container=ghidra-run",
+        "--network",
+        "container:ghidra-run",
+        "--env",
+        "CYBER_GHIDRA_MCP_KEY",
+        "cyberful-ghidra-bridge:0.1.0",
+      ])
+    })
+  })
+
+  test("validates explicit enablement and startup policy", async () => {
+    await withEnv({ CYBER_GHIDRA_ENABLED: "0" }, () => expect(shouldEnableCyberGhidra()).toBe(false))
+    await withEnv({ CYBER_GHIDRA_ENABLED: "sometimes" }, () =>
+      expect(() => shouldEnableCyberGhidra()).toThrow("CYBER_GHIDRA_ENABLED"),
+    )
+    await withEnv({ CYBER_GHIDRA_STARTUP_TIMEOUT_SECONDS: "29" }, () =>
+      expect(() => cyberGhidraStartupTimeoutSeconds()).toThrow("between 30 and 3600"),
+    )
   })
 })

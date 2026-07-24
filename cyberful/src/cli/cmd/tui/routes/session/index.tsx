@@ -27,12 +27,11 @@ import {
   expertActorCardLabel,
   expertActorStateText,
   expertActorTextLabel,
-  expertActorTone,
   expertPhaseDuration,
   expertPhaseLabel,
   isExpertSemanticProgress,
 } from "@tui/context/expert-feed"
-import type { PhaseActivityActorState } from "@/session/event-v2"
+import type { PhaseActivityActorState } from "@/session/event"
 import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
 import { SHELL_TOOL_ICON, ToolDisplayLabel, toolDisplayDetails, toolDisplayText } from "@tui/component/tool-label"
@@ -55,6 +54,7 @@ import type {
   UserMessage,
   TextPart,
   ReasoningPart,
+  WorkareaFinding,
 } from "@/server/client"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
@@ -98,7 +98,7 @@ import {
 import { getScrollAcceleration } from "../../util/scroll"
 import { IdleScrollFollow } from "../../util/scroll-follow"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { TuiFeatureRuntime } from "@/cli/cmd/tui/feature/runtime"
+import { Slot } from "@/cli/cmd/tui/feature/slots"
 import { assistantDisplayTimeLine, splitAssistantTimeLine } from "@/session/assistant-timestamp"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { CYBERFUL_BASE_MODE, useBindings, useCommandShortcut, useCyberfulKeymap } from "../../keymap"
@@ -109,8 +109,11 @@ import { OpenArtifact } from "../../util/open-artifact"
 import { CompletionCard } from "../../util/completion-card"
 import { workareaAbsolutePath } from "@/workarea"
 import { isRecord } from "@/util/record"
+import { DialogFinding, FindingSidebar, findingSplitWidths } from "./finding-sidebar"
 
 addDefaultParsers(parsers.parsers)
+
+const FINDINGS_SIDEBAR_PREFERENCE = "findings_sidebar_visible"
 
 const sessionBindingCommands = [
   "session.rename",
@@ -124,6 +127,7 @@ const sessionBindingCommands = [
   "session.toggle.actions",
   "session.toggle.scrollbar",
   "session.toggle.todo",
+  "session.toggle.findings",
   "session.page.up",
   "session.page.down",
   "session.line.up",
@@ -259,10 +263,39 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal("diff_wrap_mode", "word")
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - 4)
+  const findings = createMemo(() => sync.data.finding[route.sessionID])
+  const findingCount = createMemo(() => findings()?.registry.findings.length ?? 0)
+  const [findingsOpen, setFindingsOpen] = createSignal(false)
+  const splitWidths = createMemo(() => findingSplitWidths(dimensions().width, findingsOpen()))
+  const findingsWidth = createMemo(() => splitWidths().sidebar)
+  const feedColumnWidth = createMemo(() => splitWidths().feed)
+  const contentWidth = createMemo(() => Math.max(1, feedColumnWidth() - 4))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
   const sdk = useSDK()
+  let findingsPreferenceInitialized = false
+
+  createEffect(() => {
+    if (!kv.ready || findingsPreferenceInitialized) return
+    const stored = kv.get(FINDINGS_SIDEBAR_PREFERENCE)
+    if (typeof stored === "boolean") {
+      setFindingsOpen(stored)
+      findingsPreferenceInitialized = true
+      return
+    }
+    if (findingCount() === 0) return
+    setFindingsOpen(true)
+    kv.set(FINDINGS_SIDEBAR_PREFERENCE, true)
+    findingsPreferenceInitialized = true
+  })
+
+  function toggleFindings() {
+    findingsPreferenceInitialized = true
+    setFindingsOpen((current) => {
+      kv.set(FINDINGS_SIDEBAR_PREFERENCE, !current)
+      return !current
+    })
+  }
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -313,6 +346,9 @@ export function Session() {
   }
   const keymap = useCyberfulKeymap()
   const dialog = useDialog()
+  const openFinding = (finding: WorkareaFinding) => {
+    dialog.replace(() => <DialogFinding finding={finding} runID={findings()?.runID ?? route.sessionID} />)
+  }
   // Tracks whether the todo overlay is the current dialog, so `session.toggle.todo` can toggle it.
   const [todoDialogOpen, setTodoDialogOpen] = createSignal(false)
   const renderer = useRenderer()
@@ -642,6 +678,16 @@ export function Session() {
       category: "Session",
       run: () => {
         setShowScrollbar((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
+      title: findingsOpen() ? "Hide findings sidebar" : "Show findings sidebar",
+      value: "session.toggle.findings",
+      category: "Session",
+      slash: { name: "findings" },
+      run: () => {
+        toggleFindings()
         dialog.clear()
       },
     },
@@ -1046,7 +1092,15 @@ export function Session() {
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
-          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
+          <box
+            width={feedColumnWidth()}
+            flexShrink={0}
+            minHeight={0}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={2}
+            gap={1}
+          >
             <Show when={session()}>
               {/* Relative parent so the floating Jump-to-bottom button anchors to the
                   bottom of the feed (just above the prompt), not the whole column. */}
@@ -1207,7 +1261,7 @@ export function Session() {
                   <SubagentFooter />
                 </Show>
                 <Show when={visible()}>
-                  <TuiFeatureRuntime.Slot
+                  <Slot
                     name="session_prompt"
                     mode="replace"
                     session_id={route.sessionID}
@@ -1230,14 +1284,30 @@ export function Session() {
                         shortcut: jumpToBottomShortcut,
                         onJump: scrollToBottom,
                       }}
-                      right={<TuiFeatureRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
+                      right={
+                        <>
+                          <box marginRight={1} onMouseUp={() => keymap.dispatchCommand("session.toggle.findings")}>
+                            <text
+                              fg={findingsOpen() ? theme.accent : theme.textMuted}
+                              attributes={TextAttributes.UNDERLINE}
+                              wrapMode="none"
+                            >
+                              {`[Findings ${findingCount()}]`}
+                            </text>
+                          </box>
+                          <Slot name="session_prompt_right" session_id={route.sessionID} />
+                        </>
+                      }
                     />
-                  </TuiFeatureRuntime.Slot>
+                  </Slot>
                 </Show>
               </box>
             </Show>
             <Toast />
           </box>
+          <Show when={findingsOpen()}>
+            <FindingSidebar width={findingsWidth()} view={findings()} onOpen={openFinding} />
+          </Show>
         </box>
       </context.Provider>
     </PathFormatterProvider>
@@ -1265,13 +1335,11 @@ function ExpertPhaseRow(props: {
     props.workflow ? SubsystemPhase.phaseOwner(props.workflow, props.entry.phase) === "expert" : false
   const markerColor = () => (isExpert() ? theme.info : theme.textMuted)
   const actorLabel = () => props.entry.actor?.label
-  const fallbackActor = () => expertActorTone(props.entry.actor) === "warning"
-  const actorLabelColor = () => (fallbackActor() ? theme.warning : tint(theme.textMuted, theme.text, 0.12))
+  const actorLabelColor = () => tint(theme.textMuted, theme.text, 0.12)
   const actorStateColor = (state: PhaseActivityActorState) => {
     if (state === "completed") return theme.success
     if (state === "interrupted") return theme.warning
     if (state === "failed") return theme.error
-    if (fallbackActor()) return theme.warning
     return theme.info
   }
   const actorStateIcon = (state: PhaseActivityActorState) => {

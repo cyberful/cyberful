@@ -294,7 +294,7 @@ if (!skipInstall) {
 // Source launches still read the live file; this layer exists only in binaries.
 // → cyberful/src/bootstrap-env.ts — applies the embedded defaults at startup.
 // ─────────────────────────────────────────────────────────────────────
-const BAKE_ENV_SKIP = new Set(["CYBERFUL_OS_DIR"])
+const BAKE_ENV_SKIP = new Set(["CYBERFUL_OS_DIR", "CYBER_GHIDRA_DIR"])
 const embeddedEnv = (await optionalTextFile(path.resolve(dir, "../.env")))
   .split("\n")
   .filter((entry) => {
@@ -359,6 +359,25 @@ if (fs.existsSync(zapRoot)) {
   }
 }
 console.log(`Embedding ${Object.keys(embeddedZap).length} ZAP container files`)
+
+// ── Ghidra Build Contexts Travel With The Binary ─────────────────
+// The official Ghidra archive is too large to embed, so releases carry only the
+// checksum-pinned Docker recipes and first-party MCP implementation. Startup
+// materializes that reviewed text context and Docker downloads the authenticated
+// upstream archive while building the image. Tests and bytecode never enter the
+// release payload or a future build context.
+// ─────────────────────────────────────────────────────────────────
+const ghidraRoot = path.resolve(dir, "../mcps/ghidra")
+const embeddedGhidra: Record<string, string> = {}
+if (fs.existsSync(ghidraRoot)) {
+  const excluded = new Set(["tests", "__pycache__", ".git"])
+  for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: ghidraRoot, onlyFiles: true }))) {
+    const norm = rel.replaceAll("\\", "/")
+    if (norm.split("/").some((segment) => excluded.has(segment)) || norm.endsWith(".pyc")) continue
+    embeddedGhidra[norm] = await Bun.file(path.join(ghidraRoot, rel)).text()
+  }
+}
+console.log(`Embedding ${Object.keys(embeddedGhidra).length} Ghidra container files`)
 
 // ── Browser Driver Embedding Preserves Binary Assets ─────────────────
 // The browser MCP and Patchright driver ship inside Cyberful; only Chromium is
@@ -470,6 +489,7 @@ for (const item of targets) {
       CYBERFUL_EMBEDDED_CONFIG: JSON.stringify(embeddedConfig),
       CYBERFUL_EMBEDDED_CYBERFUL_OS: JSON.stringify(embeddedCyberfulOs),
       CYBERFUL_EMBEDDED_ZAP: JSON.stringify(embeddedZap),
+      CYBERFUL_EMBEDDED_GHIDRA: JSON.stringify(embeddedGhidra),
       CYBERFUL_EMBEDDED_BROWSER: JSON.stringify(embeddedBrowser),
       CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedBrowserBin),
     },

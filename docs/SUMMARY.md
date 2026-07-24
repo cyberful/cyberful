@@ -25,7 +25,8 @@
 - [cyberful-os](runtimes/cyberful-os.md)
 - [Browser](runtimes/browser.md)
 - [OWASP ZAP](runtimes/zap.md)
-- [Local fallback inference](runtimes/fallback-inference.md)
+- [Ghidra](runtimes/ghidra.md)
+- [EVM lab](runtimes/evm.md)
 
 ## Build with us
 

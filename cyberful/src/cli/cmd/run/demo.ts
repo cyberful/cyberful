@@ -251,7 +251,7 @@ function open(state: State): string {
         },
         parentID: `user_${id}`,
         modelID: "demo",
-        providerID: "demo",
+        subsystemID: "demo",
         mode: "demo",
         agent: "demo",
         path: {

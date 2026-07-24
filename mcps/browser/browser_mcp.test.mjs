@@ -15,7 +15,7 @@ const artifactsDir = await mkdtemp(path.join(os.tmpdir(), "cyberful-browser-mcp-
 const outsideDir = await mkdtemp(path.join(os.tmpdir(), "cyberful-browser-outside-"))
 const previousArtifactsDir = process.env.CYBER_BROWSER_ARTIFACTS_DIR
 process.env.CYBER_BROWSER_ARTIFACTS_DIR = artifactsDir
-const { boundedJsonLines, envBool, handleToolCall, readBoundedResponseBody } = await import(
+const { boundedJsonLines, browserToolDefinitions, envBool, handleToolCall, readBoundedResponseBody } = await import(
   `./browser_mcp.mjs?boundary-test=${Date.now()}`
 )
 if (previousArtifactsDir === undefined) delete process.env.CYBER_BROWSER_ARTIFACTS_DIR
@@ -29,6 +29,43 @@ afterAll(async () => {
 })
 
 describe("browser MCP input boundary", () => {
+  test("publishes one strict schema for every dispatchable browser tool", () => {
+    const definitions = browserToolDefinitions()
+    const names = definitions.map((tool) => tool.name)
+
+    expect(new Set(names).size).toBe(names.length)
+    expect(names).toContain("browser_status")
+    expect(names).toContain("browser_navigate")
+    expect(names).toContain("browser_click")
+    expect(names).toContain("browser_evaluate")
+    expect(names).toContain("browser_artifact_read")
+    expect(names).toContain("browser_close")
+    expect(definitions.find((tool) => tool.name === "browser_snapshot")?.inputSchema.properties.max_elements.maximum).toBe(
+      500,
+    )
+    for (const tool of definitions) {
+      expect(tool.name.startsWith("browser_")).toBe(true)
+      expect(tool.inputSchema.type).toBe("object")
+      expect(tool.inputSchema.additionalProperties).toBe(false)
+    }
+  })
+
+  test("attaches redacted action metadata without browser inputs", async () => {
+    const result = await handleToolCall({ name: "browser_status", arguments: {} })
+    const metadata = result._meta?.["cyberful.dev/browser-action"]
+
+    expect(metadata).toMatchObject({
+      profile: 1,
+      page_id: "none",
+      action: "browser_status",
+      action_family: "browser",
+      page_transition: "none",
+      outcome: "ok",
+    })
+    expect(JSON.stringify(metadata)).not.toContain("selector")
+    expect(JSON.stringify(metadata)).not.toContain("cookie")
+  })
+
   test("rejects malformed schema values before a browser action starts", async () => {
     const wrongType = await handleToolCall({
       name: "browser_wait",

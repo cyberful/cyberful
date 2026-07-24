@@ -1,6 +1,6 @@
 // ── Generation Progress Formatting ──────────────────────────────
 // Normalizes partial token-usage updates into stable status text and exposes
-// parsed display segments without inventing usage before a provider reports it.
+// parsed display segments without inventing usage before a subsystem reports it.
 // → cyberful/src/cli/cmd/tui/component/prompt/index.tsx — renders these progress values in the TUI.
 // ─────────────────────────────────────────────────────────────────
 

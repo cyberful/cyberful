@@ -38,11 +38,10 @@ import { Vcs } from "@/project/vcs"
 import { Reference } from "@/reference/reference"
 import { Pty } from "@/pty"
 import { PtyTicket } from "@/pty/ticket"
-import { SyncEvent } from "@/sync"
 import { Npm } from "@/dependency/npm"
 import { memoMap } from "@/effect/memo-map"
 import { DataMigration } from "@/data-migration"
-import { EventV2Bridge } from "@/event-v2-bridge"
+import { Event } from "@/event"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const CoreAppLayer = Layer.mergeAll(
@@ -82,8 +81,7 @@ const PlatformAppLayer = Layer.mergeAll(
   Reference.defaultLayer,
   Pty.defaultLayer,
   PtyTicket.defaultLayer,
-  SyncEvent.defaultLayer,
-  EventV2Bridge.defaultLayer,
+  Event.defaultLayer,
   DataMigration.defaultLayer,
 )
 

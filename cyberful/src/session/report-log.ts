@@ -36,14 +36,14 @@ type LogEntry =
       type: "assistant_error"
       error: unknown
       modelID: string
-      providerID: string
+      subsystemID: string
       agent: string
     })
   | (BaseLog & {
       type: "assistant_completed"
       finish?: string
       modelID: string
-      providerID: string
+      subsystemID: string
       agent: string
       tokens: MessageV2.Assistant["tokens"]
     })
@@ -70,7 +70,6 @@ type LogEntry =
       callID: string
       tool: string
       input: Record<string, unknown>
-      providerExecuted?: boolean
     })
   | (BaseLog & {
       type: "tool_response"
@@ -82,7 +81,6 @@ type LogEntry =
       title: string
       metadata: Record<string, unknown>
       attachments?: AttachmentLog[]
-      providerExecuted?: boolean
     })
   | (BaseLog & {
       type: "tool_error"
@@ -93,7 +91,6 @@ type LogEntry =
       error: string
       output?: string
       metadata?: Record<string, unknown>
-      providerExecuted?: boolean
     })
 
 type PendingEntry = {
@@ -176,10 +173,6 @@ function attachment(input: MessageV2.FilePart): AttachmentLog {
   }
 }
 
-function toolProviderExecuted(part: MessageV2.ToolPart) {
-  return part.metadata?.providerExecuted === true ? true : undefined
-}
-
 function toolOutputFromMetadata(metadata: Record<string, unknown> | undefined) {
   return typeof metadata?.output === "string" ? metadata.output : undefined
 }
@@ -197,7 +190,7 @@ function messageEntries(state: JournalState, info: MessageV2.Info): PendingEntry
       type: "assistant_error",
       error: info.error,
       modelID: info.modelID,
-      providerID: info.providerID,
+      subsystemID: info.subsystemID,
       agent: info.agent,
     })
     if (item) entries.push(item)
@@ -208,7 +201,7 @@ function messageEntries(state: JournalState, info: MessageV2.Info): PendingEntry
       type: "assistant_completed",
       finish: info.finish,
       modelID: info.modelID,
-      providerID: info.providerID,
+      subsystemID: info.subsystemID,
       agent: info.agent,
       tokens: info.tokens,
     })
@@ -281,7 +274,6 @@ function toolEntries(state: JournalState, part: MessageV2.ToolPart): PendingEntr
       callID: part.callID,
       tool: part.tool,
       input: part.state.input,
-      providerExecuted: toolProviderExecuted(part),
     })
     return item ? [item] : []
   }
@@ -297,7 +289,6 @@ function toolEntries(state: JournalState, part: MessageV2.ToolPart): PendingEntr
       title: part.state.title,
       metadata: part.state.metadata,
       attachments: part.state.attachments?.map(attachment),
-      providerExecuted: toolProviderExecuted(part),
     })
     return item ? [item] : []
   }
@@ -311,7 +302,6 @@ function toolEntries(state: JournalState, part: MessageV2.ToolPart): PendingEntr
     error: part.state.error,
     output: toolOutputFromMetadata(part.state.metadata),
     metadata: part.state.metadata,
-    providerExecuted: toolProviderExecuted(part),
   })
   return item ? [item] : []
 }

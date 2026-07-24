@@ -6,17 +6,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import os from "node:os"
 import path from "node:path"
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import {
   attestSourceImportManifest,
   handleSourceImport,
+  listVerifiedSourceImports,
   parseSourceImportRequest,
   publicNetworkAddress,
   sourceImportGitEnvironment,
   type SourceImportManifestPayload,
   verifySourceImport,
 } from "./source-import"
-import { effectiveSourceRoot } from "./source-tools"
+import { effectiveSourceRoot, handleSourceTool } from "./source-tools"
 import { isRecord } from "@/util/record"
 
 let root = ""
@@ -27,6 +28,7 @@ let previousWorkarea: string | undefined
 let previousWorkflow: string | undefined
 let previousSourceStore: string | undefined
 let previousImportKey: string | undefined
+let previousSourceRoot: string | undefined
 
 const importKey = "source-import-test-attestation-key-with-at-least-thirty-two-bytes"
 
@@ -91,9 +93,11 @@ beforeEach(async () => {
   previousWorkflow = process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
   previousSourceStore = process.env.CYBERFUL_SOURCE_STORE_ROOT
   previousImportKey = process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
+  previousSourceRoot = process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT
   process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
   process.env.CYBERFUL_SOURCE_STORE_ROOT = sourceStore
   process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY = importKey
+  process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = workarea
   delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
 })
 
@@ -106,6 +110,8 @@ afterEach(async () => {
   else process.env.CYBERFUL_SOURCE_STORE_ROOT = previousSourceStore
   if (previousImportKey === undefined) delete process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY
   else process.env.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY = previousImportKey
+  if (previousSourceRoot === undefined) delete process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT
+  else process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = previousSourceRoot
   await rm(root, { recursive: true, force: true })
 })
 
@@ -255,7 +261,8 @@ describe("public source import policy", () => {
       imported: true,
       commit: "a".repeat(40),
       network_complete: true,
-      submodules: false,
+      submodules: [],
+      submodule_mode: "recursive",
       lfs_smudge: false,
       local_refs: { checkout: "refs/cyberful/import-head", main: "refs/cyberful/import/0" },
     })
@@ -280,7 +287,8 @@ describe("public source import policy", () => {
     )
     if (!isRecord(manifest)) throw new Error("source import fixture manifest is not an object")
     expect(manifest).toMatchObject({
-      version: 2,
+      version: 3,
+      repository: "project",
       url: "https://github.com/example/project.git",
       commit: "a".repeat(40),
       tree: { algorithm: "sha256", files: 1, excludes: [".git"] },
@@ -490,5 +498,193 @@ describe("public source import policy", () => {
     await expect(effectiveSourceRoot(root, workarea, sourceEnvironment())).rejects.toThrow(
       "ref 'refs/cyberful/import/0' no longer matches",
     )
+  })
+
+  test("keeps a Bug Bounty collection of independently pinned repository aliases", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "bug-bounty"
+    await handleSourceImport(
+      { url: "https://github.com/example/contracts.git", repository: "contracts", submodules: "none" },
+      { confirm: async () => true, resolveHost: async () => ["8.8.8.8"], runGit: fixtureImportGit },
+    )
+    await handleSourceImport(
+      { url: "https://github.com/example/frontend.git", repository: "frontend", submodules: "none" },
+      { confirm: async () => true, resolveHost: async () => ["8.8.8.8"], runGit: fixtureImportGit },
+    )
+
+    const imports = await listVerifiedSourceImports(sourceStore, sourceEnvironment())
+    expect(imports.map((entry) => entry.repository)).toEqual(["contracts", "frontend"])
+    expect(imports.every((entry) => /^[a-f0-9]{40}$/.test(entry.manifest.commit))).toBe(true)
+    expect(imports.every((entry) => entry.manifest.version === 3)).toBe(true)
+    expect(await handleSourceTool("source_catalog", {})).toMatchObject({
+      repositories: [
+        { repository: "contracts", url: "https://github.com/example/contracts.git" },
+        { repository: "frontend", url: "https://github.com/example/frontend.git" },
+      ],
+    })
+    const selected = await handleSourceTool("source_read", { repository: "contracts", path: "main.ts" })
+    expect(selected).toMatchObject({ path: "main.ts" })
+    expect(JSON.stringify(selected)).toContain("export const sealed = true")
+    await expect(handleSourceTool("source_read", { path: "main.ts" })).rejects.toThrow("select repository")
+    let prompted = false
+    await expect(
+      handleSourceImport(
+        { url: "https://github.com/example/other.git", repository: "contracts" },
+        {
+          confirm: async () => {
+            prompted = true
+            return true
+          },
+        },
+      ),
+    ).rejects.toThrow("already exists")
+    expect(prompted).toBe(false)
+  })
+
+  test("materializes recursive relative submodules at the exact Gitlink commit", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "bug-bounty"
+    const rootCommit = "a".repeat(40)
+    const submoduleCommit = "b".repeat(40)
+    const result = await handleSourceImport(
+      { url: "https://github.com/example/contracts.git", repository: "contracts" },
+      {
+        confirm: async () => true,
+        resolveHost: async () => ["8.8.8.8"],
+        runGit: async (args, cwd) => {
+          if (args.includes("clone")) {
+            const destination = cloneDestination(args)
+            await mkdir(path.join(destination, ".git"), { recursive: true })
+            await writeFile(path.join(destination, "Source.sol"), "contract Source {}\n")
+            if (!destination.endsWith(path.join("lib", "dependency")))
+              await writeFile(
+                path.join(destination, ".gitmodules"),
+                '[submodule "dependency"]\n\tpath = lib/dependency\n\turl = ../dependency.git\n',
+              )
+          }
+          if (args[0] === "config")
+            return {
+              exitCode: 0,
+              stdout:
+                "submodule.dependency.path\nlib/dependency\0" +
+                "submodule.dependency.url\n../dependency.git\0",
+              stderr: "",
+              truncated: false,
+            }
+          if (args[0] === "ls-tree")
+            return {
+              exitCode: 0,
+              stdout: `160000 commit ${submoduleCommit}\tlib/dependency\0`,
+              stderr: "",
+              truncated: false,
+            }
+          if (args[0] === "rev-parse")
+            return {
+              exitCode: 0,
+              stdout: `${cwd.endsWith(path.join("lib", "dependency")) ? submoduleCommit : rootCommit}\n`,
+              stderr: "",
+              truncated: false,
+            }
+          return { exitCode: 0, stdout: "", stderr: "", truncated: false }
+        },
+      },
+    )
+
+    expect(result).toMatchObject({
+      version: 3,
+      repository: "contracts",
+      submodule_mode: "recursive",
+      submodules: [
+        {
+          path: "lib/dependency",
+          url: "https://github.com/example/dependency.git",
+          commit: submoduleCommit,
+        },
+      ],
+    })
+  })
+
+  test("rolls back a failed Bug Bounty import without publishing its alias", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "bug-bounty"
+    await expect(
+      handleSourceImport(
+        { url: "https://github.com/example/broken.git", repository: "broken" },
+        {
+          confirm: async () => true,
+          resolveHost: async () => ["8.8.8.8"],
+          runGit: async (args) => ({
+            exitCode: args.includes("clone") ? 1 : 0,
+            stdout: "",
+            stderr: args.includes("clone") ? "fixture failure" : "",
+            truncated: false,
+          }),
+        },
+      ),
+    ).rejects.toThrow("fixture failure")
+    await expect(lstat(path.join(importRoot, "repositories", "broken"))).rejects.toThrow()
+  })
+
+  test("rejects SSH, file, and credentialed submodule transports before cloning them", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "bug-bounty"
+    for (const [index, submoduleUrl] of [
+      "ssh://git@github.com/example/dependency.git",
+      "file:///tmp/dependency.git",
+      "https://token@github.com/example/dependency.git",
+    ].entries()) {
+      await expect(
+        handleSourceImport(
+          { url: "https://github.com/example/contracts.git", repository: `contracts-${index}` },
+          {
+            confirm: async () => true,
+            resolveHost: async () => ["8.8.8.8"],
+            runGit: async (args) => {
+              if (args.includes("clone")) {
+                const destination = cloneDestination(args)
+                await mkdir(path.join(destination, ".git"), { recursive: true })
+                await writeFile(path.join(destination, "Contract.sol"), "contract Contract {}\n")
+                await writeFile(
+                  path.join(destination, ".gitmodules"),
+                  `[submodule "dependency"]\n\tpath = lib/dependency\n\turl = ${submoduleUrl}\n`,
+                )
+              }
+              if (args[0] === "config")
+                return {
+                  exitCode: 0,
+                  stdout:
+                    "submodule.dependency.path\nlib/dependency\0" +
+                    `submodule.dependency.url\n${submoduleUrl}\0`,
+                  stderr: "",
+                  truncated: false,
+                }
+              return {
+                exitCode: 0,
+                stdout: args[0] === "rev-parse" ? `${"a".repeat(40)}\n` : "",
+                stderr: "",
+                truncated: false,
+              }
+            },
+          },
+        ),
+      ).rejects.toThrow()
+      await expect(lstat(path.join(importRoot, "repositories", `contracts-${index}`))).rejects.toThrow()
+    }
+  })
+
+  test("enforces the eight-root Bug Bounty collection limit before approval", async () => {
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "bug-bounty"
+    const collection = path.join(importRoot, "repositories")
+    await mkdir(collection)
+    await Promise.all(Array.from({ length: 8 }, (_, index) => mkdir(path.join(collection, `repo-${index}`))))
+    let prompted = false
+    await expect(
+      handleSourceImport(
+        { url: "https://github.com/example/ninth.git", repository: "ninth" },
+        {
+          confirm: async () => {
+            prompted = true
+            return true
+          },
+        },
+      ),
+    ).rejects.toThrow("at most 8")
+    expect(prompted).toBe(false)
   })
 })

@@ -49,6 +49,7 @@ import { emptyTruncationDirSync } from "@/tool/truncation-dir"
 import { SubsystemCli } from "@/subsystem/cli"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
+import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -289,6 +290,9 @@ try {
     Log.Default.warn("late subsystem shutdown failed", { error: errorMessage(error) })
   })
   await Promise.all([
+    SubsystemEvmRuntime.removeAll().catch((error) => {
+      Log.Default.warn("EVM container shutdown failed", { error: errorMessage(error) })
+    }),
     SubsystemZapRuntime.removeAll().catch((error) => {
       Log.Default.warn("ZAP container shutdown failed", { error: errorMessage(error) })
     }),

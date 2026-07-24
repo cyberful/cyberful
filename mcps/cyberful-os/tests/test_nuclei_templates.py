@@ -37,12 +37,12 @@ class RenderTemplateListTest(unittest.TestCase):
         out = cyberful_os_mcp._render_template_list(paths, count=1108, list_cap=40)
         # header + 40 sampled paths + 1 "narrow it" footer
         self.assertEqual(len(out), 42)
-        self.assertTrue(out[0].startswith("templates (first 40 of 1108"))
+        self.assertIn("first 40 of 1108", out[0])
         # exactly the first 40 real paths are shown, in order
         self.assertEqual(out[1:41], paths[:40])
-        # the footer both accounts for the remainder and steers toward a scoped re-preview
+        # the footer accounts for the remainder without making preview a scan gate
         self.assertIn("+1068 more", out[-1])
-        self.assertIn("low tens", out[-1])
+        self.assertNotIn("must", out[-1].lower())
         # the whole section is tiny — orders of magnitude under the ~54KB that overflowed the cap
         self.assertLess(len("\n".join(out)), 4000)
 
@@ -58,7 +58,7 @@ class RenderTemplateListTest(unittest.TestCase):
         self.assertEqual(at[0], "templates:")
         self.assertEqual(len(at), 41)  # header + 40
         over = cyberful_os_mcp._render_template_list(self._paths(41), count=41, list_cap=40)
-        self.assertTrue(over[0].startswith("templates (first 40 of 41"))
+        self.assertIn("first 40 of 41", over[0])
         self.assertIn("+1 more", over[-1])
 
     def test_zero_matches_renders_nothing(self):

@@ -24,7 +24,7 @@ function assistantMessage(sessionID: string): AssistantMessage {
     time: { created: 1 },
     parentID: "message-user",
     modelID: "gpt-5",
-    providerID: "openai",
+    subsystemID: "openai",
     mode: "build",
     agent: "small-worker",
     path: {

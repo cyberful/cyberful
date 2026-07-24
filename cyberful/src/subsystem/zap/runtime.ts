@@ -13,6 +13,7 @@ import * as Log from "@/util/log"
 import { errorMessage } from "@/util/error"
 import { Process } from "@/util/process"
 import { BoundedByteTail } from "@/util/bounded-output"
+import { dockerOwnershipLabels } from "@/util/container-ownership"
 import {
   cyberZapBridgeImage,
   cyberZapBridgeCommand,
@@ -474,6 +475,11 @@ export async function startEngagement(input: {
   const mcpKey = secret()
   const runtimeEnv = { CYBER_ZAP_API_KEY: apiKey, CYBER_ZAP_MCP_KEY: mcpKey }
   const published = cyberZapProxyPort() ? `127.0.0.1:${cyberZapProxyPort()}:8080` : "127.0.0.1::8080"
+  const ownershipLabels = dockerOwnershipLabels({
+    managed: "zap",
+    runtime: "zap",
+    session,
+  })
 
   rememberContainer(container)
   try {
@@ -486,12 +492,7 @@ export async function startEngagement(input: {
         "--pull=never",
         "--name",
         container,
-        "--label",
-        "org.cyberful.managed=zap",
-        "--label",
-        `org.cyberful.session=${session}`,
-        "--label",
-        `org.cyberful.owner-pid=${process.pid}`,
+        ...ownershipLabels.flatMap((label) => ["--label", label]),
         "--add-host",
         "host.docker.internal:host-gateway",
         "--publish",

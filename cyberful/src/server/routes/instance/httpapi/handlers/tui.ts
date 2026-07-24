@@ -4,7 +4,7 @@
 // → cyberful/src/bus/index.ts — delivers commands to the active terminal UI.
 // ─────────────────────────────────────────────────────────────────
 
-import { Bus } from "@/bus"
+import { Event as EventSystem } from "@/event"
 import { TuiEvent } from "@/cli/cmd/tui/event"
 import { Session } from "@/session/session"
 import { Effect } from "effect"
@@ -33,17 +33,17 @@ function isCommandAlias(command: string): command is keyof typeof commandAliases
 
 export const tuiHandlers = HttpApiBuilder.group(InstanceHttpApi, "tui", (handlers) =>
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
     const session = yield* Session.Service
     const publishCommand = (command: typeof TuiEvent.CommandExecute.properties.Type.command) => {
       const properties: typeof TuiEvent.CommandExecute.properties.Type = { command }
-      return bus.publish(TuiEvent.CommandExecute, properties)
+      return events.publish(TuiEvent.CommandExecute, properties)
     }
 
     const appendPrompt = Effect.fn("TuiHttpApi.appendPrompt")(function* (ctx: {
       payload: typeof TuiEvent.PromptAppend.properties.Type
     }) {
-      yield* bus.publish(TuiEvent.PromptAppend, ctx.payload)
+      yield* events.publish(TuiEvent.PromptAppend, ctx.payload)
       return true
     })
 
@@ -84,18 +84,18 @@ export const tuiHandlers = HttpApiBuilder.group(InstanceHttpApi, "tui", (handler
     const showToast = Effect.fn("TuiHttpApi.showToast")(function* (ctx: {
       payload: typeof TuiEvent.ToastShow.properties.Type
     }) {
-      yield* bus.publish(TuiEvent.ToastShow, ctx.payload)
+      yield* events.publish(TuiEvent.ToastShow, ctx.payload)
       return true
     })
 
     const publish = Effect.fn("TuiHttpApi.publish")(function* (ctx: { payload: typeof TuiPublishPayload.Type }) {
       if (ctx.payload.type === TuiEvent.PromptAppend.type)
-        yield* bus.publish(TuiEvent.PromptAppend, ctx.payload.properties)
+        yield* events.publish(TuiEvent.PromptAppend, ctx.payload.properties)
       if (ctx.payload.type === TuiEvent.CommandExecute.type)
-        yield* bus.publish(TuiEvent.CommandExecute, ctx.payload.properties)
-      if (ctx.payload.type === TuiEvent.ToastShow.type) yield* bus.publish(TuiEvent.ToastShow, ctx.payload.properties)
+        yield* events.publish(TuiEvent.CommandExecute, ctx.payload.properties)
+      if (ctx.payload.type === TuiEvent.ToastShow.type) yield* events.publish(TuiEvent.ToastShow, ctx.payload.properties)
       if (ctx.payload.type === TuiEvent.SessionSelect.type)
-        yield* bus.publish(TuiEvent.SessionSelect, ctx.payload.properties)
+        yield* events.publish(TuiEvent.SessionSelect, ctx.payload.properties)
       return true
     })
 
@@ -104,7 +104,7 @@ export const tuiHandlers = HttpApiBuilder.group(InstanceHttpApi, "tui", (handler
     }) {
       if (!ctx.payload.sessionID.startsWith("ses")) return yield* new HttpApiError.BadRequest({})
       yield* SessionError.mapStorageNotFound(session.get(ctx.payload.sessionID))
-      yield* bus.publish(TuiEvent.SessionSelect, ctx.payload)
+      yield* events.publish(TuiEvent.SessionSelect, ctx.payload)
       return true
     })
 

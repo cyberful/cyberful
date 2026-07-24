@@ -14,6 +14,8 @@ test("phase gateways receive the host browser profile contract and keep per-run 
     "CYBER_BROWSER_USER_DATA_DIR",
     "CYBER_BROWSER_CLEAR_COOKIES_ON_START",
     "CYBER_BROWSER_HEADLESS",
+    "CYBERFUL_RUN_ID",
+    "CYBERFUL_PROCESS_ROLE",
     "CYBERFUL_TEST_HOST_SECRET",
   ] as const
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
@@ -21,6 +23,8 @@ test("phase gateways receive the host browser profile contract and keep per-run 
     process.env.CYBER_BROWSER_CHANNEL = "chrome"
     process.env.CYBER_BROWSER_USER_DATA_DIR = "/profiles/authenticated"
     process.env.CYBER_BROWSER_CLEAR_COOKIES_ON_START = "false"
+    process.env.CYBERFUL_RUN_ID = "run-private-1"
+    process.env.CYBERFUL_PROCESS_ROLE = "worker"
     process.env.CYBERFUL_TEST_HOST_SECRET = "must-not-cross"
     delete process.env.CYBER_BROWSER_HEADLESS
 
@@ -35,6 +39,9 @@ test("phase gateways receive the host browser profile contract and keep per-run 
     expect(server.privateEnv?.CYBER_BROWSER_CLEAR_COOKIES_ON_START).toBe("false")
     expect(server.privateEnv?.CYBER_BROWSER_HEADLESS).toBe("true")
     expect(server.privateEnv?.CYBERFUL_SUBSYSTEM_PHASE).toBe("recon")
+    expect(server.privateEnv?.CYBERFUL_RUN_ID).toBe("run-private-1")
+    expect(server.privateEnv?.CYBERFUL_PROCESS_ROLE).toBe("worker")
+    expect(server.privateEnv?.CYBERFUL_OWNER_PID).toBe(String(process.pid))
     expect(server.privateEnv?.CYBERFUL_TEST_HOST_SECRET).toBeUndefined()
   } finally {
     for (const name of names) {

@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { GenerationProgress } from "./generation-progress"
 
 describe("GenerationProgress", () => {
-  test("omits the counter when a provider has not reported usage yet", () => {
+  test("omits the counter when a subsystem has not reported usage yet", () => {
     expect(GenerationProgress.formatStatus(undefined, 24_000)).toBe("generating...")
   })
 

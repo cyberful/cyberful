@@ -4,7 +4,7 @@
 // → cyberful/src/cli/cmd/tui/context/sync.tsx — stores the folded live feed.
 // ─────────────────────────────────────────────────────────────────
 
-import type { PhaseActivityActor, PhaseActivityActorState, SubsystemDescriptor } from "@/session/event-v2"
+import type { PhaseActivityActor, PhaseActivityActorState, SubsystemDescriptor } from "@/session/event"
 import { Locale } from "@/util/locale"
 import { isRecord } from "@/util/record"
 
@@ -87,10 +87,6 @@ export function expertActorCardLabel(label: string): string {
 
 export function expertActorTextLabel(label: string): string {
   return `@${label} → `
-}
-
-export function expertActorTone(actor: PhaseActivityActor | undefined): "default" | "warning" {
-  return actor?.role === "fallback" ? "warning" : "default"
 }
 
 export function isExpertSemanticProgress(text: string): boolean {

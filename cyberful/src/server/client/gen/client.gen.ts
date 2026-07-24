@@ -4,10 +4,10 @@
 // → cyberful/script/generate-client.ts — regenerates and patches this module.
 // ─────────────────────────────────────────────────────────────────
 
-import { createClient } from './client/client.gen';
-import type { ClientOptions, Config } from './client/types.gen';
-import { createConfig } from './client/utils.gen';
-import type { ClientOptions as ClientOptions2 } from './types.gen';
+import { createClient } from "./client/client.gen"
+import type { Client, ClientOptions, Config } from "./client/types.gen"
+import { createConfig } from "./client/utils.gen"
+import type { ClientOptions as ClientOptions2 } from "./types.gen"
 
 /**
  * The `createClientConfig()` function will be called on client initialization
@@ -17,6 +17,8 @@ import type { ClientOptions as ClientOptions2 } from './types.gen';
  * `setConfig()`. This is useful for example if you're using Next.js
  * to ensure your client always has the correct values.
  */
-export type CreateClientConfig<T extends ClientOptions = ClientOptions2> = (override?: Config<ClientOptions & T>) => Config<Required<ClientOptions> & T>;
+export type CreateClientConfig<T extends ClientOptions = ClientOptions2> = (
+  override?: Config<ClientOptions & T>,
+) => Config<Required<ClientOptions> & T>
 
-export const client = createClient(createConfig<ClientOptions2>({ baseUrl: 'http://localhost:4096' }));
+export const client: Client = createClient(createConfig<ClientOptions2>({ baseUrl: "http://localhost:4096" }))

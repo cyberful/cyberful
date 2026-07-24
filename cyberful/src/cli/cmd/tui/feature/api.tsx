@@ -3,7 +3,13 @@
 //   dialogs, commands, state, the fixed palette, preferences, events, and cleanup.
 // ─────────────────────────────────────────────────────────────────
 
-import type { TuiDialogSelectOption, TuiFeatureApi, TuiRouteDefinition, TuiSlotProps } from "@/cli/cmd/tui/api-types"
+import type {
+  TuiDialogSelectOption,
+  TuiFeatureApi,
+  TuiHostSlotMap,
+  TuiRouteDefinition,
+  TuiSlotProps,
+} from "@/cli/cmd/tui/api-types"
 import type { useEvent } from "@tui/context/event"
 import type { useRoute } from "@tui/context/route"
 import type { useSDK } from "@tui/context/sdk"
@@ -22,7 +28,6 @@ import { Slot as HostSlot } from "./slots"
 import type { useToast } from "../ui/toast"
 import { InstallationVersion } from "@/installation/version"
 import * as Keymap from "../keymap"
-import { createCommandShim } from "./command-shim"
 
 type RouteEntry = {
   key: symbol
@@ -181,16 +186,9 @@ function appApi(): TuiFeatureApi["app"] {
 }
 
 export function createTuiApi(input: Input): TuiFeatureApi {
-  const lifecycle: TuiFeatureApi["lifecycle"] = {
-    signal: new AbortController().signal,
-    onDispose() {
-      return () => {}
-    },
-  }
   return {
     app: appApi(),
     attention: input.attention,
-    command: createCommandShim(input.keymap, input.dialog, input.tuiConfig.keybinds),
     keys: {
       formatSequence(parts) {
         return Keymap.formatKeySequence(parts, input.tuiConfig)
@@ -251,7 +249,7 @@ export function createTuiApi(input: Input): TuiFeatureApi {
           />
         )
       },
-      Slot<Name extends string>(props: TuiSlotProps<Name>) {
+      Slot<Name extends keyof TuiHostSlotMap>(props: TuiSlotProps<Name>) {
         return <HostSlot {...props} />
       },
       Prompt(props) {
@@ -318,10 +316,9 @@ export function createTuiApi(input: Input): TuiFeatureApi {
     renderer: input.renderer,
     slots: {
       register() {
-        throw new Error("slots.register is only available in feature context")
+        throw new Error("TUI slots are not initialized")
       },
     },
-    lifecycle,
     theme: {
       get current() {
         return input.theme.theme

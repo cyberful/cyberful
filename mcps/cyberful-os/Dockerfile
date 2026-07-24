@@ -427,6 +427,26 @@ RUN set -eux; \
     kube-bench version; \
     test -s /opt/kube-bench/cfg/cis-1.24/config.yaml
 
+# Foundry is installed from one immutable, checksummed release rather than
+# through foundryup. Forge may acquire the exact Solidity compiler requested by
+# an engagement; Bug Bounty mounts its SVM cache inside the engagement workarea.
+ARG FOUNDRY_VERSION=1.7.1
+ENV SVM_HOME=/root/.svm \
+    FOUNDRY_DISABLE_NIGHTLY_WARNING=1
+RUN set -eux; \
+    case "${TARGETARCH}" in amd64|arm64) FOUNDRY_ARCH="${TARGETARCH}" ;; *) echo "unsupported cyberful-os architecture: ${TARGETARCH}" >&2; exit 1 ;; esac; \
+    FOUNDRY_ASSET="foundry_v${FOUNDRY_VERSION}_linux_${FOUNDRY_ARCH}.tar.gz"; \
+    FOUNDRY_CHECKSUM="foundry_v${FOUNDRY_VERSION}_linux_${FOUNDRY_ARCH}.sha256"; \
+    curl -fsSL "https://github.com/foundry-rs/foundry/releases/download/v${FOUNDRY_VERSION}/${FOUNDRY_ASSET}" -o "/tmp/${FOUNDRY_ASSET}"; \
+    curl -fsSL "https://github.com/foundry-rs/foundry/releases/download/v${FOUNDRY_VERSION}/${FOUNDRY_CHECKSUM}" -o "/tmp/${FOUNDRY_CHECKSUM}"; \
+    (cd /tmp && sha256sum -c "${FOUNDRY_CHECKSUM}"); \
+    tar -xzf "/tmp/${FOUNDRY_ASSET}" -C /usr/local/bin forge cast anvil chisel; \
+    rm -f "/tmp/${FOUNDRY_ASSET}" "/tmp/${FOUNDRY_CHECKSUM}"; \
+    forge --version | grep -F "${FOUNDRY_VERSION}"; \
+    cast --version | grep -F "${FOUNDRY_VERSION}"; \
+    anvil --version | grep -F "${FOUNDRY_VERSION}"; \
+    chisel --version | grep -F "${FOUNDRY_VERSION}"
+
 ARG JAZZER_RELEASE=0.30.0
 ARG JAZZER_LINUX_AMD64_SHA256=6eeaf0026d75599b07527d93b576593ce847cfca8b337a579971a5a9cdf792d0
 ARG JAZZER_LINUX_ARM64_SHA256=16636a4d3e98f1d3a7fcf59d4ab37f5be1d1ad6df9d94d5c3ca8de644838e369
@@ -501,6 +521,7 @@ RUN mkdir -p /etc/kali-motd \
 # required command or Python module is absent. The smoke probes also catch
 # installations that leave a binary on PATH but cannot actually initialize.
 COPY cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
+COPY mcp_framing.py /opt/cyberful-os/mcp_framing.py
 COPY prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
@@ -512,6 +533,10 @@ RUN chmod 0755 /usr/local/bin/prowler \
   && prowler -v \
   && kubectl version --client=true \
   && kube-bench version \
+  && forge --version \
+  && cast --version \
+  && anvil --version \
+  && chisel --version \
   && jazzer --version \
   && (afl-fuzz -h > /tmp/afl-help 2>&1 || [[ "$?" -eq 1 ]]) \
   && grep -q "afl-fuzz \[ options \]" /tmp/afl-help \

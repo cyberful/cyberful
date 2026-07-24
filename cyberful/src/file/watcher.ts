@@ -8,8 +8,7 @@ import { createWrapper } from "@parcel/watcher/wrapper"
 import type ParcelWatcher from "@parcel/watcher"
 import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
-import { Bus } from "@/bus"
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition, publish as publishEvent } from "@/event"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@/flag/flag"
@@ -27,7 +26,7 @@ const log = Log.create({ service: "file.watcher" })
 const SUBSCRIBE_TIMEOUT_MS = 10_000
 
 export const Event = {
-  Updated: BusEvent.define(
+  Updated: EventDefinition.define(
     "file.watcher.updated",
     Schema.Struct({
       file: Schema.String,
@@ -128,7 +127,7 @@ export const layer = Layer.effect(
             for (const evt of evts) {
               const event = evt.type === "create" ? "add" : evt.type === "update" ? "change" : "unlink"
               publishQueue = publishQueue
-                .then(() => Bus.publish(ctx, Event.Updated, { file: evt.path, event }))
+                .then(() => publishEvent(ctx, Event.Updated, { file: evt.path, event }).then(() => undefined))
                 .catch((publishError) => {
                   log.warn("failed to publish file watcher event", { error: publishError, file: evt.path, event })
                 })

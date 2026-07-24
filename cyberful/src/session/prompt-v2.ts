@@ -1,6 +1,6 @@
 // ── Structured Session Prompt Schema ─────────────────────────────────────
 // Defines runtime-validated text, file, and repository-reference prompt attachments.
-// → cyberful/src/session/event-v2.ts — embeds this prompt in versioned events.
+// → cyberful/src/session/event.ts — embeds this prompt in versioned events.
 // ───────────────────────────────────────────────────────────────────────
 
 import * as Schema from "effect/Schema"

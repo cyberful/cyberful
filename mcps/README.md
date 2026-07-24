@@ -38,29 +38,28 @@ Each CLI tool uses the same input shape:
 }
 ```
 
-The MCP server currently exposes 177 tools: 167 CLI tools, `requests`, `bs4`,
-`lxml`, `wordlists`, `capability_attestation`, `nuclei_templates`, `nuclei_plan`,
-`nuclei_run_scoped`, `tool_inventory`, and a fallback `shell`.
+The MCP server currently exposes 175 tools: 167 CLI tools, `requests`, `bs4`,
+`lxml`, `wordlists`, `capability_attestation`, optional `nuclei_templates`,
+`tool_inventory`, and a fallback `shell`.
 
 TLS / web / recon scanners (added to the network/web surface):
 
 - `testssl` runs `testssl.sh` — TLS/SSL protocol, cipher, and certificate scan
 - `sslscan` runs `sslscan` — TLS/SSL cipher and protocol enumeration
-- `nuclei` runs `nuclei` — template-based vuln/CVE scanner (ProjectDiscovery)
-- `nuclei_templates` previews how many templates a `-tags`/`-id`/`-severity` filter selects before you scan — side-effect-free `nuclei -tl`, run it before every `nuclei` scan
-- `nuclei_plan` validates an HTTP or HTTPS target and structured filter offline, refusing zero, unfiltered, or over-40 template selections
-- `nuclei_run_scoped` executes the resulting one-use plan with marker/rate/concurrency/OAST/redirect bounds fixed by cyberful-os
+- `nuclei` runs the complete ProjectDiscovery Nuclei CLI. Cyberful injects only
+  `-disable-update-check`; templates, rate, concurrency, redirects, OAST, tags,
+  markers, and other assessment choices remain caller-controlled under the mission.
+- `nuclei_templates` is an optional side-effect-free `nuclei -tl` preview of the
+  installed template corpus. It is never a prerequisite for `nuclei`.
 - `httpx` runs `httpx-pd` (`httpx-toolkit`) — fast HTTP probing/fingerprint
 - `subfinder` runs `subfinder` — passive subdomain enumeration (ProjectDiscovery)
 
 The three ProjectDiscovery tools (`nuclei`, `httpx`, `subfinder`) are
 telemetry-hardened in the image: update checks are disabled via the
-`DISABLE_UPDATE_CHECK=true` env and per-tool `~/.config` files, `PDCP_API_KEY`
-is empty, and OAST/interactsh stays OFF by default. The tool specs also bake
-`-disable-update-check` / `-duc` / `-no-interactsh` into their usage + examples;
-always pass them. Enable interactsh only with explicit engagement authorization.
-Caller-provided tool environments cannot override these image-wide no-telemetry
-settings. Prowler's public launcher also answers `-v`/`--version` from installed
+`DISABLE_UPDATE_CHECK=true` env and per-tool `~/.config` files, and `PDCP_API_KEY`
+is empty. Nuclei also receives `-disable-update-check` automatically. These
+settings prevent product telemetry without constraining assessment traffic or
+OAST choices authorized by the mission. Prowler's public launcher also answers `-v`/`--version` from installed
 package metadata, avoiding the upstream CLI's implicit GitHub tag request while
 delegating actual provider scans unchanged.
 
@@ -186,6 +185,20 @@ proxied automatically with trust scoped to the engagement ZAP CA SPKI.
 ZAP and browser proxying are enabled by default. Set `CYBER_ZAP_ENABLED=0` to
 disable the runtime or `CYBER_BROWSER_THROUGH_ZAP=0` to leave ZAP available
 without chaining the browser. See [`docs/runtimes/zap.md`](../docs/runtimes/zap.md).
+
+## Ghidra runtime and bridge
+
+The `ghidra/` context builds a checksum-pinned Ghidra 12.1.2/PyGhidra service
+and a minimal stdio bridge. Cyberful starts one networkless service per
+engagement, keeps its JVM and project alive across eligible phases, and removes
+the container without deleting the host-owned project store. A later instance
+for the same workarea reopens programs, analysis, names, comments, bookmarks,
+and persistent jobs.
+
+The MCP exposes bounded semantic tools for import, job control, search,
+disassembly, decompilation, cross-references, call graphs, and annotations. It
+does not expose arbitrary scripts or binary mutation. See
+[`docs/runtimes/ghidra.md`](../docs/runtimes/ghidra.md).
 
 ### Stealth / anti-detection
 

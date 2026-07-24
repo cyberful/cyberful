@@ -5,12 +5,12 @@
 
 import { describe, expect, test } from "bun:test"
 import { MessageID, PartID, SessionID } from "./schema"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { SessionPhaseEpoch } from "./phase-epoch"
 import type { MessageV2 } from "./message-v2"
 
 const sessionID = SessionID.make("ses_epoch")
-const model = { providerID: ProviderID.make("test"), modelID: ModelID.make("model") }
+const model = { subsystemID: SubsystemID.make("test"), modelID: ModelID.make("model") }
 
 function user(id: string, agent: string, created: number, metadata?: Record<string, unknown>, synthetic = false) {
   const info = {
@@ -54,7 +54,7 @@ function assistant(
       time: { created, completed: input.completed },
       parentID: MessageID.make(parentID),
       modelID: model.modelID,
-      providerID: model.providerID,
+      subsystemID: model.subsystemID,
       mode: "all",
       agent,
       path: { cwd: "/tmp", root: "/tmp" },

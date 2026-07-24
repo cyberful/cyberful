@@ -1,6 +1,6 @@
 // ── Built-In Gateway Upstream Tests ─────────────────────────────
 // Verifies that runtime configuration produces the intended cyberful-os, browser,
-// and ZAP upstream descriptors without leaking unrelated host environment values.
+// ZAP, and Ghidra upstream descriptors without leaking unrelated host values.
 // → cyberful/src/subsystem/upstream.ts — constructs the tested descriptors.
 // ─────────────────────────────────────────────────────────────────
 
@@ -18,6 +18,9 @@ const ENV_KEYS = [
   "CYBER_ZAP_PROXY_URL",
   "CYBER_ZAP_MCP_KEY",
   "CYBER_ZAP_API_KEY",
+  "CYBER_GHIDRA_ENABLED",
+  "CYBER_GHIDRA_CONTAINER",
+  "CYBER_GHIDRA_MCP_KEY",
   "CYBER_BROWSER_PROXY_CA_SPKI",
   "CYBERFUL_OS_DIR",
   "CYBERFUL_OS_IMAGE",
@@ -117,6 +120,34 @@ describe("SubsystemUpstream.builtin", () => {
       const zap = SubsystemUpstream.builtin().zap
       expect(zap.enabled).toBe(false)
       expect(zap.command).toEqual([])
+    } finally {
+      restoreEnv(env)
+    }
+  })
+
+  test("registers Ghidra only after the persistent engagement JVM is ready", () => {
+    const env = snapshotEnv()
+    try {
+      process.env.CYBER_GHIDRA_CONTAINER = "ghidra-run"
+      process.env.CYBERFUL_SUBSYSTEM_SESSION = "ses-run"
+      const ghidra = SubsystemUpstream.builtin().ghidra
+      expect(ghidra).toMatchObject({
+        type: "local",
+        enabled: true,
+        timeout: 305_000,
+        container: `cyberful-ghidra-bridge-ses-run-${process.pid}`,
+      })
+      expect(ghidra.command).toEqual(
+        expect.arrayContaining([
+          "--name",
+          `cyberful-ghidra-bridge-ses-run-${process.pid}`,
+          "org.cyberful.managed=ghidra-bridge",
+          "org.cyberful.session=ses-run",
+          "container:ghidra-run",
+        ]),
+      )
+      delete process.env.CYBER_GHIDRA_CONTAINER
+      expect(SubsystemUpstream.builtin().ghidra).toMatchObject({ enabled: false, command: [] })
     } finally {
       restoreEnv(env)
     }

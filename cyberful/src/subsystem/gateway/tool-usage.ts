@@ -1,6 +1,6 @@
 // ── Local Gateway Tool Usage Ledger ──────────────────────────────
-// Writes metadata-only gateway calls to private shards, then
-// atomically rebuilds one engagement-local CSV without request or response content.
+// Writes metadata-only gateway calls and redacted egress observations to private
+// shards, then atomically rebuilds one engagement-local CSV without payload content.
 // → cyberful/src/subsystem/gateway/server.ts — records gateway call outcomes.
 // ─────────────────────────────────────────────────────────────────
 
@@ -19,6 +19,17 @@ const COLUMNS = [
   "bytes_out",
   "marker_attested",
   "egress_blocked",
+  "egress_host",
+  "egress_method",
+  "egress_path_family",
+  "egress_request_bytes",
+  "egress_response_bytes",
+  "egress_attempts",
+  "egress_redirects",
+  "egress_deadline_ms",
+  "egress_route",
+  "egress_observability",
+  "egress_destination_changed",
   "lead_count",
   "suspected_count",
   "confirmed_count",
@@ -33,6 +44,17 @@ export interface ToolUsageEvent {
   bytes_out?: number
   marker_attested?: boolean
   egress_blocked?: boolean
+  egress_host?: string
+  egress_method?: string
+  egress_path_family?: string
+  egress_request_bytes?: number
+  egress_response_bytes?: number
+  egress_attempts?: number
+  egress_redirects?: number
+  egress_deadline_ms?: number
+  egress_route?: string
+  egress_observability?: "observed" | "declared" | "inferred" | "degraded"
+  egress_destination_changed?: boolean
   lead_count?: number
   suspected_count?: number
   confirmed_count?: number

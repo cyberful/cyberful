@@ -4,8 +4,8 @@
 // → cyberful/src/session/session.sql.ts — declares the variable table.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
+import { Event as EventDefinition } from "@/event"
+import { Event as EventSystem } from "@/event"
 import { randomBytes } from "node:crypto"
 import { MessageID, SessionID } from "./schema"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -14,7 +14,7 @@ import { and, asc, eq } from "drizzle-orm"
 import { SessionVariableTable } from "./session.sql"
 
 const MIN_REDACT_LENGTH = 8
-const MAX_DESCRIPTION_LENGTH = 120
+export const MAX_DESCRIPTION_LENGTH = 500
 const MAX_TEMPLATE_RESOLUTION_DEPTH = 16
 const TEMPLATE_PATTERN = /\{\{\s*var:([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*\}\}/g
 const EXACT_TEMPLATE_PATTERN = /^\s*\{\{\s*var:([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*\}\}\s*$/
@@ -50,7 +50,7 @@ export const Info = Schema.Struct({
 export type Info = Schema.Schema.Type<typeof Info>
 
 export const Event = {
-  Updated: BusEvent.define(
+  Updated: EventDefinition.define(
     "session.variable.updated",
     Schema.Struct({
       sessionID: SessionID,
@@ -421,7 +421,7 @@ export function freezeSystemContextSnapshot(current: SystemContextSnapshot | und
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
 
     const listRows = (sessionID: SessionID) =>
       Database.use((db) =>
@@ -436,7 +436,7 @@ export const layer = Layer.effect(
     const visibleRows = (sessionID: SessionID) => listRows(sessionID).filter((row) => !isHostOwnedName(row.name))
 
     const publish = Effect.fnUntraced(function* (sessionID: SessionID) {
-      yield* bus.publish(Event.Updated, { sessionID, variables: visibleRows(sessionID).map(toSummary) })
+      yield* events.publish(Event.Updated, { sessionID, variables: visibleRows(sessionID).map(toSummary) })
     })
 
     const set: Interface["set"] = Effect.fn("SessionVariable.set")(function* (input) {
@@ -592,6 +592,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+export const defaultLayer = layer.pipe(Layer.provide(EventSystem.defaultLayer))
 
 export * as SessionVariable from "./variable"

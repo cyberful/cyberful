@@ -1,6 +1,6 @@
 # Security tools
 
-Cyberful brings together three tool environments. You normally do not need to
+Cyberful brings together five tool environments. You normally do not need to
 start them yourself: Cyberful prepares them and gives each phase only the tools
 it needs.
 
@@ -9,12 +9,15 @@ it needs.
   interaction tools through a dedicated Chromium or Chrome profile.
 - [OWASP ZAP](zap.md) provides headless proxy and scanning capabilities for
   traffic-authorized phases.
-- [Local fallback inference](fallback-inference.md) optionally connects an
-  operator-owned loopback Responses server for bounded assist and policy-block
-  recovery while Codex remains the primary subsystem.
+- [Ghidra](ghidra.md) provides persistent headless reverse engineering,
+  decompilation, call graphs, cross-references, and annotations.
+- [EVM runtime](evm.md) provides pinned Foundry binaries, authenticated
+  multi-repository materialization, and an engagement-owned Anvil lifecycle.
 
 Pentest and Bug Bounty Program receive browser and ZAP traffic only inside their
-recorded mission. Code Audit receives no external target-traffic route. Its runtime lab uses a
+recorded mission. Their investigation phases may use the networkless persistent
+Ghidra project. Bug Bounty may also use the local EVM lab without an RPC proxy
+or method filter. Code Audit receives no external target-traffic route. Its runtime lab uses a
 source-blind dependency-bootstrap container followed by offline project
 execution and loopback attack inside cyberful-os.
 

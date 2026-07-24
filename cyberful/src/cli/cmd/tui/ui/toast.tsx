@@ -3,7 +3,7 @@
 //   replaces its owned expiry timer whenever a newer message arrives.
 // ─────────────────────────────────────────────────────────────────
 
-import { createContext, useContext, type ParentProps, Show } from "solid-js"
+import { createContext, useContext, type Accessor, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useTheme } from "@tui/context/theme"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -11,11 +11,63 @@ import { SplitBorder } from "../component/border"
 import { TextAttributes } from "@opentui/core"
 import { Schema } from "effect"
 import { TuiEvent } from "../event"
+import type { TuiThemeCurrent } from "../api-types"
 
 type ToastInput = Schema.Codec.Encoded<typeof TuiEvent.ToastShow.properties>
 export type ToastOptions = Schema.Schema.Type<typeof TuiEvent.ToastShow.properties>
 
 const decodeToastOptions = Schema.decodeUnknownSync(TuiEvent.ToastShow.properties)
+
+type ToastTheme = Pick<
+  TuiThemeCurrent,
+  "backgroundPanel" | "text" | "info" | "success" | "warning" | "error"
+>
+
+// ── Stable Notification Surface ──────────────────────────────────
+// OpenTUI can apply an async store update after the originating render owner
+// has returned. Keeping the renderables mounted lets Solid update only their
+// properties instead of creating new computations without a disposable owner.
+// Visibility and empty fallbacks preserve the prior absent-toast presentation.
+// ─────────────────────────────────────────────────────────────────
+export function ToastSurface(props: {
+  current: Accessor<ToastOptions | null>
+  theme: ToastTheme
+  width: Accessor<number>
+}) {
+  const variant = () => props.current()?.variant ?? "info"
+  return (
+    <box
+      visible={props.current() !== null}
+      position="absolute"
+      zIndex={4000}
+      justifyContent="center"
+      alignItems="flex-start"
+      top={2}
+      right={2}
+      maxWidth={Math.min(60, props.width() - 6)}
+      paddingLeft={2}
+      paddingRight={2}
+      paddingTop={1}
+      paddingBottom={1}
+      backgroundColor={props.theme.backgroundPanel}
+      borderColor={props.theme[variant()]}
+      border={["left", "right"]}
+      customBorderChars={SplitBorder.customBorderChars}
+    >
+      <text
+        visible={Boolean(props.current()?.title)}
+        attributes={TextAttributes.BOLD}
+        marginBottom={1}
+        fg={props.theme.text}
+      >
+        {props.current()?.title ?? ""}
+      </text>
+      <text fg={props.theme.text} wrapMode="word" width="100%">
+        {props.current()?.message ?? ""}
+      </text>
+    </box>
+  )
+}
 
 export function Toast() {
   const toast = useToast()
@@ -23,36 +75,7 @@ export function Toast() {
   const dimensions = useTerminalDimensions()
 
   return (
-    <Show when={toast.currentToast}>
-      {(current) => (
-        <box
-          position="absolute"
-          zIndex={4000}
-          justifyContent="center"
-          alignItems="flex-start"
-          top={2}
-          right={2}
-          maxWidth={Math.min(60, dimensions().width - 6)}
-          paddingLeft={2}
-          paddingRight={2}
-          paddingTop={1}
-          paddingBottom={1}
-          backgroundColor={theme.backgroundPanel}
-          borderColor={theme[current().variant]}
-          border={["left", "right"]}
-          customBorderChars={SplitBorder.customBorderChars}
-        >
-          <Show when={current().title}>
-            <text attributes={TextAttributes.BOLD} marginBottom={1} fg={theme.text}>
-              {current().title}
-            </text>
-          </Show>
-          <text fg={theme.text} wrapMode="word" width="100%">
-            {current().message}
-          </text>
-        </box>
-      )}
-    </Show>
+    <ToastSurface current={() => toast.currentToast} theme={theme} width={() => dimensions().width} />
   )
 }
 

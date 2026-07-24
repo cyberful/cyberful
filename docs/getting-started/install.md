@@ -8,7 +8,7 @@ to build its binaries yourself.
 Install the Codex version validated by Cyberful, then authenticate it:
 
 ```sh
-npm install --global @openai/codex@0.144.5
+npm install --global @openai/codex@0.145.0
 codex login
 ```
 

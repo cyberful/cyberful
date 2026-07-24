@@ -1,7 +1,7 @@
 // ── TUI Home Route ───────────────────────────────────────────────
 // Renders workarea selection, the initial composer, runtime readiness, feature
 //   slots, and startup prompt submission before a persisted session exists.
-// → cyberful/src/subsystem/status.ts — supplies primary and fallback readiness.
+// → cyberful/src/subsystem/status.ts — supplies Codex runtime readiness.
 // @docs/user-guide/interface.md
 // ─────────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
 import { useRouteData } from "@tui/context/route"
 import { usePromptRef } from "../context/prompt"
-import { TuiFeatureRuntime } from "@/cli/cmd/tui/feature/runtime"
+import { Slot } from "@/cli/cmd/tui/feature/slots"
 import { useProject } from "@tui/context/project"
 import { useTheme } from "@tui/context/theme"
 import { getLastWorkarea, normalizeWorkarea, workareaProjectRoot } from "@/workarea"
@@ -45,7 +45,7 @@ export const HOME_STATUS_PANEL_BACKGROUND = RGBA.fromValues(0.025, 0.025, 0.04, 
 // A deliberately small, unobtrusive splash note when the installed Codex differs from the pinned version.
 const codexVersionNote = SubsystemCodex.preflightNote()
 
-type RuntimeStatusValue = RuntimeStatus["primary"]["status"] | RuntimeStatus["fallback"]["status"] | "checking"
+type RuntimeStatusValue = RuntimeStatus["primary"]["status"] | "checking"
 type RuntimeStatusTone = "success" | "warning" | "error"
 
 export function homeRuntimeStatusTone(status: RuntimeStatusValue): RuntimeStatusTone {
@@ -57,7 +57,6 @@ export function homeRuntimeStatusTone(status: RuntimeStatusValue): RuntimeStatus
 const RUNTIME_STATUS_LABEL: Record<RuntimeStatusValue, string> = {
   available: "on",
   degraded: "degraded",
-  disabled: "disabled",
   unavailable: "off",
   checking: "checking",
 }
@@ -101,31 +100,28 @@ function RuntimeIndicator(props: RuntimeIndicatorCopy) {
 
 export function HomeRuntimeRecap(props: { readiness: RuntimeStatus | "failed" | undefined }) {
   const primary = () => (props.readiness === "failed" ? undefined : props.readiness?.primary)
-  const fallback = () => (props.readiness === "failed" ? undefined : props.readiness?.fallback)
   const primaryStatus = (): RuntimeStatusValue =>
     props.readiness === "failed" ? "unavailable" : (primary()?.status ?? "checking")
-  const fallbackStatus = (): RuntimeStatusValue =>
-    props.readiness === "failed" ? "unavailable" : (fallback()?.status ?? "checking")
   const primaryIdentity = () => {
     const value = primary()
     return value ? `${value.name} · ${value.model}` : undefined
   }
-  const rows = (): readonly [RuntimeIndicatorCopy, RuntimeIndicatorCopy] => [
-    { title: "Subsystem", identity: primaryIdentity(), status: primaryStatus() },
-    { title: "Fallback", identity: fallback()?.model, status: fallbackStatus() },
-  ]
+  const row = (): RuntimeIndicatorCopy => ({
+    title: "Subsystem",
+    identity: primaryIdentity(),
+    status: primaryStatus(),
+  })
 
   return (
     <box
-      width={homeRuntimePanelWidth(rows())}
+      width={homeRuntimePanelWidth([row()])}
       maxWidth="100%"
       flexDirection="column"
       paddingLeft={2}
       paddingRight={2}
       backgroundColor={HOME_STATUS_PANEL_BACKGROUND}
     >
-      <RuntimeIndicator {...rows()[0]} />
-      <RuntimeIndicator {...rows()[1]} />
+      <RuntimeIndicator {...row()} />
     </box>
   )
 }
@@ -257,7 +253,7 @@ export function Home() {
     initialPromptApplied = true
   }
 
-  // Wait for session state before auto-submitting --prompt. Codex phases do not need a provider model store.
+  // Wait for session state before auto-submitting --prompt. Codex phases do not need a model-selection store.
   createEffect(() => {
     const r = ref()
     if (sent) return
@@ -278,7 +274,7 @@ export function Home() {
       <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2} zIndex={1}>
         <box flexGrow={1} minHeight={0} />
         <box height={4} minHeight={0} flexShrink={1} />
-        <TuiFeatureRuntime.Slot name="home_logo" mode="replace" />
+        <Slot name="home_logo" mode="replace" />
         <HomeWorkareaLayer
           visible={workareaReady()}
           borderColor={workareaFocused() ? theme.primary : theme.border}
@@ -334,23 +330,23 @@ export function Home() {
           </Show>
         </HomeWorkareaLayer>
         <HomePromptSurface onMouseDown={() => setWorkareaFocused(false)}>
-          <TuiFeatureRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
+          <Slot name="home_prompt" mode="replace" ref={bind}>
             <Prompt
               ref={bind}
               autoFocus={!workareaFocused()}
               canSubmit={homePromptCanSubmit(workareaValid(), local.workflow.ready)}
               workarea={workareaValid() ? activeWorkarea() : undefined}
               label="Prompt"
-              right={<TuiFeatureRuntime.Slot name="home_prompt_right" />}
+              right={<Slot name="home_prompt_right" />}
               metadata="agent"
               placeholders={placeholders()}
             />
-          </TuiFeatureRuntime.Slot>
+          </Slot>
         </HomePromptSurface>
         <box width="100%" maxWidth={75} paddingTop={1} alignItems="center" flexShrink={0}>
           <HomeCredit />
         </box>
-        <TuiFeatureRuntime.Slot name="home_bottom" />
+        <Slot name="home_bottom" />
         <box flexGrow={1} minHeight={0} />
         <Toast />
       </box>
@@ -365,7 +361,7 @@ export function Home() {
         </box>
       </Show>
       <box width="100%" flexShrink={0} zIndex={1}>
-        <TuiFeatureRuntime.Slot name="home_footer" mode="single_winner" />
+        <Slot name="home_footer" mode="single_winner" />
       </box>
     </box>
   )

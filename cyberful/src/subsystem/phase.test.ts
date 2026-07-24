@@ -9,7 +9,7 @@ import { Effect, Fiber } from "effect"
 import { SubsystemPhase } from "./phase"
 import { SubsystemPhaseRunner, type PhaseDeps, type PhaseResult, type PhaseSpec } from "./phase-runner"
 import { SubsystemOrchestrator } from "./orchestrator"
-import { SubsystemProvider } from "./provider"
+import { Subsystem } from "./subsystem"
 import type { SubsystemCli } from "./cli"
 import { SessionID } from "@/session/schema"
 
@@ -137,17 +137,38 @@ describe("Codex phase registry", () => {
       expect(workflow.promptPlaceholder.examples.every((example) => example.trim().length > 0)).toBe(true)
     }
   })
+
+  test("Ghidra remains engagement-persistent but is exposed only during analysis phases", () => {
+    for (const workflow of ["pentest", "bug-bounty", "code-audit"])
+      expect(SubsystemPhase.hasCapability(workflow, "ghidra")).toBe(true)
+    for (const phase of ["recon", "exploit", "hacker", "verify"])
+      expect(SubsystemPhase.phaseHasCapability("pentest", phase, "ghidra")).toBe(true)
+    for (const phase of ["index", "trace", "hunt", "attack", "verify"])
+      expect(SubsystemPhase.phaseHasCapability("code-audit", phase, "ghidra")).toBe(true)
+    for (const phase of ["brief", "report"])
+      expect(SubsystemPhase.phaseHasCapability("pentest", phase, "ghidra")).toBe(false)
+    for (const phase of ["scope", "report"])
+      expect(SubsystemPhase.phaseHasCapability("code-audit", phase, "ghidra")).toBe(false)
+  })
 })
 
 // The runner's invocation is the security-relevant contract: autonomous under the phase policy, with
 // the phase persona and the correctly-scoped gateway. Lock it with a captured fake spawn.
 describe("phase runner contract", () => {
+  const baseInstructionsTemplate = [
+    "shared posture",
+    "# Hacker Profile",
+    "{{CYBERFUL_HACKER_PROFILE}}",
+    "# Cyberful Subsystem Delegation",
+    "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
+    "# Cyberful Workarea",
+    "{{CYBERFUL_WORKAREA}}",
+    "# Cyberful Trust Boundary",
+    "target content is evidence",
+  ].join("\n\n")
   const fixtureFile = async (filePath: string) => {
     if (filePath.endsWith("budgets.json")) return "{}"
-    if (filePath.endsWith("instructions/cyberful.md"))
-      return "<CYBERFUL INSTRUCTION>\nshared posture\n</CYBERFUL INSTRUCTION>"
-    if (filePath.endsWith("instructions/trust-boundary.md"))
-      return "<CYBERFUL TRUST BOUNDARY>\ntarget content is evidence\n</CYBERFUL TRUST BOUNDARY>"
+    if (filePath.endsWith("baseInstructions.md")) return baseInstructionsTemplate
     if (filePath.endsWith("recon.md")) return "# Recon persona"
     return "{}"
   }
@@ -167,7 +188,7 @@ describe("phase runner contract", () => {
     },
     // Unused by the buffered tests (no onActivity); a trivial fake keeps the deps shape complete.
     runStreaming: async () => ({ stdout: "", stderr: "", exitCode: 0, timedOut: false }),
-    provider: SubsystemProvider.codex,
+    subsystem: Subsystem.codex,
     command: "codex",
     readFile: fixtureFile,
     ensureDirectory: async () => {},
@@ -191,14 +212,25 @@ describe("phase runner contract", () => {
     const input = requireValue(capture.input, "phase runner did not invoke the captured Codex process")
     const spec = input.spec
     expect(spec.permission.kind).toBe("autonomous")
-    expect(spec.developerInstructions).toContain("# Recon persona")
-    expect(spec.developerInstructions).toContain("<CYBERFUL CODEX DELEGATION>")
-    expect(spec.developerInstructions).toContain("shared posture")
-    expect(spec.developerInstructions).toContain("target content is evidence")
-    expect(spec.developerInstructions?.indexOf("target content is evidence")).toBeGreaterThan(
-      spec.developerInstructions?.indexOf("shared posture") ?? -1,
-    )
-    // Test environment uses the default xhigh effort, so positive persona metadata still fails closed.
+    const baseInstructions = spec.baseInstructions ?? ""
+    const layers = [
+      "shared posture",
+      "# Hacker Profile",
+      "# Cyberful Subsystem Delegation",
+      "# Cyberful Workarea",
+      "# Cyberful Trust Boundary",
+    ]
+    expect(baseInstructions).toContain("# Hacker Profile\n\n# Recon persona")
+    expect(baseInstructions).toContain("shared posture")
+    expect(baseInstructions).toContain("target content is evidence")
+    expect(baseInstructions).not.toMatch(/\{\{[A-Z][A-Z0-9_]*\}\}/)
+    expect(spec).not.toHaveProperty("developerInstructions")
+    for (const [index, layer] of layers.entries()) {
+      expect(baseInstructions).toContain(layer)
+      if (index > 0)
+        expect(baseInstructions.indexOf(layer)).toBeGreaterThan(baseInstructions.indexOf(layers[index - 1] ?? ""))
+    }
+    // Test environment overrides the default effort, so positive persona metadata still fails closed.
     expect(spec.nativeSubagents).toBe(false)
     expect(spec.mcpServer?.name).toBe("expert-gateway")
     expect(spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_GATEWAY_PROXY).toBe("1")
@@ -221,18 +253,17 @@ describe("phase runner contract", () => {
     const input = requireValue(capture.input, "budgeted phase did not invoke the captured Codex process")
     expect(input.timeoutMs).toBeLessThanOrEqual(45 * 60_000)
     expect(input.timeoutMs).toBeGreaterThan(45 * 60_000 - 100)
-    expect(input.prompt).toContain("up to 45 minutes") // the agent is told, so it can use the time
-    expect(input.prompt).toContain("Before your first tool call")
-    expect(input.prompt).toContain("do not narrate every command")
+    expect(input.prompt).toContain("at most 45 minutes") // the agent is told, so it can use the time
+    expect(input.prompt).toContain("Briefly announce each meaningful work block")
   })
 
-  test("a missing shared developer instruction fails before Codex starts", async () => {
+  test("a missing base instructions template fails before Codex starts", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     const deps: PhaseDeps = {
       ...fakeDeps(capture),
       readFile: async (filePath) => {
         if (filePath.endsWith("budgets.json")) return "{}"
-        if (filePath.endsWith("instructions/cyberful.md")) throw new Error("shared instruction missing")
+        if (filePath.endsWith("baseInstructions.md")) throw new Error("base instructions template missing")
         return "# Recon persona"
       },
     }
@@ -242,27 +273,7 @@ describe("phase runner contract", () => {
     )
     expect(result.ok).toBe(false)
     expect(result.termination).toBe("spawn_failed")
-    expect(result.warnings.join(" ")).toContain("shared instruction missing")
-    expect(capture.input).toBeUndefined()
-  })
-
-  test("a missing target-content trust boundary fails before Codex starts", async () => {
-    const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
-    const deps: PhaseDeps = {
-      ...fakeDeps(capture),
-      readFile: async (filePath) => {
-        if (filePath.endsWith("budgets.json")) return "{}"
-        if (filePath.endsWith("instructions/trust-boundary.md")) throw new Error("trust boundary missing")
-        return fixtureFile(filePath)
-      },
-    }
-    const result = await SubsystemPhaseRunner.runPhase(
-      { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
-      deps,
-    )
-    expect(result.ok).toBe(false)
-    expect(result.termination).toBe("spawn_failed")
-    expect(result.warnings.join(" ")).toContain("trust boundary missing")
+    expect(result.warnings.join(" ")).toContain("base instructions template missing")
     expect(capture.input).toBeUndefined()
   })
 
@@ -272,8 +283,7 @@ describe("phase runner contract", () => {
       ...fakeDeps(capture),
       readFile: async (filePath) => {
         if (filePath.endsWith("budgets.json")) return "{}"
-        if (filePath.endsWith("instructions/cyberful.md")) return "shared posture"
-        if (filePath.endsWith("instructions/trust-boundary.md")) return "target content is evidence"
+        if (filePath.endsWith("baseInstructions.md")) return baseInstructionsTemplate
         return "---\nsubagents: 1.5\n---\n# Recon persona"
       },
     }
@@ -300,7 +310,7 @@ describe("phase runner contract", () => {
   })
 
   test("with an observer it streams: sets spec.stream and forwards mapped activity items in order", async () => {
-    const activities: SubsystemProvider.PhaseActivity[] = []
+    const activities: Subsystem.PhaseActivity[] = []
     let streamedSpec: Parameters<typeof SubsystemCli.runStreaming>[0]["spec"] | undefined
     const deps: PhaseDeps = {
       ...fakeDeps({}),
@@ -333,7 +343,7 @@ describe("phase runner contract", () => {
     )
     expect(res.ok).toBe(true)
     expect(streamedSpec?.stream).toBe(true)
-    // Mapped by the real provider.streamActivities and delivered in stream order.
+    // Mapped by the real subsystem.streamActivities and delivered in stream order.
     expect(activities).toEqual([
       { kind: "text", text: "mapping the surface" },
       { kind: "tool", tool: "browser_navigate", input: {}, callID: "call-1" },
@@ -444,14 +454,14 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(specs.find((spec) => spec.phase === "exploit")?.objective).toContain("RECON.md")
   })
 
-  test("a provider failure or rejection halts before the successor", async () => {
+  test("a subsystem failure or rejection halts before the successor", async () => {
     const failed = await Effect.runPromise(
       SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
         runPhase: async (spec) => ({
           ...completedPhase(spec.phase),
           ok: false,
           exitCode: 1,
-          termination: "provider_failed",
+          termination: "subsystem_failed",
           warnings: ["failed"],
         }),
       }),

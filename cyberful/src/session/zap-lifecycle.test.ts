@@ -4,7 +4,7 @@
 // ────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { zapRuntimeLifecycle } from "./prompt"
+import { zapRuntimeLifecycle } from "./prompt-policy"
 
 describe("ZAP lifecycle policy", () => {
   test("enables ZAP for live-target workflows", () => {

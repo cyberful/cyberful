@@ -1,11 +1,9 @@
 // ── Agentic Subsystem Process And App-Server Ownership ───────────
 // Runs one Codex subprocess, its bidirectional app-server protocol, host dynamic
 // tools, structured failure capture, process-tree cleanup, private gateway, and
-// owner-only native skill projection. Local fallback sessions reuse this owner
-// with a different provider binding rather than creating an untracked model path.
-// → cyberful/src/subsystem/provider.ts — supplies provider-specific argv and environment deltas.
-// → cyberful/src/util/bounded-output.ts — bounds retained provider streams.
-// @docs/runtimes/fallback-inference.md
+// owner-only native skill projection.
+// → cyberful/src/subsystem/subsystem.ts — supplies subsystem-specific argv and environment deltas.
+// → cyberful/src/util/bounded-output.ts — bounds retained subsystem streams.
 // ─────────────────────────────────────────────────────────────────
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process"
@@ -24,13 +22,14 @@ import {
   writeFileSync,
 } from "node:fs"
 import { rm } from "node:fs/promises"
-import type { DynamicTool, Provider, ProviderFailure, SubsystemRunSpec } from "./provider"
+import type { DynamicTool, Subsystem, SubsystemFailure, SubsystemRunSpec } from "./subsystem"
 import { sanitizeMarkdownArtifacts } from "./sanitize"
 import { SubsystemCodex } from "./codex"
 import { SubsystemCodexControl } from "./codex-control"
 import {
   approvalElicitationContent,
   approvalElicitationSchema,
+  humanDecisionMetadata,
   isQuestionRejected,
   parseApprovalElicitationMetadata,
   type AskHuman,
@@ -39,6 +38,7 @@ import {
 import type { Controller as ApprovalController } from "./approval-state"
 import * as Log from "@/util/log"
 import { BoundedByteTail } from "@/util/bounded-output"
+import { sanitizedModelProcessEnv } from "@/util/cyberful-process"
 
 const log = Log.create({ service: "subsystem-cli" })
 
@@ -73,13 +73,13 @@ export interface RunResult {
   timedOut: boolean
   termination?: RunTermination
   failureReason?: string
-  failure?: ProviderFailure
+  failure?: SubsystemFailure
 }
 
-export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "provider_failed"
+export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "subsystem_failed"
 
 export interface RunInput {
-  provider: Provider
+  subsystem: Subsystem
   spec: SubsystemRunSpec
   // The Codex executable resolved on PATH.
   command: string
@@ -130,8 +130,8 @@ const live = new Set<SpawnedProc>()
 const CODEX_SETTINGS_ATTESTATION_TIMEOUT_MS = 5_000
 const PROCESS_TREE_CLEANUP_TIMEOUT_MS = 5_000
 const PROCESS_TREE_CLEANUP_OUTPUT_BYTES = 64 * 1024
-const PROVIDER_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024
-const PROVIDER_NDJSON_LINE_LIMIT_BYTES = 8 * 1024 * 1024
+const SUBSYSTEM_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024
+const SUBSYSTEM_NDJSON_LINE_LIMIT_BYTES = 8 * 1024 * 1024
 let exitHookInstalled = false
 let shuttingDown = false
 
@@ -271,10 +271,10 @@ function spawnCli(input: RunInput): SpawnedProc {
     : undefined
   if (privateDirectory) chmodSync(privateDirectory, 0o700)
   try {
-    const { args, extraEnv } = input.provider.buildArgs(
+    const { args, extraEnv } = input.subsystem.buildArgs(
       privateDirectory ? materializePrivateMcpEnvironment(input.spec, privateDirectory) : input.spec,
     )
-    const env: Record<string, string | undefined> = { ...process.env, ...extraEnv }
+    const env = sanitizedModelProcessEnv(extraEnv)
     const child = nodeSpawn(input.command, args, {
       cwd: input.spec.cwd,
       env,
@@ -407,13 +407,12 @@ function spawnCodexAppServer(input: RunInput): SpawnedProc {
   const auth = path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"), "auth.json")
   if (existsSync(auth)) symlinkSync(auth, path.join(codexHome, "auth.json"))
   try {
-    const built = input.provider.buildAppServerArgs(materializePrivateMcpEnvironment(input.spec, codexHome))
+    const built = input.subsystem.buildAppServerArgs(materializePrivateMcpEnvironment(input.spec, codexHome))
     const skillRoots = prepareCodexSkills(codexHome, input.spec.skillRoots)
-    const env: Record<string, string | undefined> = {
-      ...process.env,
+    const env = sanitizedModelProcessEnv({
       ...built.extraEnv,
       CODEX_HOME: codexHome,
-    }
+    })
     const child = nodeSpawn(input.command, built.args, {
       cwd: input.spec.cwd,
       env,
@@ -574,10 +573,10 @@ function adaptChild(
 const wasTimedOut = (proc: SpawnedProc) => proc.stopReason === "budget_exhausted"
 
 function terminationOf(proc: SpawnedProc, exitCode: number): RunTermination {
-  if (proc.stopReason === "cancelled") return "provider_failed"
+  if (proc.stopReason === "cancelled") return "subsystem_failed"
   if (proc.stopReason) return proc.stopReason
   if (proc.spawnError) return "spawn_failed"
-  return exitCode === 0 ? "completed" : "provider_failed"
+  return exitCode === 0 ? "completed" : "subsystem_failed"
 }
 
 // ── Stream Failure Cannot Bypass Process Reaping ───────────────────
@@ -591,7 +590,7 @@ function terminationOf(proc: SpawnedProc, exitCode: number): RunTermination {
 async function drainText(
   stream: ReadableStream<Uint8Array>,
 ): Promise<{ text: string; truncated: boolean; error?: unknown }> {
-  const output = new BoundedByteTail(PROVIDER_OUTPUT_LIMIT_BYTES)
+  const output = new BoundedByteTail(SUBSYSTEM_OUTPUT_LIMIT_BYTES)
   const reader = stream.getReader()
   try {
     while (true) {
@@ -611,7 +610,7 @@ async function drainText(
 
 function truncationWarning(stream: "output" | "error", truncated: boolean) {
   if (!truncated) return
-  return `Expert ${stream} exceeded ${PROVIDER_OUTPUT_LIMIT_BYTES} bytes; only the final window was retained.`
+  return `Expert ${stream} exceeded ${SUBSYSTEM_OUTPUT_LIMIT_BYTES} bytes; only the final window was retained.`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -741,6 +740,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     let requestID = 0
     let activeThreadID: string | undefined
     let activeTurnID: string | undefined
+    const activeTurns = new Map<string, string>()
     let awaitingTurnSettings = false
     let settingsSettled = false
     let settleSettings: (value: SubsystemCodex.ThreadSettings | { error: string }) => void = () => {}
@@ -792,6 +792,13 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     }
     const respond = (id: RpcID, result: unknown) => send({ id, result })
     const respondError = (id: RpcID, message: string) => send({ id, error: { code: -32000, message } })
+    const activeTurnCorrelationError = (params: Record<string, unknown>) => {
+      if (typeof params.threadId !== "string" || !activeTurns.has(params.threadId))
+        return "Request does not belong to an active Cyberful thread"
+      if (typeof params.turnId !== "string" || activeTurns.get(params.threadId) !== params.turnId)
+        return "Request does not belong to an active Cyberful turn"
+      return undefined
+    }
 
     const handleServerRequest = async (message: Record<string, unknown>) => {
       const id = message.id
@@ -801,10 +808,8 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
         const params = message.params
         if (params.serverName !== "expert-gateway")
           return respondError(id, "Elicitation did not originate from the active Cyberful gateway")
-        if (!activeThreadID || params.threadId !== activeThreadID)
-          return respondError(id, "Elicitation does not belong to the active Cyberful thread")
-        if (!activeTurnID || params.turnId !== activeTurnID)
-          return respondError(id, "Elicitation does not belong to the active Cyberful turn")
+        const correlationError = activeTurnCorrelationError(params)
+        if (correlationError) return respondError(id, correlationError.replace("Request", "Elicitation"))
         if (params.mode !== "form") return respondError(id, "Cyberful accepts only standard MCP form elicitation")
         const questions = parseApprovalElicitationMetadata(params._meta)
         if (!questions) return respondError(id, "Elicitation contains an invalid Cyberful approval envelope")
@@ -815,9 +820,10 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
           const answers = await input.askQuestion(questions, questionSignal)
           const content = approvalElicitationContent(questions, answers)
           if (!content) return respondError(id, "Human selector returned invalid answers")
-          return respond(id, { action: "accept", content, _meta: null })
+          return respond(id, { action: "accept", content, _meta: humanDecisionMetadata() })
         } catch (error) {
-          if (isQuestionRejected(error)) return respond(id, { action: "decline", content: null, _meta: null })
+          if (isQuestionRejected(error))
+            return respond(id, { action: "decline", content: null, _meta: humanDecisionMetadata() })
           if (questionSignal.aborted) return respond(id, { action: "cancel", content: null, _meta: null })
           return respondError(id, error instanceof Error ? error.message : String(error))
         }
@@ -839,10 +845,8 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       if (message.method === "item/tool/call") {
         if (!isRecord(message.params)) return respondError(id, "Codex supplied invalid dynamic tool parameters")
         const params = message.params
-        if (!activeThreadID || params.threadId !== activeThreadID)
-          return respondError(id, "Dynamic tool call does not belong to the active Cyberful thread")
-        if (!activeTurnID || params.turnId !== activeTurnID)
-          return respondError(id, "Dynamic tool call does not belong to the active Cyberful turn")
+        const correlationError = activeTurnCorrelationError(params)
+        if (correlationError) return respondError(id, correlationError.replace("Request", "Dynamic tool call"))
         if (typeof params.callId !== "string" || typeof params.tool !== "string")
           return respondError(id, "Dynamic tool call is missing its identity")
         const tool = input.dynamicTools?.find((candidate) => candidate.definition.name === params.tool)
@@ -896,17 +900,25 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       if (
         event.method === "turn/started" &&
         isRecord(event.params) &&
-        event.params.threadId === activeThreadID &&
+        typeof event.params.threadId === "string" &&
         isRecord(event.params.turn) &&
         typeof event.params.turn.id === "string"
-      )
-        activeTurnID = event.params.turn.id
+      ) {
+        activeTurns.set(event.params.threadId, event.params.turn.id)
+        if (event.params.threadId === activeThreadID) activeTurnID = event.params.turn.id
+      }
       const settings = SubsystemCodex.threadSettings(event)
       if (awaitingTurnSettings && settings) settleAttestation(settings)
       if (awaitingTurnSettings && !settingsSettled && isOperationalCodexEvent(event))
         settleAttestation({ error: "Codex began operational activity before attesting its resolved settings." })
       if (event.method) onEvent?.(event)
       if (event.method !== "turn/completed" || !isRecord(event.params) || !isRecord(event.params.turn)) return
+      if (
+        typeof event.params.threadId === "string" &&
+        typeof event.params.turn.id === "string" &&
+        activeTurns.get(event.params.threadId) === event.params.turn.id
+      )
+        activeTurns.delete(event.params.threadId)
       if (activeThreadID && event.params.threadId !== activeThreadID) return
       completedTurn = event.params.turn
       completeTurn(completedTurn)
@@ -930,7 +942,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     const threadResult = await request("thread/start", {
       model: input.spec.model ?? null,
       baseInstructions: input.spec.baseInstructions ?? null,
-      developerInstructions: input.spec.developerInstructions ?? null,
+      developerInstructions: null,
       dynamicTools: input.dynamicTools?.map((tool) => tool.definition) ?? input.spec.dynamicTools ?? null,
       cwd: input.spec.cwd,
       runtimeWorkspaceRoots: [input.spec.cwd],
@@ -1007,7 +1019,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
           .join("\n"),
         exitCode: 1,
         timedOut: wasTimedOut(proc),
-        termination: "provider_failed",
+        termination: "subsystem_failed",
         failureReason,
       }
     }
@@ -1035,10 +1047,23 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
     }
 
     completedTurn = await Promise.race([turnCompleted, proc.exited.then(() => undefined)])
+    const exitedBeforeRootCompletion = completedTurn === undefined
+    const observedExitCode = exitedBeforeRootCompletion ? await proc.exited : undefined
     unregister?.()
     unregister = undefined
-    const logicalExitCode = completedTurn?.status === "completed" ? 0 : 1
-    const failure = input.provider.classifyFailure(completedTurn)
+    const logicalExitCode = completedTurn?.status === "completed" ? 0 : (observedExitCode ?? 1)
+    const failure = input.subsystem.classifyFailure(completedTurn)
+    const prematureExitReason = exitedBeforeRootCompletion
+      ? proc.stopReason === "cancelled"
+        ? "Codex app-server was interrupted by a session abort before the root turn completed."
+        : proc.stopReason === "budget_exhausted"
+          ? "Codex app-server exhausted the phase budget before the root turn completed."
+          : proc.stopReason === "shutdown"
+            ? "Codex app-server stopped during Cyberful shutdown before the root turn completed."
+            : `Codex app-server exited before the root turn completed (exit ${logicalExitCode}${
+                proc.signalCode ? `, signal ${proc.signalCode}` : ""
+              }).`
+      : undefined
     await stopAppServer(proc)
     await exitObservation
     await settleServerRequests()
@@ -1064,6 +1089,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       exitCode: logicalExitCode,
       timedOut: wasTimedOut(proc),
       termination: terminationOf(proc, logicalExitCode),
+      ...(prematureExitReason ? { failureReason: prematureExitReason } : {}),
       ...(failure ? { failure } : {}),
     }
   } catch (error) {
@@ -1082,7 +1108,7 @@ async function runCodexAppServer(input: RunInput, onEvent?: (event: unknown) => 
       exitCode: proc?.spawnError ? 127 : 1,
       timedOut: proc ? wasTimedOut(proc) : false,
       termination: cleanupWarning
-        ? "provider_failed"
+        ? "subsystem_failed"
         : proc
           ? terminationOf(proc, proc.spawnError ? 127 : 1)
           : "spawn_failed",
@@ -1096,7 +1122,7 @@ function isOperationalCodexEvent(event: Record<string, unknown>): boolean {
 }
 
 export async function run(input: RunInput): Promise<RunResult> {
-  if (input.provider.name === "codex" && input.sessionID) return runCodexAppServer(input)
+  if (input.subsystem.name === "codex" && input.sessionID) return runCodexAppServer(input)
   try {
     const proc = spawnCli(input)
     const [stdout, stderr] = await Promise.all([drainText(proc.stdout), drainText(proc.stderr)])
@@ -1123,7 +1149,7 @@ export async function run(input: RunInput): Promise<RunResult> {
         .join("\n"),
       exitCode: exitCode ?? 0,
       timedOut: wasTimedOut(proc),
-      termination: cleanupWarning ? "provider_failed" : terminationOf(proc, exitCode ?? 0),
+      termination: cleanupWarning ? "subsystem_failed" : terminationOf(proc, exitCode ?? 0),
       failureReason: cleanupWarning,
     }
   } catch (error) {
@@ -1142,7 +1168,7 @@ export async function run(input: RunInput): Promise<RunResult> {
 // to onEvent as it arrives, and still return the buffered RunResult so the caller unwraps the final
 // reply exactly as for a json run. onEvent runs synchronously as each event is decoded.
 export async function runStreaming(input: RunInput, onEvent: (event: unknown) => void): Promise<RunResult> {
-  if (input.provider.name === "codex" && input.sessionID) return runCodexAppServer(input, onEvent)
+  if (input.subsystem.name === "codex" && input.sessionID) return runCodexAppServer(input, onEvent)
   try {
     const proc = spawnCli(input)
     const [stdout, stderr] = await Promise.all([consumeNdjson(proc.stdout, onEvent), drainText(proc.stderr)])
@@ -1168,7 +1194,7 @@ export async function runStreaming(input: RunInput, onEvent: (event: unknown) =>
         .join("\n"),
       exitCode: exitCode ?? 0,
       timedOut: wasTimedOut(proc),
-      termination: cleanupWarning ? "provider_failed" : terminationOf(proc, exitCode ?? 0),
+      termination: cleanupWarning ? "subsystem_failed" : terminationOf(proc, exitCode ?? 0),
       failureReason: cleanupWarning,
     }
   } catch (error) {
@@ -1183,10 +1209,10 @@ export async function runStreaming(input: RunInput, onEvent: (event: unknown) =>
 }
 
 // ── Streaming Decode Preserves Events And A Bounded Final Tail ─────
-// Provider chunks can split an NDJSON value at any byte boundary, so complete
+// Subsystem chunks can split an NDJSON value at any byte boundary, so complete
 // lines are assembled before parsing and valid events remain ordered. One
 // oversized line is discarded until its newline without blocking later events.
-// Raw retention keeps only the final byte window where providers place their
+// Raw retention keeps only the final byte window where subsystems place their
 // result event, preventing verbose activity from growing process memory forever.
 // ─────────────────────────────────────────────────────────────
 export async function consumeNdjson(
@@ -1194,8 +1220,8 @@ export async function consumeNdjson(
   onEvent: (event: unknown) => void,
   options: { maxOutputBytes?: number; maxLineBytes?: number } = {},
 ): Promise<{ raw: string; truncated: boolean; error?: unknown }> {
-  const maxOutputBytes = options.maxOutputBytes ?? PROVIDER_OUTPUT_LIMIT_BYTES
-  const maxLineBytes = options.maxLineBytes ?? PROVIDER_NDJSON_LINE_LIMIT_BYTES
+  const maxOutputBytes = options.maxOutputBytes ?? SUBSYSTEM_OUTPUT_LIMIT_BYTES
+  const maxLineBytes = options.maxLineBytes ?? SUBSYSTEM_NDJSON_LINE_LIMIT_BYTES
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0)
     throw new Error("maxOutputBytes must be a positive safe integer")
   if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0)
@@ -1223,7 +1249,7 @@ export async function consumeNdjson(
     try {
       onEvent(event)
     } catch (error) {
-      // Activity presentation is observational; one consumer failure must not abort the provider turn,
+      // Activity presentation is observational; one consumer failure must not abort the subsystem turn,
       // but it remains visible because otherwise the UI could silently stop reflecting live work.
       log.warn("streaming activity observer failed", { error })
     }
@@ -1258,7 +1284,7 @@ export async function consumeNdjson(
       }
     }
   } catch (error) {
-    // A killed provider can break the reader after valid events. Returning the accumulated stream is
+    // A killed subsystem can break the reader after valid events. Returning the accumulated stream is
     // the explicit partial-transcript result; the process termination remains visible on RunResult.
     streamError = error
   } finally {

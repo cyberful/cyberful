@@ -1,5 +1,5 @@
 // ── Embedded First-Party Asset Bootstrap ─────────────────────────
-// Materializes release-bundled policy, cyberful-os, and ZAP assets while keeping
+// Materializes release-bundled policy, cyberful-os, ZAP, and Ghidra assets while keeping
 // source runs and explicit operator locations on their native filesystem paths.
 // → cyberful/builtin/cyberful.json — anchors the first-party configuration tree.
 // → cyberful/src/index.ts — evaluates this bootstrap before command handlers start.
@@ -14,6 +14,7 @@ import * as Builtin from "./builtin"
 declare const CYBERFUL_EMBEDDED_CONFIG: Record<string, string> | undefined
 declare const CYBERFUL_EMBEDDED_CYBERFUL_OS: Record<string, string> | undefined
 declare const CYBERFUL_EMBEDDED_ZAP: Record<string, string> | undefined
+declare const CYBERFUL_EMBEDDED_GHIDRA: Record<string, string> | undefined
 declare const CYBERFUL_BUILD_ID: string | undefined
 
 function buildIdSlug(): string {
@@ -90,8 +91,20 @@ function materializeEmbeddedZap(): boolean {
   return true
 }
 
+function materializeEmbeddedGhidra(): boolean {
+  if (typeof CYBERFUL_EMBEDDED_GHIDRA === "undefined") return false
+  const files = CYBERFUL_EMBEDDED_GHIDRA
+  if (!files || Object.keys(files).length === 0 || process.env.CYBER_GHIDRA_DIR) return false
+
+  const ghidraDir = path.join(Global.Path.cache, `ghidra-${buildIdSlug()}`)
+  materialize(ghidraDir, files)
+  process.env.CYBER_GHIDRA_DIR = ghidraDir
+  return true
+}
+
 // Run config and cyberful-os bootstraps independently so a build carrying only one asset still initializes it.
 const configReady = materializeEmbeddedConfig() || activateSourceConfig()
 const cyberfulOsReady = materializeEmbeddedCyberfulOs()
 const zapReady = materializeEmbeddedZap()
-export const bootstrapConfigReady = configReady || cyberfulOsReady || zapReady
+const ghidraReady = materializeEmbeddedGhidra()
+export const bootstrapConfigReady = configReady || cyberfulOsReady || zapReady || ghidraReady

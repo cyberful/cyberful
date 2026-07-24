@@ -6,7 +6,8 @@
 import { Effect, Layer, Context, Schema, Stream, Scope } from "effect"
 import { formatPatch, structuredPatch } from "diff"
 import { Bus } from "@/bus"
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventSystem } from "@/event"
+import { Event as EventDefinition } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { InstanceDisposalRegistry } from "@/effect/instance-registry"
 import { FileWatcher } from "@/file/watcher"
@@ -245,7 +246,7 @@ export const Mode = Schema.Literals(["git", "branch"])
 export type Mode = Schema.Schema.Type<typeof Mode>
 
 export const Event = {
-  BranchUpdated: BusEvent.define(
+  BranchUpdated: EventDefinition.define(
     "vcs.branch.updated",
     Schema.Struct({
       branch: Schema.optional(Schema.String),
@@ -318,12 +319,13 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Vc
 export const layer: Layer.Layer<
   Service,
   never,
-  Git.Service | Bus.Service | InstanceDisposalRegistry.Service
+  Git.Service | Bus.Service | EventSystem.Service | InstanceDisposalRegistry.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
     const git = yield* Git.Service
     const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
     const scope = yield* Scope.Scope
 
     const state = yield* InstanceState.make<State>(
@@ -349,7 +351,7 @@ export const layer: Layer.Layer<
               if (next !== value.current) {
                 log.info("branch changed", { from: value.current, to: next })
                 value.current = next
-                yield* bus.publish(Event.BranchUpdated, { branch: next })
+                yield* events.publish(Event.BranchUpdated, { branch: next })
               }
             }),
           ),
@@ -446,6 +448,7 @@ export const layer: Layer.Layer<
 export const defaultLayer = layer.pipe(
   Layer.provide(Git.defaultLayer),
   Layer.provide(Bus.layer),
+  Layer.provide(EventSystem.defaultLayer),
   Layer.provide(InstanceDisposalRegistry.layer),
 )
 

@@ -4,8 +4,8 @@
 // → cyberful/src/pty/pty.bun.ts — adapts the native Bun PTY implementation.
 // ─────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
+import { Event as EventDefinition } from "@/event"
+import { Event as EventSystem } from "@/event"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -96,10 +96,10 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Pty
 }) {}
 
 export const Event = {
-  Created: BusEvent.define("pty.created", Schema.Struct({ info: Info })),
-  Updated: BusEvent.define("pty.updated", Schema.Struct({ info: Info })),
-  Exited: BusEvent.define("pty.exited", Schema.Struct({ id: PtyID, exitCode: NonNegativeInt })),
-  Deleted: BusEvent.define("pty.deleted", Schema.Struct({ id: PtyID })),
+  Created: EventDefinition.define("pty.created", Schema.Struct({ info: Info })),
+  Updated: EventDefinition.define("pty.updated", Schema.Struct({ info: Info })),
+  Exited: EventDefinition.define("pty.exited", Schema.Struct({ id: PtyID, exitCode: NonNegativeInt })),
+  Deleted: EventDefinition.define("pty.deleted", Schema.Struct({ id: PtyID })),
 }
 
 export interface Interface {
@@ -121,7 +121,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
 
     function closeSubscriber(ws: Socket, id: PtyID, code?: number, reason?: string) {
       try {
@@ -188,7 +188,7 @@ export const layer = Layer.effect(
       if (session.closed) return
       log.info("removing session", { id })
       teardown(session, processExited)
-      yield* bus.publish(Event.Deleted, { id: session.info.id })
+      yield* events.publish(Event.Deleted, { id: session.info.id })
     })
 
     const remove = Effect.fn("Pty.remove")(function* (id: PtyID) {
@@ -310,11 +310,11 @@ export const layer = Layer.effect(
           const normalizedExitCode = Number.isSafeInteger(exitCode) && exitCode >= 0 ? exitCode : 1
           log.info("session exited", { id, exitCode: normalizedExitCode })
           session.info.status = "exited"
-          bridge.fork(bus.publish(Event.Exited, { id, exitCode: normalizedExitCode }))
+          bridge.fork(events.publish(Event.Exited, { id, exitCode: normalizedExitCode }))
           bridge.fork(removeSession(id, true))
         }),
       )
-      yield* bus.publish(Event.Created, { info })
+      yield* events.publish(Event.Created, { info })
       return info
     })
 
@@ -326,7 +326,7 @@ export const layer = Layer.effect(
       if (input.size) {
         session.process.resize(input.size.cols, input.size.rows)
       }
-      yield* bus.publish(Event.Updated, { info: session.info })
+      yield* events.publish(Event.Updated, { info: session.info })
       return session.info
     })
 
@@ -401,6 +401,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer), Layer.provide(Config.defaultLayer))
+export const defaultLayer = layer.pipe(Layer.provide(EventSystem.defaultLayer), Layer.provide(Config.defaultLayer))
 
 export * as Pty from "."

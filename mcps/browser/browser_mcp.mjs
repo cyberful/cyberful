@@ -16,6 +16,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { releaseBrowserContext } from "./browser_context_ownership.mjs"
 import { saveBrowserDownload } from "./browser_download.mjs"
+import { BrowserToolRegistry } from "./browser_tool_registry.mjs"
 import {
   BACKGROUND_NETWORKING_DISABLED_ARGS,
   PATCHRIGHT_DISABLED_FEATURES_ARG,
@@ -31,6 +32,7 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 300_000
 const DEFAULT_MAX_TEXT_CHARS = 12_000
 const DEFAULT_MAX_ELEMENTS = 80
+const MAX_SNAPSHOT_ELEMENTS = 500
 const DEFAULT_NETWORK_LIMIT = 500
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
@@ -85,6 +87,8 @@ let contextOwnership = "none"
 let activePage = null
 let cachedExecutablePath = null
 const attachedPages = new WeakSet()
+const pageIds = new WeakMap()
+let pageSequence = 0
 
 // ── Shared Browser Modes Preserve Tab Ownership ──────────────────────
 // OWN_TAB scouts share one Chromium context but pin a private page instead of
@@ -154,10 +158,81 @@ function stripAnsi(value) {
   return String(value).replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
 }
 
-function toolResult(text, isError = false) {
+function toolResult(text, isError = false, metadata = undefined) {
   return {
     content: [{ type: "text", text: stripAnsi(text) }],
     isError,
+    ...(metadata ? { _meta: metadata } : {}),
+  }
+}
+
+// ── Browser Actions Emit Redacted Surface Metadata ──────────────
+// Route families retain navigation coverage without selectors, entered text,
+// cookies, query values, fragments, or response bodies. The gateway persists
+// these records independently from the model-visible result. Metadata describes
+// surface movement only and never authorizes, modifies, retries, or blocks traffic.
+// ─────────────────────────────────────────────────────────────────
+function pageId(page) {
+  if (!page) return "none"
+  const existing = pageIds.get(page)
+  if (existing) return existing
+  const id = `page-${++pageSequence}`
+  pageIds.set(page, id)
+  return id
+}
+
+function redactedLocation(rawUrl) {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return { origin: url.protocol, path_family: "/" }
+    const pathFamily = url.pathname
+      .split("/")
+      .filter(Boolean)
+      .slice(0, 8)
+      .map((segment) =>
+        /^\d+$|^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^[A-Za-z0-9_-]{24,}$/i.test(segment)
+          ? ":id"
+          : segment.slice(0, 80),
+      )
+    return { origin: url.origin, path_family: `/${pathFamily.join("/")}` || "/" }
+  } catch {
+    return { origin: "unknown", path_family: "/" }
+  }
+}
+
+function actionFamily(tool) {
+  if (tool === "browser_navigate") return "navigation"
+  if (["browser_click", "browser_scroll", "browser_press"].includes(tool)) return "ui_interaction"
+  if (["browser_fill", "browser_type", "browser_select", "browser_check", "browser_set_input_files"].includes(tool)) return "ui_input"
+  if (tool.startsWith("browser_captcha_")) return "captcha"
+  if (["browser_snapshot", "browser_screenshot", "browser_wait"].includes(tool)) return "observation"
+  if (tool === "browser_evaluate") return "script"
+  return "browser"
+}
+
+function annotateBrowserAction(tool, result, page, beforeUrl) {
+  if (!tool.startsWith("browser_")) return result
+  const afterUrl = page && !page.isClosed() ? page.url() : beforeUrl
+  const before = redactedLocation(beforeUrl)
+  const after = redactedLocation(afterUrl)
+  const statusMatch = result.content?.find((item) => item.type === "text")?.text?.match(/^status:\s*(\d{3})\b/m)
+  const transition = beforeUrl === afterUrl ? "none" : before.origin === after.origin ? "same_origin" : "cross_origin"
+  return {
+    ...result,
+    _meta: {
+      ...(result._meta || {}),
+      "cyberful.dev/browser-action": {
+        profile: PROFILE_ID,
+        page_id: pageId(page),
+        origin: after.origin,
+        path_family: after.path_family,
+        action: tool,
+        action_family: actionFamily(tool),
+        page_transition: transition,
+        outcome: result.isError ? "error" : "ok",
+        status: statusMatch ? Number(statusMatch[1]) : null,
+      },
+    },
   }
 }
 
@@ -1526,10 +1601,14 @@ async function detectCaptcha(page, maxSignals = 50, options = {}) {
 // public tool cannot be listed without an executable handler beside its schema.
 // ─────────────────────────────────────────────────────────────────────
 
-const TOOL_REGISTRY = []
+const TOOL_REGISTRY = new BrowserToolRegistry()
 
 function registerTool(name, description, inputSchema, handler) {
-  TOOL_REGISTRY.push({ name, description, inputSchema, handler })
+  TOOL_REGISTRY.register({ name, description, inputSchema, handler })
+}
+
+export function browserToolDefinitions() {
+  return TOOL_REGISTRY.definitions()
 }
 
 // ── Tool Schemas Are Runtime Boundaries ──────────────────────────────
@@ -1791,13 +1870,13 @@ registerTool(
         maximum: 100_000,
         default: DEFAULT_MAX_TEXT_CHARS,
       },
-      max_elements: { type: "integer", minimum: 1, maximum: 300, default: DEFAULT_MAX_ELEMENTS },
+      max_elements: { type: "integer", minimum: 1, maximum: MAX_SNAPSHOT_ELEMENTS, default: DEFAULT_MAX_ELEMENTS },
     },
   },
   async (args) => {
     const page = await currentPage()
     const maxTextChars = intArg(args.max_text_chars, DEFAULT_MAX_TEXT_CHARS, 100, 100_000)
-    const maxElements = intArg(args.max_elements, DEFAULT_MAX_ELEMENTS, 1, 300)
+    const maxElements = intArg(args.max_elements, DEFAULT_MAX_ELEMENTS, 1, MAX_SNAPSHOT_ELEMENTS)
     const snapshot = await captureSnapshot(page, maxTextChars, maxElements)
     return toolResult(formatSnapshot(snapshot, maxTextChars))
   },
@@ -1828,7 +1907,7 @@ registerTool(
 
 registerTool(
   "browser_captcha_handoff",
-  "Attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with the gateway question tool using kind=captcha; the host circuit breaker waits durably and requires a later browser_captcha_status clear result.",
+  "Attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with the gateway question tool using kind=captcha; only this browser profile and origin pause until browser_captcha_status clears the original page.",
   {
     type: "object",
     additionalProperties: false,
@@ -2516,7 +2595,7 @@ registerTool(
 )
 
 function capabilitiesText() {
-  const tools = TOOL_REGISTRY.map((tool) => `- \`${tool.name}\`: ${tool.description}`).join("\n")
+  const tools = browserToolDefinitions().map((tool) => `- \`${tool.name}\`: ${tool.description}`).join("\n")
   return `# ${SERVER_NAME} MCP capabilities
 
 This MCP server exposes an isolated, stealth-hardened Chromium browser (patchright driver) for browser-use style automation.
@@ -2574,11 +2653,15 @@ export async function handleToolCall(params) {
     if (typeof params.name !== "string" || !params.name || params.name.length > 128) {
       throw new Error("tool name must be a non-empty string of at most 128 characters")
     }
-    const tool = TOOL_REGISTRY.find((candidate) => candidate.name === params.name)
+    const tool = TOOL_REGISTRY.find(params.name)
     if (!tool) return toolResult(`unknown tool: ${params.name}\n`, true)
     const args = params.arguments === undefined ? {} : params.arguments
     validateToolArguments(tool.inputSchema, args)
-    return await tool.handler(args)
+    const page = activePage && !activePage.isClosed() ? activePage : null
+    const beforeUrl = page ? page.url() : "about:blank"
+    const result = await tool.handler(args)
+    const resultPage = activePage && !activePage.isClosed() ? activePage : page
+    return annotateBrowserAction(params.name, result, resultPage, beforeUrl)
   } catch (error) {
     return toolException(error)
   }
@@ -2602,11 +2685,7 @@ async function handleRequest(message) {
       ok(id, {})
     } else if (method === "tools/list") {
       ok(id, {
-        tools: TOOL_REGISTRY.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        })),
+        tools: browserToolDefinitions(),
       })
     } else if (method === "tools/call") {
       ok(id, await handleToolCall(params))

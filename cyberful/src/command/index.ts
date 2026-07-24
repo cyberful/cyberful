@@ -5,7 +5,7 @@
 // → cyberful/src/skill/index.ts — contributes skill-backed commands without shadowing explicit ones.
 // ─────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID, MessageID } from "@/session/schema"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -17,7 +17,7 @@ type State = {
 }
 
 export const Event = {
-  Executed: BusEvent.define(
+  Executed: EventDefinition.define(
     "command.executed",
     Schema.Struct({
       name: Schema.String,

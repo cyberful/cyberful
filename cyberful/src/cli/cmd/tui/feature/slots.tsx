@@ -1,26 +1,27 @@
-// ── TUI Slot Registry Adapter ────────────────────────────────────
-// Validates feature slot plugins, binds the active Solid slot registry, and
-//   restores an empty renderer when the owning feature runtime is disposed.
+// ── Built-In TUI Slots ───────────────────────────────────────────
+// Composes the small set of host-owned visual contributions and restores an
+//   empty renderer when the TUI is disposed.
 // ─────────────────────────────────────────────────────────────────
 
-import type { TuiFeatureApi, TuiSlotContext, TuiSlotMap, TuiSlotProps } from "@/cli/cmd/tui/api-types"
-import { createSlot, createSolidSlotRegistry, type JSX, type SolidPlugin } from "@opentui/solid"
-import { isRecord } from "@/util/record"
+import type {
+  TuiFeatureApi,
+  TuiHostSlotMap,
+  TuiSlotContext,
+  TuiSlotContribution,
+  TuiSlotMap,
+  TuiSlotProps,
+} from "@/cli/cmd/tui/api-types"
+import { createSlot, createSolidSlotRegistry, type JSX } from "@opentui/solid"
 
-type RuntimeSlotMap = TuiSlotMap<Record<string, object>>
-
-type Slot = <Name extends string>(props: TuiSlotProps<Name>) => JSX.Element | null
-export type HostSlotFeature<Slots extends Record<string, object> = {}> = SolidPlugin<TuiSlotMap<Slots>, TuiSlotContext>
+type Slot = <Name extends keyof TuiHostSlotMap>(props: TuiSlotProps<Name>) => JSX.Element | null
 
 export type HostFeatureApi = TuiFeatureApi
 export type HostSlots = {
-  register: {
-    (plugin: HostSlotFeature): () => void
-    <Slots extends Record<string, object>>(plugin: HostSlotFeature<Slots>): () => void
-  }
+  register: (contribution: TuiSlotContribution) => () => void
+  dispose: () => void
 }
 
-function empty<Name extends string>(_props: TuiSlotProps<Name>) {
+function empty<Name extends keyof TuiHostSlotMap>(_props: TuiSlotProps<Name>) {
   return null
 }
 
@@ -28,23 +29,16 @@ let view: Slot = empty
 
 export const Slot: Slot = (props) => view(props)
 
-function isHostSlotPlugin(value: unknown): value is HostSlotFeature<Record<string, object>> {
-  if (!isRecord(value)) return false
-  if (typeof value.id !== "string") return false
-  if (!isRecord(value.slots)) return false
-  return true
-}
-
 export function setupSlots(api: HostFeatureApi): HostSlots {
-  const reg = createSolidSlotRegistry<RuntimeSlotMap, TuiSlotContext>(
+  const reg = createSolidSlotRegistry<TuiSlotMap, TuiSlotContext>(
     api.renderer,
     {
       theme: api.theme,
     },
     {
       onPluginError(event) {
-        console.error("[tui.slot] plugin error", {
-          plugin: event.pluginId,
+        console.error("[tui.slot] contribution error", {
+          contribution: event.pluginId,
           slot: event.slot,
           phase: event.phase,
           source: event.source,
@@ -54,12 +48,16 @@ export function setupSlots(api: HostFeatureApi): HostSlots {
     },
   )
 
-  const slot = createSlot<RuntimeSlotMap, TuiSlotContext>(reg)
-  view = (props) => slot(props)
+  const slot = createSlot<TuiSlotMap, TuiSlotContext>(reg)
+  view = (props) => slot(props as Parameters<typeof slot>[0])
+  let sequence = 0
   return {
-    register(plugin: HostSlotFeature) {
-      if (!isHostSlotPlugin(plugin)) return () => {}
-      return reg.register(plugin)
+    register(contribution) {
+      sequence += 1
+      return reg.register({ ...contribution, id: `builtin:${sequence}` })
+    },
+    dispose() {
+      view = empty
     },
   }
 }

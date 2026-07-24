@@ -28,7 +28,7 @@ describe("built-in Code Audit workflow", () => {
     if (workflow?.kind !== "workflow") throw new Error("Code Audit must be sequential")
     expect(workflow.phases.map((phase) => phase.name)).toEqual(PHASES.map(([phase]) => phase))
     expect(workflow.sourcePolicy).toBe("read")
-    expect(workflow.capabilities).toEqual(["source", "code-graph", "isolated-exec", "audit-diff"])
+    expect(workflow.capabilities).toEqual(["source", "code-graph", "isolated-exec", "audit-diff", "ghidra"])
     expect(workflow.completionTitle).toBe("Code audit completed")
     expect([workflow.report.source, workflow.report.path]).toEqual([
       "CODE_AUDIT_REPORT.md",

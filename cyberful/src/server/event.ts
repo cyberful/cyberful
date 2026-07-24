@@ -4,10 +4,10 @@
 // → cyberful/src/server/global-lifecycle.ts — emits the disposal event.
 // ─────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { Schema } from "effect"
 
 export const Event = {
-  Connected: BusEvent.define("server.connected", Schema.Struct({})),
-  Disposed: BusEvent.define("global.disposed", Schema.Struct({})),
+  Connected: EventDefinition.define("server.connected", Schema.Struct({})),
+  Disposed: EventDefinition.define("global.disposed", Schema.Struct({})),
 }

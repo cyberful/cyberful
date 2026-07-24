@@ -1,8 +1,11 @@
 // ── Cyberful Process Identity ────────────────────────────────────
 // Validates and propagates one run identity and process role across the main
-// process, workers, runtime health responses, and child environments.
+// process, workers, and runtime health responses. Model subprocesses receive a
+// deliberately reduced environment so nested Cyberful commands cannot inherit
+// the host run's cleanup authority.
 // → cyberful/src/server/runtime-identity.ts — publishes this metadata for health checks.
 // → cyberful/src/cli/cmd/tui/thread.ts — passes the identity into the TUI worker.
+// → cyberful/src/subsystem/gateway/config.ts — retains ownership in the private gateway environment.
 // ─────────────────────────────────────────────────────────────────
 
 import { randomUUID } from "node:crypto"
@@ -41,4 +44,18 @@ export function sanitizedProcessEnv(overrides?: Record<string, string>) {
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   )
   return overrides ? Object.assign(env, overrides) : env
+}
+
+// ── Model Children Cannot Own The Host Run ───────────────────────
+// Run identity authorizes process and container cleanup, so it must stop at the
+// host-to-model boundary. A model shell may legitimately invoke `cyberful
+// --version`; inheriting the parent identity would let that nested CLI finalize
+// the active run. Strip ownership after process overrides are merged, while
+// the private gateway file carries the same identity to trusted host tooling.
+// ─────────────────────────────────────────────────────────────────
+export function sanitizedModelProcessEnv(overrides?: Record<string, string>) {
+  const env = sanitizedProcessEnv(overrides)
+  delete env[CYBERFUL_RUN_ID]
+  delete env[CYBERFUL_PROCESS_ROLE]
+  return env
 }

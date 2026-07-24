@@ -1,6 +1,6 @@
 // ── Public Event Schema Catalog ──────────────────────────────────
-// Loads every repository-owned event definition, seals all three registries,
-// and returns the complete legacy and transactional payload schemas used by
+// Loads every repository-owned event definition, seals the canonical registry,
+// and returns the complete live and transactional payload schemas used by
 // HTTP and generated-client contracts.
 // → cyberful/src/server/routes/instance/httpapi/api.ts — publishes project event schemas.
 // → cyberful/src/server/routes/instance/httpapi/groups/global.ts — publishes global event schemas.
@@ -16,22 +16,20 @@ import "@/project/vcs"
 import "@/pty"
 import "@/question"
 import "@/server/event"
-import "@/session/event-v2"
+import "@/session/event"
+import "@/session/finding"
 import "@/session/message-v2"
 import "@/session/session"
 import "@/session/status"
 import "@/session/todo"
 import "@/session/variable"
-import { BusEvent } from "@/bus/bus-event"
-import { EventV2 } from "@/event-v2"
-import { SyncEvent } from "@/sync"
+import { Event } from "@/event"
+import { EventProjection } from "@/event-projection"
 
 export function payloadSchemas() {
-  BusEvent.freezeDefinitions()
-  EventV2.freezeDefinitions()
-  SyncEvent.freezeDefinitions()
+  Event.freezeDefinitions()
   return {
-    events: [...BusEvent.effectPayloads(), ...SyncEvent.busPayloads()],
-    sync: SyncEvent.effectPayloads(),
+    events: Event.effectPayloads(),
+    sync: EventProjection.effectPayloads(),
   }
 }

@@ -1,7 +1,7 @@
-// ── Provider-Neutral Session Token Accounting ───────────────────
-// Aggregates cumulative generated-token snapshots per runtime process so sessions
-// count sequential and concurrent work without interpreting provider event shapes.
-// → cyberful/src/subsystem/provider.ts — translates Codex events into these snapshots.
+// ── Subsystem-Neutral Session Token Accounting ───────────────────
+// Aggregates cumulative token snapshots per runtime process and derives bounded
+// context-reuse/churn metrics without interpreting subsystem-specific event shapes.
+// → cyberful/src/subsystem/subsystem.ts — translates Codex events into these snapshots.
 // ─────────────────────────────────────────────────────────────────
 
 export interface Snapshot {
@@ -21,6 +21,14 @@ export interface Totals {
     readonly read: number
     readonly write: number
   }
+}
+
+export interface ContextChurn {
+  readonly uncachedInput: number
+  readonly cacheReadRatio: number
+  readonly inputAmplification: number
+  readonly churnRatio: number
+  readonly reasoningShare: number
 }
 
 export interface SessionCounter {
@@ -64,6 +72,29 @@ export function createSessionCounter(): SessionCounter {
     },
     total,
     usage,
+  }
+}
+
+function ratio(numerator: number, denominator: number): number {
+  if (denominator <= 0) return 0
+  return Number(Math.min(1, Math.max(0, numerator / denominator)).toFixed(4))
+}
+
+// ── Churn Comes From Subsystem Counters ────────────────────────
+// Input amplification measures how much context was processed per generated
+// token. Churn isolates the non-cached share of that input, while cache reuse and
+// reasoning share stay separate so a long but efficiently reused phase is not
+// mistaken for repeated context reconstruction. Missing counters resolve to zero
+// and remain visibly absent from callers that never received a usage snapshot.
+// ─────────────────────────────────────────────────────────────────
+export function contextChurn(usage: Totals): ContextChurn {
+  const uncachedInput = Math.max(0, usage.input - usage.cache.read)
+  return {
+    uncachedInput,
+    cacheReadRatio: ratio(usage.cache.read, usage.input),
+    inputAmplification: Number((usage.input / Math.max(1, usage.output)).toFixed(2)),
+    churnRatio: ratio(uncachedInput, usage.input),
+    reasoningShare: ratio(usage.reasoning, usage.output),
   }
 }
 

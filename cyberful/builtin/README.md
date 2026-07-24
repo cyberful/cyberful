@@ -8,15 +8,13 @@ every binary.
 
 ```text
 cyberful/builtin/
+  baseInstructions.md
   cyberful.json
   agents/
     pentest/       brief, recon, exploit, hacker, verify, report, budgets
     bug-bounty/    dedicated brief, verify, report, and shared-phase budgets
     code-audit/    scope, index, trace, hunt, attack, verify, report, budgets
     ask/           interactive follow-up persona and budget
-  instructions/
-    cyberful.md
-    trust-boundary.md
   skills/*/SKILL.md
   skills/{ZAP,NUCLEI}.md
   example/         development-only attachment fixtures
@@ -25,9 +23,12 @@ cyberful/builtin/
 ## Persona contract
 
 Each Markdown filename below a workflow or follow-up namespace is a phase or
-persona identifier used by the orchestrator. The host composes the persona, delegation policy, shared
-behavioral instructions, and final trust boundary into one fresh Codex
-app-server context. Codex's model-specific base instructions remain intact.
+persona identifier used by the orchestrator. The host renders
+`baseInstructions.md` once for each phase, replacing its hacker-profile,
+delegation, and workarea placeholders with the current runtime values. The
+invariant target-content trust boundary lives directly in the template. The
+rendered document replaces Codex's model-specific base instructions; Cyberful
+supplies no separate developer-instruction content.
 
 Persona frontmatter declares a non-negative integer `subagents`. The host
 removes it from model-visible prose and permits native delegation only when the
@@ -77,14 +78,20 @@ complete.
 
 Every phase receives only the gateway capabilities registered for its workflow
 and phase. Pentest and Bug Bounty Program can use cyberful-os, the isolated
-browser, and ZAP within their mission. Code Audit uses bounded source and Code Graph tools, an offline Git
-diff tool in Scope, and a disposable runtime lab in Attack and Verify. It has
+browser, ZAP, and the persistent headless Ghidra project within their eligible
+phases and mission. Bug Bounty additionally exposes pinned
+source imports, the managed EVM lab, and explicit EVM evidence indexing in their
+eligible phases; the compact `operate-evm-security-toolchain` skill describes
+their use without changing the shared Recon, Exploit, or Hacker personas. Code
+Audit uses bounded source and Code Graph tools, Ghidra from Index through
+Verify, an offline Git diff tool in Scope, and a disposable runtime lab in
+Attack and Verify. It has
 no external target-traffic route and never edits the user's checkout.
 
 Messages from the TUI steer the active root Codex turn. Blocking questions use
 the gateway's human-input bridge. Repository files, web content, tool output,
-and persisted target data remain untrusted evidence under
-`instructions/trust-boundary.md`.
+and persisted target data remain untrusted evidence under the trust boundary
+encoded directly in the base template.
 
 ## Skills
 

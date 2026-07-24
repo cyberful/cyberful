@@ -1651,7 +1651,7 @@ export function Prompt(props: PromptProps) {
                     </box>
                     {/* Show the Codex subsystem's session-wide live progress:
                         "executing job" while a tool runs, else the classic "generating… N" — the token
-                        count with NO rate when the provider has reported one. */}
+                        count with NO rate when the subsystem has reported one. */}
                     <Show
                       when={ep().lastKind === "tool"}
                       fallback={<GenerationStatusText message={GenerationProgress.formatStatus(ep().tokens)} />}

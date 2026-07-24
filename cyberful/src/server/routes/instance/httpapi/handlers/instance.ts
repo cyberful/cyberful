@@ -2,7 +2,7 @@
 // Exposes the active instance's agents, commands, formatters, skills, repository
 // state, runtime readiness, and capability metadata, reloading after VCS mutations.
 // → cyberful/src/server/routes/instance/httpapi/groups/instance.ts — defines the public operations.
-// → cyberful/src/subsystem/status.ts — probes primary and fallback readiness.
+// → cyberful/src/subsystem/status.ts — probes Codex runtime readiness.
 // ─────────────────────────────────────────────────────────────────
 
 import { Agent } from "@/agent/agent"
@@ -96,8 +96,7 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
     })
 
     const getRuntimeStatus = Effect.fn("InstanceHttpApi.runtimeStatus")(function* () {
-      const ctx = yield* InstanceState.context
-      return yield* Effect.promise(() => SubsystemStatus.inspect(ctx.directory))
+      return yield* Effect.promise(() => SubsystemStatus.inspect())
     })
 
     return handlers

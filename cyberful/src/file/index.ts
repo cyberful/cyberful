@@ -4,7 +4,7 @@
 // → cyberful/src/file/ripgrep.ts — performs bounded filesystem enumeration and search.
 // ─────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { serviceUse } from "@/effect/service-use"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -68,7 +68,7 @@ export const Content = Schema.Struct({
 export type Content = DeepMutable<Schema.Schema.Type<typeof Content>>
 
 export const Event = {
-  Edited: BusEvent.define(
+  Edited: EventDefinition.define(
     "file.edited",
     Schema.Struct({
       file: Schema.String,

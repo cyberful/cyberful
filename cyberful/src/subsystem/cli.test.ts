@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { SubsystemCli } from "./cli"
-import { SubsystemProvider } from "./provider"
+import { Subsystem } from "./subsystem"
 import { SubsystemCodex } from "./codex"
 import { SubsystemControl } from "./control"
 import { SubsystemApprovalState } from "./approval-state"
@@ -26,9 +26,9 @@ function requireValue<T>(value: T | null | undefined, message: string): T {
   return value
 }
 
-function testProvider(overrides: Partial<SubsystemProvider.Provider> = {}): SubsystemProvider.Provider {
+function testProvider(overrides: Partial<Subsystem.Subsystem> = {}): Subsystem.Subsystem {
   return {
-    ...SubsystemProvider.codex,
+    ...Subsystem.codex,
     extractResultText: () => "",
     streamActivities: () => [],
     ...overrides,
@@ -61,7 +61,7 @@ test("private MCP environment is materialized outside argv with owner-only permi
       CYBERFUL_SUBSYSTEM_SESSION: "ses_1",
     })
     expect((await stat(environmentFile)).mode & 0o777).toBe(0o600)
-    expect(SubsystemProvider.codex.buildAppServerArgs(spec).args.join(" ")).not.toContain("private-value")
+    expect(Subsystem.codex.buildAppServerArgs(spec).args.join(" ")).not.toContain("private-value")
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -69,8 +69,8 @@ test("private MCP environment is materialized outside argv with owner-only permi
 
 test("a completed one-shot run removes its owner-private MCP environment", async () => {
   let privateDirectory: string | undefined
-  const provider = testProvider({
-    buildArgs: (spec: SubsystemProvider.SubsystemRunSpec) => {
+  const subsystem = testProvider({
+    buildArgs: (spec: Subsystem.SubsystemRunSpec) => {
       const environmentFile = spec.mcpServer?.env.CYBERFUL_SUBSYSTEM_ENV_PATH
       if (environmentFile) privateDirectory = path.dirname(environmentFile)
       return { args: ["-e", ""], extraEnv: {} }
@@ -78,7 +78,7 @@ test("a completed one-shot run removes its owner-private MCP environment", async
   })
 
   const result = await SubsystemCli.run({
-    provider,
+    subsystem,
     spec: {
       cwd: process.cwd(),
       permission: { kind: "readonly" },
@@ -101,7 +101,48 @@ test("a completed one-shot run removes its owner-private MCP environment", async
   await expect(stat(cleanedDirectory)).rejects.toMatchObject({ code: "ENOENT" })
 })
 
-// ── Stream Tests Use Real Byte Boundaries Without A Provider ──────────
+test("a model-side cyberful --version cannot inherit the host run cleanup identity", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "cyberful-version-env-test-"))
+  const command = path.join(directory, "cyberful")
+  const capture = path.join(directory, "identity.txt")
+  try {
+    await Bun.write(
+      command,
+      [
+        "#!/bin/sh",
+        'test "$1" = "--version" || exit 64',
+        'printf "%s\\n%s\\n" "${CYBERFUL_RUN_ID-unset}" "${CYBERFUL_PROCESS_ROLE-unset}" > "$CYBERFUL_FIXTURE_CAPTURE"',
+        "",
+      ].join("\n"),
+    )
+    await chmod(command, 0o700)
+    const subsystem = testProvider({
+      buildArgs: () => ({
+        args: ["--version"],
+        extraEnv: {
+          CYBERFUL_FIXTURE_CAPTURE: capture,
+          CYBERFUL_RUN_ID: "parent-run",
+          CYBERFUL_PROCESS_ROLE: "worker",
+        },
+      }),
+    })
+
+    const result = await SubsystemCli.run({
+      subsystem,
+      spec: { cwd: directory, permission: { kind: "readonly" } },
+      command,
+      prompt: "",
+      timeoutMs: 5_000,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(await readFile(capture, "utf8")).toBe("unset\nunset\n")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+// ── Stream Tests Use Real Byte Boundaries Without A Subsystem ──────────
 // The decoder must reassemble NDJSON split across arbitrary chunks, preserve
 // complete events before a stream failure, and return raw text for final-result
 // extraction. In-memory byte streams exercise that production parser directly,
@@ -197,10 +238,10 @@ describe("consumeNdjson", () => {
   })
 })
 
-// A provider stub whose buildArgs turns the spawn into a plain `sleep <seconds>`, so these tests
-// exercise the real subprocess tracking without a live Codex process — buildArgs is the only Provider
+// A subsystem stub whose buildArgs turns the spawn into a plain `sleep <seconds>`, so these tests
+// exercise the real subprocess tracking without a live Codex process — buildArgs is the only Subsystem
 // method spawnCli calls before spawning.
-function sleepProvider(seconds: number): SubsystemProvider.Provider {
+function sleepProvider(seconds: number): Subsystem.Subsystem {
   return testProvider({
     buildArgs: () => ({ args: [String(seconds)], extraEnv: {} }),
   })
@@ -208,7 +249,7 @@ function sleepProvider(seconds: number): SubsystemProvider.Provider {
 
 function sleepInput(seconds: number): SubsystemCli.RunInput {
   return {
-    provider: sleepProvider(seconds),
+    subsystem: sleepProvider(seconds),
     spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
     command: "sleep",
     prompt: "",
@@ -241,23 +282,32 @@ function elicitationParams(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function runFixtureElicitation(params: Record<string, unknown>, askQuestion?: AskHuman) {
-  const provider: SubsystemProvider.Provider = {
-    ...SubsystemProvider.codex,
+async function runFixtureElicitation(
+  params: Record<string, unknown>,
+  askQuestion?: AskHuman,
+  activeTurns: ReadonlyArray<{ threadId: string; turnId: string }> = [],
+  abort?: AbortSignal,
+) {
+  const subsystem: Subsystem.Subsystem = {
+    ...Subsystem.codex,
     buildAppServerArgs: () => ({
       args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
-      extraEnv: { CYBERFUL_FIXTURE_ELICITATION_PARAMS: JSON.stringify(params) },
+      extraEnv: {
+        CYBERFUL_FIXTURE_ELICITATION_PARAMS: JSON.stringify(params),
+        CYBERFUL_FIXTURE_ACTIVE_TURNS: JSON.stringify(activeTurns),
+      },
     }),
   }
   return SubsystemCli.runStreaming(
     {
-      provider,
+      subsystem,
       spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
       command: process.execPath,
       prompt: "exercise native elicitation",
       timeoutMs: 5_000,
       sessionID: "ses_elicitation_fixture",
       askQuestion,
+      abort,
     },
     () => {},
   )
@@ -307,8 +357,8 @@ describe("Expert subprocess lifecycle", () => {
 
   test("shutdown removes the private MCP environment of an in-flight process", async () => {
     let privateDirectory: string | undefined
-    const provider = testProvider({
-      buildArgs: (spec: SubsystemProvider.SubsystemRunSpec) => {
+    const subsystem = testProvider({
+      buildArgs: (spec: Subsystem.SubsystemRunSpec) => {
         const environmentFile = spec.mcpServer?.env.CYBERFUL_SUBSYSTEM_ENV_PATH
         if (environmentFile) privateDirectory = path.dirname(environmentFile)
         return { args: ["30"], extraEnv: {} }
@@ -316,7 +366,7 @@ describe("Expert subprocess lifecycle", () => {
     })
     const running = SubsystemCli.run({
       ...sleepInput(30),
-      provider,
+      subsystem,
       spec: {
         cwd: process.cwd(),
         permission: { kind: "readonly" },
@@ -349,10 +399,10 @@ describe("Expert subprocess lifecycle", () => {
       notifications.push(pids)
       if (pids.length === 1) processRegistered.resolve()
     })
-    const provider = testProvider({
+    const subsystem = testProvider({
       buildArgs: () => ({ args: ["-c", "trap '' TERM; sleep 30"], extraEnv: {} }),
     })
-    const running = SubsystemCli.run({ ...sleepInput(30), provider, command: "/bin/sh" })
+    const running = SubsystemCli.run({ ...sleepInput(30), subsystem, command: "/bin/sh" })
     await processRegistered.promise
 
     await SubsystemCli.killAll()
@@ -377,16 +427,16 @@ describe("Expert subprocess lifecycle", () => {
     const result = await running
     expect(result.exitCode).not.toBe(0)
     expect(result.timedOut).toBe(false)
-    expect(result.termination).toBe("provider_failed")
+    expect(result.termination).toBe("subsystem_failed")
     expect(SubsystemCli.liveCount()).toBe(0)
   })
 
   test("a caller abort force-kills a process group that ignores SIGTERM", async () => {
-    const provider = testProvider({
+    const subsystem = testProvider({
       buildArgs: () => ({ args: ["-c", "trap '' TERM; sleep 30"], extraEnv: {} }),
     })
     const controller = new AbortController()
-    const running = SubsystemCli.run({ ...sleepInput(30), provider, command: "/bin/sh", abort: controller.signal })
+    const running = SubsystemCli.run({ ...sleepInput(30), subsystem, command: "/bin/sh", abort: controller.signal })
     await waitForLiveCount(1)
     const started = Date.now()
 
@@ -395,7 +445,7 @@ describe("Expert subprocess lifecycle", () => {
 
     expect(result.exitCode).not.toBe(0)
     expect(result.timedOut).toBe(false)
-    expect(result.termination).toBe("provider_failed")
+    expect(result.termination).toBe("subsystem_failed")
     expect(Date.now() - started).toBeLessThan(2_000)
     expect(SubsystemCli.liveCount()).toBe(0)
   })
@@ -413,9 +463,9 @@ describe("Expert subprocess lifecycle", () => {
   // An absent CLI must still surface as a failed run WITH its reason. With the Node spawn the ENOENT
   // arrives async on the child's 'error' (not on stderr), so spawnError has to carry it into the result.
   test("a missing CLI is a failed run (exit 127) that keeps its error reason", async () => {
-    const provider = testProvider()
+    const subsystem = testProvider()
     const result = await SubsystemCli.run({
-      provider,
+      subsystem,
       spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
       command: "cyberful-no-such-expert-binary",
       prompt: "",
@@ -457,7 +507,7 @@ describe("Expert subprocess lifecycle", () => {
       await chmod(command, 0o755)
       const startedAt = Date.now()
       const result = await SubsystemCli.run({
-        provider: SubsystemProvider.codex,
+        subsystem: Subsystem.codex,
         spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
         command,
         prompt: "",
@@ -497,22 +547,27 @@ describe("Expert subprocess lifecycle", () => {
   })
 
   test("the Codex app-server turn accepts a live steer before completing", async () => {
-    const provider: SubsystemProvider.Provider = {
-      ...SubsystemProvider.codex,
+    const subsystem: Subsystem.Subsystem = {
+      ...Subsystem.codex,
       buildAppServerArgs: () => ({
         args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
         extraEnv: {
           CYBERFUL_FIXTURE_REQUIRE_SKILLS: "1",
           CYBERFUL_FIXTURE_EXPECT_EFFORT: SubsystemCodex.effort(),
+          CYBERFUL_FIXTURE_EXPECT_BASE_INSTRUCTIONS: "cyberful base contract",
+          CYBERFUL_FIXTURE_EXPECT_SANITIZED_IDENTITY: "1",
+          CYBERFUL_RUN_ID: "parent-run",
+          CYBERFUL_PROCESS_ROLE: "worker",
         },
       }),
     }
     const running = SubsystemCli.runStreaming(
       {
-        provider,
+        subsystem,
         spec: {
           cwd: process.cwd(),
           permission: { kind: "autonomous" },
+          baseInstructions: "cyberful base contract",
           skillRoots: [path.join(Builtin.DIR, "skills")],
         },
         command: process.execPath,
@@ -546,7 +601,7 @@ describe("Expert subprocess lifecycle", () => {
     const result = await running
     expect(result.termination).toBe("completed")
     expect(result.exitCode).toBe(0)
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toBe("steered: prioritize the admin route")
+    expect(Subsystem.codex.extractResultText(result.stdout)).toBe("steered: prioritize the admin route")
     expect(SubsystemControl.activeCount("ses_app_server_test")).toBe(0)
   })
 
@@ -559,20 +614,20 @@ describe("Expert subprocess lifecycle", () => {
 
     expect(result.termination).toBe("completed")
     expect(observed).toEqual(ELICITATION_QUESTIONS)
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"q0":"[\\"Proceed\\"]"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"q0":"[\\"Proceed\\"]"')
   })
 
   test("returns the adapter's structured terminal cyber policy classification", async () => {
-    const provider: SubsystemProvider.Provider = {
-      ...SubsystemProvider.codex,
+    const subsystem: Subsystem.Subsystem = {
+      ...Subsystem.codex,
       buildAppServerArgs: () => ({
         args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
         extraEnv: { CYBERFUL_FIXTURE_TURN_FAILURE: "cyberPolicy" },
       }),
     }
     const result = await SubsystemCli.run({
-      provider,
+      subsystem,
       spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
       command: process.execPath,
       prompt: "bounded fixture",
@@ -580,7 +635,7 @@ describe("Expert subprocess lifecycle", () => {
       sessionID: "ses_structured_policy_failure",
     })
 
-    expect(result.termination).toBe("provider_failed")
+    expect(result.termination).toBe("subsystem_failed")
     expect(result.failure).toEqual({
       kind: "security_policy_block",
       providerCode: "cyberPolicy",
@@ -588,29 +643,30 @@ describe("Expert subprocess lifecycle", () => {
     })
   })
 
-  test("round-trips a correlated dynamic host tool through app-server", async () => {
-    const provider: SubsystemProvider.Provider = {
-      ...SubsystemProvider.codex,
+  test("round-trips a correlated dynamic host tool from an active native subagent", async () => {
+    const child = { threadId: "thread-dynamic-child", turnId: "turn-dynamic-child" }
+    const subsystem: Subsystem.Subsystem = {
+      ...Subsystem.codex,
       buildAppServerArgs: () => ({
         args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
         extraEnv: {
           CYBERFUL_FIXTURE_DYNAMIC_TOOL_PARAMS: JSON.stringify({
-            threadId: "thread-fixture",
-            turnId: "turn-fixture",
-            callId: "call-fallback",
-            tool: "delegate_to_fallback_inference",
+            ...child,
+            callId: "call-host-helper",
+            tool: "host_helper",
             arguments: {
               task: "verify the bounded operation",
               success_criteria: "durable evidence exists",
             },
           }),
+          CYBERFUL_FIXTURE_ACTIVE_TURNS: JSON.stringify([child]),
         },
       }),
     }
     let observed: unknown
     const result = await SubsystemCli.runStreaming(
       {
-        provider,
+        subsystem,
         spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
         command: process.execPath,
         prompt: "use the helper",
@@ -620,8 +676,8 @@ describe("Expert subprocess lifecycle", () => {
           {
             definition: {
               type: "function",
-              name: "delegate_to_fallback_inference",
-              description: "Run one bounded local helper.",
+              name: "host_helper",
+              description: "Run one bounded host operation.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -656,7 +712,25 @@ describe("Expert subprocess lifecycle", () => {
     })
 
     expect(result.termination).toBe("completed")
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"decline"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"action":"decline"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain("cyberful.dev/human-decision")
+  })
+
+  test("routes an active native subagent elicitation to the human selector", async () => {
+    const child = { threadId: "thread-child", turnId: "turn-child" }
+    let observed: ReadonlyArray<HumanQuestion> | undefined
+    const result = await runFixtureElicitation(
+      elicitationParams(child),
+      async (questions) => {
+        observed = questions
+        return [["Proceed"]]
+      },
+      [child],
+    )
+
+    expect(result.termination).toBe("completed")
+    expect(observed).toEqual(ELICITATION_QUESTIONS)
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
   })
 
   test("keeps MCP elicitation pending until the human selector decides", async () => {
@@ -677,14 +751,14 @@ describe("Expert subprocess lifecycle", () => {
     answer.resolve([["Proceed"]])
     const result = await running
     expect(result.termination).toBe("completed")
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"action":"accept"')
   })
 
   test("cancels an elicitation when no human selector belongs to the run", async () => {
     const result = await runFixtureElicitation(elicitationParams())
 
     expect(result.termination).toBe("completed")
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain('"action":"cancel"')
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain('"action":"cancel"')
   })
 
   test("shutdown cancels a pending elicitation and reaps its app-server", async () => {
@@ -707,6 +781,31 @@ describe("Expert subprocess lifecycle", () => {
     expect(SubsystemCli.liveCount()).toBe(0)
   })
 
+  test("a session abort explains an app-server exit before root turn completion", async () => {
+    const selectorStarted = Promise.withResolvers<void>()
+    const controller = new AbortController()
+    const running = runFixtureElicitation(
+      elicitationParams(),
+      async (_questions, signal) => {
+        selectorStarted.resolve()
+        if (!signal.aborted)
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+        throw signal.reason
+      },
+      [],
+      controller.signal,
+    )
+    await selectorStarted.promise
+
+    controller.abort(new Error("session abort requested"))
+    const result = await running
+
+    expect(result.termination).toBe("subsystem_failed")
+    expect(result.exitCode).not.toBe(1)
+    expect(result.failureReason).toContain("session abort")
+    expect(result.failureReason).toContain("before the root turn completed")
+  })
+
   for (const [label, params, message] of [
     ["gateway", elicitationParams({ serverName: "other-gateway" }), "active Cyberful gateway"],
     ["thread", elicitationParams({ threadId: "other-thread" }), "active Cyberful thread"],
@@ -721,7 +820,7 @@ describe("Expert subprocess lifecycle", () => {
 
       expect(asked).toBe(false)
       expect(result.termination).toBe("completed")
-      expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain(message)
+      expect(Subsystem.codex.extractResultText(result.stdout)).toContain(message)
     })
   }
 
@@ -737,12 +836,12 @@ describe("Expert subprocess lifecycle", () => {
 
     expect(asked).toBe(false)
     expect(result.termination).toBe("completed")
-    expect(SubsystemProvider.codex.extractResultText(result.stdout)).toContain("does not match")
+    expect(Subsystem.codex.extractResultText(result.stdout)).toContain("does not match")
   })
 
   test("fails closed when app-server attests settings different from the requested effort", async () => {
-    const provider: SubsystemProvider.Provider = {
-      ...SubsystemProvider.codex,
+    const subsystem: Subsystem.Subsystem = {
+      ...Subsystem.codex,
       buildAppServerArgs: () => ({
         args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
         extraEnv: { CYBERFUL_FIXTURE_RESOLVED_EFFORT: "definitely-not-requested" },
@@ -750,7 +849,7 @@ describe("Expert subprocess lifecycle", () => {
     }
     const result = await SubsystemCli.runStreaming(
       {
-        provider,
+        subsystem,
         spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
         command: process.execPath,
         prompt: "do not run",
@@ -759,15 +858,15 @@ describe("Expert subprocess lifecycle", () => {
       },
       () => {},
     )
-    expect(result.termination).toBe("provider_failed")
+    expect(result.termination).toBe("subsystem_failed")
     expect(result.failureReason).toContain("Codex settings attestation failed")
     expect(result.failureReason).toContain("expected")
     expect(result.stdout).toContain("thread/settings/updated")
   })
 
   test("fails closed if operational activity starts before settings are attested", async () => {
-    const provider: SubsystemProvider.Provider = {
-      ...SubsystemProvider.codex,
+    const subsystem: Subsystem.Subsystem = {
+      ...Subsystem.codex,
       buildAppServerArgs: () => ({
         args: [path.join(import.meta.dir, "fixtures/codex-app-server.ts")],
         extraEnv: { CYBERFUL_FIXTURE_OPERATION_BEFORE_SETTINGS: "1" },
@@ -775,7 +874,7 @@ describe("Expert subprocess lifecycle", () => {
     }
     const result = await SubsystemCli.runStreaming(
       {
-        provider,
+        subsystem,
         spec: { cwd: process.cwd(), permission: { kind: "readonly" } },
         command: process.execPath,
         prompt: "do not run",
@@ -784,7 +883,7 @@ describe("Expert subprocess lifecycle", () => {
       },
       () => {},
     )
-    expect(result.termination).toBe("provider_failed")
+    expect(result.termination).toBe("subsystem_failed")
     expect(result.failureReason).toContain("before attesting")
     expect(result.stdout).toContain("tool-before-settings")
   })

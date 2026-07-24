@@ -28,7 +28,9 @@
     "browser:install": "browser/bin/cyber-browser-install",
     "test:browser": "bun test browser",
     "zap:build": "docker build -t cyberful-zap:2.17.0 -f zap/Dockerfile zap",
-    "zap:bridge:build": "docker build -t cyberful-zap-bridge:0.1.0 -f zap/Dockerfile.bridge zap"
+    "zap:bridge:build": "docker build -t cyberful-zap-bridge:0.1.0 -f zap/Dockerfile.bridge zap",
+    "ghidra:build": "docker build -t cyberful-ghidra:12.1.2 -f ghidra/Dockerfile ghidra",
+    "ghidra:bridge:build": "docker build -t cyberful-ghidra-bridge:0.1.0 -f ghidra/Dockerfile.bridge ghidra"
   },
   "dependencies": {
     "patchright-core": "1.61.1"

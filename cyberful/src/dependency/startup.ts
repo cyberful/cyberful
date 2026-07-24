@@ -8,12 +8,13 @@
 import { stat } from "node:fs/promises"
 import * as Log from "@/util/log"
 import { CYBERFUL_PROCESS_ROLE } from "@/util/cyberful-process"
-import { Bus } from "@/bus"
+import { Event } from "@/event"
 import { TuiEvent } from "@/cli/cmd/tui/event"
 import { InstanceState } from "@/effect/instance-state"
 import { cyberfulOsContainerCommand, cyberfulOsDir, shouldStartCyberfulOs } from "./config"
 import { Effect } from "effect"
 import { errorMessage } from "@/util/error"
+import { runOwnerToken } from "@/util/container-ownership"
 
 const log = Log.create({ service: "dependency-startup" })
 const cyberfulOsContainers = new Map<string, CyberfulOsEntry>()
@@ -162,11 +163,11 @@ function installDependencyExitHooks() {
   })
 }
 
-function announce(bus: Bus.Interface, message: string) {
+function announce(events: Event.Interface, message: string) {
   return Effect.all(
     [
       Effect.sync(() => log.info(message)),
-      bus
+      events
         .publish(TuiEvent.ToastShow, {
           title: "Cyberful startup",
           message,
@@ -256,7 +257,7 @@ function claimCyberfulOsStart(
   return task
 }
 
-const startCyberfulOs = Effect.fn("DependencyStartup.startCyberfulOs")(function* (bus: Bus.Interface) {
+const startCyberfulOs = Effect.fn("DependencyStartup.startCyberfulOs")(function* (events: Event.Interface) {
   if (!shouldStartCyberfulOs()) return
 
   const dir = cyberfulOsDir()
@@ -271,11 +272,19 @@ const startCyberfulOs = Effect.fn("DependencyStartup.startCyberfulOs")(function*
   const container = {
     command: cyberfulOsContainerCommand(),
     cwd: dir,
-    env: { ...process.env, CYBERFUL_OS_WORKSPACE: envValue("CYBERFUL_OS_WORKSPACE") ?? workspace },
+    env: {
+      ...process.env,
+      CYBERFUL_OS_WORKSPACE: envValue("CYBERFUL_OS_WORKSPACE") ?? workspace,
+      CYBERFUL_MANAGED: "dependency",
+      CYBERFUL_OWNER_PID: String(process.pid),
+      CYBERFUL_RUN_OWNER: runOwnerToken() ?? "unowned",
+      CYBERFUL_RUNTIME: "dependency",
+      CYBERFUL_SESSION: "shared",
+    },
   }
   const notices = {
-    announce: (message: string) => Effect.runPromise(announce(bus, message)),
-    failure: (error: unknown) => Effect.runPromise(report("cyberful-os", bus)(error)),
+    announce: (message: string) => Effect.runPromise(announce(events, message)),
+    failure: (error: unknown) => Effect.runPromise(report("cyberful-os", events)(error)),
   }
   yield* Effect.tryPromise({
     try: () => claimCyberfulOsStart(container, notices, { installExitHooks: true }),
@@ -287,12 +296,12 @@ const startCyberfulOs = Effect.fn("DependencyStartup.startCyberfulOs")(function*
   )
 })
 
-function report(name: string, bus: Bus.Interface) {
+function report(name: string, events: Event.Interface) {
   return (error: unknown) =>
     Effect.all(
       [
         Effect.sync(() => log.warn(`${name} startup failed`, { error: errorMessage(error) })),
-        bus
+        events
           .publish(TuiEvent.ToastShow, {
             title: "Cyberful startup",
             message: `${name} startup failed: ${errorMessage(error)}`,
@@ -387,8 +396,8 @@ function notifyListener(listener: (containers: string[]) => void, containers = l
 }
 
 export const runCyberfulOs = Effect.gen(function* () {
-  const bus = yield* Bus.Service
-  yield* startCyberfulOs(bus).pipe(Effect.catch(report("cyberful-os", bus)))
+  const events = yield* Event.Service
+  yield* startCyberfulOs(events).pipe(Effect.catch(report("cyberful-os", events)))
 })
 
 export const run = runCyberfulOs

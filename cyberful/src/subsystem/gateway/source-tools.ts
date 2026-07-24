@@ -7,7 +7,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
-import { verifySourceImport } from "./source-import"
+import { listVerifiedSourceImports } from "./source-import"
 
 const MAX_FILES = 50_000
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -58,6 +58,12 @@ const AUDIT_LAB_MANIFESTS = new Set([
 
 export const SOURCE_TOOL_DEFS = [
   {
+    name: "source_catalog",
+    description:
+      "List authenticated imported repositories, exact commits, and recursive submodule pins available in this engagement.",
+    inputSchema: { type: "object" as const, additionalProperties: false, properties: {} },
+  },
+  {
     name: "source_inventory",
     description:
       "Inventory the authorized project source without following symlinks. Returns bounded paths, language, size, and SHA-256 metadata; it never writes to the project.",
@@ -65,6 +71,7 @@ export const SOURCE_TOOL_DEFS = [
       type: "object" as const,
       additionalProperties: false,
       properties: {
+        repository: { type: "string", description: "Imported repository alias when the engagement has several." },
         prefix: { type: "string", description: "Optional relative directory beneath the project source." },
       },
     },
@@ -77,6 +84,7 @@ export const SOURCE_TOOL_DEFS = [
       type: "object" as const,
       additionalProperties: false,
       properties: {
+        repository: { type: "string", description: "Imported repository alias when the engagement has several." },
         path: { type: "string" },
         start_line: { type: "integer", minimum: 1 },
         end_line: { type: "integer", minimum: 1 },
@@ -92,6 +100,7 @@ export const SOURCE_TOOL_DEFS = [
       type: "object" as const,
       additionalProperties: false,
       properties: {
+        repository: { type: "string", description: "Imported repository alias when the engagement has several." },
         query: { type: "string", minLength: 1, maxLength: 500 },
         regex: { type: "boolean", default: false },
         prefix: { type: "string" },
@@ -104,7 +113,13 @@ export const SOURCE_TOOL_DEFS = [
     name: "source_snapshot",
     description:
       "Materialize a deterministic host-owned read-only analysis snapshot outside the model workarea and return its virtual identity and manifest. The original checkout is never modified.",
-    inputSchema: { type: "object" as const, additionalProperties: false, properties: {} },
+    inputSchema: {
+      type: "object" as const,
+      additionalProperties: false,
+      properties: {
+        repository: { type: "string", description: "Imported repository alias when the engagement has several." },
+      },
+    },
   },
 ] as const
 
@@ -307,21 +322,12 @@ export async function resolveEffectiveSource(
   configuredSourceRoot: string,
   workareaRoot: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
-  options: { readonly includeSnapshot?: boolean } = {},
+  options: { readonly includeSnapshot?: boolean; readonly repository?: string } = {},
 ): Promise<EffectiveSource> {
   const canonicalWorkarea = await realpath(workareaRoot)
   const sourceStore = await canonicalSourceStore(canonicalWorkarea, environment)
-  const importRoot = path.join(sourceStore, "import")
-  const imported = path.join(importRoot, "repository")
-  const manifestPath = path.join(importRoot, "manifest.json")
-  const importMetadata = await optionalEntry(importRoot)
-  if (!importMetadata?.isDirectory() || importMetadata.isSymbolicLink())
-    throw new Error("source store import path is missing or unsafe")
-  const [repositoryMetadata, manifest] = await Promise.all([
-    optionalEntry(imported),
-    optionalEntry(manifestPath),
-  ])
-  if (!repositoryMetadata && !manifest) {
+  const imports = await listVerifiedSourceImports(sourceStore, environment)
+  if (imports.length === 0) {
     if (options.includeSnapshot !== false) {
       const snapshotRoot = path.join(sourceStore, "snapshot")
       const snapshot = await verifySnapshot(snapshotRoot, canonicalWorkarea, sourceStore)
@@ -333,13 +339,19 @@ export async function resolveEffectiveSource(
     }
     return { root: await realpath(configuredSourceRoot), kind: "project-source" }
   }
-  if (!repositoryMetadata?.isDirectory() || repositoryMetadata.isSymbolicLink())
-    throw new Error("source import repository is missing, non-directory, or symlink")
-  const resolved = await realpath(imported)
-  if (!isContained(importRoot, resolved)) throw new Error("source import resolves outside its host-owned root")
-  if (!manifest?.isFile() || manifest.isSymbolicLink()) throw new Error("source import manifest is missing or unsafe")
-  await verifySourceImport(resolved, manifestPath, environment)
-  return { root: resolved, kind: "source-import" }
+  const requested = options.repository
+  if (requested !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(requested))
+    throw new Error("source repository selector is invalid")
+  const selected = requested
+    ? imports.find((candidate) => candidate.repository === requested)
+    : imports.length === 1
+      ? imports[0]
+      : undefined
+  if (!selected) {
+    if (requested) throw new Error(`source repository '${requested}' is not imported`)
+    throw new Error("multiple imported repositories are available; select repository")
+  }
+  return { root: selected.root, kind: "source-import" }
 }
 
 export async function effectiveSourceRoot(
@@ -480,6 +492,69 @@ export async function materializeSourceForAuditLab(
     manifests_only: options.manifestsOnly === true,
     files: selected.map((file) => path.relative(sourceBase, file).replaceAll(path.sep, "/")),
   }
+}
+
+// EVM labs receive mutable copies of selected authenticated imports. Each copy
+// is namespaced by repository alias and carries the immutable root/submodule
+// provenance used by later evidence records.
+export async function materializeSourcesForEvmLab(destinationRoot: string, requested: readonly string[] = []) {
+  const context = sourceRoots()
+  if (!context) throw new Error("EVM lab requires absolute source, workarea, and source-store roots")
+  const workareaRoot = await realpath(context.workareaRoot)
+  const destination = path.resolve(destinationRoot)
+  if (!isContained(workareaRoot, destination) || destination === workareaRoot)
+    throw new Error("EVM lab destination must be a child of the workarea")
+  const sourceStoreRoot = await canonicalSourceStore(workareaRoot, process.env)
+  const imports = await listVerifiedSourceImports(sourceStoreRoot)
+  if (imports.length === 0) throw new Error("EVM lab source materialization requires an imported repository")
+  const selected = requested.length === 0
+    ? imports
+    : requested.map((repository) => {
+        if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(repository)) throw new Error("EVM repository selector is invalid")
+        const found = imports.find((candidate) => candidate.repository === repository)
+        if (!found) throw new Error(`source repository '${repository}' is not imported`)
+        return found
+      })
+  if (new Set(selected.map((entry) => entry.repository)).size !== selected.length)
+    throw new Error("EVM repository selectors must be unique")
+  await mkdir(destination, { recursive: true, mode: 0o700 })
+  const records = []
+  for (const entry of selected) {
+    const targetRoot = path.join(destination, entry.repository)
+    if (!isContained(destination, targetRoot)) throw new Error("EVM source destination escapes its lab")
+    await mkdir(targetRoot, { mode: 0o700 })
+    const files = await candidateFiles(entry.root)
+    const digest = createHash("sha256")
+    for (const source of files) {
+      const relative = path.relative(entry.root, source)
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue
+      const target = path.join(targetRoot, relative)
+      if (!isContained(targetRoot, target)) throw new Error("EVM source file escapes its repository")
+      await mkdir(path.dirname(target), { recursive: true, mode: 0o700 })
+      await copyFile(source, target)
+      const bytes = await readFile(source)
+      digest.update(createHash("sha256").update(bytes).digest("hex")).update("  ").update(relative).update("\n")
+    }
+    records.push({
+      repository: entry.repository,
+      url: entry.manifest.url,
+      commit: entry.manifest.commit,
+      source_tree_sha256: entry.manifest.tree.sha256,
+      materialized_sha256: digest.digest("hex"),
+      file_count: files.length,
+      project_path: path.relative(workareaRoot, targetRoot).replaceAll(path.sep, "/"),
+      container_path: `/workspace/${path.relative(workareaRoot, targetRoot).replaceAll(path.sep, "/")}`,
+      submodules:
+        entry.manifest.version === 3
+          ? entry.manifest.submodules.map((submodule) => ({
+              path: submodule.path,
+              url: submodule.url,
+              commit: submodule.commit,
+            }))
+          : [],
+    })
+  }
+  return records
 }
 
 async function mapBounded<T, R>(items: readonly T[], operation: (item: T) => Promise<R>) {
@@ -643,8 +718,29 @@ export async function handleSourceTool(name: SourceToolName, args: Record<string
   const context = sourceRoots()
   if (!context) throw new Error("source tools require absolute source, workarea, and host source-store roots")
   const workareaRoot = await realpath(context.workareaRoot)
-  const effective = await resolveEffectiveSource(context.sourceRoot, workareaRoot)
   const sourceStoreRoot = await canonicalSourceStore(workareaRoot, process.env)
+  if (name === "source_catalog") {
+    const imports = await listVerifiedSourceImports(sourceStoreRoot)
+    return {
+      repositories: imports.map((entry) => ({
+        repository: entry.repository,
+        url: entry.manifest.url,
+        commit: entry.manifest.commit,
+        history_complete: entry.manifest.history_complete,
+        submodules:
+          entry.manifest.version === 3
+            ? entry.manifest.submodules.map((submodule) => ({
+                path: submodule.path,
+                url: submodule.url,
+                commit: submodule.commit,
+              }))
+            : [],
+      })),
+    }
+  }
+  const repository = args.repository
+  if (repository !== undefined && typeof repository !== "string") throw new Error("repository must be a string")
+  const effective = await resolveEffectiveSource(context.sourceRoot, workareaRoot, process.env, { repository })
   const canonical = {
     sourceRoot: effective.root,
     workareaRoot,

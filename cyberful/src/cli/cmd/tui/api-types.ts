@@ -20,7 +20,6 @@ import type { CliRenderer, KeyEvent, RGBA, Renderable, SlotMode } from "@opentui
 import type { Binding, Keymap } from "@opentui/keymap"
 import type { KeySequenceFormatPart, SequenceBindingLike } from "@opentui/keymap/extras"
 import type { JSX, SolidPlugin } from "@opentui/solid"
-type FeatureOptions = Record<string, unknown>
 
 type FeatureConfig = Omit<ControlPlaneConfig, "plugin"> & {
   tui?: Record<string, unknown>
@@ -70,42 +69,6 @@ export type TuiKeymap = Keymap<Renderable, KeyEvent>
 export type TuiModeApi = {
   current: () => string
   push: (mode: string) => () => void
-}
-
-/**
- * Legacy `api.command` shape retained for compatible plugin initialization.
- *
- * @deprecated Use `api.keymap.registerLayer({ commands, bindings })` instead.
- */
-export type TuiCommand = {
-  title: string
-  value: string
-  description?: string
-  category?: string
-  keybind?: string
-  suggested?: boolean
-  hidden?: boolean
-  enabled?: boolean
-  slash?: {
-    name: string
-    aliases?: string[]
-  }
-  onSelect?: (dialog?: TuiDialogStack) => void | Promise<void>
-}
-
-/**
- * Legacy `api.command` API retained for compatible plugin initialization.
- *
- * @deprecated Use `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and
- * `api.keymap.dispatchCommand("command.palette.show")` instead.
- */
-export type TuiCommandApi = {
-  /** @deprecated Use `api.keymap.registerLayer({ commands, bindings })` instead. */
-  register: (cb: () => TuiCommand[]) => () => void
-  /** @deprecated Use `api.keymap.dispatchCommand(name)` instead. */
-  trigger: (value: string) => void
-  /** @deprecated Use `api.keymap.dispatchCommand("command.palette.show")` instead. */
-  show: () => void
 }
 
 export type TuiDialogProps = {
@@ -368,7 +331,6 @@ type TuiConfigView = Pick<FeatureConfig, "$schema"> &
   NonNullable<FeatureConfig["tui"]> & {
     leader_timeout: number
     attention: TuiAttentionConfigView
-    feature_enabled?: Record<string, boolean>
     keybinds: TuiBindingLookupView
   }
 
@@ -414,79 +376,35 @@ export type TuiHostSlotMap = {
   home_footer: {}
 }
 
-export type TuiSlotMap<Slots extends Record<string, object> = {}> = TuiHostSlotMap & Slots
+export type TuiSlotMap = TuiHostSlotMap
 
-type TuiSlotShape<Name extends string, Slots extends Record<string, object>> = Name extends keyof TuiHostSlotMap
+type TuiSlotShape<Name extends string> = Name extends keyof TuiHostSlotMap
   ? TuiHostSlotMap[Name]
-  : Name extends keyof Slots
-    ? Slots[Name]
-    : Record<string, unknown>
+  : Record<string, unknown>
 
-export type TuiSlotProps<Name extends string = string, Slots extends Record<string, object> = {}> = {
+export type TuiSlotProps<Name extends keyof TuiHostSlotMap = keyof TuiHostSlotMap> = {
   name: Name
   mode?: SlotMode
   children?: JSX.Element
-} & TuiSlotShape<Name, Slots>
+} & TuiSlotShape<Name>
 
 export type TuiSlotContext = {
   theme: TuiTheme
 }
 
-type SlotCore<Slots extends Record<string, object> = {}> = SolidPlugin<TuiSlotMap<Slots>, TuiSlotContext>
-
-export type TuiSlotFeature<Slots extends Record<string, object> = {}> = Omit<SlotCore<Slots>, "id"> & {
-  id?: never
-}
+export type TuiSlotContribution = Omit<SolidPlugin<TuiSlotMap, TuiSlotContext>, "id">
 
 export type TuiSlots = {
-  register: {
-    (plugin: TuiSlotFeature): string
-    <Slots extends Record<string, object>>(plugin: TuiSlotFeature<Slots>): string
-  }
+  register: (contribution: TuiSlotContribution) => () => void
 }
 
 export type TuiEventBus = {
   on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => () => void
 }
 
-export type TuiDispose = () => void | Promise<void>
-
-export type TuiLifecycle = {
-  readonly signal: AbortSignal
-  onDispose: (fn: TuiDispose) => () => void
-}
-
-export type TuiFeatureState = "first" | "updated" | "same"
-
-export type TuiFeatureEntry = {
-  id: string
-  source: "file" | "npm" | "internal"
-  spec: string
-  target: string
-  requested?: string
-  version?: string
-  modified?: number
-  first_time: number
-  last_time: number
-  time_changed: number
-  load_count: number
-  fingerprint: string
-}
-
-export type TuiFeatureMeta = TuiFeatureEntry & {
-  state: TuiFeatureState
-}
-
 export type TuiFeatureApi = {
   app: TuiApp
   attention: TuiAttention
-  /**
-   * Legacy `api.command` API retained for compatible plugin initialization.
-   *
-   * @deprecated Use `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and
-   * `api.keymap.dispatchCommand("command.palette.show")` instead.
-   */
-  command?: TuiCommandApi
   keys: TuiKeys
   keymap: TuiKeymap
   mode: TuiModeApi
@@ -501,7 +419,7 @@ export type TuiFeatureApi = {
     DialogConfirm: (props: TuiDialogConfirmProps) => JSX.Element
     DialogPrompt: (props: TuiDialogPromptProps) => JSX.Element
     DialogSelect: <Value = unknown>(props: TuiDialogSelectProps<Value>) => JSX.Element
-    Slot: <Name extends string>(props: TuiSlotProps<Name>) => JSX.Element | null
+    Slot: <Name extends keyof TuiHostSlotMap>(props: TuiSlotProps<Name>) => JSX.Element | null
     Prompt: (props: TuiPromptProps) => JSX.Element
     toast: (input: TuiToast) => void
     dialog: TuiDialogStack
@@ -514,17 +432,4 @@ export type TuiFeatureApi = {
   event: TuiEventBus
   renderer: CliRenderer
   slots: TuiSlots
-  lifecycle: TuiLifecycle
-}
-
-export type TuiFeature = (
-  api: TuiFeatureApi,
-  options: FeatureOptions | undefined,
-  meta: TuiFeatureMeta,
-) => Promise<void>
-
-export type TuiFeatureModule = {
-  id?: string
-  tui: TuiFeature
-  server?: never
 }

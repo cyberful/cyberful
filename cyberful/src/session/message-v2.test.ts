@@ -4,12 +4,12 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { MessageID, SessionID } from "./schema"
 import { MessageV2 } from "./message-v2"
 
 const sessionID = SessionID.make("ses_test")
-const providerID = ProviderID.make("test")
+const subsystemID = SubsystemID.make("test")
 const modelID = ModelID.make("test-model")
 
 function user(id: string, delivery?: "immediate" | "deferred"): MessageV2.WithParts {
@@ -20,7 +20,7 @@ function user(id: string, delivery?: "immediate" | "deferred"): MessageV2.WithPa
       role: "user",
       time: { created: 1 },
       agent: "build",
-      model: { providerID, modelID },
+      model: { subsystemID, modelID },
       metadata: delivery ? { delivery } : undefined,
     },
     parts: [],
@@ -35,7 +35,7 @@ function assistant(id: string, parentID: string): MessageV2.WithParts {
       role: "assistant",
       parentID: MessageID.make(parentID),
       modelID,
-      providerID,
+      subsystemID,
       mode: "build",
       agent: "build",
       path: { cwd: "/tmp", root: "/tmp" },

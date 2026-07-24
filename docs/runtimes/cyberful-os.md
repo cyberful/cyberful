@@ -38,14 +38,58 @@ mcps/cyberful-os/bin/cyberful-os-container down
 real image and verifies its capability catalog through both the MCP server and
 the phase gateway.
 
-## Controlled Nuclei execution
+The MCP catalog is the single source for both `tools/list` and `tools/call`.
+Every published lowercase tool name has one schema and one handler. The
+`shell` fallback keeps its bounded command, workdir, timeout, output, environment,
+and optional egress-metadata contract; dedicated argv tools remain preferred.
 
-`nuclei_plan` accepts one authorized absolute HTTP or HTTPS target and a
-structured tag, template ID, or severity filter. It rejects credentials, URL
-fragments, empty filters, and selections above 40 templates without sending
-target traffic. `nuclei_run_scoped` then consumes the plan once with redirects
-and OAST disabled, concurrency and bulk size fixed to one, and the request rate
-capped at five per second.
+## Foundry
+
+The multi-architecture image installs `forge`, `cast`, `anvil`, and `chisel`
+from the immutable Foundry `v1.7.1` release. The build downloads the official
+per-archive SHA-256 file for `linux_amd64` or `linux_arm64`, verifies it before
+extraction, and checks every binary's reported version. `foundryup` is not
+installed or run at runtime.
+
+Foundry's normal compiler auto-detection remains enabled so the first project
+build can download its exact Solidity compiler. In EVM-capable Bug Bounty runs,
+`HOME`, `FOUNDRY_DIR`, `SVM_HOME`, and `XDG_CACHE_HOME` point under
+`.cyberful-evm/cache` in the engagement mount. Redirecting `HOME` is required by
+the pinned compiler manager and makes a downloaded `solc` reusable by a later
+offline container. The cache is reused across phases, never written to the
+host's global profile, and removed by engagement cleanup.
+
+## Nuclei execution
+
+`nuclei` exposes the complete ProjectDiscovery CLI. Cyberful injects only
+`-disable-update-check` to prevent product telemetry; it adds no template,
+rate, concurrency, redirect, OAST, tag, marker, or workflow limits.
+`nuclei_templates` is an optional offline preview of the installed template
+corpus and is never required before a run. Mission and effect policy apply to
+Nuclei exactly as they apply to every other tool.
+
+## Passive egress observation
+
+The `shell` tool accepts an optional metadata hint for network-bearing PoCs. It
+executes the command first, then attaches a redacted observation containing the
+host, method, path family, byte counts, attempts, redirects, deadline, actual
+route, and whether the destination differed from the hint. URL user information,
+queries, fragments, headers, credentials, and bodies are never written to this
+ledger. Dynamic, personal, and opaque path identifiers are collapsed to a path
+family.
+
+Observation is deliberately fail-open and is not an enforcement proxy. It does
+not compare the destination with an allowlist and cannot block, rewrite, reroute,
+retry, delay, or cancel a request, including when a script selects a different
+host. If extraction or persistence fails, the original tool result is returned
+and the gateway records degraded observability when it can. The standalone
+`egress_observation` tool lets a phase append richer post-execution metadata; it
+also never controls network execution. Mission scope and safety policy remain
+separate from this telemetry. Missing metadata never causes a retry.
+
+The gateway merges these local-only fields into
+`raw/operations/tool-usage.csv`. No observation is exported from the machine,
+and missing fields remain empty rather than being inferred as proof.
 
 ## Configuration
 
@@ -75,11 +119,22 @@ the MCP client.
 
 Containers created for an engagement carry an internal, one-way run-ownership
 label. Normal session completion removes the deterministic container name. On
-TUI shutdown, Cyberful waits for the worker to terminate and then also sweeps
-containers bearing that run label, covering a late Docker creation that was not
-present in the worker's final in-memory inventory. The ownership filter prevents
-cleanup from affecting containers belonging to another concurrent Cyberful run.
+TUI shutdown, Cyberful first gives the worker its bounded teardown window. If
+that worker must then be terminated, the terminal process separately awaits the
+full Docker cleanup window before applying synchronous snapshot and run-label
+retries. This covers both slow Docker Desktop removal and a late container that
+was not present in the worker's final in-memory inventory. The ownership filter
+prevents cleanup from affecting containers belonging to another concurrent run.
 
 The image build pins its base and installed capability catalog in
 `mcps/cyberful-os/Dockerfile`. Runtime code and user-facing metadata refer only
 to the `cyberful-os` identity.
+
+## Imported source execution
+
+Phases use the native host shell only for static analysis of imported source.
+Dependency installation, builds, tests, scripts, binaries, and services run
+through the cyberful-os `shell` MCP tool. The active workarea maps to
+`/workspace` inside the container, so container paths derive from
+workarea-relative paths without embedding host-specific directories. Network
+remains available according to the active workflow and `MISSION.md`.

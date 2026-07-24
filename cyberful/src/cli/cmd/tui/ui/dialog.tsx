@@ -56,9 +56,10 @@ export function Dialog(
       width={dimensions().width}
       height={dimensions().height}
       alignItems="center"
+      justifyContent={props.size === "xlarge" ? "center" : undefined}
       position="absolute"
       zIndex={3000}
-      paddingTop={dimensions().height / 4}
+      paddingTop={props.size === "xlarge" ? 0 : dimensions().height / 4}
       left={0}
       top={0}
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
@@ -70,6 +71,8 @@ export function Dialog(
         }}
         width={width()}
         maxWidth={dimensions().width - 2}
+        maxHeight={dimensions().height - 2}
+        overflow="hidden"
         backgroundColor={theme.backgroundPanel}
         paddingTop={1}
       >

@@ -23,6 +23,8 @@ import { DependencyStartup } from "@/dependency/startup"
 import { SubsystemCli } from "@/subsystem/cli"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
+import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
+import { SubsystemGhidraRuntime } from "@/subsystem/ghidra/runtime"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { decodeTuiGlobalEvent, TuiRpcContract } from "./rpc-contract"
 
@@ -67,12 +69,14 @@ SubsystemCli.onLiveChange((pids) => {
 
 let expertContainers: string[] = []
 let zapContainers: string[] = []
+let ghidraContainers: string[] = []
 let dependencyContainers: string[] = []
 const emitContainers = () =>
   Rpc.emit(TuiRpcContract, "docker.live", {
     resources: [
       ...expertContainers.map((name) => ({ name, action: "remove" as const, kind: "expert" as const })),
       ...zapContainers.map((name) => ({ name, action: "remove" as const, kind: "zap" as const })),
+      ...ghidraContainers.map((name) => ({ name, action: "remove" as const, kind: "ghidra" as const })),
       ...dependencyContainers.map((name) => ({ name, action: "stop" as const, kind: "dependency" as const })),
     ],
   })
@@ -82,6 +86,10 @@ const stopExpertContainerLiveUpdates = SubsystemContainer.onLiveChange((containe
 })
 SubsystemZapRuntime.onLiveChange((containers) => {
   zapContainers = containers
+  emitContainers()
+})
+SubsystemGhidraRuntime.onLiveChange((containers) => {
+  ghidraContainers = containers
   emitContainers()
 })
 const stopDependencyLiveUpdates = DependencyStartup.onLiveChange((containers) => {
@@ -181,23 +189,26 @@ const handlers = {
       })
     })
 
-    await Promise.all([
-      SubsystemZapRuntime.removeAll().catch((error) => {
-        Log.Default.warn("ZAP container shutdown failed", {
-          error: error instanceof Error ? error.message : error,
-        })
-      }),
-      SubsystemContainer.removeForShutdown().catch((error) => {
-        Log.Default.warn("expert container shutdown failed", {
-          error: error instanceof Error ? error.message : error,
-        })
-      }),
-      DependencyStartup.stopStarted().catch((error) => {
-        Log.Default.warn("dependency shutdown failed", {
-          error: error instanceof Error ? error.message : error,
-        })
-      }),
+    Log.Default.info("container cleanup started")
+    const cleanupResults = await Promise.allSettled([
+      SubsystemEvmRuntime.removeAll(),
+      SubsystemZapRuntime.removeAll(),
+      SubsystemGhidraRuntime.removeAll(),
+      SubsystemContainer.removeForShutdown(),
+      DependencyStartup.stopStarted(),
     ])
+    const cleanupNames = ["EVM", "ZAP", "Ghidra", "run-owned", "dependency"] as const
+    const cleanupFailures = cleanupResults.flatMap((result, index) =>
+      result.status === "rejected" ? [{ resource: cleanupNames[index], error: result.reason }] : [],
+    )
+    for (const failure of cleanupFailures) {
+      Log.Default.warn("container cleanup failed", {
+        resource: failure.resource,
+        error: failure.error instanceof Error ? failure.error.message : failure.error,
+      })
+    }
+    if (cleanupFailures.length > 0) Log.Default.warn("container cleanup incomplete", { failures: cleanupFailures.length })
+    else Log.Default.info("container cleanup completed")
     stopDependencyLiveUpdates()
     stopExpertContainerLiveUpdates()
 
@@ -206,6 +217,7 @@ const handlers = {
         error: error instanceof Error ? error.message : error,
       })
     })
+    Log.Default.info("shutdown complete")
     await Log.dispose()
   },
 } satisfies Rpc.Definition<typeof TuiRpcContract>

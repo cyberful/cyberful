@@ -4,58 +4,55 @@
 // → cyberful/script/generate-client.ts — regenerates and patches this module.
 // ─────────────────────────────────────────────────────────────────
 
-import type { BodySerializer, QuerySerializer } from './bodySerializer.gen';
+import type { BodySerializer, QuerySerializer } from "./bodySerializer.gen"
 import {
   type ArraySeparatorStyle,
   serializeArrayParam,
   serializeObjectParam,
   serializePrimitiveParam,
-} from './pathSerializer.gen';
+} from "./pathSerializer.gen"
 
 export interface PathSerializer {
-  path: Record<string, unknown>;
-  url: string;
+  path: Record<string, unknown>
+  url: string
 }
 
-export const PATH_PARAM_RE = /\{[^{}]+\}/g;
+export const PATH_PARAM_RE: RegExp = /\{[^{}]+\}/g
 
-export const defaultPathSerializer = ({ path, url: _url }: PathSerializer) => {
-  let url = _url;
-  const matches = _url.match(PATH_PARAM_RE);
+export const defaultPathSerializer = ({ path, url: _url }: PathSerializer): string => {
+  let url = _url
+  const matches = _url.match(PATH_PARAM_RE)
   if (matches) {
     for (const match of matches) {
-      let explode = false;
-      let name = match.substring(1, match.length - 1);
-      let style: ArraySeparatorStyle = 'simple';
+      let explode = false
+      let name = match.substring(1, match.length - 1)
+      let style: ArraySeparatorStyle = "simple"
 
-      if (name.endsWith('*')) {
-        explode = true;
-        name = name.substring(0, name.length - 1);
+      if (name.endsWith("*")) {
+        explode = true
+        name = name.substring(0, name.length - 1)
       }
 
-      if (name.startsWith('.')) {
-        name = name.substring(1);
-        style = 'label';
-      } else if (name.startsWith(';')) {
-        name = name.substring(1);
-        style = 'matrix';
+      if (name.startsWith(".")) {
+        name = name.substring(1)
+        style = "label"
+      } else if (name.startsWith(";")) {
+        name = name.substring(1)
+        style = "matrix"
       }
 
-      const value = path[name];
+      const value = path[name]
 
       if (value === undefined || value === null) {
-        continue;
+        continue
       }
 
       if (Array.isArray(value)) {
-        url = url.replace(
-          match,
-          serializeArrayParam({ explode, name, style, value }),
-        );
-        continue;
+        url = url.replace(match, serializeArrayParam({ explode, name, style, value }))
+        continue
       }
 
-      if (typeof value === 'object') {
+      if (typeof value === "object") {
         url = url.replace(
           match,
           serializeObjectParam({
@@ -65,29 +62,27 @@ export const defaultPathSerializer = ({ path, url: _url }: PathSerializer) => {
             value: value as Record<string, unknown>,
             valueOnly: true,
           }),
-        );
-        continue;
+        )
+        continue
       }
 
-      if (style === 'matrix') {
+      if (style === "matrix") {
         url = url.replace(
           match,
           `;${serializePrimitiveParam({
             name,
             value: value as string,
           })}`,
-        );
-        continue;
+        )
+        continue
       }
 
-      const replaceValue = encodeURIComponent(
-        style === 'label' ? `.${value as string}` : (value as string),
-      );
-      url = url.replace(match, replaceValue);
+      const replaceValue = encodeURIComponent(style === "label" ? `.${value as string}` : (value as string))
+      url = url.replace(match, replaceValue)
     }
   }
-  return url;
-};
+  return url
+}
 
 export const getUrl = ({
   baseUrl,
@@ -96,67 +91,66 @@ export const getUrl = ({
   querySerializer,
   url: _url,
 }: {
-  baseUrl?: string;
-  path?: Record<string, unknown>;
-  query?: Record<string, unknown>;
-  querySerializer: QuerySerializer;
-  url: string;
-}) => {
-  const pathUrl = _url.startsWith('/') ? _url : `/${_url}`;
-  let url = (baseUrl ?? '') + pathUrl;
+  baseUrl?: string
+  path?: Record<string, unknown>
+  query?: Record<string, unknown>
+  querySerializer: QuerySerializer
+  url: string
+}): string => {
+  const pathUrl = _url.startsWith("/") ? _url : `/${_url}`
+  let url = (baseUrl ?? "") + pathUrl
   if (path) {
-    url = defaultPathSerializer({ path, url });
+    url = defaultPathSerializer({ path, url })
   }
-  let search = query ? querySerializer(query) : '';
-  if (search.startsWith('?')) {
-    search = search.substring(1);
+  let search = query ? querySerializer(query) : ""
+  if (search.startsWith("?")) {
+    search = search.substring(1)
   }
   if (search) {
-    url += `?${search}`;
+    url += `?${search}`
   }
-  return url;
-};
+  return url
+}
 
 export function getValidRequestBody(options: {
-  body?: unknown;
-  bodySerializer?: BodySerializer | null;
-  serializedBody?: BodyInit | null;
+  body?: unknown
+  bodySerializer?: BodySerializer | null
+  serializedBody?: BodyInit | null
 }): BodyInit | null | undefined {
-  const hasBody = options.body !== undefined;
+  const hasBody = options.body !== undefined
 
   if (hasBody && options.bodySerializer) {
-    const bodySerializer = options.bodySerializer;
-    if ('serializedBody' in options) {
-      const hasSerializedBody =
-        options.serializedBody !== undefined && options.serializedBody !== '';
+    const bodySerializer = options.bodySerializer
+    if ("serializedBody" in options) {
+      const hasSerializedBody = options.serializedBody !== undefined && options.serializedBody !== ""
 
-      return hasSerializedBody ? options.serializedBody : null;
+      return hasSerializedBody ? options.serializedBody : null
     }
 
-    // not all clients precompute a serializedBody property (i.e. client-axios)
-    return options.body !== '' ? bodySerializer(options.body) : null;
+    // not all clients precompute a serializedBody property (i.e., client-axios)
+    return options.body !== "" ? bodySerializer(options.body) : null
   }
 
   // A body without a serializer must already satisfy Fetch's runtime contract.
   if (hasBody) {
     if (
       options.body === null ||
-      typeof options.body === 'string' ||
+      typeof options.body === "string" ||
       options.body instanceof Blob ||
       options.body instanceof ArrayBuffer ||
       options.body instanceof FormData ||
       options.body instanceof URLSearchParams ||
       options.body instanceof ReadableStream
     ) {
-      return options.body;
+      return options.body
     }
     if (ArrayBuffer.isView(options.body) && options.body.buffer instanceof ArrayBuffer) {
       // The ArrayBuffer proof excludes SharedArrayBuffer views, which Fetch does not accept as BodyInit.
-      return options.body as ArrayBufferView<ArrayBuffer>;
+      return options.body as ArrayBufferView<ArrayBuffer>
     }
-    throw new TypeError('Request body requires a configured serializer');
+    throw new TypeError("Request body requires a configured serializer")
   }
 
   // no body was provided
-  return undefined;
+  return undefined
 }

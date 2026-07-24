@@ -43,7 +43,7 @@ export const SessionTable = sqliteTable(
     agent: text(),
     model: text({ mode: "json" }).$type<{
       id: string
-      providerID: string
+      subsystemID: string
       variant?: string
     }>(),
     ...Timestamps,

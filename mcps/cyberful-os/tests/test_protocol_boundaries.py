@@ -41,6 +41,37 @@ def _run_embedded_locally(argv, **kwargs):
 
 
 class ToolSchemaBoundaryTest(unittest.TestCase):
+    def test_registry_pairs_every_unique_public_name_with_a_handler_and_schema(self):
+        registry = cyberful_os_mcp._exposed_tool_registry()
+        names = [entry[0] for entry in registry]
+
+        self.assertEqual(len(names), len(set(names)))
+        self.assertGreater(len(names), 100)
+        for name, description, schema, handler in registry:
+            with self.subTest(tool=name):
+                self.assertRegex(name, r"^[a-z0-9_]+$")
+                self.assertTrue(description)
+                self.assertEqual(schema.get("type"), "object")
+                self.assertFalse(schema.get("additionalProperties", True))
+                self.assertTrue(callable(handler))
+
+    def test_shell_schema_remains_the_bounded_fallback_contract(self):
+        shell = next(entry for entry in cyberful_os_mcp._exposed_tool_registry() if entry[0] == "shell")
+        schema = shell[2]
+
+        self.assertEqual(schema["required"], ["command"])
+        self.assertEqual(
+            set(schema["properties"]),
+            {"command", "cwd", "timeout_seconds", "max_output_bytes", "env", "egress"},
+        )
+        self.assertEqual(schema["properties"]["timeout_seconds"]["default"], cyberful_os_mcp.DEFAULT_TIMEOUT_SECONDS)
+        self.assertEqual(schema["properties"]["timeout_seconds"]["maximum"], cyberful_os_mcp.MAX_TIMEOUT_SECONDS)
+        self.assertEqual(
+            schema["properties"]["max_output_bytes"]["default"],
+            cyberful_os_mcp.DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        self.assertEqual(schema["properties"]["max_output_bytes"]["maximum"], cyberful_os_mcp.MAX_OUTPUT_BYTES)
+
     def test_rejects_wrong_types_and_unknown_fields_before_docker(self):
         wrong_type = cyberful_os_mcp.handle_tool_call({
             "name": "tool_inventory",
@@ -85,6 +116,38 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("invalid environment variable name", result["content"][0]["text"])
         run_command.assert_not_called()
+
+    def test_shell_dispatch_preserves_command_cwd_timeout_output_and_environment(self):
+        completed = cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="printf stable",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=1,
+            stdout="stable",
+            stderr="",
+            truncated=False,
+        )
+        with mock.patch.object(cyberful_os_mcp, "run_in_container", return_value=completed) as run_command:
+            result = cyberful_os_mcp.handle_tool_call({
+                "name": "shell",
+                "arguments": {
+                    "command": "printf stable",
+                    "cwd": "/workspace/project",
+                    "timeout_seconds": 17,
+                    "max_output_bytes": 8192,
+                    "env": {"CYBERFUL_TEST": "stable"},
+                },
+            })
+
+        self.assertFalse(result["isError"])
+        run_command.assert_called_once_with(
+            "printf stable",
+            cwd="/workspace/project",
+            timeout_seconds=17,
+            max_output_bytes=8192,
+            extra_env={"CYBERFUL_TEST": "stable"},
+        )
 
 
 class StdioBoundaryTest(unittest.TestCase):

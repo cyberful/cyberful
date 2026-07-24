@@ -2,13 +2,13 @@
 // Publishes typed instance events to scoped Effect streams, callback subscribers,
 // and the process-wide event bridge while owning subscription cleanup.
 // → cyberful/src/bus/global.ts — carries instance events across process-wide consumers.
-// → cyberful/src/bus/bus-event.ts — registers the schemas used by typed events.
+// → cyberful/src/event.ts — registers the schemas used by typed events.
 // ─────────────────────────────────────────────────────────────────
 
 import { Effect, Exit, Layer, PubSub, Scope, Context, Stream, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import * as Log from "@/util/log"
-import { BusEvent } from "./bus-event"
+import * as EventDefinition from "@/event-definition"
 import { GlobalBus } from "./global"
 import { InstanceState } from "@/effect/instance-state"
 import { InstanceDisposalRegistry } from "@/effect/instance-registry"
@@ -20,16 +20,16 @@ import { InstanceRef } from "@/effect/instance-ref"
 
 const log = Log.create({ service: "bus" })
 
-type BusProperties<D extends BusEvent.Definition<string, Schema.Top>> = Schema.Schema.Type<D["properties"]>
+type BusProperties<D extends EventDefinition.Definition<string, Schema.Top>> = Schema.Schema.Type<D["properties"]>
 
-export const InstanceDisposed = BusEvent.define(
+export const InstanceDisposed = EventDefinition.define(
   "server.instance.disposed",
   Schema.Struct({
     directory: Schema.String,
   }),
 )
 
-export type Payload<D extends BusEvent.Definition = BusEvent.Definition> = {
+export type Payload<D extends EventDefinition.Definition = EventDefinition.Definition> = {
   id: string
   type: D["type"]
   properties: BusProperties<D>
@@ -41,7 +41,7 @@ type State = {
 }
 
 export interface Interface {
-  readonly publish: <D extends BusEvent.Definition>(
+  readonly publish: <D extends EventDefinition.Definition>(
     def: D,
     properties: BusProperties<D>,
     options?: { id?: string },
@@ -53,11 +53,11 @@ export interface Interface {
   // later. Returning a lazily acquired stream would reopen a race in which events
   // published between subscription setup and the first pull are lost.
   // ─────────────────────────────────────────────────────────────────
-  readonly subscribe: <D extends BusEvent.Definition>(
+  readonly subscribe: <D extends EventDefinition.Definition>(
     def: D,
   ) => Effect.Effect<Stream.Stream<Payload<D>>, never, Scope.Scope>
   readonly subscribeAll: () => Effect.Effect<Stream.Stream<Payload>, never, Scope.Scope>
-  readonly subscribeCallback: <D extends BusEvent.Definition>(
+  readonly subscribeCallback: <D extends EventDefinition.Definition>(
     def: D,
     callback: (event: Payload<D>) => unknown,
   ) => Effect.Effect<() => void>
@@ -102,7 +102,7 @@ export const layer = Layer.effect(
     // association erased by Map, and publish routes through the same definition
     // key before a typed subscriber can observe the value.
     // ─────────────────────────────────────────────────────────────────
-    function getOrCreate<D extends BusEvent.Definition>(state: State, def: D) {
+    function getOrCreate<D extends EventDefinition.Definition>(state: State, def: D) {
       return Effect.gen(function* () {
         let ps = state.typed.get(def.type)
         if (!ps) {
@@ -113,7 +113,7 @@ export const layer = Layer.effect(
       })
     }
 
-    function publish<D extends BusEvent.Definition>(def: D, properties: BusProperties<D>, options?: { id?: string }) {
+    function publish<D extends EventDefinition.Definition>(def: D, properties: BusProperties<D>, options?: { id?: string }) {
       return Effect.gen(function* () {
         const s = yield* InstanceState.get(state)
         const payload: Payload = { id: options?.id ?? createID(), type: def.type, properties }
@@ -134,7 +134,7 @@ export const layer = Layer.effect(
       })
     }
 
-    const subscribe = <D extends BusEvent.Definition>(
+    const subscribe = <D extends EventDefinition.Definition>(
       def: D,
     ): Effect.Effect<Stream.Stream<Payload<D>>, never, Scope.Scope> =>
       Effect.gen(function* () {
@@ -181,7 +181,7 @@ export const layer = Layer.effect(
       })
     }
 
-    const subscribeCallback = Effect.fn("Bus.subscribeCallback")(function* <D extends BusEvent.Definition>(
+    const subscribeCallback = Effect.fn("Bus.subscribeCallback")(function* <D extends EventDefinition.Definition>(
       def: D,
       callback: (event: Payload<D>) => unknown,
     ) {
@@ -216,7 +216,7 @@ export function createID() {
   return Identifier.create("evt", "ascending")
 }
 
-export async function publish<D extends BusEvent.Definition>(
+export async function publish<D extends EventDefinition.Definition>(
   ctx: InstanceContext,
   def: D,
   properties: BusProperties<D>,
@@ -225,7 +225,7 @@ export async function publish<D extends BusEvent.Definition>(
   return runPromise((svc) => svc.publish(def, properties, options).pipe(Effect.provideService(InstanceRef, ctx)))
 }
 
-export function subscribe<D extends BusEvent.Definition>(def: D, callback: (event: Payload<D>) => unknown) {
+export function subscribe<D extends EventDefinition.Definition>(def: D, callback: (event: Payload<D>) => unknown) {
   return runSync((svc) => svc.subscribeCallback(def, callback))
 }
 

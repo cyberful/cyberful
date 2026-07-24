@@ -2,7 +2,7 @@
 // Creates prefixed sortable identifiers, validates supplied IDs, and recovers
 // timestamps from ascending IDs used by persisted domain records.
 // → cyberful/src/session/schema.ts — brands session and message identifiers built here.
-// → cyberful/src/event-v2.ts — creates event identifiers from the same ordering contract.
+// → cyberful/src/event.ts — creates event identifiers from the same ordering contract.
 // ─────────────────────────────────────────────────────────────────
 
 import { randomBytes } from "node:crypto"

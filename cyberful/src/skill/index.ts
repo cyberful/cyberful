@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url"
 import { Effect, Layer, Context, Schema } from "effect"
 import { NamedError } from "@/util/error"
 import type { Agent } from "@/agent/agent"
-import { Bus } from "@/bus"
+import { Event as EventSystem } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { Global } from "@/global"
 import { AppFileSystem } from "@/effect/filesystem"
@@ -118,7 +118,7 @@ export interface Interface {
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
-const add = Effect.fnUntraced(function* (state: State, match: string, bus: Bus.Interface) {
+const add = Effect.fnUntraced(function* (state: State, match: string, events: EventSystem.Interface) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
@@ -129,7 +129,7 @@ const add = Effect.fnUntraced(function* (state: State, match: string, bus: Bus.I
           ? err.data.message
           : `Failed to parse skill ${match}`
         const { Session } = yield* Effect.promise(() => import("@/session/session"))
-        yield* bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
+        yield* events.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
         log.error("failed to load skill", { skill: match, err })
         return undefined
       }),
@@ -244,7 +244,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   }
 })
 
-const loadSkills = Effect.fnUntraced(function* (state: State, discovered: DiscoveryState, bus: Bus.Interface) {
+const loadSkills = Effect.fnUntraced(function* (state: State, discovered: DiscoveryState, events: EventSystem.Interface) {
   // ── Discovery Order Decides Duplicate Precedence ────────────────
   // Skill loading mutates one name-indexed registry and later discoveries are
   // intentionally allowed to replace earlier compatible definitions. Parsing
@@ -252,7 +252,7 @@ const loadSkills = Effect.fnUntraced(function* (state: State, discovered: Discov
   // Sequential loading preserves the stable order produced by discovery while
   // keeping duplicate warnings and the final selected location deterministic.
   // ─────────────────────────────────────────────────────────────────
-  yield* Effect.forEach(discovered.matches, (match) => add(state, match, bus), { discard: true })
+  yield* Effect.forEach(discovered.matches, (match) => add(state, match, events), { discard: true })
 
   log.info("init", { count: Object.keys(state.skills).length })
 })
@@ -263,7 +263,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
     const fsys = yield* AppFileSystem.Service
     const global = yield* Global.Service
     const flags = yield* RuntimeFlags.Service
@@ -283,7 +283,7 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
         const s: State = { skills: {}, dirs: new Set() }
-        yield* loadSkills(s, yield* InstanceState.get(discovered), bus)
+        yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s
       }),
     )
@@ -320,7 +320,7 @@ export const layer = Layer.effect(
 
 export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
-  Layer.provide(Bus.layer),
+  Layer.provide(EventSystem.defaultLayer),
   Layer.provide(AppFileSystem.defaultLayer),
   Layer.provide(Global.layer),
   Layer.provide(RuntimeFlags.defaultLayer),

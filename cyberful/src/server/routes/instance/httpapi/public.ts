@@ -254,11 +254,6 @@ function applyClientSchemaOverrides(spec: OpenApiSpec) {
   if (schemas.Command?.properties?.template) schemas.Command.properties.template = { type: "string" }
   if (schemas.GlobalSession?.properties?.project)
     schemas.GlobalSession.properties.project = nullable(schemas.GlobalSession.properties.project)
-  const providerOptions = schemas.ProviderConfig?.properties?.options
-  if (providerOptions) providerOptions.additionalProperties = {}
-  const model = schemas.ProviderConfig?.properties?.models?.additionalProperties
-  const variants = typeof model === "object" ? model.properties?.variants?.additionalProperties : undefined
-  if (variants && typeof variants === "object") variants.additionalProperties = {}
   const syncInfo = schemas.SyncEventSessionUpdated?.properties?.data?.properties?.info
   if (syncInfo?.properties) makePropertiesNullable(syncInfo.properties)
 }

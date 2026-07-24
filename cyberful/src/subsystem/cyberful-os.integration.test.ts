@@ -175,8 +175,27 @@ test("the built image exposes every required capability through cyberful-os and 
       if (!name) throw new Error(`tool_inventory.tools[${index}].name must be non-empty`)
       return tool.installed === false ? [] : [name]
     })
-    expect(exposed.toSorted()).toEqual(["variable", ...installedInventoryNames].toSorted())
+    expect(exposed.toSorted()).toEqual(
+      ["variable", "test_object", "egress_observation", ...installedInventoryNames].toSorted(),
+    )
     expect(exposed).not.toContain("jeb")
+
+    const shellResult = await client.callTool({
+      name: "shell",
+      arguments: {
+        command: 'test "$CYBERFUL_SHELL_VALUE" = stable && test "$PWD" = /workspace && printf "shell-live:%s" "$CYBERFUL_SHELL_VALUE"',
+        cwd: "/workspace",
+        timeout_seconds: 5,
+        max_output_bytes: 4096,
+        env: { CYBERFUL_SHELL_VALUE: "stable" },
+      },
+    })
+    expect(shellResult.isError).not.toBe(true)
+    const shellText = textContent(shellResult)
+    expect(shellText).toContain("target: cyberful-os")
+    expect(shellText).toContain("exit_code: 0")
+    expect(shellText).toContain("timed_out: false")
+    expect(shellText).toContain("stdout:\nshell-live:stable")
 
     const parseResult = await client.callTool({
       name: "bs4",

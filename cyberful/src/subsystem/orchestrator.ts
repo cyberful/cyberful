@@ -11,7 +11,6 @@ import { SessionReportLog } from "@/session/report-log"
 import type { SessionID } from "@/session/schema"
 import type { Candidate as CompletionCandidate } from "./completion"
 import type { RunTermination } from "./cli"
-import type { SubsystemFallback } from "./fallback"
 
 export interface AdvanceInput {
   sessionID: SessionID
@@ -28,8 +27,6 @@ export interface AdvanceInput {
   // Codex model identity for phase runs. Effort is private Codex application policy.
   expertModel?: string
   expertBackend?: string
-  // Immutable launch-directory resolution shared by every phase in this run.
-  fallback?: SubsystemFallback.Resolution
   timeoutMs: number
   // Private gateway environment; never forwarded to the Codex process.
   env?: Record<string, string>
@@ -78,7 +75,7 @@ function rejectedPhase(phase: string, input: AdvanceInput, error: unknown): Phas
     summary: `The ${phase} phase runner failed before returning a result: ${detail}`,
     exitCode: 1,
     timedOut: false,
-    termination: "provider_failed",
+    termination: "subsystem_failed",
     backend: input.expertBackend ?? "unknown",
     durationMs: 0,
     limitMs,
@@ -108,7 +105,6 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           home: input.home,
           objective,
           model: input.expertModel,
-          fallback: input.fallback,
           timeoutMs: input.timeoutMs,
           abort,
           env: input.env,

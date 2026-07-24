@@ -1,12 +1,8 @@
-// ── Home Footer Feature ──────────────────────────────────────────
-// Registers the application version at the right side of the home footer slot
-//   using the public feature API and current terminal theme.
+// ── Home Footer ──────────────────────────────────────────────────
+// Registers the application version at the right side of the home footer.
 // ─────────────────────────────────────────────────────────────────
 
-import type { TuiFeature, TuiFeatureApi } from "@/cli/cmd/tui/api-types"
-import type { InternalTuiFeature } from "../../feature/internal"
-
-const id = "internal:home-footer"
+import type { TuiFeatureApi } from "@/cli/cmd/tui/api-types"
 
 function Version(props: { api: TuiFeatureApi }) {
   const theme = () => props.api.theme.current
@@ -35,8 +31,8 @@ function View(props: { api: TuiFeatureApi }) {
   )
 }
 
-const tui: TuiFeature = async (api) => {
-  api.slots.register({
+export function installHomeFooter(api: TuiFeatureApi) {
+  return api.slots.register({
     order: 100,
     slots: {
       home_footer() {
@@ -45,10 +41,3 @@ const tui: TuiFeature = async (api) => {
     },
   })
 }
-
-const feature: InternalTuiFeature = {
-  id,
-  tui,
-}
-
-export default feature

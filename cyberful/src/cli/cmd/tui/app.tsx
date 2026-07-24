@@ -30,7 +30,6 @@ import { FeatureRouteMissing } from "@tui/component/feature-route-missing"
 import { ProjectProvider } from "@tui/context/project"
 import { useEvent } from "@tui/context/event"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
-import { StartupLoading } from "@tui/component/startup-loading"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { LocalProvider, useLocal } from "@tui/context/local"
 import { DialogStatus } from "@tui/component/dialog-status"
@@ -54,9 +53,10 @@ import open from "open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig } from "./context/tui-config"
 import { TuiConfig } from "@/cli/cmd/tui/config/tui"
-import { TuiFeatureRuntime } from "@/cli/cmd/tui/feature/runtime"
 import { createTuiApi } from "@/cli/cmd/tui/feature/api"
 import type { RouteMap } from "@/cli/cmd/tui/feature/api"
+import { installBuiltinTui } from "@/cli/cmd/tui/feature/builtins"
+import { Slot } from "@/cli/cmd/tui/feature/slots"
 import { createTuiAttention } from "@/cli/cmd/tui/attention"
 import { FormatError, FormatUnknownError } from "@/cli/error"
 import { observePromise } from "@/util/promise"
@@ -163,6 +163,7 @@ export function tui(input: {
   return new Promise<void>(async (resolve) => {
     const unguard = win32InstallCtrlCGuard()
     win32DisableProcessedInput()
+    let disposeBuiltinTui = () => {}
 
     const onExit = async () => {
       unguard?.()
@@ -170,7 +171,7 @@ export function tui(input: {
     }
     const onBeforeExit = async () => {
       offKeymap()
-      await TuiFeatureRuntime.dispose()
+      disposeBuiltinTui()
     }
 
     const renderer = await createCliRenderer(rendererConfig(input.config))
@@ -227,7 +228,12 @@ export function tui(input: {
                                       <FrecencyProvider>
                                         <PromptHistoryProvider>
                                           <PromptRefProvider>
-                                            <App onSnapshot={input.onSnapshot} />
+                                            <App
+                                              onSnapshot={input.onSnapshot}
+                                              onBuiltinTuiDispose={(dispose) => {
+                                                disposeBuiltinTui = dispose
+                                              }}
+                                            />
                                           </PromptRefProvider>
                                         </PromptHistoryProvider>
                                       </FrecencyProvider>
@@ -251,7 +257,7 @@ export function tui(input: {
   })
 }
 
-function App(props: { onSnapshot?: () => Promise<string[]> }) {
+function App(props: { onSnapshot?: () => Promise<string[]>; onBuiltinTuiDispose: (dispose: () => void) => void }) {
   const tuiConfig = useTuiConfig()
   const route = useRoute()
   const dimensions = useTerminalDimensions()
@@ -292,18 +298,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     renderer,
     attention,
   })
-  const [ready, setReady] = createSignal(false)
-  observePromise(
-    TuiFeatureRuntime.init({
-      api,
-      config: tuiConfig,
-      dispose: () => attention.dispose(),
-    }),
-    {
-      rejected: (error) => console.error("Failed to load TUI features", error),
-      settled: () => setReady(true),
-    },
-  )
+  const disposeBuiltins = installBuiltinTui(api)
+  let builtinsDisposed = false
+  const disposeBuiltinTui = () => {
+    if (builtinsDisposed) return
+    builtinsDisposed = true
+    disposeBuiltins()
+    attention.dispose()
+  }
+  props.onBuiltinTuiDispose(disposeBuiltinTui)
 
   // Let selection copy/dismiss win ahead of normal bindings when the feature flag is on.
   const offSelectionKeys = keymap.intercept(
@@ -316,7 +319,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   )
   onCleanup(() => {
     offSelectionKeys()
-    attention.dispose()
+    disposeBuiltinTui()
   })
 
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback
@@ -745,7 +748,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   const plugin = createMemo(() => {
-    if (!ready()) return
     if (route.data.type !== "feature") return
     const render = routeView(route.data.id)
     if (!render) return <FeatureRouteMissing id={route.data.id} onHome={() => route.navigate({ type: "home" })} />
@@ -771,24 +773,21 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <Show when={Flag.CYBERFUL_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <box flexGrow={1} minHeight={0} flexDirection="column">
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Session />
-            </Match>
-          </Switch>
-          {plugin()}
-        </box>
-        <box flexShrink={0}>
-          <TuiFeatureRuntime.Slot name="app_bottom" />
-        </box>
-        <TuiFeatureRuntime.Slot name="app" />
-      </Show>
-      <StartupLoading ready={ready} />
+      <box flexGrow={1} minHeight={0} flexDirection="column">
+        <Switch>
+          <Match when={route.data.type === "home"}>
+            <Home />
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Session />
+          </Match>
+        </Switch>
+        {plugin()}
+      </box>
+      <box flexShrink={0}>
+        <Slot name="app_bottom" />
+      </box>
+      <Slot name="app" />
     </box>
   )
 }

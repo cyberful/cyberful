@@ -1,15 +1,11 @@
 // ── Private Phase Gateway Configuration ─────────────────────────
-// Builds host-owned MCP registrations for primary and local fallback attempts,
-// separating safe process settings from owner-private environment, lifecycle
-// signals, and the default-deny tool profile selected for that exact attempt.
+// Builds the host-owned MCP registration for a phase, separating safe process
+// settings from owner-private environment and lifecycle signals.
 // → cyberful/src/subsystem/phase-runner.ts — creates one descriptor for each phase.
-// → cyberful/src/subsystem/gateway/tool-profile.ts — validates profile names.
-// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────
 
 import path from "path"
-import type { SubsystemMcpServer } from "../provider"
-import type { ToolProfile } from "./tool-profile"
+import type { SubsystemMcpServer } from "../subsystem"
 
 export interface GatewayOptions {
   proxy?: boolean
@@ -22,8 +18,6 @@ export interface GatewayOptions {
   questionEnabled?: boolean
   // Engagement-stable CAPTCHA circuit-breaker state.
   circuitBreakerPath?: string
-  // Full for the primary phase; compact default-deny surfaces for local fallback attempts.
-  toolProfile?: ToolProfile
   // Owner-private per-run environment overrides.
   env?: Readonly<Record<string, string>>
 }
@@ -41,6 +35,16 @@ function browserRuntimeEnv(): Record<string, string> {
       (entry): entry is [string, string] => entry[0].startsWith("CYBER_BROWSER_") && entry[1] !== undefined,
     ),
   )
+}
+
+function ownershipRuntimeEnv(): Record<string, string> {
+  const runID = process.env.CYBERFUL_RUN_ID?.trim()
+  const processRole = process.env.CYBERFUL_PROCESS_ROLE?.trim()
+  return {
+    CYBERFUL_OWNER_PID: String(process.pid),
+    ...(runID ? { CYBERFUL_RUN_ID: runID } : {}),
+    ...(processRole ? { CYBERFUL_PROCESS_ROLE: processRole } : {}),
+  }
 }
 
 declare global {
@@ -84,13 +88,13 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
     privateEnv: {
       ...browserRuntimeEnv(),
       ...(opts?.env ?? {}),
+      ...ownershipRuntimeEnv(),
       CYBERFUL_SUBSYSTEM_SESSION: sessionID,
       ...(phase ? { CYBERFUL_SUBSYSTEM_PHASE: phase } : {}),
       ...(opts?.proxy ? { CYBERFUL_SUBSYSTEM_GATEWAY_PROXY: "1" } : {}),
       ...(opts?.pidSignalPath ? { CYBERFUL_SUBSYSTEM_GATEWAY_PID_PATH: opts.pidSignalPath } : {}),
       ...(opts?.questionEnabled ? { CYBERFUL_SUBSYSTEM_QUESTION_ENABLED: "1" } : {}),
       ...(opts?.circuitBreakerPath ? { CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH: opts.circuitBreakerPath } : {}),
-      ...(opts?.toolProfile ? { CYBERFUL_SUBSYSTEM_TOOL_PROFILE: opts.toolProfile } : {}),
       ...(opts?.handoff
         ? {
             CYBERFUL_SUBSYSTEM_HANDOFF_PATH: opts.handoff.signalPath,

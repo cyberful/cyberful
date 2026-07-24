@@ -29,7 +29,6 @@ export const Attention = Schema.Struct({
 export const TuiInfo = Schema.Struct({
   $schema: Schema.optional(Schema.String),
   keybinds: Schema.optional(TuiKeybind.KeybindOverrides),
-  feature_enabled: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   leader_timeout: Schema.optional(KeymapLeaderTimeout),
   attention: Schema.optional(Attention),
   scroll_speed: Schema.optional(ScrollSpeed).annotate({

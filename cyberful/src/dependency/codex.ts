@@ -14,7 +14,7 @@ import { Process } from "@/util/process"
 // It may move only with the integration proof that exercises configuration
 // validation and an MCP round trip without requiring a Codex account.
 // ─────────────────────────────────────────────────────────────────
-export const CODEX_PINNED_VERSION = "0.144.5"
+export const CODEX_PINNED_VERSION = "0.145.0"
 
 // `codex --version` prints exactly `codex-cli <semver>`.
 const VERSION_RE = /^\s*codex-cli\s+(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*$/

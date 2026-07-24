@@ -14,6 +14,7 @@ import type {
   QuestionRequest,
   FormatterStatus,
   SessionStatus,
+  FindingRegistryView,
 } from "@/server/client"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
@@ -66,6 +67,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       todo: {
         [sessionID: string]: Todo[]
       }
+      finding: {
+        [sessionID: string]: FindingRegistryView | undefined
+      }
       message: {
         [sessionID: string]: Message[]
       }
@@ -101,6 +105,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: [],
       session_status: {},
       todo: {},
+      finding: {},
       message: {},
       skill: {},
       expert_phase: {},
@@ -185,6 +190,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
     }
 
+    async function refreshFindings(sessionID: string, signal?: AbortSignal) {
+      const response = await sdk.client.session.findings({ sessionID }, { signal })
+      signal?.throwIfAborted()
+      if (response.data) setStore("finding", sessionID, reconcile(response.data))
+    }
+
     event.subscribe((event) => {
       switch (event.type) {
         case "server.instance.disposed":
@@ -230,6 +241,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
+          break
+
+        case "finding.registry.updated":
+          void refreshFindings(event.properties.sessionID).catch((error) => {
+            Log.Default.warn("finding registry refresh failed", {
+              sessionID: event.properties.sessionID,
+              revision: event.properties.revision,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          })
           break
 
         case "session.deleted": {
@@ -609,7 +630,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return last.time.completed ? "idle" : "working"
         },
         // ── Route Sync Cannot Outlive Its Session View ───────────
-        // Opening a session starts three independent control-plane reads before
+        // Opening a session starts independent control-plane reads before
         // publishing one coherent store update. The route owns their shared abort
         // signal and cancels it when navigation changes. A final abort check after
         // all reads prevents a late response from repopulating the abandoned view
@@ -617,10 +638,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         // ─────────────────────────────────────────────────────────────────
         async sync(sessionID: string, options: { signal?: AbortSignal } = {}) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo] = await Promise.all([
+          const [session, messages, todo, findings] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true, signal: options.signal }),
             sdk.client.session.messages({ sessionID, limit: 100 }, { signal: options.signal }),
             sdk.client.session.todo({ sessionID }, { signal: options.signal }),
+            sdk.client.session.findings({ sessionID }, { signal: options.signal }),
           ])
           options.signal?.throwIfAborted()
           const sessionData = session.data
@@ -631,6 +653,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               if (match.found) draft.session[match.index] = sessionData
               if (!match.found) draft.session.splice(match.index, 0, sessionData)
               draft.todo[sessionID] = todo.data ?? []
+              draft.finding[sessionID] = findings.data
               const infos: (typeof draft.message)[string] = []
               const skillEntries: SkillFeedEntry[] = []
               for (const message of messages.data ?? []) {

@@ -1,6 +1,6 @@
 // ── TUI Home Route Tests ─────────────────────────────────────────
 // Verifies welcome-screen overlay ordering and the semantic colors assigned to
-//   primary subsystem and fallback readiness states.
+//   Codex subsystem readiness states.
 // → cyberful/src/cli/cmd/tui/routes/home.tsx — owns the tested welcome surface.
 // ─────────────────────────────────────────────────────────────────
 
@@ -27,7 +27,6 @@ test("runtime indicators use green, yellow, and red semantic tones", () => {
   expect(homeRuntimeStatusTone("available")).toBe("success")
   expect(homeRuntimeStatusTone("checking")).toBe("warning")
   expect(homeRuntimeStatusTone("degraded")).toBe("warning")
-  expect(homeRuntimeStatusTone("disabled")).toBe("warning")
   expect(homeRuntimeStatusTone("unavailable")).toBe("error")
 })
 
@@ -43,7 +42,6 @@ test("the runtime panel adds four columns to its longest row", () => {
   expect(
     homeRuntimePanelWidth([
       { title: "Subsystem", identity: "codex · gpt-5.6-sol", status: "available" },
-      { title: "Fallback", identity: "deepseek-v4-flash", status: "available" },
     ]),
   ).toBe("Subsystem codex · gpt-5.6-sol on".length + 4)
 })

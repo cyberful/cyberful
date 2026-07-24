@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import sessionProjectors from "../session/projectors"
-import { SyncEvent } from "@/sync"
+import { EventProjection } from "@/event-projection"
 import { Session } from "@/session/session"
 import { SessionTable } from "@/session/session.sql"
 import { Database } from "@/storage/db"
@@ -13,7 +13,7 @@ import { eq } from "drizzle-orm"
 import { Schema } from "effect"
 
 export function initProjectors() {
-  SyncEvent.init({
+  EventProjection.init({
     projectors: sessionProjectors,
     convertEvent: (type, data) => {
       if (type === "session.updated") {

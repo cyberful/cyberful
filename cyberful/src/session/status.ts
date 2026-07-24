@@ -3,8 +3,8 @@
 // → cyberful/src/session/run-state.ts — updates status around owned work.
 // ─────────────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
+import { Event as EventDefinition } from "@/event"
+import { Event as EventSystem } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -21,7 +21,7 @@ export const Info = Schema.Union([
 export type Info = Schema.Schema.Type<typeof Info>
 
 export const Event = {
-  Status: BusEvent.define(
+  Status: EventDefinition.define(
     "session.status",
     Schema.Struct({
       sessionID: SessionID,
@@ -29,7 +29,7 @@ export const Event = {
     }),
   ),
   // deprecated
-  Idle: BusEvent.define(
+  Idle: EventDefinition.define(
     "session.idle",
     Schema.Struct({
       sessionID: SessionID,
@@ -48,7 +48,7 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Se
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
 
     const state = yield* InstanceState.make(
       Effect.fn("SessionStatus.state")(() => Effect.succeed(new Map<SessionID, Info>())),
@@ -65,9 +65,9 @@ export const layer = Layer.effect(
 
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)
-      yield* bus.publish(Event.Status, { sessionID, status })
+      yield* events.publish(Event.Status, { sessionID, status })
       if (status.type === "idle") {
-        yield* bus.publish(Event.Idle, { sessionID })
+        yield* events.publish(Event.Idle, { sessionID })
         data.delete(sessionID)
         return
       }
@@ -78,6 +78,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+export const defaultLayer = layer.pipe(Layer.provide(EventSystem.defaultLayer))
 
 export * as SessionStatus from "./status"

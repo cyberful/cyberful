@@ -11,6 +11,7 @@ import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import { FindingRegistry } from "@/finding/registry"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
@@ -65,6 +66,7 @@ export const SessionPaths = {
   get: `${root}/:sessionID`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
+  findings: `${root}/:sessionID/findings`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -143,6 +145,18 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.todo",
             summary: "Get session todos",
             description: "Retrieve the todo list associated with a specific session, showing tasks and action items.",
+          }),
+        ),
+        HttpApiEndpoint.get("findings", SessionPaths.findings, {
+          params: { sessionID: SessionID },
+          query: DirectoryRoutingQuery,
+          success: described(FindingRegistry.View, "Workarea finding registry"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.findings",
+            summary: "Get session findings",
+            description: "Resolve the session workarea and return its authoritative cross-run finding registry.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {

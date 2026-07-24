@@ -3,7 +3,7 @@
 //   toast requests, and navigation shared across terminal components.
 // ─────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { SessionID } from "@/session/schema"
 import { PositiveInt } from "@/schema"
 import { Effect, Schema } from "effect"
@@ -11,8 +11,8 @@ import { Effect, Schema } from "effect"
 const DEFAULT_TOAST_DURATION = 5000
 
 export const TuiEvent = {
-  PromptAppend: BusEvent.define("tui.prompt.append", Schema.Struct({ text: Schema.String })),
-  CommandExecute: BusEvent.define(
+  PromptAppend: EventDefinition.define("tui.prompt.append", Schema.Struct({ text: Schema.String })),
+  CommandExecute: EventDefinition.define(
     "tui.command.execute",
     Schema.Struct({
       command: Schema.Union([
@@ -36,7 +36,7 @@ export const TuiEvent = {
       ]),
     }),
   ),
-  ToastShow: BusEvent.define(
+  ToastShow: EventDefinition.define(
     "tui.toast.show",
     Schema.Struct({
       title: Schema.optional(Schema.String),
@@ -47,7 +47,7 @@ export const TuiEvent = {
       }),
     }),
   ),
-  SessionSelect: BusEvent.define(
+  SessionSelect: EventDefinition.define(
     "tui.session.select",
     Schema.Struct({
       sessionID: SessionID.annotate({ description: "Session ID to navigate to" }),

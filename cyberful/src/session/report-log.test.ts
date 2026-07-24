@@ -11,7 +11,7 @@ import { tmpdir } from "node:os"
 import { Effect, Schema } from "effect"
 import { InstanceRef } from "@/effect/instance-ref"
 import { ProjectID } from "@/project/schema"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { MessageID, PartID, SessionID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { create, expertTranscriptFile, pathForSession } from "./report-log"
@@ -54,7 +54,7 @@ test("a failed journal append can be retried exactly once", async () => {
     role: "user",
     time: { created: 1 },
     agent: "ask",
-    model: { providerID: ProviderID.make("test"), modelID: ModelID.make("test") },
+    model: { subsystemID: SubsystemID.make("test"), modelID: ModelID.make("test") },
   }
   const part: MessageV2.TextPart = {
     id: PartID.make("prt_report_retry"),

@@ -7,8 +7,8 @@
 import { Slug } from "@/util/slug"
 import { serviceUse } from "@/effect/service-use"
 import path from "path"
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
+import { Event as EventDefinition } from "@/event"
+import { Event as EventSystem } from "@/event"
 import { InstallationVersion } from "@/installation/version"
 
 import { Database } from "@/storage/db"
@@ -22,7 +22,6 @@ import { like } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
-import { SyncEvent } from "../sync"
 import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable, SessionVariableTable } from "./session.sql"
 import { ProjectTable } from "../project/project.sql"
@@ -33,7 +32,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { ProjectID } from "../project/schema"
 import { SessionID, MessageID, PartID } from "./schema"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optionalOmitUndefined } from "@/schema"
@@ -84,7 +83,7 @@ export function fromRow(row: SessionRow): Info {
     model: row.model
       ? {
           id: ModelID.make(row.model.id),
-          providerID: ProviderID.make(row.model.providerID),
+          subsystemID: SubsystemID.make(row.model.subsystemID),
           variant: row.model.variant,
         }
       : undefined,
@@ -197,7 +196,7 @@ const Revert = Schema.Struct({
 
 const Model = Schema.Struct({
   id: ModelID,
-  providerID: ProviderID,
+  subsystemID: SubsystemID,
   variant: optionalOmitUndefined(Schema.String),
 })
 
@@ -310,33 +309,33 @@ const UpdatedEventSchema = Schema.Struct({
 })
 
 export const Event = {
-  Created: SyncEvent.define({
+  Created: EventDefinition.define({
     type: "session.created",
     version: 1,
     aggregate: "sessionID",
     schema: CreatedEventSchema,
   }),
-  Updated: SyncEvent.define({
+  Updated: EventDefinition.define({
     type: "session.updated",
     version: 1,
     aggregate: "sessionID",
     schema: UpdatedEventSchema,
     busSchema: CreatedEventSchema,
   }),
-  Deleted: SyncEvent.define({
+  Deleted: EventDefinition.define({
     type: "session.deleted",
     version: 1,
     aggregate: "sessionID",
     schema: CreatedEventSchema,
   }),
-  Diff: BusEvent.define(
+  Diff: EventDefinition.define(
     "session.diff",
     Schema.Struct({
       sessionID: SessionID,
       diff: Schema.Array(Snapshot.FileDiff),
     }),
   ),
-  Error: BusEvent.define(
+  Error: EventDefinition.define(
     "session.error",
     Schema.Struct({
       sessionID: Schema.optional(SessionID),
@@ -413,20 +412,19 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Se
 
 export const use = serviceUse(Service)
 
-export type Patch = Types.DeepMutable<SyncEvent.Event<typeof Event.Updated>["data"]["info"]>
+export type Patch = Types.DeepMutable<EventDefinition.Data<typeof Event.Updated>["info"]>
 
 const db = <T>(fn: (database: Database.TxOrDb) => T) => Effect.sync(() => Database.use(fn))
 
 export const layer: Layer.Layer<
   Service,
   never,
-  Bus.Service | Storage.Service | SyncEvent.Service | SessionWriteCoordinator.Service
+  EventSystem.Service | Storage.Service | SessionWriteCoordinator.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
     const storage = yield* Storage.Service
-    const sync = yield* SyncEvent.Service
     const writeCoordinator = yield* SessionWriteCoordinator.Service
     const reportLog = SessionReportLog.create()
     const messageWrite = writeCoordinator.run
@@ -460,8 +458,8 @@ export const layer: Layer.Layer<
       }
       log.info("created", result)
 
-      yield* sync.run(Event.Created, { sessionID: result.id, info: result })
-      yield* bus.publish(Event.Updated, {
+      yield* events.publish(Event.Created, { sessionID: result.id, info: result })
+      yield* events.emit(Event.Updated, {
         sessionID: result.id,
         info: result,
       })
@@ -503,7 +501,7 @@ export const layer: Layer.Layer<
         const kids = yield* children(sessionID)
         for (const child of kids) yield* remove(child.id)
 
-        yield* sync.run(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
+        yield* events.publish(Event.Deleted, { sessionID, info: session }, { publish: hasInstance })
         yield* Effect.sync(() => {
           reportLog.forget(sessionID)
           writeCoordinator.forget(sessionID)
@@ -519,7 +517,7 @@ export const layer: Layer.Layer<
 
     const updateMessageUnlocked = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* sync.run(MessageV2.Event.Updated, { sessionID: msg.sessionID, info: msg })
+        yield* events.publish(MessageV2.Event.Updated, { sessionID: msg.sessionID, info: msg })
         yield* reportLog.message(msg)
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
@@ -529,7 +527,7 @@ export const layer: Layer.Layer<
 
     const updatePartUnlocked = <T extends MessageV2.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* sync.run(MessageV2.Event.PartUpdated, {
+        yield* events.publish(MessageV2.Event.PartUpdated, {
           sessionID: part.sessionID,
           part: structuredClone(part),
           time: Date.now(),
@@ -671,7 +669,7 @@ export const layer: Layer.Layer<
       return session
     })
 
-    const patch = (sessionID: SessionID, info: Patch) => sync.run(Event.Updated, { sessionID, info })
+    const patch = (sessionID: SessionID, info: Patch) => events.publish(Event.Updated, { sessionID, info })
 
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } })
@@ -749,8 +747,8 @@ export const layer: Layer.Layer<
     const removeMessage = Effect.fn("Session.removeMessage")((input: { sessionID: SessionID; messageID: MessageID }) =>
       messageWrite(
         input.sessionID,
-        sync
-          .run(MessageV2.Event.Removed, {
+        events
+          .publish(MessageV2.Event.Removed, {
             sessionID: input.sessionID,
             messageID: input.messageID,
           })
@@ -762,8 +760,8 @@ export const layer: Layer.Layer<
       (input: { sessionID: SessionID; messageID: MessageID; partID: PartID }) =>
         messageWrite(
           input.sessionID,
-          sync
-            .run(MessageV2.Event.PartRemoved, {
+          events
+            .publish(MessageV2.Event.PartRemoved, {
               sessionID: input.sessionID,
               messageID: input.messageID,
               partID: input.partID,
@@ -780,7 +778,7 @@ export const layer: Layer.Layer<
       delta: string
       mode?: "append" | "replace"
     }) {
-      yield* bus.publish(MessageV2.Event.PartDelta, input)
+      yield* events.publish(MessageV2.Event.PartDelta, input)
     })
 
     /** Finds the first message matching the predicate, searching newest-first. */
@@ -830,9 +828,8 @@ export const layer: Layer.Layer<
 )
 
 export const defaultLayer = layer.pipe(
-  Layer.provide(Bus.layer),
+  Layer.provide(EventSystem.defaultLayer),
   Layer.provide(Storage.defaultLayer),
-  Layer.provide(SyncEvent.defaultLayer),
   Layer.provide(SessionWriteCoordinator.processLayer),
 )
 

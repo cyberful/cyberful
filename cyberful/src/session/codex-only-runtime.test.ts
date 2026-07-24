@@ -7,10 +7,10 @@ import { describe, expect, test } from "bun:test"
 import { Exit, Schema } from "effect"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { MessageID, SessionID } from "./schema"
-import { PromptInput } from "./prompt"
-import { EventV2 } from "@/event-v2"
+import { PromptInput } from "./prompt-input"
+import { Event } from "@/event"
 import { isRecord } from "@/util/record"
-import "./event-v2"
+import "./event"
 
 describe("primary Codex session boundary", () => {
   test("the prompt and phase gateway have no AI SDK routing dependency", async () => {
@@ -85,10 +85,16 @@ describe("primary Codex session boundary", () => {
   })
 
   test("Codex activity has no retired model-step lifecycle events", () => {
-    const types = [...EventV2.definitions()].map((event) => event.type)
+    const types = [...Event.definitions()].map((event) => event.type)
     expect(types).toContain("session.next.subsystem.phase_activity")
     expect(types).not.toContain("session.next.codex.phase_activity")
     expect(types).not.toContain("session.next.model.switched")
     expect(types.filter((type) => type.startsWith("session.next.step."))).toEqual([])
+  })
+
+  test("subsystem reasoning observations stay out of the public phase activity stream", async () => {
+    const source = await Bun.file(new URL("./prompt.ts", import.meta.url)).text()
+    expect(source).not.toContain("reasoningObservation")
+    expect(source.match(/if \(activity\.kind === "reasoning"\) return/g)).toHaveLength(2)
   })
 })

@@ -1,12 +1,8 @@
 # Cyberful TUI Architecture
 
-The terminal application is a local control plane around Codex as its primary
-model executor. Session storage, orchestration, policy, MCP lifecycle, and
-reporting are host responsibilities; primary model reasoning occurs in one
-ephemeral Codex process per phase. An optional operator-owned loopback Responses
-server can run bounded delegated operations or a one-shot recovery through the
-same subsystem contract. Delegations are serialized and may repeat while phase
-budget remains.
+The terminal application is a local control plane around Codex. Session storage,
+orchestration, policy, MCP lifecycle, and reporting are host responsibilities;
+model reasoning occurs in one ephemeral Codex process per phase.
 
 ## Runtime shape
 
@@ -17,20 +13,13 @@ TUI input
   -> SessionPrompt journal + orchestration
   -> ephemeral Codex app-server
   -> private host MCP gateway
-  -> read-only source store / Code Graph / cyberful-os / browser / ZAP / variables / question / handoff
+  -> read-only source store / Code Graph / cyberful-os / browser / ZAP / Ghidra / variables / question / handoff
   -> workarea artifacts
   -> validated successor
-
-Recoverable primary failure or incomplete output contract
-  -> primary process and gateway fully reaped and outputs collected
-  -> one local fallback recovery with a fallback-recovery gateway
-  -> validated deliverable and handoff, or preserved dual failure
 ```
 
-Codex app-server owns the normal phase path. The TUI has no session-level
-executor selector. Cyberful loads `fallback-server.yaml` once from the launch
-directory and makes the local route available only after a successful loopback
-preflight; it is never discovered from a workarea.
+Codex app-server owns the phase path. The TUI has no session-level executor
+selector.
 
 Important host services under `cyberful/src` include:
 
@@ -41,50 +30,24 @@ Important host services under `cyberful/src` include:
 - the gateway under `src/subsystem/gateway/` for approved MCP capabilities.
 
 The session journal records user input and the public projection of subsystem
-activity. Separate fallback transcripts and host-owned runtime manifests record
-profile, trigger, adapter, model, server state, result, and recovery status without
-keys or the configured system prompt.
+activity. Host-owned runtime manifests record termination, provider failures,
+usage, context churn, settings attestation, novelty policy, and verdict counts
+without credentials, prompts, or reasoning text.
 
 ## Phase lifecycle
 
 For each sequential phase the orchestrator:
 
-1. resolves the repository persona, shared Cyberful developer instruction, required artifact, and wall-clock budget;
+1. resolves the Cyberful base template, phase persona, required artifact, and wall-clock budget, then renders the current delegation and workarea values;
 2. creates a temporary Codex home and private gateway definition;
 3. starts `codex app-server` over stdio;
 4. starts one thread and one turn;
 5. maps public text, tool activity, and delegated-actor lifecycle into TUI events and the phase transcript;
-6. forwards live user steering and TUI-backed questions, preserving exact
-   accepted and declined decisions in a phase-confined approval ledger;
+6. forwards live user steering and TUI-backed questions while pausing the active
+   process budget for each pending human decision;
 7. validates the required artifact and constrained `handoff` request;
 8. proves the process and gateway tree have exited, then seals the final artifact with a host-generated
    SHA-256 manifest before launching the successor.
-
-When configured and reachable, the primary receives a conditional nudge and may
-call `delegate_to_fallback_inference` whenever an authorized action needs a more
-aggressive approach that it cannot execute. Calls are serialized, have distinct
-attempt numbers, gateways, and transcripts, and have no numeric cap while phase
-budget remains. A `fallback-assist` returns a compact result without owning the
-phase handoff or seeing the delegation tool itself.
-
-After collecting the complete primary result, Cyberful may start one automatic
-recovery for a provider failure, empty effective summary, missing deliverable,
-or missing/invalid handoff. Cancellation, shutdown, exhausted budget, spawn or
-setup failure, a live primary gateway, and host cleanup, sealing, or readiness
-failures do not qualify. The fresh `fallback-recovery` session inherits the
-phase, workarea, scope, approval ledger, controls, and remaining active budget;
-it receives a sanitized 16 KiB capsule, may own handoff, and cannot recurse.
-Structured `cyberPolicy` blocks remain one provider-failure use case rather than
-the only trigger. Approval waits remain outside the active budget.
-
-Both fallback profiles use default-deny, versioned first-party tool sets. Assist
-eagerly receives shell plus compact evidence/discovery, browser, approval,
-rate-limit, and circuit-breaker controls; it discovers dedicated container
-commands through a narrow `tool_inventory` query only when needed. Recovery
-also receives active security tools because it may own the interrupted phase.
-Both omit recon inventory and report generators, and `handoff` appears only in
-recovery. Because shell remains general, this selection is an interface
-reduction rather than a security boundary.
 
 The phase runner supplies Markdown cleanup with only the required deliverable
 path; it never traverses the complete workarea. Code Audit also verifies a
@@ -107,7 +70,7 @@ concurrent subsystem implementations cannot merge their activity accidentally.
 ## Gateway and security tools
 
 Each phase receives one host-owned MCP gateway. It proxies only the tools
-approved for that phase from cyberful-os, browser, and ZAP, and implements session
+approved for that phase from cyberful-os, browser, ZAP, and Ghidra, and implements session
 variables, human questions, and the phase-specific handoff. Personal Codex MCP
 configuration and plugins do not enter the temporary runtime.
 
@@ -118,9 +81,11 @@ children call through the same phase gateway and share its workarea, containers,
 and network policy.
 
 Gateway secrets are materialized in owner-only temporary files rather than
-Codex process arguments. ZAP bridge containers are named and labelled per
-gateway, removed explicitly when it closes, and swept again when the engagement
-ends.
+Codex process arguments. ZAP and Ghidra bridge containers are named and labelled
+per gateway, removed explicitly when it closes, and swept again when the
+engagement ends. The networkless Ghidra JVM persists between eligible phases;
+its host-owned project survives container cleanup and reopens by canonical
+workarea identity.
 
 Repository imports and deterministic source snapshots live in an owner-only
 application-data store keyed by canonical workarea identity, outside Codex's
@@ -139,4 +104,5 @@ shell environment shaping. They cannot perform model execution.
 
 Run `bun typecheck` from each package for type checking and
 `bun run build` for the application bundle. MCP smoke tests should verify cyberful-os command
-execution, browser navigation through ZAP, shared history, and bridge discovery through the gateway.
+execution, browser navigation through ZAP, Ghidra project restart persistence,
+shared history, and bridge discovery through the gateway.

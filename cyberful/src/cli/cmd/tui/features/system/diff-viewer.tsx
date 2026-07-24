@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 /** @jsxImportSource @opentui/solid */
-import type { TuiFeature, TuiFeatureApi, TuiRouteCurrent } from "@/cli/cmd/tui/api-types"
+import type { TuiFeatureApi, TuiRouteCurrent } from "@/cli/cmd/tui/api-types"
 import type { SnapshotFileDiff, VcsFileDiff } from "@/server/client"
 import { TextAttributes, type BorderSides, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { LANGUAGE_EXTENSIONS } from "@/cli/syntax-language"
@@ -935,15 +935,15 @@ function DiffViewerHelpDialog() {
   )
 }
 
-const tui: TuiFeature = async (api) => {
-  api.route.register([
+export function installDiffViewer(api: TuiFeatureApi) {
+  const offRoute = api.route.register([
     {
       name: ROUTE,
       render: () => <DiffViewer api={api} />,
     },
   ])
 
-  api.keymap.registerLayer({
+  const offKeymap = api.keymap.registerLayer({
     commands: [
       {
         name: "diff.open",
@@ -962,9 +962,9 @@ const tui: TuiFeature = async (api) => {
       },
     ],
   })
-}
 
-export default {
-  id: "diff-viewer",
-  tui,
+  return () => {
+    offKeymap()
+    offRoute()
+  }
 }

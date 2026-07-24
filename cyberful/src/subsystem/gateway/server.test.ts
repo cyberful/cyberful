@@ -44,6 +44,7 @@ const {
   runtimeNetworkAllowed,
   writeGatewayPidSignal,
 } = await import("./server")
+const { humanDecisionMetadata } = await import("../human-question")
 const { Database } = await import("../../storage/db")
 const { SessionTable } = await import("../../session/session.sql")
 const { ProjectTable } = await import("../../project/project.sql")
@@ -145,9 +146,12 @@ afterAll(async () => {
 })
 
 describe("expert-gateway variable tool", () => {
-  test("exposes variable storage as the base tool surface", async () => {
+  test("exposes variable storage and its description limit as the base tool surface", async () => {
     const { tools } = await client.listTools()
     expect(tools.map((tool) => tool.name)).toEqual(["variable"])
+    const inputSchema = recordValue(tools[0]?.inputSchema, "variable input schema")
+    const properties = recordValue(inputSchema.properties, "variable input properties")
+    expect(recordValue(properties.description, "variable description schema").maxLength).toBe(500)
   })
 
   test("set persists to the shared session_variable table", async () => {
@@ -169,6 +173,33 @@ describe("expert-gateway variable tool", () => {
         .get(),
     )
     expect(row?.value).toBe("secret-token-value-1234")
+  })
+
+  test("set accepts a 500-character description and rejects a longer replacement", async () => {
+    const description = "d".repeat(500)
+    const accepted = await callVariable(client, {
+      action: "set",
+      name: "TARGET_PRIVATE_PATH",
+      value: "/private/target/path",
+      description,
+    })
+    expect(accepted.ok).toBe(true)
+    expect(recordValue(accepted.variable, "stored variable").description).toBe(description)
+
+    const rejected = await client.callTool({
+      name: "variable",
+      arguments: {
+        action: "set",
+        name: "TARGET_PRIVATE_PATH",
+        value: "/replacement/path",
+        description: "d".repeat(501),
+      },
+    })
+    expect(rejected.isError).toBe(true)
+    expect(jsonContent(rejected).error).toContain("at most 500 characters")
+
+    const stored = await callVariable(client, { action: "get", name: "TARGET_PRIVATE_PATH", reveal: true })
+    expect(stored.value).toBe("/private/target/path")
   })
 
   test("list and default get redact the raw value", async () => {
@@ -300,7 +331,7 @@ describe("expert-gateway workflow capability policy", () => {
     expect(runtimeNetworkAllowed({ workflow: "ask", phase: "ask", authorized: false })).toBe(true)
   })
 
-  test("publishes diff and lab tools only to their Code Audit phases", async () => {
+  test("publishes source and lab tools only to eligible workflow phases", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-workflow-tools-"))
     const source = path.join(directory, "source")
     const workarea = path.join(directory, "workarea")
@@ -312,10 +343,13 @@ describe("expert-gateway workflow capability policy", () => {
       source: process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT,
       workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
       sourceStore: process.env.CYBERFUL_SOURCE_STORE_ROOT,
+      novelty: process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT,
+      evmRuntime: process.env.CYBERFUL_EVM_RUNTIME_ID,
     }
     process.env.CYBERFUL_SUBSYSTEM_SOURCE_ROOT = source
     process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
     process.env.CYBERFUL_SOURCE_STORE_ROOT = sourceStore
+    process.env.CYBERFUL_EVM_RUNTIME_ID = "11111111-2222-4333-8444-555555555555"
 
     async function toolNames(workflow: string, phase: string) {
       process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = workflow
@@ -351,7 +385,40 @@ describe("expert-gateway workflow capability policy", () => {
       expect(await toolNames("code-audit", "missing")).toEqual(["variable"])
       expect(await toolNames("unknown", "brief")).toEqual(["variable"])
 
-      expect(await toolNames("pentest", "recon")).toEqual(["variable"])
+      expect(await toolNames("pentest", "recon")).toEqual(["variable", "test_object", "egress_observation"])
+      process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = JSON.stringify({ required: true })
+      expect(await toolNames("bug-bounty", "recon")).toEqual([
+        "variable",
+        "source_import",
+        "source_catalog",
+        "source_inventory",
+        "source_read",
+        "source_search",
+        "source_snapshot",
+        "evm_lab",
+        "evm_evidence",
+        "test_object",
+        "novelty",
+        "egress_observation",
+      ])
+      expect(await toolNames("bug-bounty", "brief")).toEqual([
+        "variable",
+        "source_import",
+        "source_catalog",
+        "source_inventory",
+        "source_read",
+        "source_search",
+        "source_snapshot",
+      ])
+      expect(await toolNames("bug-bounty", "report")).toEqual([
+        "variable",
+        "source_catalog",
+        "source_inventory",
+        "source_read",
+        "source_search",
+        "source_snapshot",
+        "evm_evidence",
+      ])
     } finally {
       if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
       else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
@@ -363,6 +430,10 @@ describe("expert-gateway workflow capability policy", () => {
       else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
       if (previous.sourceStore === undefined) delete process.env.CYBERFUL_SOURCE_STORE_ROOT
       else process.env.CYBERFUL_SOURCE_STORE_ROOT = previous.sourceStore
+      if (previous.novelty === undefined) delete process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT
+      else process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = previous.novelty
+      if (previous.evmRuntime === undefined) delete process.env.CYBERFUL_EVM_RUNTIME_ID
+      else process.env.CYBERFUL_EVM_RUNTIME_ID = previous.evmRuntime
       await rm(directory, { recursive: true, force: true })
     }
   })
@@ -412,83 +483,6 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     await server.closeGateway()
     await server.closeGateway()
     expect(closes).toBe(1)
-  })
-
-  test("keeps active tools recovery-only at listing and direct-call boundaries", async () => {
-    let activeCalls = 0
-    let deniedCalls = 0
-    const upstreams: UpstreamTool[] = [
-      {
-        capability: "isolated-exec",
-        def: {
-          name: "active_http_mutation",
-          inputSchema: { type: "object" },
-          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["active"] } },
-        },
-        call: async () => {
-          activeCalls += 1
-          return { content: [{ type: "text", text: "mutated" }] }
-        },
-      },
-      {
-        capability: "isolated-exec",
-        def: {
-          name: "tool_inventory",
-          inputSchema: { type: "object" },
-          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["evidence"] } },
-        },
-        call: async () => ({ content: [{ type: "text", text: "inventory" }] }),
-      },
-      {
-        capability: "isolated-exec",
-        def: {
-          name: "nmap",
-          inputSchema: { type: "object" },
-          _meta: { "cyberful.dev/tool-profile": { version: 1, roles: ["recon"] } },
-        },
-        call: async () => {
-          deniedCalls += 1
-          return { content: [{ type: "text", text: "should not execute" }] }
-        },
-      },
-    ]
-    const server = await createGatewayServer({ upstreams, toolProfile: "fallback-assist" })
-    const [ct, st] = InMemoryTransport.createLinkedPair()
-    await server.connect(st)
-    const c = new Client({ name: "fallback-profile-test", version: "0" })
-    await c.connect(ct)
-    try {
-      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["tool_inventory", "variable"])
-      const activeDenied = await c.callTool({ name: "active_http_mutation", arguments: {} })
-      expect(textContent(activeDenied)).toContain("unknown tool")
-      const denied = await c.callTool({ name: "nmap", arguments: {} })
-      expect(textContent(denied)).toContain("unknown tool")
-      expect(activeCalls).toBe(0)
-      expect(deniedCalls).toBe(0)
-    } finally {
-      await c.close()
-      await server.closeGateway()
-    }
-
-    const recovery = await createGatewayServer({ upstreams, toolProfile: "fallback-recovery" })
-    const [recoveryClientTransport, recoveryServerTransport] = InMemoryTransport.createLinkedPair()
-    await recovery.connect(recoveryServerTransport)
-    const recoveryClient = new Client({ name: "fallback-recovery-profile-test", version: "0" })
-    await recoveryClient.connect(recoveryClientTransport)
-    try {
-      expect((await recoveryClient.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
-        "active_http_mutation",
-        "tool_inventory",
-        "variable",
-      ])
-      expect(textContent(await recoveryClient.callTool({ name: "active_http_mutation", arguments: {} }))).toBe(
-        "mutated",
-      )
-      expect(activeCalls).toBe(1)
-    } finally {
-      await recoveryClient.close()
-      await recovery.closeGateway()
-    }
   })
 
   test("re-exposes upstream tools, resolves simple and composed {{var}} args, and redacts replies", async () => {
@@ -662,117 +656,36 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("keeps the official ZAP report tool visible but defers its call during Recon", async () => {
-    let called = false
-    const report: UpstreamTool = {
-      def: { name: "zap_generate_report", description: "report", inputSchema: { type: "object" } },
-      call: async () => {
-        called = true
-        return { content: [{ type: "text", text: "generated" }] }
-      },
-    }
-    const previous = process.env.CYBERFUL_SUBSYSTEM_PHASE
-    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
-    const server = await createGatewayServer({ upstreams: [report] })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const reconClient = new Client({ name: "zap-recon-policy-test", version: "0" })
-    await reconClient.connect(clientTransport)
-    try {
-      expect((await reconClient.listTools()).tools.map((tool) => tool.name)).toContain("zap_generate_report")
-      const result = await reconClient.callTool({
-        name: "zap_generate_report",
-        arguments: { file_path: "early.json" },
-      })
-      expect("isError" in result && result.isError).toBe(true)
-      expect(textContent(result)).toContain("after Recon completes")
-      expect(called).toBe(false)
-    } finally {
-      await reconClient.close()
-      await server.closeGateway()
-      if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
-      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous
-    }
-  })
-
-  test("also defers the scoped ZAP report wrapper during Recon", async () => {
-    let called = false
-    const report: UpstreamTool = {
-      def: { name: "zap_generate_scoped_report", description: "scoped report", inputSchema: { type: "object" } },
-      call: async () => {
-        called = true
-        return { content: [{ type: "text", text: "generated" }] }
-      },
-    }
-    const previous = process.env.CYBERFUL_SUBSYSTEM_PHASE
-    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
-    const server = await createGatewayServer({ upstreams: [report] })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const reconClient = new Client({ name: "zap-scoped-recon-policy-test", version: "0" })
-    await reconClient.connect(clientTransport)
-    try {
-      const result = await reconClient.callTool({
-        name: "zap_generate_scoped_report",
-        arguments: {
-          file_path: "early.json",
-          template: "traditional-json",
-          title: "early",
-          sites: ["https://example.com"],
-        },
-      })
-      expect("isError" in result && result.isError).toBe(true)
-      expect(textContent(result)).toContain("after Recon completes")
-      expect(called).toBe(false)
-    } finally {
-      await reconClient.close()
-      await server.closeGateway()
-      if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
-      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous
-    }
-  })
-
-  test("requires the scoped wrapper for the terminal client ZAP report", async () => {
-    let unscopedCalled = false
-    let scopedCalled = false
-    const previous = process.env.CYBERFUL_SUBSYSTEM_PHASE
-    process.env.CYBERFUL_SUBSYSTEM_PHASE = "report"
-    const server = await createGatewayServer({
-      upstreams: [
-        {
-          def: { name: "zap_generate_report", description: "unscoped", inputSchema: { type: "object" } },
+  test("forwards ZAP report tools in every phase without a Cyberful phase gate", async () => {
+    for (const phase of ["recon", "report"]) {
+      const calls: string[] = []
+      const previous = process.env.CYBERFUL_SUBSYSTEM_PHASE
+      process.env.CYBERFUL_SUBSYSTEM_PHASE = phase
+      const server = await createGatewayServer({
+        upstreams: ["zap_generate_report", "zap_generate_scoped_report"].map((name) => ({
+          def: { name, description: name, inputSchema: { type: "object" } },
           call: async () => {
-            unscopedCalled = true
-            return { content: [{ type: "text", text: "unscoped" }] }
+            calls.push(name)
+            return { content: [{ type: "text" as const, text: name }] }
           },
-        },
-        {
-          def: { name: "zap_generate_scoped_report", description: "scoped", inputSchema: { type: "object" } },
-          call: async () => {
-            scopedCalled = true
-            return { content: [{ type: "text", text: "scoped" }] }
-          },
-        },
-      ],
-    })
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-    await server.connect(serverTransport)
-    const client = new Client({ name: "zap-terminal-report-policy-test", version: "0" })
-    await client.connect(clientTransport)
-    try {
-      const unscoped = await client.callTool({ name: "zap_generate_report", arguments: {} })
-      expect("isError" in unscoped && unscoped.isError).toBe(true)
-      expect(textContent(unscoped)).toContain("zap_generate_scoped_report")
-      expect(unscopedCalled).toBe(false)
-
-      const scoped = await client.callTool({ name: "zap_generate_scoped_report", arguments: {} })
-      expect("isError" in scoped && scoped.isError).not.toBe(true)
-      expect(scopedCalled).toBe(true)
-    } finally {
-      await client.close()
-      await server.closeGateway()
-      if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
-      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous
+        })),
+      })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const phaseClient = new Client({ name: `zap-${phase}-autonomy-test`, version: "0" })
+      await phaseClient.connect(clientTransport)
+      try {
+        for (const name of ["zap_generate_report", "zap_generate_scoped_report"]) {
+          const result = await phaseClient.callTool({ name, arguments: {} })
+          expect("isError" in result && result.isError).not.toBe(true)
+        }
+        expect(calls).toEqual(["zap_generate_report", "zap_generate_scoped_report"])
+      } finally {
+        await phaseClient.close()
+        await server.closeGateway()
+        if (previous === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+        else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous
+      }
     }
   })
 
@@ -904,6 +817,178 @@ describe("expert-gateway handoff tool", () => {
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_PATH", previous.path)
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR", previous.successor)
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL", previous.terminal)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("requires structured UNTESTABLE blockers for Bug Bounty exploit handoff", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "expert-bounty-verdict-test-"))
+    const signal = path.join(dir, "handoff.json")
+    const previous = {
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+      handoff: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_PATH,
+      successor: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR,
+    }
+    Object.assign(process.env, {
+      CYBERFUL_SUBSYSTEM_PHASE: "exploit",
+      CYBERFUL_SUBSYSTEM_WORKFLOW: "bug-bounty",
+      CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: dir,
+      CYBERFUL_SUBSYSTEM_HANDOFF_PATH: signal,
+      CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: "hacker",
+    })
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let c: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [] })
+      const [ct, st] = InMemoryTransport.createLinkedPair()
+      await server.connect(st)
+      c = new Client({ name: "bounty-verdict-test", version: "0" })
+      await c.connect(ct)
+      const missing = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "done", artifact: "EXPLOIT.md" },
+      })
+      expect(jsonContent(missing).error).toContain("structured verdict")
+
+      const accepted = await c.callTool({
+        name: "handoff",
+        arguments: {
+          summary: "one hypothesis could not run",
+          artifact: "EXPLOIT.md",
+          verdicts: {
+            confirmed: [],
+            disproved: ["B1"],
+            suspected: [],
+            inconclusive: [],
+            untestable: [
+              {
+                id: "B3",
+                blocker_reason: "MISSING_PREREQUISITE",
+                next_step: "Capture the intended first-party configuration flow.",
+              },
+            ],
+          },
+        },
+      })
+      expect(jsonContent(accepted).successor).toBe("hacker")
+      expect(JSON.parse(await readFile(signal, "utf8"))).toMatchObject({
+        verdicts: {
+          disproved: ["B1"],
+          untestable: [{ id: "B3", blocker_reason: "MISSING_PREREQUISITE" }],
+        },
+      })
+    } finally {
+      await c?.close()
+      await server?.closeGateway()
+      for (const [key, value] of Object.entries(previous)) {
+        const environment =
+          key === "phase"
+            ? "CYBERFUL_SUBSYSTEM_PHASE"
+            : key === "workflow"
+              ? "CYBERFUL_SUBSYSTEM_WORKFLOW"
+              : key === "workarea"
+                ? "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
+                : key === "handoff"
+                  ? "CYBERFUL_SUBSYSTEM_HANDOFF_PATH"
+                  : "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR"
+        if (value === undefined) delete process.env[environment]
+        else process.env[environment] = value
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("gates Bug Bounty handoff on object disposition and novelty synthesis", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "expert-bounty-novelty-gate-test-"))
+    const signal = path.join(dir, "handoff.json")
+    const environment = [
+      "CYBERFUL_SUBSYSTEM_PHASE",
+      "CYBERFUL_SUBSYSTEM_WORKFLOW",
+      "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_PATH",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL",
+      "CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT",
+    ] as const
+    const previous = Object.fromEntries(environment.map((key) => [key, process.env[key]]))
+    Object.assign(process.env, {
+      CYBERFUL_SUBSYSTEM_PHASE: "recon",
+      CYBERFUL_SUBSYSTEM_WORKFLOW: "bug-bounty",
+      CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: dir,
+      CYBERFUL_SUBSYSTEM_HANDOFF_PATH: signal,
+      CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: "exploit",
+      CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT: JSON.stringify({ required: true }),
+    })
+    delete process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let c: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [] })
+      const [ct, st] = InMemoryTransport.createLinkedPair()
+      await server.connect(st)
+      c = new Client({ name: "bounty-novelty-gate-test", version: "0" })
+      await c.connect(ct)
+
+      await c.callTool({
+        name: "test_object",
+        arguments: { action: "transition", id: "project-1", kind: "project", label: "fixture", state: "planned" },
+      })
+      const openObject = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "recon complete", artifact: "RECON.md" },
+      })
+      expect(jsonContent(openObject).error).toContain("test object lifecycle")
+
+      await c.callTool({
+        name: "test_object",
+        arguments: { action: "transition", id: "project-1", state: "not_created" },
+      })
+      const missingNovelty = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "recon complete", artifact: "RECON.md" },
+      })
+      expect(jsonContent(missingNovelty).error).toContain("novelty contract")
+
+      await c.callTool({
+        name: "novelty",
+        arguments: {
+          action: "record",
+          id: "N1",
+          title: "Cross-owner state drift",
+          root_cause: "state ownership mismatch",
+          enforcement_owner: "control plane",
+          protocol: "HTTP",
+          state_transition: "create to read",
+          attacker_capability: "read adjacent synthetic state",
+          oracle: "identity-specific response differential",
+          target_facts: ["The target exposes separate create and read services."],
+        },
+      })
+      await c.callTool({
+        name: "novelty",
+        arguments: {
+          action: "synthesize",
+          outcome: "diversified",
+          contrarian_summary: "Checked an ownership seam outside the dominant endpoint family.",
+          evidence: ["Compared creation and read enforcement across target-specific services."],
+          remaining_unknowns: ["Asynchronous propagation semantics"],
+        },
+      })
+      const accepted = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "recon complete", artifact: "RECON.md" },
+      })
+      expect(jsonContent(accepted).successor).toBe("exploit")
+    } finally {
+      await c?.close()
+      await server?.closeGateway()
+      for (const key of environment) {
+        const value = previous[key]
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
       await rm(dir, { recursive: true, force: true })
     }
   })
@@ -1101,11 +1186,35 @@ describe("expert-gateway question tool", () => {
           },
         })
         expect(jsonContent(result)).toMatchObject({ ok: false, action })
+        if (action === "decline")
+          expect(jsonContent(result).output).toContain("before Cyberful received an explicit human decision")
       } finally {
         await connected.close()
       }
     })
   }
+
+  test("attributes a decline to the human only with Cyberful decision metadata", async () => {
+    const connected = await questionClient(() => ({ action: "decline", _meta: humanDecisionMetadata() }))
+    try {
+      const result = await connected.client.callTool({
+        name: "question",
+        arguments: {
+          questions: [
+            {
+              header: "Authorization",
+              question: "Proceed with the next active test?",
+              options: [{ label: "Proceed", description: "Continue inside the agreed scope." }],
+              custom: false,
+            },
+          ],
+        },
+      })
+      expect(jsonContent(result).output).toContain("human explicitly declined")
+    } finally {
+      await connected.close()
+    }
+  })
 
   test("fails closed when accepted elicitation content is invalid", async () => {
     const connected = await questionClient(() => ({ action: "accept", content: { q0: "not-json" } }))
@@ -1130,7 +1239,7 @@ describe("expert-gateway question tool", () => {
     }
   })
 
-  test("requires visible CAPTCHA attestation and keeps active tools blocked through human verification", async () => {
+  test("requires visible CAPTCHA attestation and pauses only its browser profile and origin", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "expert-captcha-gateway-test-"))
     const circuit = path.join(parent, "circuit.json")
     const previous = {
@@ -1142,24 +1251,48 @@ describe("expert-gateway question tool", () => {
     process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH = circuit
     process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
     let navigations = 0
+    const browserMeta = (profile: number, pageID: string, origin: string, action: string) => ({
+      "cyberful.dev/browser-action": {
+        profile,
+        page_id: pageID,
+        origin,
+        path_family: "/challenge",
+        action,
+        action_family: action.startsWith("browser_captcha") ? "captcha" : "navigation",
+        page_transition: "none",
+        outcome: "ok",
+        status: 200,
+      },
+    })
     const upstreams: UpstreamTool[] = [
       {
         def: { name: "browser_captcha_handoff", inputSchema: { type: "object" } },
         call: async () => ({
           content: [{ type: "text", text: JSON.stringify({ detected: true, action: "manual_handoff_ready" }) }],
+          _meta: browserMeta(1, "page-challenge", "https://example.test", "browser_captcha_handoff"),
         }),
+        browserProfile: 1,
       },
       {
         def: { name: "browser_captcha_status", inputSchema: { type: "object" } },
-        call: async () => ({ content: [{ type: "text", text: JSON.stringify({ detected: false }) }] }),
+        call: async () => ({
+          content: [{ type: "text", text: JSON.stringify({ detected: false }) }],
+          _meta: browserMeta(1, "page-challenge", "https://example.test", "browser_captcha_status"),
+        }),
+        browserProfile: 1,
       },
-      {
+      ...([1, 2] as const).map((profile): UpstreamTool => ({
         def: { name: "browser_navigate", inputSchema: { type: "object" } },
-        call: async () => {
+        call: async (args) => {
           navigations += 1
-          return { content: [{ type: "text", text: "navigated" }] }
+          const url = new URL(String(args.url))
+          return {
+            content: [{ type: "text", text: "navigated" }],
+            _meta: browserMeta(profile, `page-${profile}`, url.origin, "browser_navigate"),
+          }
         },
-      },
+        browserProfile: profile,
+      })),
     ]
     let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
     let c: McpClient | undefined
@@ -1186,18 +1319,34 @@ describe("expert-gateway question tool", () => {
       expect(jsonContent(await c.callTool({ name: "question", arguments: question })).error).toContain(
         "already visible",
       )
-      await c.callTool({ name: "browser_captcha_handoff", arguments: {} })
-      expect(jsonContent(await c.callTool({ name: "browser_navigate", arguments: {} })).error).toContain(
-        "awaiting human",
+      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
+      expect(jsonContent(await c.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 1, url: "https://example.test/account" },
+      })).error).toContain(
+        "human resolution",
       )
       expect(navigations).toBe(0)
+      expect(textContent(await c.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 2, url: "https://example.test/account" },
+      }))).toBe("navigated")
+      expect(textContent(await c.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 1, url: "https://other.test/account" },
+      }))).toBe("navigated")
+      expect(navigations).toBe(2)
       await c.callTool({ name: "question", arguments: question })
-      expect(jsonContent(await c.callTool({ name: "browser_navigate", arguments: {} })).error).toContain(
-        "awaiting verification",
-      )
-      await c.callTool({ name: "browser_captcha_status", arguments: {} })
-      expect(textContent(await c.callTool({ name: "browser_navigate", arguments: {} }))).toBe("navigated")
-      expect(navigations).toBe(1)
+      expect(jsonContent(await c.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 1, url: "https://example.test/account" },
+      })).error).toContain("human resolution")
+      await c.callTool({ name: "browser_captcha_status", arguments: { profile: 1 } })
+      expect(textContent(await c.callTool({
+        name: "browser_navigate",
+        arguments: { profile: 1, url: "https://example.test/account" },
+      }))).toBe("navigated")
+      expect(navigations).toBe(3)
     } finally {
       await c?.close()
       await server?.closeGateway()

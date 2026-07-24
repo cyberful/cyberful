@@ -6,6 +6,9 @@ provide screenshot or vision tools and does not solve CAPTCHAs. Every
 `browser_*` tool accepts an optional integer `profile` from `1` through `5`;
 omitting it selects profile 1.
 
+Browser discovery and dispatch share one registry: duplicate names or a tool
+without an object schema and handler stop startup before Chromium is launched.
+
 Each number owns separate cookies, local storage, cache, tabs, downloads, and a
 Chromium profile lock. This makes role-to-role and tenant-to-tenant comparisons
 possible without moving session tokens between accounts. A mission can say, for
@@ -58,6 +61,15 @@ Key controls include `CYBER_BROWSER_HEADLESS`,
 is enabled, the host injects the loopback proxy and trust pin; users should not
 manually supply its API keys.
 
-A visible CAPTCHA may be handed to the human through the TUI. Active browser
-tools remain blocked until the challenge is visibly cleared; Cyberful never
-injects a bypass token.
+A visible CAPTCHA is handed to the human through the TUI while the challenged
+page is preserved and foregrounded. The breaker is limited to that browser
+profile and origin; other profiles, origins, tabs, and non-browser tools keep
+working. It closes only after `browser_captcha_status` confirms the original
+page is clear. Cyberful never injects a bypass token.
+
+Every browser result carries a redacted `_meta["cyberful.dev/browser-action"]`
+envelope with profile, page ID, origin, path family, action family, page
+transition, outcome, and status when available. It excludes selectors, entered
+text, cookies, request bodies, and query values. The gateway stores these events
+locally in `raw/operations/surface-coverage.jsonl` and publishes a per-phase
+summary of exercised and unexercised surface.

@@ -1,9 +1,14 @@
 {
-  "$comment": "Wall-clock budgets in minutes for Bug Bounty Program phase processes. Shared phases intentionally match Pentest.",
-  "brief": 10,
-  "recon": 60,
-  "exploit": 120,
-  "hacker": 90,
-  "verify": 45,
-  "report": 30
+  "$comment": "Wall-clock ceilings plus a qualitative contrarian pass for Bug Bounty research phases.",
+  "brief": 30,
+  "recon": 240,
+  "exploit": 360,
+  "hacker": 360,
+  "verify": 180,
+  "report": 90,
+  "$novelty": {
+    "recon": { "required": true },
+    "exploit": { "required": true },
+    "hacker": { "required": true }
+  }
 }

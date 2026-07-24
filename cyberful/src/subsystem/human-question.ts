@@ -17,6 +17,7 @@ const MAX_DESCRIPTION_LENGTH = 2_000
 const MAX_ANSWER_LENGTH = 8_000
 
 export const APPROVAL_ELICITATION_META_KEY = "cyberful.dev/approval"
+export const HUMAN_DECISION_META_KEY = "cyberful.dev/human-decision"
 
 export interface HumanQuestion {
   question: string
@@ -35,8 +36,12 @@ interface ApprovalElicitationEnvelope {
   questions: ReadonlyArray<HumanQuestion>
 }
 
+interface HumanDecisionEnvelope {
+  version: 1
+  source: "human"
+}
+
 export interface ApprovalElicitationSchema {
-  $schema: "https://json-schema.org/draft/2020-12/schema"
   type: "object"
   properties: Record<
     string,
@@ -110,15 +115,43 @@ export function parseApprovalElicitationMetadata(value: unknown): HumanQuestion[
   return parseHumanQuestions(envelope.questions)
 }
 
+// ── A Decline Is Human Only With End-To-End Attestation ──────────
+// MCP transports may collapse client routing errors or unavailable selectors
+// into the same `decline` action used for an operator rejection. Cyberful adds
+// this metadata only after its selector returns or throws the typed rejection,
+// and the gateway requires it before attributing the decision to the human.
+// Missing or malformed metadata therefore remains non-authorizing without
+// inventing an operator action that never occurred.
+// ─────────────────────────────────────────────────────────────────
+export function humanDecisionMetadata(): Record<string, unknown> {
+  return {
+    [HUMAN_DECISION_META_KEY]: {
+      version: 1,
+      source: "human",
+    } satisfies HumanDecisionEnvelope,
+  }
+}
+
+export function hasHumanDecisionMetadata(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const envelope = value[HUMAN_DECISION_META_KEY]
+  return (
+    isRecord(envelope) &&
+    envelope.version === 1 &&
+    envelope.source === "human" &&
+    Object.keys(envelope).every((key) => ["version", "source"].includes(key))
+  )
+}
+
 // ── Primitive Form Content Preserves Rich Cyberful Answers ──────
-// MCP form elicitation intentionally permits only primitive top-level fields.
-// Each answer set is therefore a JSON-encoded string array. The versioned
-// metadata remains the authoritative UI contract, and both ends validate the
-// decoded matrix before it can authorize work.
+// MCP form elicitation intentionally permits only primitive top-level fields,
+// and transports may normalize optional JSON Schema annotations like `$schema`.
+// Cyberful emits only the functional form shape and compares it exactly with
+// the versioned metadata before routing the question. Each answer set remains a
+// JSON-encoded string array validated at both ends before it can authorize work.
 // ─────────────────────────────────────────────────────────────────
 export function approvalElicitationSchema(questions: ReadonlyArray<HumanQuestion>): ApprovalElicitationSchema {
   return {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
     properties: Object.fromEntries(
       questions.map((question, index) => [

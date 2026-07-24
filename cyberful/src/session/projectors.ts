@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { sql } from "drizzle-orm"
 import type { TxOrDb } from "@/storage/db"
-import { SyncEvent } from "@/sync"
+import { EventProjection } from "@/event-projection"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
@@ -103,11 +103,11 @@ export function toPartialRow(info: DeepPartial<Session.Info>) {
 }
 
 export default [
-  SyncEvent.project(Session.Event.Created, (db, data) => {
+  EventProjection.project(Session.Event.Created, (db, data) => {
     db.insert(SessionTable).values(Session.toRow(data.info)).run()
   }),
 
-  SyncEvent.project(Session.Event.Updated, (db, data) => {
+  EventProjection.project(Session.Event.Updated, (db, data) => {
     const info = data.info
     const row = db
       .update(SessionTable)
@@ -118,11 +118,11 @@ export default [
     if (!row) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
   }),
 
-  SyncEvent.project(Session.Event.Deleted, (db, data) => {
+  EventProjection.project(Session.Event.Deleted, (db, data) => {
     db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID)).run()
   }),
 
-  SyncEvent.project(MessageV2.Event.Updated, (db, data) => {
+  EventProjection.project(MessageV2.Event.Updated, (db, data) => {
     const time_created = data.info.time.created
     const { id, sessionID, ...rest } = data.info
 
@@ -142,7 +142,7 @@ export default [
     }
   }),
 
-  SyncEvent.project(MessageV2.Event.Removed, (db, data) => {
+  EventProjection.project(MessageV2.Event.Removed, (db, data) => {
     for (const row of db
       .select()
       .from(PartTable)
@@ -156,7 +156,7 @@ export default [
       .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartRemoved, (db, data) => {
+  EventProjection.project(MessageV2.Event.PartRemoved, (db, data) => {
     const row = db
       .select()
       .from(PartTable)
@@ -170,7 +170,7 @@ export default [
       .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartUpdated, (db, data) => {
+  EventProjection.project(MessageV2.Event.PartUpdated, (db, data) => {
     const { id, messageID, sessionID, ...rest } = data.part
     const row = db.select().from(PartTable).where(eq(PartTable.id, id)).get()
 

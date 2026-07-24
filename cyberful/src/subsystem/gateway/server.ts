@@ -1,10 +1,8 @@
-// ── Phase And Fallback Gateway MCP Server ────────────────────────────────────
-// Runs the session-scoped MCP bridge used by primary and local fallback attempts
-// for variables, handoffs, questions, usage recording, and hardened proxying.
-// Template resolution, response redaction, and enforced tool profiles keep stored
-// secrets and excluded capability definitions out of local model traffic.
+// ── Phase Gateway MCP Server ────────────────────────────────────────────────
+// Runs the session-scoped MCP bridge for variables, handoffs, questions, usage
+// recording, and hardened proxying to browser, ZAP, Ghidra, and execution runtimes.
+// Template resolution and response redaction keep stored secrets out of model traffic.
 // @docs/concepts/execution-model.md
-// @docs/runtimes/fallback-inference.md
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -33,15 +31,28 @@ import { Database } from "../../storage/db"
 import { SessionVariableTable } from "../../session/session.sql"
 import { SessionVariable } from "../../session/variable"
 import { SubsystemCompletion } from "../completion"
+import { SubsystemVerdict } from "../verdict"
 import { SubsystemUpstream } from "../upstream"
 import { SessionID } from "../../session/schema"
-import { zapPhaseToolError } from "./zap-phase-policy"
 import { ToolUsageRecorder } from "./tool-usage"
+import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
+import { SurfaceCoverage, browserAction } from "./surface-coverage"
+import {
+  TEST_OBJECT_TOOL_DEF,
+  testObjectLifecycleFromEnvironment,
+  type TestObjectLifecycleLedger,
+} from "./test-object-lifecycle"
+import { NOVELTY_TOOL_DEF, noveltyLedgerFromEnvironment, type NoveltyLedger } from "./novelty-ledger"
 import * as Log from "@/util/log"
+import { errorMessage } from "@/util/error"
 import { SOURCE_TOOL_DEFS, handleSourceTool, isSourceTool, sourceToolsAvailable } from "./source-tools"
 import { SOURCE_IMPORT_TOOL_DEF, handleSourceImport, type SourceImportRequest } from "./source-import"
 import { GIT_TOOL_DEFS, gitToolsAvailable, handleGitTool, isGitTool } from "./git-tools"
 import { AUDIT_LAB_TOOL_DEF, auditLabAvailable, cleanupAuditLabs, prepareAuditLab } from "./audit-lab"
+import { EVM_LAB_TOOL_DEF, evmLabAvailable, handleEvmLab } from "./evm-lab"
+import { EVM_EVIDENCE_TOOL_DEF, evmEvidenceAvailable, handleEvmEvidence } from "./evm-evidence"
+import { GhidraEvidenceRecorder } from "./ghidra-evidence"
+import { evmVariableRegistryName } from "../evm/runtime"
 import {
   CODE_GRAPH_TOOL_DEFS,
   codeGraphToolsAvailable,
@@ -58,11 +69,19 @@ import {
 import {
   approvalElicitationMetadata,
   approvalElicitationSchema,
+  hasHumanDecisionMetadata,
   parseApprovalElicitationContent,
   parseHumanQuestions,
   type HumanQuestion,
 } from "../human-question"
-import { GatewayToolProfile, type ToolProfile } from "./tool-profile"
+import {
+  gatewayPhasePolicy,
+  runtimeNetworkAllowed,
+  type GatewayPhasePolicy,
+} from "./phase-policy"
+import { GatewayToolRegistry } from "./tool-registry"
+
+export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
 const log = Log.create({ service: "phase-gateway" })
 const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
@@ -170,58 +189,37 @@ function text(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: body }], ...(isError ? { isError: true } : {}) }
 }
 
-function selectedWorkflow() {
-  return process.env.CYBERFUL_SUBSYSTEM_WORKFLOW?.trim()
+function liveTargetToolDefinitions(input: { testObjects: boolean; novelty: boolean; egress: boolean }) {
+  return [
+    ...(input.testObjects ? [TEST_OBJECT_TOOL_DEF] : []),
+    ...(input.novelty ? [NOVELTY_TOOL_DEF] : []),
+    ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
+  ]
 }
 
-function workflowCapability(capability: SubsystemPhase.WorkflowCapability) {
-  const workflow = selectedWorkflow()
-  return workflow ? SubsystemPhase.hasCapability(workflow, capability) : false
-}
-
-function activeWorkflowPhase(workflow = selectedWorkflow(), phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()) {
-  return Boolean(
-    workflow &&
-      phase &&
-      SubsystemPhase.workflow(workflow) &&
-      (SubsystemPhase.isExpertPhase(workflow, phase) || SubsystemPhase.isInteractiveAgent(workflow, phase)),
-  )
-}
-
-export function runtimeCapabilityAllowed(input: {
-  workflow?: string
-  phase?: string
-  capability: SubsystemPhase.WorkflowCapability
-  authorized: boolean
-}) {
-  if (!input.workflow || !SubsystemPhase.workflow(input.workflow)) return false
-  return SubsystemPhase.hasCapability(input.workflow, input.capability)
-}
-
-export function runtimeNetworkAllowed(input: { workflow?: string; phase?: string; authorized: boolean }) {
-  return input.workflow !== "code-audit"
-}
-
-function activeRuntimeAllowed(capability: SubsystemPhase.WorkflowCapability) {
-  const workflow = selectedWorkflow()
-  const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
-  if (!activeWorkflowPhase(workflow, phase)) return false
-  return runtimeCapabilityAllowed({ workflow, phase, capability, authorized: false })
-}
-
-function localToolDefinitions() {
-  const workflow = selectedWorkflow()
-  const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
-  if (!activeWorkflowPhase(workflow, phase)) return []
-  const source = sourceToolsAvailable() && workflowCapability("source") ? [...SOURCE_TOOL_DEFS] : []
-  const sourceImport = workflow === "code-audit" && phase === "scope" ? [SOURCE_IMPORT_TOOL_DEF] : []
-  const git = gitToolsAvailable() && workflowCapability("audit-diff") && phase === "scope" ? [...GIT_TOOL_DEFS] : []
-  const codeGraph = codeGraphToolsAvailable() && workflowCapability("code-graph") ? [...CODE_GRAPH_TOOL_DEFS] : []
+function localToolDefinitions(
+  policy: GatewayPhasePolicy,
+  input: { testObjects: boolean; novelty: boolean; egress: boolean },
+) {
+  if (!policy.active) return []
+  const source = sourceToolsAvailable() && policy.allows("source") ? [...SOURCE_TOOL_DEFS] : []
+  const sourceImport = policy.sourceImport ? [SOURCE_IMPORT_TOOL_DEF] : []
+  const git = gitToolsAvailable() && policy.auditDiff ? [...GIT_TOOL_DEFS] : []
+  const codeGraph = codeGraphToolsAvailable() && policy.allows("code-graph") ? [...CODE_GRAPH_TOOL_DEFS] : []
   const lab =
-    workflow === "code-audit" && (phase === "attack" || phase === "verify") && auditLabAvailable()
-      ? [AUDIT_LAB_TOOL_DEF]
-      : []
-  return [...sourceImport, ...source, ...codeGraph, ...git, ...lab]
+    policy.auditLab && auditLabAvailable() ? [AUDIT_LAB_TOOL_DEF] : []
+  const evmLab = policy.evmLab && evmLabAvailable() ? [EVM_LAB_TOOL_DEF] : []
+  const evmEvidence = policy.evmEvidence && evmEvidenceAvailable() ? [EVM_EVIDENCE_TOOL_DEF] : []
+  return [
+    ...sourceImport,
+    ...source,
+    ...codeGraph,
+    ...git,
+    ...lab,
+    ...evmLab,
+    ...evmEvidence,
+    ...liveTargetToolDefinitions(input),
+  ]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -290,7 +288,11 @@ const VARIABLE_TOOL_DEF = {
       action: { type: "string", enum: ["set", "get", "list", "delete"] },
       name: { type: "string", description: "Variable name (required for set/get/delete)." },
       value: { description: "JSON value to store (required for set)." },
-      description: { type: "string", description: "Optional note stored with the variable." },
+      description: {
+        type: "string",
+        maxLength: SessionVariable.MAX_DESCRIPTION_LENGTH,
+        description: `Optional note stored with the variable (at most ${SessionVariable.MAX_DESCRIPTION_LENGTH} characters).`,
+      },
       reveal: { type: "boolean", description: "get only: return the raw value instead of a redacted preview." },
     },
     required: ["action"],
@@ -392,7 +394,7 @@ async function handleQuestion(
           question: "Resolve the visible CAPTCHA in the browser Cyberful brought to the front, then confirm here.",
           options: [
             { label: "Resolved", description: "I completed the visible challenge in that browser." },
-            { label: "Cannot resolve", description: "Keep the circuit breaker closed and stop active testing." },
+            { label: "Cannot resolve", description: "Keep this browser profile and origin paused." },
           ],
           custom: false,
         },
@@ -412,9 +414,11 @@ async function handleQuestion(
       ok: false,
       action: response.action,
       output:
-        response.action === "decline"
+        response.action === "decline" && hasHumanDecisionMetadata(response._meta)
           ? "The human explicitly declined this request. Do not perform the proposed action."
-          : "The human interaction was cancelled. Do not perform the proposed action.",
+          : response.action === "decline"
+            ? "The request was declined before Cyberful received an explicit human decision. Do not perform the proposed action."
+            : "The human interaction was cancelled. Do not perform the proposed action.",
     })
   const answers = parseApprovalElicitationContent(presentedQuestions, response.content)
   if (!answers) return text({ error: "native elicitation returned invalid answers" }, true)
@@ -426,7 +430,7 @@ async function handleQuestion(
       answers: answers[index] ?? [],
     })),
     output: captcha
-      ? "The human answered. Call browser_captcha_status now; active tooling remains blocked until the host observes that the challenge cleared."
+      ? "The human answered. Call browser_captcha_status on the original page; only that profile and origin remain paused until clearance."
       : "The human answered. Continue the current phase using these answers.",
   })
 }
@@ -444,8 +448,9 @@ async function confirmSourceImport(
       {
         header: "Import source",
         question:
-          `Clone the public repository ${request.url} at ${refs} into this isolated workarea? ` +
-          "This is one explicit network acquisition; hooks, credentials, submodules, LFS and dependency downloads stay disabled.",
+          `Clone public repository '${request.repository}' from ${request.url} at ${refs} into the isolated source collection? ` +
+          `Declared submodules are ${request.submodules === "recursive" ? "included at their exact Gitlink commits" : "not included"}; ` +
+          "hooks, credentials, redirects, LFS and dependency execution stay disabled.",
         options: [
           { label: "Import repository", description: "Acquire and seal the displayed public Git source." },
           { label: "Keep local only", description: "Do not make a network request; use the current local source." },
@@ -465,6 +470,7 @@ async function confirmSourceImport(
 
 interface HandoffConfig {
   phase: string
+  workflow?: string
   successor?: string
   signalPath: string
 }
@@ -478,11 +484,12 @@ function handoffConfig(): HandoffConfig | undefined {
   const terminal = process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL === "1"
   if (Boolean(successor) === terminal)
     throw new Error("expert-gateway handoff requires exactly one successor or terminal marker")
-  return { phase, successor, signalPath }
+  return { phase, workflow: gatewayPhasePolicy().workflow, successor, signalPath }
 }
 
 function handoffToolDef(config: HandoffConfig) {
   const destination = config.successor ? `the ${config.successor} phase` : "engagement completion"
+  const verdictsRequired = SubsystemVerdict.requiredFor(config.workflow, config.phase)
   return {
     name: "handoff",
     description:
@@ -523,13 +530,22 @@ function handoffToolDef(config: HandoffConfig) {
           },
           required: ["title", "summaryMarkdown"],
         },
+        verdicts: {
+          ...SubsystemVerdict.INPUT_SCHEMA,
+          description:
+            "Complete mutually-exclusive hypothesis inventory. SUSPECTED requires positive target evidence; UNTESTABLE requires a typed blocker and exact next step.",
+        },
       },
-      required: ["summary"],
+      required: ["summary", ...(verdictsRequired ? ["verdicts"] : [])],
     },
   }
 }
 
-async function handleHandoff(config: HandoffConfig, args: Record<string, unknown>) {
+async function handleHandoff(
+  config: HandoffConfig,
+  args: Record<string, unknown>,
+  guards: { testObjects?: TestObjectLifecycleLedger; novelty?: NoveltyLedger } = {},
+) {
   const summary = typeof args.summary === "string" ? args.summary.trim() : ""
   if (!summary) return text({ error: "handoff requires a non-empty summary" })
   const target = typeof args.target === "string" ? args.target.trim() : undefined
@@ -543,6 +559,18 @@ async function handleHandoff(config: HandoffConfig, args: Record<string, unknown
   const completion = args.completion === undefined ? undefined : SubsystemCompletion.parseCandidate(args.completion)
   if (args.completion !== undefined && !completion)
     return text({ error: "handoff completion requires a non-empty title and summaryMarkdown" })
+  let verdicts: ReturnType<typeof SubsystemVerdict.parse>
+  try {
+    verdicts = SubsystemVerdict.parse(args.verdicts)
+  } catch (error) {
+    return text({ error: error instanceof Error ? error.message : String(error) }, true)
+  }
+  if (SubsystemVerdict.requiredFor(config.workflow, config.phase) && !verdicts)
+    return text({ error: "handoff requires a structured verdict inventory for this phase" }, true)
+  const lifecycleError = await guards.testObjects?.handoffError()
+  if (lifecycleError) return text({ error: lifecycleError }, true)
+  const noveltyError = await guards.novelty?.handoffError()
+  if (noveltyError) return text({ error: noveltyError }, true)
   try {
     await writeFile(
       config.signalPath,
@@ -552,6 +580,7 @@ async function handleHandoff(config: HandoffConfig, args: Record<string, unknown
         summary,
         artifact,
         completion,
+        verdicts: args.verdicts,
         time: Date.now(),
       }),
       { flag: "wx" },
@@ -594,8 +623,14 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
       if (rejection) return text({ error: `refusing to save '${name}': ${rejection}` }, true)
       if (args.description !== undefined && typeof args.description !== "string")
         return text({ error: "description must be a string" }, true)
-      if (typeof args.description === "string" && args.description.length > 120)
-        return text({ error: "description must contain at most 120 characters" }, true)
+      if (
+        typeof args.description === "string" &&
+        args.description.length > SessionVariable.MAX_DESCRIPTION_LENGTH
+      )
+        return text(
+          { error: `description must contain at most ${SessionVariable.MAX_DESCRIPTION_LENGTH} characters` },
+          true,
+        )
       return text({ ok: true, variable: setVar(sessionID, name, value, args.description) })
     }
     case "get": {
@@ -768,6 +803,9 @@ function resultMetric(result: CallToolResult, name: "lead_count" | "suspected_co
 
 async function observeCaptchaCircuit(config: CircuitBreakerConfig, tool: string, result: CallToolResult) {
   if (tool !== "browser_captcha_status" && tool !== "browser_captcha_handoff") return
+  const action = browserAction(result)
+  if (!action) return
+  const scope = { profile: action.profile, origin: action.origin, pageID: action.pageID }
   const value = result.content
     ?.flatMap((content) => {
       if (content.type !== "text") return []
@@ -777,10 +815,27 @@ async function observeCaptchaCircuit(config: CircuitBreakerConfig, tool: string,
     .find((item) => typeof item.detected === "boolean")
   if (!value) return
   if (value.detected === true) {
-    await activateCircuitBreaker(config.filePath, config.phase, tool === "browser_captcha_handoff" && !result.isError)
+    await activateCircuitBreaker(config.filePath, config.phase, scope, tool === "browser_captcha_handoff" && !result.isError)
     return
   }
-  if (tool === "browser_captcha_status") await clearCircuitBreaker(config.filePath)
+  if (tool === "browser_captcha_status") await clearCircuitBreaker(config.filePath, scope)
+}
+
+function browserScope(
+  tool: string,
+  args: Record<string, unknown>,
+  profile: BrowserProfileId | undefined,
+  coverage: SurfaceCoverage | undefined,
+) {
+  if (profile === undefined || !tool.startsWith("browser_")) return
+  const current = coverage?.currentScope(profile)
+  if (tool !== "browser_navigate" || typeof args.url !== "string") return current
+  try {
+    const url = new URL(args.url.includes("://") ? args.url : `http://${args.url}`)
+    return { profile, origin: url.origin, pageID: current?.pageID ?? "pending" }
+  } catch {
+    return current
+  }
 }
 
 function redactResource(sessionID: SessionID, result: ReadResourceResult): ReadResourceResult {
@@ -849,10 +904,10 @@ export function resolveBrowserUpstreamEnv(input: {
 
 // ── Upstreams Receive Least-Privilege Environments ───────────────
 // All built-in processes share the gateway as a parent but do not share the same
-// trust boundary. Only the ZAP bridge requires engagement API and MCP credentials;
-// cyberful-os exposes a shell and the browser does not need those secrets. Ledger
-// proof keys remain host-only for every upstream. Filtering a complete
-// environment here keeps each child launch explicit and independently reviewable.
+// trust boundary. ZAP and Ghidra bridges each receive only their engagement
+// credentials; cyberful-os exposes a shell and the browser needs neither. Ledger
+// proof keys remain host-only for every upstream. Filtering a complete environment
+// here keeps each child launch explicit and independently reviewable.
 // ─────────────────────────────────────────────────────────────────
 export function upstreamProcessEnv(
   key: string,
@@ -865,9 +920,11 @@ export function upstreamProcessEnv(
     ),
   )
   delete env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
-  if (key === "zap") return env
-  delete env.CYBER_ZAP_API_KEY
-  delete env.CYBER_ZAP_MCP_KEY
+  if (key !== "zap") {
+    delete env.CYBER_ZAP_API_KEY
+    delete env.CYBER_ZAP_MCP_KEY
+  }
+  if (key !== "ghidra") delete env.CYBER_GHIDRA_MCP_KEY
   return env
 }
 
@@ -876,7 +933,7 @@ export function upstreamProcessEnv(
 // phase. Their clients remain owned here because tools, resources, templates,
 // and prompts all share the same transport lifetime. cyberful-os is the required
 // execution boundary and fails startup when unavailable; optional browser or
-// ZAP failures degrade visibly without inventing a capability that cannot run.
+// ZAP and Ghidra failures degrade visibly without inventing a capability that cannot run.
 // ──────────────────────────────────────────────────────────────
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
   tools: UpstreamTool[]
@@ -888,7 +945,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const clients: Client[] = []
   const bridgeContainers = new Set<string>()
   const upstreamCapabilities: readonly {
-    readonly key: "cyberful-os" | "browser" | "zap"
+    readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
     readonly capability: SubsystemPhase.WorkflowCapability
     readonly browserProfile?: BrowserProfileId
   }[] = [
@@ -899,15 +956,16 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       browserProfile,
     })),
     { key: "zap", capability: "zap" },
+    { key: "ghidra", capability: "ghidra" },
   ]
+  const policy = gatewayPhasePolicy()
   for (const { key, capability, browserProfile } of upstreamCapabilities) {
-    const workflow = selectedWorkflow()
-    if (!activeWorkflowPhase(workflow) || !workflow || !SubsystemPhase.hasCapability(workflow, capability)) continue
-    if (!activeRuntimeAllowed(capability)) continue
+    if (!policy.allows(capability)) continue
     const def = builtins[key]
     if (!def || def.enabled === false || !Array.isArray(def.command) || def.command.length === 0) continue
     try {
-      if (key === "zap" && "container" in def && def.container) bridgeContainers.add(def.container)
+      if ((key === "zap" || key === "ghidra") && "container" in def && def.container)
+        bridgeContainers.add(def.container)
       const [cmd, ...args] = def.command
       const env = upstreamProcessEnv(key, process.env, def.environment)
       if (key === "browser" && browserProfile !== undefined) {
@@ -935,10 +993,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         // are registered for removal when their gateway closes.
         // ──────────────────────────────────────────────────────────────
         const workarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim() || process.cwd()
-        const workflow = selectedWorkflow()
+        const workflow = policy.workflow
         const networkAllowed = runtimeNetworkAllowed({
           workflow,
-          phase: process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim(),
+          phase: policy.phase,
           authorized: false,
         })
         const baseContainer =
@@ -952,9 +1010,19 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBERFUL_OS_CONTAINER = container
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
-        if (!networkAllowed)
-          env.CYBERFUL_OS_DOCKER_ARGS =
-            "--network=none --cpus=2 --memory=4g --pids-limit=512 --security-opt=no-new-privileges"
+        const dockerArgs = !networkAllowed
+          ? ["--network=none", "--cpus=2", "--memory=4g", "--pids-limit=512", "--security-opt=no-new-privileges"]
+          : []
+        if (workflow && SubsystemPhase.hasCapability(workflow, "evm-lab")) {
+          dockerArgs.push(
+            "--add-host=host.docker.internal:host-gateway",
+            "--env=HOME=/workspace/.cyberful-evm/cache/home",
+            "--env=FOUNDRY_DIR=/workspace/.cyberful-evm/cache/home/.foundry",
+            "--env=SVM_HOME=/workspace/.cyberful-evm/cache/home/.svm",
+            "--env=XDG_CACHE_HOME=/workspace/.cyberful-evm/cache/home/.cache",
+          )
+        }
+        if (dockerArgs.length > 0) env.CYBERFUL_OS_DOCKER_ARGS = dockerArgs.join(" ")
         process.env.CYBERFUL_OS_CONTAINER = container
         if (appsecProfile) bridgeContainers.add(container)
       }
@@ -1040,7 +1108,6 @@ export async function createGatewayServer(opts?: {
   upstreamClients?: Client[]
   closeUpstreams?: () => Promise<void>
   upstreamDiagnosticSink?: (text: string) => void
-  toolProfile?: ToolProfile
 }): Promise<GatewayServer> {
   const connected = opts?.upstreams
     ? {
@@ -1051,15 +1118,7 @@ export async function createGatewayServer(opts?: {
     : proxyEnabled()
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
       : { tools: [], clients: [], close: () => Promise.resolve() }
-  const toolProfile = opts?.toolProfile ?? GatewayToolProfile.parse(process.env.CYBERFUL_SUBSYSTEM_TOOL_PROFILE)
-  const upstreams = connected.tools.filter((upstream) =>
-    GatewayToolProfile.allowsUpstream({
-      profile: toolProfile,
-      name: upstream.def.name,
-      capability: upstream.capability,
-      metadata: upstream.def._meta,
-    }),
-  )
+  const upstreams = connected.tools
   const byName = new Map<string, UpstreamTool[]>()
   for (const upstream of upstreams) {
     const candidates = byName.get(upstream.def.name) ?? []
@@ -1074,8 +1133,17 @@ export async function createGatewayServer(opts?: {
     )
     return profiles.length > 0 ? browserProfileToolDefinition(definition, profiles) : definition
   })
-  const localTools = toolProfile === "full" ? localToolDefinitions() : []
-  const localToolNames = new Set<string>(localTools.map((tool) => tool.name))
+  const policy = gatewayPhasePolicy()
+  const phase = policy.phase
+  const liveTargetResearch = policy.liveTargetResearch
+  const testObjects = liveTargetResearch ? testObjectLifecycleFromEnvironment() : undefined
+  const novelty = liveTargetResearch ? noveltyLedgerFromEnvironment() : undefined
+  const liveTargetTools = {
+    testObjects: testObjects !== undefined,
+    novelty: novelty !== undefined,
+    egress: liveTargetResearch,
+  }
+  const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name))
     ? createCodeGraphToolHandler()
     : undefined
@@ -1083,6 +1151,10 @@ export async function createGatewayServer(opts?: {
   const question = questionEnabled()
   const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
+  const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
+  const coverage = workareaRoot && phase ? new SurfaceCoverage(workareaRoot, phase) : undefined
+  const ghidraEvidence =
+    workareaRoot && phase && policy.allows("ghidra") ? new GhidraEvidenceRecorder(workareaRoot, phase) : undefined
   const server = new Server(
     { name: "expert-gateway", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
@@ -1113,42 +1185,25 @@ export async function createGatewayServer(opts?: {
         if (failures.length > 0) throw new AggregateError(failures, "phase runtime and audit lab cleanup failed")
       },
       () => usage.close(),
+      ...(coverage ? [() => coverage.close()] : []),
+      ...(ghidraEvidence ? [() => ghidraEvidence.close()] : []),
       ...(codeGraph ? [() => codeGraph.close()] : []),
     ]))
   server.onclose = async () => {
     await closeUpstreams().catch((error) => log.error("phase gateway cleanup failed", { error }))
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      VARIABLE_TOOL_DEF,
-      ...(question && GatewayToolProfile.allowsLifecycle(toolProfile, "question") ? [QUESTION_TOOL_DEF] : []),
-      ...(handoff && GatewayToolProfile.allowsLifecycle(toolProfile, "handoff") ? [handoffToolDef(handoff)] : []),
-      ...localTools,
-      ...upstreamDefinitions,
-    ],
-  }))
-
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const sessionID = boundSession()
-    const name = req.params.name
-    const args = req.params.arguments ?? {}
-    if (name === "variable" && GatewayToolProfile.allowsLifecycle(toolProfile, "variable"))
-      return handleVariable(sessionID, args)
-    if (name === "question" && question && GatewayToolProfile.allowsLifecycle(toolProfile, "question"))
-      return handleQuestion(server, circuit, args)
-    if (name === "handoff" && handoff && GatewayToolProfile.allowsLifecycle(toolProfile, "handoff")) {
-      const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
+  const tools = new GatewayToolRegistry()
+  tools.register(VARIABLE_TOOL_DEF, (args, { sessionID }) => handleVariable(sessionID, args))
+  if (question) tools.register(QUESTION_TOOL_DEF, (args) => handleQuestion(server, circuit, args))
+  if (handoff)
+    tools.register(handoffToolDef(handoff), async (args) => {
+      const breakerError = circuit ? await circuitBreakerError(circuit.filePath, "handoff") : undefined
       if (breakerError) return text({ error: breakerError }, true)
       if (!handoff.successor && codeGraph) {
         try {
-          // ── Terminal Handoff Requires A Host-Rendered Finding Export ────────
           // Terminal SARIF and evidence are rendered from the validated ledger,
           // never from a model-selected path or hand-authored structured file.
-          // Export occurs before accepting the final handoff, so completion
-          // cannot promise an artifact that failed to seal. A rendering failure
-          // remains an MCP error and leaves the workflow unadvanced.
-          // ──────────────────────────────────────────────────────────────
           await codeGraph.handle("code_finding", { action: "export" })
         } catch (error) {
           return text(
@@ -1157,62 +1212,174 @@ export async function createGatewayServer(opts?: {
           )
         }
       }
-      return handleHandoff(handoff, args)
+      return handleHandoff(handoff, args, { testObjects, novelty })
+    })
+
+  for (const definition of localTools) {
+    const name = definition.name
+    if (name === SOURCE_IMPORT_TOOL_DEF.name) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(
+            await handleSourceImport(args, {
+              confirm: (request) => confirmSourceImport(server, question, circuit, request),
+            }),
+          )
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
-    if (localToolNames.has(name) && name === "source_import") {
-      try {
-        return text(
-          await handleSourceImport(args, {
-            confirm: (request) => confirmSourceImport(server, question, circuit, request),
-          }),
-        )
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
+    if (isSourceTool(name)) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await handleSourceTool(name, args))
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
-    if (localToolNames.has(name) && isSourceTool(name)) {
-      try {
-        return text(await handleSourceTool(name, args))
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
+    if (isCodeGraphTool(name) && codeGraph) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await codeGraph.handle(name, args))
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
-    if (localToolNames.has(name) && isCodeGraphTool(name) && codeGraph) {
-      try {
-        return text(await codeGraph.handle(name, args))
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
+    if (isGitTool(name)) {
+      tools.register(definition, async (args, { sessionID }) => {
+        try {
+          return text(await handleGitTool(sessionID, name, args))
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
-    if (localToolNames.has(name) && isGitTool(name)) {
-      try {
-        return text(await handleGitTool(sessionID, name, args))
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
+    if (name === AUDIT_LAB_TOOL_DEF.name) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await prepareAuditLab(args))
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
-    if (localToolNames.has(name) && name === AUDIT_LAB_TOOL_DEF.name) {
-      try {
-        return text(await prepareAuditLab(args))
-      } catch (error) {
-        return text({ error: error instanceof Error ? error.message : String(error) }, true)
-      }
+    if (name === EVM_LAB_TOOL_DEF.name) {
+      tools.register(definition, async (args, { sessionID }) => {
+        try {
+          const resolved = resolveArgs(sessionID, name, args)
+          const registry = evmVariableRegistryName(process.env.CYBERFUL_EVM_RUNTIME_ID ?? "")
+          const updateRegistry = (variableName: string, present: boolean) => {
+            const existing = getVar(sessionID, registry)?.value
+            const current = Array.isArray(existing)
+              ? existing.filter((value): value is string => typeof value === "string")
+              : []
+            const names = present
+              ? [...new Set([...current, variableName])]
+              : current.filter((candidate) => candidate !== variableName)
+            if (names.length === 0) deleteVar(sessionID, registry)
+            else
+              setVar(
+                sessionID,
+                registry,
+                SessionVariable.decodeValue(names),
+                "Host-owned EVM variable cleanup registry",
+              )
+          }
+          return text(
+            await handleEvmLab(resolved, {
+              setVariable: (variableName, value, description) => {
+                setVar(
+                  sessionID,
+                  SessionVariable.Name.make(variableName),
+                  SessionVariable.decodeValue(value),
+                  description,
+                )
+                updateRegistry(variableName, true)
+              },
+              deleteVariable: (variableName) => {
+                deleteVar(sessionID, variableName)
+                updateRegistry(variableName, false)
+              },
+            }),
+          )
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
     }
+    if (name === EVM_EVIDENCE_TOOL_DEF.name) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await handleEvmEvidence(args))
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === TEST_OBJECT_TOOL_DEF.name && testObjects) {
+      tools.register(definition, async (args) => {
+        try {
+          if (args.action === "list") return text({ objects: await testObjects.list() })
+          if (args.action !== "transition")
+            return text({ error: "test_object action must be transition or list" }, true)
+          return text({ ok: true, object: await testObjects.transition(args) })
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === NOVELTY_TOOL_DEF.name && novelty) {
+      tools.register(definition, async (args) => {
+        try {
+          if (args.action === "status") return text(await novelty.status())
+          if (args.action === "record") return text(await novelty.record(args))
+          if (args.action === "synthesize") return text(await novelty.synthesize(args))
+          return text({ error: "novelty action must be record, status, or synthesize" }, true)
+        } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === EGRESS_OBSERVATION_TOOL_DEF.name) {
+      tools.register(definition, async (args) => {
+        try {
+          const observation = EgressObservation.declared(args)
+          await usage.record({ tool: name, outcome: "ok", egress_blocked: false, ...observation })
+          return text({ ok: true, observation })
+        } catch (error) {
+          log.warn("egress observation degraded", { error })
+          return text({ ok: false, observability: "degraded", output: "Network execution remains unaffected." })
+        }
+      })
+      continue
+    }
+    throw new Error(`gateway tool '${name}' has no local dispatcher`)
+  }
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [...tools.definitions(), ...upstreamDefinitions],
+  }))
+
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const sessionID = boundSession()
+    const name = req.params.name
+    const args = req.params.arguments ?? {}
+    const local = tools.call(name, args, { sessionID })
+    if (local) return await local
     const candidates = byName.get(name)
     if (!candidates) return text({ error: `unknown tool ${name}` })
-    const breakerError = circuit ? await circuitBreakerError(circuit.filePath, name) : undefined
-    if (breakerError) return text({ error: breakerError }, true)
-    const policyError = zapPhaseToolError(process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim(), name)
-    if (policyError) {
-      await usage
-        .record({
-          tool: name,
-          outcome: "blocked",
-          error_class: "PhasePolicyError",
-        })
-        .catch((error) => log.warn("could not record policy-blocked phase tool call", { tool: name, error }))
-      return text({ error: policyError }, true)
-    }
     const resolvedArgs = resolveArgs(sessionID, name, args)
     let selected: ReturnType<typeof selectBrowserProfileUpstream>
     try {
@@ -1220,33 +1387,67 @@ export async function createGatewayServer(opts?: {
     } catch (error) {
       return text({ error: error instanceof Error ? error.message : String(error) }, true)
     }
+    const breakerError = circuit
+      ? await circuitBreakerError(
+          circuit.filePath,
+          name,
+          browserScope(name, selected.args, selected.upstream.browserProfile, coverage),
+        )
+      : undefined
+    if (breakerError) return text({ error: breakerError }, true)
     const upstream = selected.upstream
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
     const startedAt = performance.now()
     try {
       const result = annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments)
+      await coverage?.observe(result)
       if (circuit) await observeCaptchaCircuit(circuit, name, result)
-      const redacted = redactResult(sessionID, result)
+      let redacted = redactResult(sessionID, result)
+      if (upstream.capability === "ghidra" && ghidraEvidence) {
+        try {
+          const evidence = await ghidraEvidence.record(name, args, redacted)
+          redacted = {
+            ...redacted,
+            content: [
+              ...redacted.content,
+              { type: "text", text: `Ghidra evidence: ${evidence.path} (sha256 ${evidence.sha256})` },
+            ],
+          }
+        } catch (error) {
+          log.warn("could not persist Ghidra workarea evidence", { tool: name, error })
+          redacted = {
+            ...redacted,
+            content: [
+              ...redacted.content,
+              { type: "text", text: `Ghidra evidence capture failed: ${errorMessage(error)}` },
+            ],
+          }
+        }
+      }
+      const egress = EgressObservation.observe(name, resolvedArgs, result)
       await usage
         .record({
           tool: name,
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: redacted.isError ? "error" : "ok",
           bytes_out: Buffer.byteLength(JSON.stringify(redacted)),
-          marker_attested: name === "nuclei_run_scoped" ? true : undefined,
+          marker_attested: undefined,
           lead_count: resultMetric(redacted, "lead_count"),
           suspected_count: resultMetric(redacted, "suspected_count"),
           confirmed_count: resultMetric(redacted, "confirmed_count"),
+          ...(egress ? { egress_blocked: false, ...egress } : {}),
         })
         .catch((error) => log.warn("could not record completed phase tool call", { tool: name, error }))
       return redacted
     } catch (error) {
+      const egress = EgressObservation.observe(name, resolvedArgs, { content: [] })
       await usage
         .record({
           tool: name,
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: "error",
           error_class: error instanceof Error ? error.name : "UnknownError",
+          ...(egress ? { egress_blocked: false, ...egress } : {}),
         })
         .catch((auditError) => log.warn("could not record failed phase tool call", { tool: name, error: auditError }))
       throw error

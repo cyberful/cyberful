@@ -22,7 +22,7 @@ make test-python
 make docs-build
 ```
 
-Run Docker, network, ZAP, and Codex contract tiers when the affected boundary
+Run Docker, network, ZAP, Ghidra, and Codex contract tiers when the affected boundary
 requires them. Treat new type errors and runtime warnings as defects. Add a
 regression test whenever a defect is technically reproducible. Regenerate the
 control-plane client with `bun run --cwd cyberful generate-client` only when its

@@ -11,7 +11,7 @@ import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
 import * as Log from "@/util/log"
 import { Flag } from "@/flag/flag"
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { GlobalBus } from "@/bus/global"
 import { which } from "../util/which"
 import { ProjectID } from "./schema"
@@ -52,7 +52,7 @@ export const Info = Schema.Struct({
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
 export const Event = {
-  Updated: BusEvent.define("project.updated", Info),
+  Updated: EventDefinition.define("project.updated", Info),
 }
 
 type Row = typeof ProjectTable.$inferSelect

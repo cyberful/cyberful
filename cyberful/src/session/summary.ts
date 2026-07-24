@@ -5,7 +5,7 @@
 // ───────────────────────────────────────────────────────────────────────
 
 import { Effect, Layer, Context, Schema } from "effect"
-import { Bus } from "@/bus"
+import { Event as EventSystem } from "@/event"
 import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
 import * as Session from "./session"
@@ -84,7 +84,7 @@ export const layer = Layer.effect(
     const sessions = yield* Session.Service
     const snapshot = yield* Snapshot.Service
     const storage = yield* Storage.Service
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
 
     const computeDiff = Effect.fn("SessionSummary.computeDiff")(function* (input: { messages: MessageV2.WithParts[] }) {
       let from: string | undefined
@@ -125,7 +125,7 @@ export const layer = Layer.effect(
       yield* storage
         .write(["session_diff", input.sessionID], diffs)
         .pipe(Effect.catchCause((cause) => Effect.logWarning("session diff cache write failed", { cause })))
-      yield* bus.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: diffs })
+      yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: diffs })
 
       const messages = all.filter(
         (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
@@ -167,7 +167,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Session.defaultLayer),
     Layer.provide(Snapshot.defaultLayer),
     Layer.provide(Storage.defaultLayer),
-    Layer.provide(Bus.layer),
+    Layer.provide(EventSystem.defaultLayer),
   ),
 )
 

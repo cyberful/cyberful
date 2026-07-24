@@ -23,6 +23,8 @@ export type WorkflowCapability =
   | "audit-diff"
   | "browser"
   | "zap"
+  | "ghidra"
+  | "evm-lab"
 
 // ── Phase Deliverable And Persona Contracts ─────────────────────
 // Each workflow phase names the one structured artifact it must leave in the
@@ -98,7 +100,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "pentest",
     sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap"],
+    capabilities: ["isolated-exec", "browser", "zap", "ghidra"],
     zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
@@ -130,8 +132,8 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     },
     kind: "workflow",
     personas: "bug-bounty",
-    sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap"],
+    sourcePolicy: "read",
+    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab"],
     zapLifecycle: "engagement",
     completionTitle: "Bug bounty assessment completed",
     nextWorkflow: "ask",
@@ -171,7 +173,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "code-audit",
     sourcePolicy: "read",
-    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff"],
+    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra"],
     zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
@@ -353,12 +355,8 @@ function rootForHome(home: string) {
   return path.dirname(home)
 }
 
-export function cyberfulInstructionPath(home = expertHome()): string {
-  return path.join(rootForHome(home), "instructions", "cyberful.md")
-}
-
-export function trustBoundaryInstructionPath(home = expertHome()): string {
-  return path.join(rootForHome(home), "instructions", "trust-boundary.md")
+export function baseInstructionsPath(home = expertHome()): string {
+  return path.join(rootForHome(home), "baseInstructions.md")
 }
 
 export function skillRoot(home = expertHome()): string {
@@ -395,6 +393,30 @@ export function capabilitiesFor(workflowName: string): readonly WorkflowCapabili
 
 export function hasCapability(workflowName: string, capability: WorkflowCapability): boolean {
   return capabilitiesFor(workflowName).includes(capability)
+}
+
+const GHIDRA_PHASES: Readonly<Record<string, ReadonlySet<string>>> = {
+  pentest: new Set(["recon", "exploit", "hacker", "verify"]),
+  "bug-bounty": new Set(["recon", "exploit", "hacker", "verify"]),
+  "code-audit": new Set(["index", "trace", "hunt", "attack", "verify"]),
+}
+
+// ── Persistent Ghidra State Outlives Its Tool Surface ────────────
+// The engagement runtime starts once and retains the project through every
+// handoff, but only investigation and verification phases may mutate or query
+// it. Brief and report phases consume exported evidence in the workarea rather
+// than receiving the live reverse-engineering capability. This separation keeps
+// reporting deterministic without discarding the project needed by a later
+// runtime instance or resumed engagement.
+// ─────────────────────────────────────────────────────────────────
+export function phaseHasCapability(
+  workflowName: string,
+  phase: string | undefined,
+  capability: WorkflowCapability,
+): boolean {
+  if (!hasCapability(workflowName, capability)) return false
+  if (capability !== "ghidra") return true
+  return phase !== undefined && GHIDRA_PHASES[workflowName]?.has(phase) === true
 }
 
 export function zapLifecycleFor(workflowName: string): ZapLifecycle {

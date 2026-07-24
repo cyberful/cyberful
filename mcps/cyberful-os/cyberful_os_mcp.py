@@ -26,7 +26,13 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from types import FrameType
-from typing import Any, BinaryIO, Callable, Iterator
+from typing import Any, Callable
+
+from mcp_framing import (
+    bounded_json_lines as read_bounded_json_lines,
+    reject_nonfinite_json,
+    request_envelope_error as framing_request_envelope_error,
+)
 
 # ── Bound Every Tool Call Before It Reaches Docker ────────────────────
 # MCP requests arrive as client-controlled JSON. Shared defaults and caps form
@@ -70,20 +76,23 @@ NO_TELEMETRY_ENV = {
 CURRENT_PROGRESS_TOKEN: Any | None = None
 LAST_PROGRESS_AT = 0.0
 PROGRESS_SEQUENCE = 0
-NUCLEI_MAX_TEMPLATES = 40
-NUCLEI_MAX_RATE = 5
-NUCLEI_EXCLUDED_TAGS = "dos,fuzz,bruteforce,headless,oast,interactsh,intrusive"
 STRICT_PREFLIGHT_ENV = "CYBERFUL_OS_STRICT_PREFLIGHT"
 WORKAREA_ROOT_ENV = "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
 RUN_ID_ENV = "CYBERFUL_RUN_ID"
 OWNER_LABEL = "org.cyberful.run-owner"
 RUNTIME_LABEL = "org.cyberful.runtime"
+MANAGED_LABEL = "org.cyberful.managed"
+OWNER_PID_LABEL = "org.cyberful.owner-pid"
+SESSION_LABEL = "org.cyberful.session"
 EXPERT_RUNTIME = "expert"
 ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)")
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_SINGLE_RE = re.compile(r"\x1b[@-Z\\-_]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HTTP_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+HTTP_METHOD_RE = re.compile(r"(?:^|\s)(?:-X|--request)\s+([A-Za-z]{2,20})(?:\s|$)")
+EGRESS_META_KEY = "cyberful.dev/egress"
 
 # ── Speak JSON-RPC On Stdout And Diagnostics On Stderr ────────────────
 # MCP clients parse stdout as a protocol stream, so diagnostics belong only on
@@ -239,15 +248,23 @@ def docker_extra_args() -> list[str]:
 
 def container_owner_args() -> list[str]:
     run_id = os.environ.get(RUN_ID_ENV, "").strip()
-    if not run_id:
-        return []
-    owner = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
-    return [
+    owner_pid = os.environ.get("CYBERFUL_OWNER_PID", "").strip()
+    if not owner_pid.isdigit() or int(owner_pid) <= 0:
+        owner_pid = str(os.getpid())
+    session = os.environ.get("CYBERFUL_SUBSYSTEM_SESSION", "unknown").strip() or "unknown"
+    labels = [
         "--label",
-        f"{OWNER_LABEL}={owner}",
+        f"{MANAGED_LABEL}=expert",
+        "--label",
+        f"{OWNER_PID_LABEL}={owner_pid}",
+        "--label",
+        f"{SESSION_LABEL}={session}",
         "--label",
         f"{RUNTIME_LABEL}={EXPERT_RUNTIME}",
     ]
+    run_owner = hashlib.sha256(run_id.encode("utf-8")).hexdigest() if run_id else "unowned"
+    labels.extend(["--label", f"{OWNER_LABEL}={run_owner}"])
+    return labels
 
 
 # ── Preserve The User's Docker Endpoint Choice ────────────────────────
@@ -800,11 +817,11 @@ def safe_container_args(args: dict[str, Any]) -> tuple[int, int, str, dict[str, 
     return timeout_seconds, max_output_bytes, cwd, extra_env
 
 
-# ── Keep Handler Schemas Beside Their Execution Rules ─────────────────
-# Handwritten tools declare the client-facing shape next to the code that
-# consumes it. Although the final registry is rebuilt after catalog validation,
-# this local pairing lets reviewers compare accepted input with the handler's
-# actual normalization and failure behavior in one place.
+# ── One Registry Owns Discovery And Dispatch ─────────────────────────
+# Handlers are defined independently, then paired with their one public schema
+# after catalog validation. This avoids a temporary decorator registry whose
+# definitions would be discarded and rebuilt before the server starts.
+# The resulting tuple is the only source for tools/list and tools/call.
 # ──────────────────────────────────────────────────────────────────────
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -1043,6 +1060,97 @@ def _std_options() -> dict[str, Any]:
     }
 
 
+def _egress_hint_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "description": (
+            "Optional post-experiment metadata hint. It is observational only: host changes never block, "
+            "rewrite, approve, redirect, or retry the command."
+        ),
+        "properties": {
+            "host": {"type": "string", "maxLength": 253},
+            "method": {"type": "string", "maxLength": 20},
+            "path_family": {"type": "string", "maxLength": 180},
+            "request_bytes": {"type": "integer", "minimum": 0},
+            "response_bytes": {"type": "integer", "minimum": 0},
+            "attempts": {"type": "integer", "minimum": 0},
+            "redirects": {"type": "integer", "minimum": 0},
+            "deadline_ms": {"type": "integer", "minimum": 0},
+        },
+    }
+
+
+def _redacted_path_family(value: str) -> str:
+    segments: list[str] = []
+    for raw in value.split("/"):
+        if not raw or len(segments) >= 4:
+            continue
+        decoded = urllib.parse.unquote(raw)
+        if decoded in {":id", ":segment"}:
+            segments.append(decoded)
+            continue
+        if (
+            "@" in decoded
+            or re.fullmatch(r"(?:\d+|[a-f0-9]{16,}|[0-9a-f]{8}-[0-9a-f-]{27,})", decoded, re.IGNORECASE)
+            or re.fullmatch(r"[a-zA-Z0-9_-]{20,}", decoded)
+        ):
+            segments.append(":id")
+            continue
+        redacted = re.sub(r"[^a-zA-Z0-9._~-]", "-", decoded)[:40]
+        segments.append(redacted or ":segment")
+    return ("/" + "/".join(segments))[:180] or "/"
+
+
+def _safe_egress_host(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    host = value.strip().lower().rstrip(".")
+    return host if host and len(host) <= 253 and re.fullmatch(r"[a-z0-9.-]+(?::\d{1,5})?", host) else None
+
+
+def _shell_egress_metadata(command: str, hint: Any, timeout_seconds: int) -> dict[str, Any]:
+    declared = hint if isinstance(hint, dict) else {}
+    inferred_url = HTTP_URL_RE.search(command)
+    inferred_host: str | None = None
+    inferred_path: str | None = None
+    if inferred_url:
+        parsed = urllib.parse.urlsplit(inferred_url.group(0))
+        inferred_host = _safe_egress_host(parsed.netloc.rsplit("@", 1)[-1])
+        inferred_path = _redacted_path_family(parsed.path)
+    declared_host = _safe_egress_host(declared.get("host"))
+    method_match = HTTP_METHOD_RE.search(command)
+    declared_method = declared.get("method")
+    method = (
+        declared_method.strip().upper()
+        if isinstance(declared_method, str) and re.fullmatch(r"[A-Za-z]{2,20}", declared_method.strip())
+        else method_match.group(1).upper() if method_match else None
+    )
+    destination_changed = bool(declared_host and inferred_host and declared_host != inferred_host)
+    metadata: dict[str, Any] = {
+        "version": 1,
+        "route": "cyberful-os/docker-direct",
+        "observability": "declared" if declared else "inferred" if inferred_host else "degraded",
+        "deadline_ms": declared.get("deadline_ms", timeout_seconds * 1000),
+        "destination_changed": destination_changed,
+    }
+    optional = {
+        "host": inferred_host or declared_host,
+        "method": method,
+        "path_family": inferred_path or (
+            _redacted_path_family(declared["path_family"])
+            if isinstance(declared.get("path_family"), str)
+            else None
+        ),
+        "request_bytes": declared.get("request_bytes"),
+        "response_bytes": declared.get("response_bytes"),
+        "attempts": declared.get("attempts"),
+        "redirects": declared.get("redirects"),
+    }
+    metadata.update({key: value for key, value in optional.items() if value is not None})
+    return metadata
+
+
 # ── Keep Arbitrary Shell Execution Explicitly Named ───────────────────
 # Most clients should call a dedicated lowercase tool so argv validation can
 # avoid shell parsing. A fallback remains available for genuine catalog gaps,
@@ -1051,52 +1159,24 @@ def _std_options() -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-@register_tool(
-    "shell",
-    "Fallback only: execute an arbitrary shell command inside the Docker cyberful-os container when no dedicated lowercase tool fits.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "command": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Shell command to execute with bash -lc in cyberful-os.",
-            },
-            "cwd": {
-                "type": "string",
-                "description": "Working directory inside the container. Defaults to /workspace.",
-            },
-            "timeout_seconds": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": MAX_TIMEOUT_SECONDS,
-                "default": DEFAULT_TIMEOUT_SECONDS,
-                "description": "Wall-clock timeout for the command.",
-            },
-            "max_output_bytes": {
-                "type": "integer",
-                "minimum": 1024,
-                "maximum": MAX_OUTPUT_BYTES,
-                "default": DEFAULT_MAX_OUTPUT_BYTES,
-                "description": "Maximum combined stdout/stderr bytes returned (default 262144; maximum 4194304).",
-            },
-            "env": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Extra environment variables for this command.",
-            },
-        },
-        "required": ["command"],
-    },
-)
 def handle_shell(args: dict[str, Any]) -> dict[str, Any]:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         return tool_result("`command` must be a non-empty string.\n", is_error=True)
     to, mo, cwd, env_map = safe_container_args(args)
     r = run_in_container(command, cwd=cwd, timeout_seconds=to, max_output_bytes=mo, extra_env=env_map)
-    return result_from_run(r)
+    result = result_from_run(r)
+    # ── Egress Observation Is Strictly Fail-Open ──────────────────────
+    # The command has already executed directly when metadata is derived. The
+    # declared host is never an allowlist and a mismatch is merely recorded. If
+    # parsing or attachment fails, return the untouched command result so the
+    # observability layer cannot convert successful target traffic into failure.
+    # ───────────────────────────────────────────────────────────────────
+    try:
+        result["_meta"] = {EGRESS_META_KEY: _shell_egress_metadata(command, args.get("egress"), to)}
+    except (TypeError, ValueError) as exc:
+        eprint(f"shell egress observation degraded: {type(exc).__name__}")
+    return result
 
 
 # ── Catalog Names Are The Stable Public API ───────────────────────────
@@ -1129,17 +1209,6 @@ class LibraryToolSpec:
     optional: bool = False
 
 
-@dataclass(frozen=True)
-class NucleiPlan:
-    plan_id: str
-    target: str
-    filter_args: tuple[str, ...]
-    template_count: int
-    rate_limit: int
-    output_path: str
-
-
-NUCLEI_PLANS: dict[str, NucleiPlan] = {}
 PREFLIGHT_REPORT: dict[str, Any] | None = None
 
 
@@ -1317,6 +1386,9 @@ CLI_TOOL_SPECS: tuple[CliToolSpec, ...] = (
     _cli("syft", "syft", "supply-chain", "Syft SBOM generator for directories, archives, filesystems, and container images.", "Pass a source with an explicit scheme when ambiguity matters, then choose one or more output formats. Persist CycloneDX JSON or SPDX JSON under /workspace for correlation with lockfiles and scanner results.", examples=("scan dir:/workspace -o cyclonedx-json=/workspace/sbom.cdx.json",)),
     _cli("grype", "grype", "supply-chain", "Grype vulnerability matcher for SBOMs, directories, filesystems, archives, and container images.", "Pass an explicit source such as sbom:/workspace/sbom.cdx.json or dir:/workspace. Choose JSON or CycloneDX output, preserve the vulnerability DB status/age, and use --only-fixed or severity filters only after retaining the unfiltered evidence set.", examples=("sbom:/workspace/sbom.cdx.json --output json --file /workspace/grype.json",)),
     _cli("gitleaks", "gitleaks", "supply-chain", "Gitleaks secret discovery across Git history, working trees, directories, and stdin.", "Pass the current gitleaks subcommand (git, dir, or stdin), source path, config/baseline flags, and a machine-readable report path. Scan history and present files separately because their remediation and exposure windows differ.", examples=("git /workspace --report-format sarif --report-path /workspace/gitleaks-history.sarif --no-banner", "dir /workspace --report-format json --report-path /workspace/gitleaks-tree.json --no-banner")),
+    _cli("forge", "forge", "smart-contracts", "Pinned Foundry build, test, fuzz, invariant, trace, and Solidity project tool.", "Pass ordinary Forge subcommands and flags. Work in a mutable engagement project, retain exact test commands and seeds for candidate findings, and let Forge auto-detect the required solc version unless the project pins one explicitly.", examples=("build", "test -vvvv", "test --match-test invariant_ --fuzz-runs 10000")),
+    _cli("cast", "cast", "smart-contracts", "Pinned Foundry RPC, ABI, transaction, trace, storage, and wallet utility.", "Pass ordinary Cast subcommands and flags. Prefer the managed EVM lab RPC for state-changing proofs when the engagement policy requires local-only execution.", examples=("block-number --rpc-url http://host.docker.internal:8545", "call 0x0000000000000000000000000000000000000000 'balanceOf(address)(uint256)' 0x0000000000000000000000000000000000000000 --rpc-url http://host.docker.internal:8545")),
+    _cli("anvil", "anvil", "smart-contracts", "Pinned Foundry local Ethereum node and fork engine.", "Use the host-owned evm_lab tool for persistent engagement nodes, snapshots, accounts, and cleanup. Direct Anvil remains available for version inspection or additional caller-managed nodes.", examples=("--version",)),
     _cli("cloudsplaining", "cloudsplaining", "cloud", "AWS IAM policy analysis for privilege escalation, data exposure, infrastructure modification, and resource-constraint gaps.", "Pass cloudsplaining subcommands and flags in args. Analyze exported account authorization details or individual policy documents, retain the raw input snapshot, and write HTML/JSON findings into /workspace.", examples=("scan --input-file /workspace/account-authorization-details.json --output /workspace/cloudsplaining", "scan-policy-file --input-file /workspace/policy.json")),
     _cli("prowler", "prowler", "cloud", "Prowler multi-provider cloud, Kubernetes, SaaS, and compliance posture assessment CLI.", "Pass the provider first, then scope by account/subscription/project, region, service, check, category, or compliance framework. Use explicit output modes and directory; broad provider-wide scans should follow a credential and scope inventory so absences are distinguishable from denied visibility.", examples=("aws --services iam s3 --output-modes json-ocsf csv --output-directory /workspace/prowler", "kubernetes --list-checks")),
     _cli("kubectl", "kubectl", "kubernetes", "Pinned Kubernetes client for API discovery, RBAC review, workload inspection, and bounded cluster evidence collection.", "Pass --kubeconfig and --context explicitly when more than one context may exist. Prefer structured -o json/yaml output and server-side discovery; kubectl is within one minor of supported v1.36 clusters and older/newer clusters may require a matching client.", examples=("--kubeconfig /workspace/kubeconfig auth can-i --list", "--kubeconfig /workspace/kubeconfig get pods -A -o json")),
@@ -1333,7 +1405,7 @@ CLI_TOOL_SPECS: tuple[CliToolSpec, ...] = (
     _cli("jeb", "jeb", "reversing", "Optional JEB reverse engineering suite entrypoint when installed in private builds.", "Pass JEB CLI flags in args; this tool is optional and appears missing unless JEB_INSTALLER_URL was used at image build time.", examples=("--help",), optional=True),
     _cli("testssl", "testssl", "tls", "TLS/SSL protocol, cipher suite, certificate, and configuration scanner (testssl.sh; the system package installs the binary as `testssl`). Report deprecated protocols (TLS 1.0/1.1) as a protocol-support problem, not a key-length one.", "The target (host, host:port, or https URL) MUST be the LAST argument; put all flags BEFORE it (testssl aborts with 'URI comes last' otherwise). Use --quiet --color 0 for clean machine-readable output.", examples=("https://example.com", "--quiet --color 0 --severity LOW example.com:443", "-p -S example.com:443"), expected_paths=("/usr/bin/testssl",)),
     _cli("sslscan", "sslscan", "tls", "TLS/SSL cipher suite and protocol version enumeration scanner.", "Pass the target host:port and sslscan flags in args.", examples=("example.com:443", "--no-failed example.com"), expected_paths=("/usr/bin/sslscan",)),
-    _cli("nuclei", "nuclei", "web", "Raw ProjectDiscovery Nuclei CLI for expert cases not expressible through the preferred nuclei_plan + nuclei_run_scoped flow. The signed template corpus is pre-installed, so do not pass -t. Always disable update checks and OAST, hold the engagement-wide rate at or below 5 requests/second, serialize concurrency, attach the required program marker, and filter to detected technology or a concrete candidate. Preview with nuclei_templates before any raw run. Unfiltered scans are refused by policy even though this low-level wrapper remains available. Treat every hit as SUSPECTED.", "Prefer nuclei_plan followed by nuclei_run_scoped. Use this raw wrapper only when the controlled runner cannot express a justified filter; include -disable-update-check -no-interactsh -rate-limit 5 -c 1 -bulk-size 1, X-Request-ID: Bugcrowd, and explicit -tags/-id/-severity. Never run unfiltered or add intrusive/OAST templates.", examples=("-u https://example.com -id CVE-2021-3129 -disable-update-check -no-interactsh -rate-limit 5 -c 1 -bulk-size 1 -H 'X-Request-ID: Bugcrowd'",), expected_paths=("/usr/bin/nuclei", "/usr/local/bin/nuclei")),
+    _cli("nuclei", "nuclei", "web", "Complete ProjectDiscovery Nuclei CLI. Cyberful adds only -disable-update-check; all other Nuclei arguments remain caller-controlled under the mission.", "Pass any Nuclei CLI arguments in args. nuclei_templates is an optional offline preview.", examples=("-u https://example.com",), expected_paths=("/usr/bin/nuclei", "/usr/local/bin/nuclei")),
     _cli("httpx", "httpx-pd", "web", "Fast HTTP probing, fingerprinting, and technology/title/status detection (ProjectDiscovery httpx). Telemetry-hardened: ALWAYS pass -duc (disable update check). httpx has NO per-header flags (there is no -csp, -hsts, etc.) — to inspect security headers/cookies (CSP, HSTS, Set-Cookie...) use -json with -include-response-header (-irh) and read the headers from the JSON, or use the `requests` tool. Common valid flags: -title, -tech-detect, -status-code, -web-server, -location, -json, -irh.", "Pass targets and httpx flags in args; always include -duc. For header inspection use -json -irh, not invented per-header flags.", examples=("-u https://example.com -duc -title -tech-detect -status-code -web-server", "-u https://example.com -duc -json -irh", "-l hosts.txt -duc -json"), expected_paths=("/usr/local/bin/httpx-pd",), aliases=("httpx-toolkit",)),
     _cli("subfinder", "subfinder", "dns", "Passive subdomain enumeration from public sources (ProjectDiscovery). Telemetry-hardened: ALWAYS pass -duc (disable update check).", "Pass -d <domain> and subfinder flags in args; always include -duc.", examples=("-d example.com -duc", "-d example.com -all -duc"), expected_paths=("/usr/bin/subfinder", "/usr/local/bin/subfinder")),
 )
@@ -1366,8 +1438,6 @@ def _validate_catalog() -> None:
         names.add(spec.name)
     for reserved in (
         "capability_attestation",
-        "nuclei_plan",
-        "nuclei_run_scoped",
         "nuclei_templates",
         "tool_inventory",
         "wordlists",
@@ -1452,8 +1522,12 @@ def _argv_from_args(spec: CliToolSpec, args: dict[str, Any]) -> tuple[list[str],
     if stdin_value is not None and not isinstance(stdin_value, str):
         return [], None, {"error": "`stdin` must be a string when provided."}
 
+    normalized_args = list(raw_args)
+    if spec.name == "nuclei" and "-disable-update-check" not in normalized_args:
+        normalized_args.insert(0, "-disable-update-check")
+
     stdin_bytes = stdin_value.encode("utf-8") if isinstance(stdin_value, str) else None
-    return [spec.command, *raw_args], stdin_bytes, None
+    return [spec.command, *normalized_args], stdin_bytes, None
 
 
 def _make_cli_handler(spec: CliToolSpec) -> ToolHandler:
@@ -1673,43 +1747,12 @@ def ensure_strict_preflight() -> None:
     )
 
 
-@register_tool(
-    "capability_attestation",
-    "Attest the live cyberful-os image against every required CLI and Python-library capability, including Nuclei and Metasploit smoke probes. This is read-only and writes no target traffic.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {**_std_options()},
-        "required": [],
-    },
-)
 def handle_capability_attestation(args: dict[str, Any]) -> dict[str, Any]:
     report = container_capability_report(args)
     _write_capability_attestation(report)
     return tool_result(json.dumps(report, indent=2, sort_keys=True) + "\n", is_error=report["status"] != "available")
 
 
-@register_tool(
-    "tool_inventory",
-    "List cyberful-os MCP tools, real commands/modules, aliases, categories, expected paths, optional flags, and live availability.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "category": {
-                "type": "string",
-                "description": "Optional category filter, such as network, web, osint, mobile, reversing, snmp, or supply-chain.",
-            },
-            "include_status": {
-                "type": "boolean",
-                "default": True,
-                "description": "Resolve command/module availability inside the current container.",
-            },
-            **_std_options(),
-        },
-        "required": [],
-    },
-)
 def handle_tool_inventory(args: dict[str, Any]) -> dict[str, Any]:
     category = args.get("category")
     include_status = args.get("include_status", True)
@@ -1797,26 +1840,8 @@ def handle_tool_inventory(args: dict[str, Any]) -> dict[str, Any]:
                     "category": "meta",
                     "installed": True if include_status else None,
                     "path": None,
-                    "usage": "Preview how many nuclei templates a -tags/-id/-severity filter selects before scanning (side-effect-free `nuclei -tl`).",
-                    "description": "Nuclei template-filter preview (count + list) — run before a `nuclei` scan to avoid blasting the full corpus.",
-                },
-                {
-                    "name": "nuclei_plan",
-                    "kind": "capability",
-                    "category": "meta",
-                    "installed": True if include_status else None,
-                    "path": None,
-                    "usage": "Build a side-effect-free, bounded Nuclei plan from an HTTP or HTTPS target and explicit tags, template IDs, or severities.",
-                    "description": "Validates scope shape, previews the corpus, and issues an opaque plan ID only for 1-40 matching templates.",
-                },
-                {
-                    "name": "nuclei_run_scoped",
-                    "kind": "capability",
-                    "category": "meta",
-                    "installed": True if include_status else None,
-                    "path": None,
-                    "usage": "Execute a previously validated nuclei_plan by plan ID; raw Nuclei flags are not accepted.",
-                    "description": "Bounded Nuclei runner with the Bugcrowd marker, no OAST, no redirects, <=5 req/s, and serialized requests.",
+                    "usage": "Optionally preview template filters offline with nuclei -tl.",
+                    "description": "Optional side-effect-free Nuclei template preview.",
                 },
             ]
         )
@@ -1830,28 +1855,6 @@ def handle_tool_inventory(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-@register_tool(
-    "requests",
-    "Fetch HTTP(S) resources using Python requests inside the cyberful-os container. Use this for scripted OSINT, authenticated fetches, API checks, and response capture — prefer it over curl+grep/byte-window scraping when you need the body or headers. For JSON-capable endpoints (REST APIs, and framework debug/exception pages), set headers {\"Accept\": \"application/json\"} to receive the STRUCTURED JSON directly instead of scraping JSON embedded in HTML. Bodies are capped at max_body_chars (default 65536, max 1048576) and the result sets body_truncated=true when cut — raise max_body_chars (don't byte-window) to capture the full payload.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "url": {"type": "string", "description": "HTTP or HTTPS URL to request."},
-            "method": {"type": "string", "default": "GET", "description": "HTTP method, for example GET, POST, PUT, PATCH, DELETE, or HEAD."},
-            "headers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional request headers."},
-            "params": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional query parameters."},
-            "data": {"type": "string", "description": "Optional raw request body."},
-            "json_body": {"type": "object", "description": "Optional JSON request body."},
-            "request_timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30, "description": "Requests library timeout in seconds."},
-            "verify_tls": {"type": "boolean", "default": True, "description": "Verify TLS certificates."},
-            "follow_redirects": {"type": "boolean", "default": True, "description": "Follow HTTP redirects."},
-            "max_body_chars": {"type": "integer", "minimum": 0, "maximum": 1048576, "default": 65536, "description": "Maximum response text characters returned."},
-            **_std_options(),
-        },
-        "required": ["url"],
-    },
-)
 def handle_requests_tool(args: dict[str, Any]) -> dict[str, Any]:
     url = args.get("url")
     if not isinstance(url, str) or not url:
@@ -1923,25 +1926,6 @@ print(json.dumps(result, indent=2, sort_keys=True))
     return result_from_run(r)
 
 
-@register_tool(
-    "bs4",
-    "Parse HTML using Beautiful Soup inside the cyberful-os container. Use this to extract text, attributes, links, forms, or matching HTML fragments from fetched or saved content.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "html": {"type": "string", "description": "Inline HTML content. Provide either html or path."},
-            "path": {"type": "string", "description": "Path to an HTML file inside the container. Provide either html or path."},
-            "selector": {"type": "string", "description": "CSS selector to extract. Defaults to title, a, form, input, script, and meta if omitted."},
-            "attribute": {"type": "string", "description": "Attribute to extract from matching elements, such as href, src, action, name, or content."},
-            "text_only": {"type": "boolean", "default": True, "description": "Return element text instead of HTML when attribute is not set."},
-            "parser": {"type": "string", "default": "html.parser", "description": "Beautiful Soup parser name, for example html.parser or lxml."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100, "description": "Maximum matching elements returned."},
-            **_std_options(),
-        },
-        "required": [],
-    },
-)
 def handle_bs4_tool(args: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps({
         **args,
@@ -2003,24 +1987,6 @@ print(json.dumps({
     return result_from_run(r)
 
 
-@register_tool(
-    "lxml",
-    "Parse HTML/XML and evaluate XPath using lxml inside the cyberful-os container. Use this for structured extraction from pages, XML APIs, manifests, and mobile/static-analysis outputs.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "content": {"type": "string", "description": "Inline HTML/XML content. Provide either content or path."},
-            "path": {"type": "string", "description": "Path to an HTML/XML file inside the container. Provide either content or path."},
-            "xpath": {"type": "string", "description": "XPath expression to evaluate."},
-            "mode": {"type": "string", "enum": ["html", "xml"], "default": "html", "description": "Parse mode."},
-            "namespaces": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional XPath namespace map."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100, "description": "Maximum results returned."},
-            **_std_options(),
-        },
-        "required": ["xpath"],
-    },
-)
 def handle_lxml_tool(args: dict[str, Any]) -> dict[str, Any]:
     xpath = args.get("xpath")
     if not isinstance(xpath, str) or not xpath:
@@ -2086,25 +2052,6 @@ print(json.dumps({
     return result_from_run(r)
 
 
-@register_tool(
-    "wordlists",
-    "List and preview cyberful-os credential and content-discovery wordlists inside the container, including /usr/share/wordlists/cyberful-os/credentials, /usr/share/wordlists/cyberful-os/content (frequency-ordered raft/API lists), and /opt/cred-tools/common-creds.txt.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "paths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional files or directories to inspect. Defaults to cyberful-os credential and content-discovery wordlists, common creds, and dirb common wordlist.",
-            },
-            "preview_lines": {"type": "integer", "minimum": 0, "maximum": 100, "default": 5, "description": "Number of leading lines to preview per file."},
-            "max_files": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100, "description": "Maximum files returned."},
-            **_std_options(),
-        },
-        "required": [],
-    },
-)
 def handle_wordlists(args: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps({
         **args,
@@ -2215,11 +2162,11 @@ print(json.dumps({
     return result_from_run(r)
 
 
-# ── Broad Template Previews Preserve The Count, Not Every Path ────────
-# A broad filter can match thousands of templates and exhaust the MCP output
-# budget before the caller learns that its scope is unsafe. The match count is
-# the decision signal, so broad results retain only a sample and narrowing advice.
-# A properly scoped result remains below the cap and returns every matched path.
+# ── Template Previews Preserve Counts Without Governing Scans ────────
+# A template listing can contain thousands of paths and exceed the MCP output
+# budget. The full match count remains visible while the rendered path sample
+# stays compact; this display behavior neither constrains nor authorizes a later
+# scan. Filters are entirely optional and remain caller-controlled.
 # ──────────────────────────────────────────────────────────────────────
 
 def _render_template_list(template_lines: list[str], count: int, list_cap: int = 40) -> list[str]:
@@ -2227,10 +2174,9 @@ def _render_template_list(template_lines: list[str], count: int, list_cap: int =
         return []
     if count > list_cap:
         return [
-            f"templates (first {list_cap} of {count} — list capped to keep this preview compact):",
+            f"templates (showing first {list_cap} of {count}; scan behavior is unchanged):",
             *template_lines[:list_cap],
-            f"… +{count - list_cap} more not listed. Narrow -tags/-id/-severity to the tech/versions you "
-            "actually detected and re-preview; aim for a count in the low tens before you scan.",
+            f"… +{count - list_cap} more paths omitted from this display.",
         ]
     return ["templates:", *template_lines]
 
@@ -2270,7 +2216,7 @@ def handle_nuclei_templates(args: dict[str, Any]) -> dict[str, Any]:
     if r.timed_out:
         summary = (
             f"[nuclei_templates] Timed out after {to}s before the list finished. "
-            "Narrow the filter or raise timeout_seconds. Side-effect-free: -tl only lists templates, it never scans."
+            "Side-effect-free: -tl only lists templates, it never scans."
         )
     elif failed:
         summary = (
@@ -2279,16 +2225,14 @@ def handle_nuclei_templates(args: dict[str, Any]) -> dict[str, Any]:
         )
     elif count == 0:
         summary = (
-            "[nuclei_templates] WARNING: 0 templates match this filter — it selected NOTHING (too narrow, wrong -tags/-id, or a typo). "
-            "Fix the filter before scanning: a 0-match preview means the scan would test nothing."
+            "[nuclei_templates] 0 templates matched the supplied listing arguments. "
+            "This optional preview does not govern a later run."
         )
     else:
         summary = (
             f"[nuclei_templates] {count_str} templates match this filter — an upper bound on what a `nuclei` scan with these flags will load "
             "(the scan also applies nuclei's default exclusions, so it may run somewhat fewer). "
-            "Side-effect-free: -tl lists templates and exits, no request is sent to any target. "
-            "If this number is in the hundreds or thousands the filter is too broad (an unfiltered scan runs thousands of templates) — "
-            "narrow -tags/-id/-severity to the tech and versions you actually detected."
+            "Side-effect-free: -tl lists templates and exits, no request is sent to any target."
         )
 
     lines = [summary, "", f"command: {r.command}", ""]
@@ -2298,248 +2242,14 @@ def handle_nuclei_templates(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result("\n".join(lines).rstrip() + "\n", is_error=failed)
 
 
-# ── Turn A Broad Scanner Into A Reviewed, Bounded Operation ──────────
-# The raw Nuclei wrapper remains available for expert use. These two additional
-# tools provide the preferred path: planning performs only an offline template
-# listing, while execution accepts an opaque plan ID rather than caller-chosen
-# flags. This makes the runtime bounds inspectable and prevents the approved
-# target/filter from drifting between preview and scan.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _nuclei_filter_args(args: dict[str, Any]) -> tuple[list[str], str | None]:
-    token = re.compile(r"^[A-Za-z0-9_.:-]+$")
-    filters: list[str] = []
-    for field, flag in (("tags", "-tags"), ("template_ids", "-id")):
-        values = args.get(field, [])
-        if values is None:
-            values = []
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-            return [], f"`{field}` must be an array of strings."
-        normalized = [value.strip() for value in values if value.strip()]
-        if len(normalized) > 20 or any(not token.fullmatch(value) for value in normalized):
-            return [], f"`{field}` accepts at most 20 simple names containing letters, digits, dot, colon, underscore, or hyphen."
-        if normalized:
-            filters.extend([flag, ",".join(sorted(set(normalized)))])
-
-    severities = args.get("severities", [])
-    if severities is None:
-        severities = []
-    allowed_severities = {"info", "low", "medium", "high", "critical", "unknown"}
-    if not isinstance(severities, list) or not all(isinstance(value, str) for value in severities):
-        return [], "`severities` must be an array of strings."
-    normalized_severities = [value.strip().lower() for value in severities if value.strip()]
-    if any(value not in allowed_severities for value in normalized_severities):
-        return [], "`severities` contains an unsupported value."
-    if normalized_severities:
-        filters.extend(["-severity", ",".join(sorted(set(normalized_severities)))])
-    if not filters:
-        return [], "Provide at least one tag, template ID, or severity; unfiltered plans are refused."
-    return filters, None
-
-
-def _nuclei_web_target(value: Any) -> tuple[str, str | None]:
-    if not isinstance(value, str) or not value.strip() or len(value) > 2048:
-        return "", "`target` must be a non-empty HTTP or HTTPS URL no longer than 2048 characters."
-    target = value.strip()
-    parsed = urllib.parse.urlsplit(target)
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"} or not parsed.hostname:
-        return "", "`target` must be an absolute HTTP or HTTPS URL."
-    if parsed.username or parsed.password or parsed.fragment:
-        return "", "`target` must not contain credentials or a URL fragment."
-    try:
-        parsed.port
-    except ValueError:
-        return "", "`target` contains an invalid port."
-    return urllib.parse.urlunsplit(parsed._replace(scheme=scheme)), None
-
-
-def _preview_nuclei_filters(filter_args: list[str], args: dict[str, Any]) -> tuple[CommandResult, list[str]]:
-    to, mo, cwd, env_map = safe_container_args(args)
-    result = run_argv_in_container(
-        ["nuclei", "-tl", "-disable-update-check", *filter_args],
-        cwd=cwd,
-        timeout_seconds=to,
-        max_output_bytes=mo,
-        extra_env=env_map,
-    )
-    templates = [
-        line.strip()
-        for line in (result.stdout + "\n" + result.stderr).splitlines()
-        if line.strip().endswith((".yaml", ".yml"))
-    ]
-    return result, templates
-
-
-def handle_nuclei_plan(args: dict[str, Any]) -> dict[str, Any]:
-    unexpected = sorted(
-        set(args) - {"target", "tags", "template_ids", "severities", "max_templates", "rate_limit", "timeout_seconds", "max_output_bytes", "cwd"}
-    )
-    if unexpected:
-        return tool_result(f"Unsupported nuclei_plan fields: {', '.join(unexpected)}. Raw Nuclei flags are not accepted.\n", is_error=True)
-    target, target_error = _nuclei_web_target(args.get("target"))
-    if target_error:
-        return tool_result(target_error + "\n", is_error=True)
-    filter_args, filter_error = _nuclei_filter_args(args)
-    if filter_error:
-        return tool_result(filter_error + "\n", is_error=True)
-
-    rate_limit = int_arg(args.get("rate_limit"), NUCLEI_MAX_RATE, 1, NUCLEI_MAX_RATE)
-    max_templates = int_arg(args.get("max_templates"), NUCLEI_MAX_TEMPLATES, 1, NUCLEI_MAX_TEMPLATES)
-    result, templates = _preview_nuclei_filters(filter_args, args)
-    if result.timed_out or result.exit_code != 0:
-        return tool_result(
-            "Nuclei could not validate this filter offline; no plan was created.\n\n"
-            + result_from_run(result)["content"][0]["text"],
-            is_error=True,
-        )
-    if result.truncated:
-        return tool_result(
-            "The offline template preview was truncated, so its size cannot be attested; narrow the filter and plan again.\n",
-            is_error=True,
-        )
-    if not templates:
-        return tool_result("The offline filter matched zero templates; no plan was created.\n", is_error=True)
-    if len(templates) > max_templates:
-        return tool_result(
-            f"The offline filter matched {len(templates)} templates, above this plan's limit of {max_templates}; narrow it and plan again.\n",
-            is_error=True,
-        )
-
-    canonical = json.dumps(
-        {
-            "target": target,
-            "filter_args": filter_args,
-            "template_count": len(templates),
-            "rate_limit": rate_limit,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    plan_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    plan = NucleiPlan(
-        plan_id=plan_id,
-        target=target,
-        filter_args=tuple(filter_args),
-        template_count=len(templates),
-        rate_limit=rate_limit,
-        output_path=f"raw/operations/nuclei/{plan_id}.jsonl",
-    )
-    NUCLEI_PLANS[plan_id] = plan
-    return tool_result(
-        json.dumps(
-            {
-                "status": "ready",
-                "side_effect_free": True,
-                "plan_id": plan.plan_id,
-                "target": plan.target,
-                "filter_args": list(plan.filter_args),
-                "template_count": plan.template_count,
-                "templates": templates,
-                "rate_limit": plan.rate_limit,
-                "output_path": plan.output_path,
-                "next_tool": "nuclei_run_scoped",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
-
-
-def handle_nuclei_run_scoped(args: dict[str, Any]) -> dict[str, Any]:
-    unexpected = sorted(set(args) - {"plan_id", "timeout_seconds", "max_output_bytes", "cwd"})
-    if unexpected:
-        return tool_result(f"Unsupported nuclei_run_scoped fields: {', '.join(unexpected)}. Raw Nuclei flags are not accepted.\n", is_error=True)
-    plan_id = args.get("plan_id")
-    if not isinstance(plan_id, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_id):
-        return tool_result("`plan_id` must be the ID returned by nuclei_plan.\n", is_error=True)
-    plan = NUCLEI_PLANS.get(plan_id)
-    if not plan:
-        return tool_result("This Nuclei plan is unknown or already consumed; create a fresh nuclei_plan.\n", is_error=True)
-
-    to, mo, cwd, env_map = safe_container_args(args)
-    directory = os.path.dirname(plan.output_path)
-    prepared = run_argv_in_container(
-        ["mkdir", "-p", directory],
-        cwd=cwd,
-        timeout_seconds=min(to, 30),
-        max_output_bytes=min(mo, 32 * 1024),
-        extra_env=env_map,
-    )
-    if prepared.exit_code != 0 or prepared.timed_out:
-        return tool_result("Could not prepare the bounded Nuclei output directory.\n", is_error=True)
-
-    result = run_argv_in_container(
-        [
-            "nuclei",
-            "-u",
-            plan.target,
-            *plan.filter_args,
-            "-disable-update-check",
-            "-no-interactsh",
-            "-dr",
-            "-rate-limit",
-            str(plan.rate_limit),
-            "-c",
-            "1",
-            "-bulk-size",
-            "1",
-            "-exclude-tags",
-            NUCLEI_EXCLUDED_TAGS,
-            "-H",
-            "X-Request-ID: Bugcrowd",
-            "-jsonl",
-            "-silent",
-            "-o",
-            plan.output_path,
-        ],
-        cwd=cwd,
-        timeout_seconds=to,
-        max_output_bytes=mo,
-        extra_env=env_map,
-    )
-    counted = run_argv_in_container(
-        [
-            "python3",
-            "-c",
-            "import pathlib,sys; p=pathlib.Path(sys.argv[1]); print(sum(1 for line in p.open(encoding='utf-8', errors='replace') if line.strip()) if p.is_file() else 0)",
-            plan.output_path,
-        ],
-        cwd=cwd,
-        timeout_seconds=min(to, 30),
-        max_output_bytes=min(mo, 32 * 1024),
-        extra_env=env_map,
-    )
-    try:
-        suspected_count = max(0, int(counted.stdout.strip())) if counted.exit_code == 0 else 0
-    except ValueError:
-        suspected_count = 0
-    NUCLEI_PLANS.pop(plan_id, None)
-    prefix = (
-        f"plan_id: {plan.plan_id}\n"
-        f"template_count: {plan.template_count}\n"
-        f"rate_limit: {plan.rate_limit}\n"
-        f"output_path: {plan.output_path}\n"
-        f"lead_count: {suspected_count}\n"
-        f"suspected_count: {suspected_count}\n"
-        "confirmed_count: 0\n"
-        "classification: every emitted match is SUSPECTED until independently reproduced and verified\n\n"
-    )
-    rendered = result_from_run(result)
-    return tool_result(prefix + rendered["content"][0]["text"], is_error=bool(rendered.get("isError")))
-
-
 _validate_catalog()
 
 # ── Rebuild Registry From The Verified Catalog ────────────────────────
 # Import-time validation proves that generated tool names are unique and MCP
-# safe. Only after that proof does the code clear the temporary decorator
-# registry and rebuild it from the catalog. The lowercase per-binary API is thus
-# the sole public surface exposed to MCP clients.
+# safe. Only after that proof does the code build the registry.
+# The lowercase per-binary API is the sole public surface exposed to MCP clients.
+# Every published schema is paired with the handler used by dispatch.
 # ──────────────────────────────────────────────────────────────────────
-TOOL_REGISTRY.clear()
 register_tool(
     "capability_attestation",
     "Attest the live cyberful-os image against every required CLI and Python-library capability, including Nuclei and Metasploit smoke probes. This is read-only and writes no target traffic.",
@@ -2568,7 +2278,7 @@ for _spec in CLI_TOOL_SPECS:
     register_tool(_spec.name, _cli_tool_description(_spec), _cli_tool_schema())(_make_cli_handler(_spec))
 register_tool(
     "nuclei_templates",
-    "Preview how many nuclei templates a filter selects BEFORE you scan — call this first whenever you plan a `nuclei` run. Runs `nuclei -tl -disable-update-check` plus your filter flags inside the cyberful-os container and returns the matching template count and list. Side-effect-free: -tl only lists templates and exits — it sends NO request to any target. Pass the SAME -tags/-id/-severity flags you will pass to the `nuclei` scan, as a JSON array of strings in `args`; the count and list are then an upper bound on what that scan will load (a scan also applies nuclei's default exclusions). Do NOT pass -t, -u, a target, or -l — the signed corpus is pre-installed and auto-resolved, and -tl/-disable-update-check are added for you. Read the count before scanning: a count in the hundreds or thousands means your filter is too broad (an unfiltered nuclei scan runs thousands of templates); a count of 0 means the filter matched nothing and must be fixed.",
+    "Optionally list the installed Nuclei templates matching filter arguments. This runs offline with -tl and sends no target request.",
     {
         "type": "object",
         "additionalProperties": False,
@@ -2577,7 +2287,7 @@ register_tool(
                 "type": "array",
                 "items": {"type": "string"},
                 "default": [],
-                "description": "Template FILTER flags to preview, as a JSON array of strings — the SAME -tags/-id/-severity you will pass to the `nuclei` scan (e.g. [\"-tags\",\"laravel\"] or [\"-id\",\"CVE-2021-3129\"]). Do NOT include -t, -u, -l, or a target; -tl and -disable-update-check are added automatically and the pre-installed corpus is auto-resolved.",
+                "description": "Nuclei template-listing arguments; -tl and -disable-update-check are added automatically.",
                 "examples": [["-tags", "laravel"], ["-id", "CVE-2021-3129"]],
             },
             **_std_options(),
@@ -2585,70 +2295,6 @@ register_tool(
         "required": [],
     },
 )(handle_nuclei_templates)
-register_tool(
-    "nuclei_plan",
-    "Preferred Nuclei planning tool. Performs only an offline template listing, refuses unfiltered or broad selections, and returns an opaque one-use plan ID for nuclei_run_scoped. It sends no target traffic.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "target": {
-                "type": "string",
-                "description": "Authorized absolute HTTP or HTTPS target URL. Credentials and fragments are refused.",
-            },
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 20,
-                "description": "Nuclei tags tied to detected technology, such as wordpress or cve.",
-            },
-            "template_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 20,
-                "description": "Exact Nuclei template IDs tied to a concrete candidate.",
-            },
-            "severities": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["info", "low", "medium", "high", "critical", "unknown"]},
-                "description": "Optional severities. At least one tags/template_ids/severities filter is required.",
-            },
-            "max_templates": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": NUCLEI_MAX_TEMPLATES,
-                "default": NUCLEI_MAX_TEMPLATES,
-                "description": "Maximum offline-matched templates accepted by this plan; hard-capped at 40.",
-            },
-            "rate_limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": NUCLEI_MAX_RATE,
-                "default": NUCLEI_MAX_RATE,
-                "description": "Maximum planned request rate; hard-capped at 5 requests/second.",
-            },
-            **_std_options(),
-        },
-        "required": ["target"],
-    },
-)(handle_nuclei_plan)
-register_tool(
-    "nuclei_run_scoped",
-    "Execute exactly one previously validated nuclei_plan. This tool accepts no raw Nuclei flags and enforces the Bugcrowd marker, no OAST, no redirects, at most 5 requests/second, concurrency 1, bulk size 1, and exclusion of intrusive template tags. Treat every hit as SUSPECTED.",
-    {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "plan_id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$",
-                "description": "Opaque one-use ID returned by nuclei_plan.",
-            },
-            **_std_options(),
-        },
-        "required": ["plan_id"],
-    },
-)(handle_nuclei_run_scoped)
 register_tool(
     "requests",
     "Fetch HTTP(S) resources using Python requests inside the cyberful-os container. Use this for scripted OSINT, authenticated fetches, API checks, and response capture — prefer it over curl+grep/byte-window scraping when you need the body or headers. For JSON-capable endpoints (REST APIs, and framework debug/exception pages), set headers {\"Accept\": \"application/json\"} to receive the STRUCTURED JSON directly instead of scraping JSON embedded in HTML. Bodies are capped at max_body_chars (default 65536, max 1048576) and the result sets body_truncated=true when cut — raise max_body_chars (don't byte-window) to capture the full payload.",
@@ -2735,6 +2381,7 @@ register_tool(
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS, "default": DEFAULT_TIMEOUT_SECONDS, "description": "Wall-clock timeout for the command."},
             "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": MAX_OUTPUT_BYTES, "default": DEFAULT_MAX_OUTPUT_BYTES, "description": "Maximum combined stdout/stderr bytes returned."},
             "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Extra environment variables for this command."},
+            "egress": _egress_hint_schema(),
         },
         "required": ["command"],
     },
@@ -2934,57 +2581,15 @@ def request_shutdown(_signum: int, _frame: FrameType | None) -> None:
 # Invalid framing remains a JSON-RPC error and never reaches a tool handler.
 # ──────────────────────────────────────────────────────────────────────
 
-@dataclass(frozen=True)
-class InputLine:
-    text: str | None = None
-    error: str | None = None
-
-
-def bounded_json_lines(stream: BinaryIO, max_bytes: int = MAX_JSON_LINE_BYTES) -> Iterator[InputLine]:
-    if type(max_bytes) is not int or max_bytes < 1:
-        raise ValueError("max_bytes must be a positive integer")
-    while True:
-        raw = stream.readline(max_bytes + 1)
-        if not raw:
-            return
-        has_newline = raw.endswith(b"\n")
-        if len(raw) > max_bytes and not has_newline:
-            while raw and not raw.endswith(b"\n"):
-                raw = stream.readline(64 * 1024)
-            yield InputLine(error=f"input line exceeds {max_bytes} bytes")
-            continue
-        payload = raw[:-1] if has_newline else raw
-        if payload.endswith(b"\r"):
-            payload = payload[:-1]
-        try:
-            yield InputLine(text=payload.decode("utf-8", errors="strict"))
-        except UnicodeDecodeError:
-            yield InputLine(error="input line is not valid UTF-8")
+def bounded_json_lines(stream: Any, max_bytes: int = MAX_JSON_LINE_BYTES):
+    return read_bounded_json_lines(stream, max_bytes)
 
 
 def request_envelope_error(message: Any) -> str | None:
-    try:
-        _validate_schema_value(message, {}, "request", 0, [0])
-    except ValueError as exc:
-        return str(exc).replace("invalid tool arguments at ", "invalid request at ", 1)
-    if not isinstance(message, dict):
-        return "request must be an object"
-    if message.get("jsonrpc") != "2.0":
-        return 'jsonrpc must equal "2.0"'
-    method = message.get("method")
-    if not isinstance(method, str) or not method or len(method) > 128:
-        return "method must be a non-empty string of at most 128 characters"
-    params = message.get("params")
-    if "params" in message and not isinstance(params, dict):
-        return "params must be an object"
-    message_id = message.get("id")
-    if "id" in message and message_id is not None and type(message_id) not in {str, int}:
-        return "id must be a string, integer, null, or omitted"
-    return None
-
-
-def reject_nonfinite_json(value: str) -> None:
-    raise ValueError(f"non-finite JSON number {value} is not allowed")
+    return framing_request_envelope_error(
+        message,
+        lambda value: _validate_schema_value(value, {}, "request", 0, [0]),
+    )
 
 
 def main() -> int:

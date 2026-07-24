@@ -9,8 +9,9 @@ rejects a generic test command so package-specific isolation is preserved.
 | `make test-bun`         | Application and browser MCP unit tests               |
 | `make test-python`      | cyberful-os Python unit tests                        |
 | `make test-cyberful-os` | Real image, catalog, MCP, and gateway contract       |
-| `make test-network`     | Browser sockets and local Responses recovery          |
+| `make test-network`     | Browser socket integration                            |
 | `make test-zap`         | Docker ZAP, bridge, browser proxy, scan, and cleanup |
+| `make test-ghidra`      | Real Ghidra import, analysis, MCP, and restart state |
 | `make test-codex`       | Pinned Codex app-server and MCP compatibility        |
 | `make docs-build`       | Strict documentation build and link validation       |
 
@@ -18,13 +19,11 @@ Before publishing a change, scan the checkout for secrets. This is a safety net,
 not permission to place a real credential in Git history even briefly.
 
 `make test` runs the default Bun, Python, and live cyberful-os tiers;
-`make test-all` adds network, ZAP, and Codex contracts.
+`make test-all` adds network, ZAP, Ghidra, and Codex contracts.
 
-The fallback network tier starts a real loopback Responses fixture, confirms
-preflight and multiple serialized tool calls, injects a non-`cyberPolicy`
-provider failure, and checks that local recovery completes the phase. It is kept
-out of the default Bun tier because restricted sandboxes may forbid binding a
-loopback socket.
+The network tier exercises the browser socket contract. It remains outside the
+default Bun tier because restricted sandboxes may forbid binding a loopback
+socket.
 
 GitHub CI/CD is temporarily disabled. Until it is activated, maintainers run the
 relevant commands above locally and record which checks passed. The workflow

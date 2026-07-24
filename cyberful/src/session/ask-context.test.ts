@@ -4,13 +4,13 @@
 // ───────────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { MessageID, PartID, SessionID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { ASK_HISTORY_CHARACTERS, SessionAskContext } from "./ask-context"
 
 const sessionID = SessionID.make("ses_ask")
-const providerID = ProviderID.make("codex")
+const subsystemID = SubsystemID.make("codex")
 const modelID = ModelID.make("test")
 
 function user(index: number): MessageV2.WithParts {
@@ -22,7 +22,7 @@ function user(index: number): MessageV2.WithParts {
       role: "user",
       time: { created: index * 2 },
       agent: "ask",
-      model: { providerID, modelID },
+      model: { subsystemID, modelID },
     },
     parts: [{ id: PartID.make(`prt_u${index}`), sessionID, messageID: id, type: "text", text: `question ${index}` }],
   }
@@ -40,7 +40,7 @@ function assistant(index: number): MessageV2.WithParts {
       agent: "ask",
       mode: "ask",
       modelID,
-      providerID,
+      subsystemID,
       path: { cwd: "/tmp", root: "/tmp" },
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     },

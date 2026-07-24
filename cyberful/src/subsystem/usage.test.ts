@@ -1,7 +1,7 @@
 // ── Session Token Aggregation Tests ─────────────────────────────
 // Verifies cumulative token snapshots across sequential and overlapping runtime
 // processes without double-counting duplicate or stale observations.
-// → cyberful/src/subsystem/usage.ts — owns provider-neutral aggregation.
+// → cyberful/src/subsystem/usage.ts — owns subsystem-neutral aggregation.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
@@ -30,7 +30,7 @@ describe("SubsystemUsage.createSessionCounter", () => {
     expect(counter.observe(firstRun, { generatedTokens: 125 })).toBe(175)
   })
 
-  test("normalizes invalid provider values at the subsystem boundary", () => {
+  test("normalizes invalid usage values at the subsystem boundary", () => {
     const counter = SubsystemUsage.createSessionCounter()
     const run = {}
 
@@ -64,6 +64,13 @@ describe("SubsystemUsage.createSessionCounter", () => {
       output: 125,
       reasoning: 25,
       cache: { read: 50, write: 0 },
+    })
+    expect(SubsystemUsage.contextChurn(counter.usage())).toEqual({
+      uncachedInput: 320,
+      cacheReadRatio: 0.1351,
+      inputAmplification: 2.96,
+      churnRatio: 0.8649,
+      reasoningShare: 0.2,
     })
   })
 })

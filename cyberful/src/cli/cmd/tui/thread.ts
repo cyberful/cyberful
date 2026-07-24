@@ -1,8 +1,9 @@
 // ── TUI Worker Process Lifecycle ─────────────────────────────────
 // Launches the isolated control-plane worker, bridges RPC and global events,
-//   coordinates dependency preflight, and reaps worker and container resources
-//   on normal exit, signal, startup failure, or forced shutdown.
+//   coordinates dependency preflight, and delegates terminal-owned emergency
+//   cleanup after normal exit, signal, startup failure, or forced shutdown.
 // → cyberful/src/cli/cmd/tui/worker.ts — owns worker-side services and ordered shutdown.
+// → cyberful/src/cli/cmd/tui/thread-cleanup.ts — reaps resources after worker termination.
 // ─────────────────────────────────────────────────────────────────
 
 import { cmd } from "@/cli/cmd/cmd"
@@ -27,7 +28,11 @@ import { BrowserPreflight } from "@/dependency/browser-preflight"
 import { CYBERFUL_PROCESS_ROLE, CYBERFUL_RUN_ID, ensureRunID, sanitizedProcessEnv } from "@/util/cyberful-process"
 import { validateSession } from "./validate-session"
 import { TuiRpcContract, type DockerResource } from "./rpc-contract"
-import { SubsystemContainer } from "@/subsystem/container"
+import {
+  cleanupAfterWorker,
+  reapDockerResourcesSync,
+  reapRunOwnedDockerResourcesSync,
+} from "./thread-cleanup"
 
 declare global {
   const CYBERFUL_WORKER_PATH: string
@@ -36,90 +41,11 @@ declare global {
 type RpcClient = ReturnType<typeof Rpc.client<typeof TuiRpcContract>>
 const shutdownSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 const WORKER_SHUTDOWN_TIMEOUT_MS = 15_000
-const DOCKER_EXIT_CLEANUP_TIMEOUT_MS = 5_000
-const DOCKER_EXIT_CLEANUP_OUTPUT_BYTES = 64 * 1024
 
 function signalExitCode(signal: (typeof shutdownSignals)[number]) {
   if (signal === "SIGHUP") return 129
   if (signal === "SIGINT") return 130
   return 143
-}
-
-function reapDockerResourcesSync(resources: Iterable<DockerResource>) {
-  for (const resource of resources) {
-    try {
-      if (resource.kind === "zap") {
-        const related = Bun.spawnSync(
-          ["docker", "ps", "--all", "--quiet", "--filter", `label=org.cyberful.zap-container=${resource.name}`],
-          {
-            stdout: "pipe",
-            stderr: "ignore",
-            timeout: DOCKER_EXIT_CLEANUP_TIMEOUT_MS,
-            maxBuffer: DOCKER_EXIT_CLEANUP_OUTPUT_BYTES,
-          },
-        )
-        if (related.exitCode === 0) {
-          new TextDecoder()
-            .decode(related.stdout)
-            .trim()
-            .split("\n")
-            .filter(Boolean)
-            .forEach((container) => {
-              Bun.spawnSync(["docker", "rm", "--force", "--volumes", container], {
-                stdout: "ignore",
-                stderr: "ignore",
-                timeout: DOCKER_EXIT_CLEANUP_TIMEOUT_MS,
-              })
-            })
-        }
-      }
-
-      Bun.spawnSync(
-        resource.action === "remove"
-          ? ["docker", "rm", "--force", "--volumes", resource.name]
-          : ["docker", "stop", "--time", "1", resource.name],
-        { stdout: "ignore", stderr: "ignore", timeout: DOCKER_EXIT_CLEANUP_TIMEOUT_MS },
-      )
-    } catch (error) {
-      Log.Default.warn("failed to reap TUI Docker resource", {
-        error,
-        resource: resource.name,
-        action: resource.action,
-      })
-    }
-  }
-}
-
-// ── Run Labels Recover Containers Missing From RPC Inventory ────────────
-// A gateway can dispatch `docker run` immediately before it is killed, allowing
-// the daemon to create a container after the worker's last live snapshot. The
-// terminal process waits for worker termination and then queries the immutable
-// run labels, keeping this fallback isolated from concurrent Cyberful runs.
-// ────────────────────────────────────────────────────────────────
-function reapRunOwnedDockerResourcesSync(runID: string) {
-  const filters = SubsystemContainer.ownerFilterArguments(runID)
-  if (filters.length === 0) return
-  try {
-    const listed = Bun.spawnSync(["docker", "ps", "--all", "--quiet", ...filters], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: DOCKER_EXIT_CLEANUP_TIMEOUT_MS,
-      maxBuffer: DOCKER_EXIT_CLEANUP_OUTPUT_BYTES,
-    })
-    if (listed.exitCode !== 0) {
-      Log.Default.warn("failed to list TUI run-owned Docker resources")
-      return
-    }
-    const resources = new TextDecoder()
-      .decode(listed.stdout)
-      .trim()
-      .split("\n")
-      .filter((id) => /^[a-f0-9]{12,64}$/i.test(id))
-      .map((name): DockerResource => ({ name, action: "remove", kind: "expert" }))
-    reapDockerResourcesSync(resources)
-  } catch (error) {
-    Log.Default.warn("failed to reap TUI run-owned Docker resources", { error })
-  }
 }
 
 function createWorkerFetch(client: RpcClient): typeof fetch {
@@ -321,9 +247,11 @@ export const TuiThreadCommand = cmd({
         })
         client.close()
         await worker.terminate()
-        for (const pid of liveSubsystemPids) SubsystemCli.killTree(pid, "SIGKILL")
-        reapDockerResourcesSync(liveDockerResources.values())
-        reapRunOwnedDockerResourcesSync(runID)
+        await cleanupAfterWorker({
+          runID,
+          pids: liveSubsystemPids,
+          resources: liveDockerResources.values(),
+        })
         liveSubsystemPids.clear()
         liveDockerResources.clear()
       }

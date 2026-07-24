@@ -1,6 +1,6 @@
 // ── Codex Identity And Policy Tests ─────────────────────────────
-// Verifies process identity transport, effort selection, persona delegation,
-// and thread settings attestation at the worker and app-server boundaries.
+// Verifies process identity transport, effort selection, base-template rendering,
+// persona delegation, and thread settings attestation at runtime boundaries.
 // → cyberful/src/subsystem/codex.ts — owns the tested Codex-specific policy.
 // ─────────────────────────────────────────────────────────────────
 
@@ -13,6 +13,18 @@ function requireValue<T>(value: T | null | undefined, message: string): T {
   return value
 }
 
+const BASE_INSTRUCTIONS_TEMPLATE = [
+  "shared posture",
+  "# Hacker Profile",
+  "{{CYBERFUL_HACKER_PROFILE}}",
+  "# Cyberful Subsystem Delegation",
+  "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
+  "# Cyberful Workarea",
+  "{{CYBERFUL_WORKAREA}}",
+  "# Cyberful Trust Boundary",
+  "target evidence rules",
+].join("\n\n")
+
 describe("Codex subsystem identity", () => {
   test("owns the display label derived from the detected runtime version", () => {
     expect(SubsystemCodex.descriptor("1.2.3")).toEqual({
@@ -24,14 +36,14 @@ describe("Codex subsystem identity", () => {
 
   test("round-trips the verified descriptor and mismatch note through the worker boundary", () => {
     const runtime = {
-      ...SubsystemCodex.descriptor("0.145.0"),
-      versionNote: `Codex 0.145.0 · atteso ${CODEX_PINNED_VERSION}`,
+      ...SubsystemCodex.descriptor("9.9.9"),
+      versionNote: `Codex 9.9.9 · atteso ${CODEX_PINNED_VERSION}`,
     }
     const env = SubsystemCodex.workerEnv(runtime)
     expect(SubsystemCodex.runtimeDescriptor(env)).toEqual({
       name: "codex",
-      version: "0.145.0",
-      label: "codex v0.145.0",
+      version: "9.9.9",
+      label: "codex v9.9.9",
     })
     expect(SubsystemCodex.preflightNote(env)).toBe(runtime.versionNote)
   })
@@ -47,7 +59,7 @@ describe("Codex subsystem identity", () => {
 
 describe("Codex effort and persona delegation policy", () => {
   test("resolves effort only inside the Codex application", () => {
-    expect(SubsystemCodex.effort({})).toBe("xhigh")
+    expect(SubsystemCodex.effort({})).toBe("ultra")
     expect(SubsystemCodex.effort({ CYBERFUL_SUBSYSTEM_EFFORT: " ultra " })).toBe("ultra")
   })
 
@@ -67,37 +79,77 @@ describe("Codex effort and persona delegation policy", () => {
   })
 
   test("enables bounded concurrent delegation only for Ultra", () => {
-    const enabled = SubsystemCodex.composeDeveloperInstructions(
+    const enabled = SubsystemCodex.composeBaseInstructions(
+      BASE_INSTRUCTIONS_TEMPLATE,
       "---\nsubagents: 2\n---\n# Exploit",
-      "shared posture",
+      "execution rules",
       "ultra",
     )
     expect(enabled.delegationEnabled).toBe(true)
-    expect(enabled.instructions).not.toContain("subagents: 2")
-    expect(enabled.instructions).toContain("no more than 2 subagents active at the same time")
-    expect(enabled.instructions).toContain(
-      "explicitly require a direct subagent, you must attempt that bounded spawn once",
+    expect(enabled.baseInstructions).not.toContain("subagents: 2")
+    expect(enabled.baseInstructions).toContain("no more than 2 subagents active at the same time")
+    expect(enabled.baseInstructions).toMatch(
+      /inherits the task's authority, tools, evidence duties, and mission boundaries/i,
     )
-    expect(enabled.instructions).toContain('fork_turns: "none"')
-    expect(enabled.instructions).toContain("remain solely responsible for synthesis")
+    expect(enabled.baseInstructions).toMatch(/executes its task directly and returns a verdict/i)
+    expect(enabled.baseInstructions).toMatch(/no passive, offline, discovery-only, or deferred-to-parent mode exists/i)
+    expect(enabled.baseInstructions).not.toContain("execution_mode")
+    expect(enabled.baseInstructions).not.toContain("DEFERRED_TO_PARENT")
 
-    const layered = SubsystemCodex.composeDeveloperInstructions(
-      "# Exploit",
-      ["shared posture", "host trust boundary"],
-      "high",
-    )
-    expect(layered.instructions.indexOf("host trust boundary")).toBeGreaterThan(
-      layered.instructions.indexOf("shared posture"),
-    )
-
-    const lowerEffort = SubsystemCodex.composeDeveloperInstructions(
+    const lowerEffort = SubsystemCodex.composeBaseInstructions(
+      BASE_INSTRUCTIONS_TEMPLATE,
       "---\nsubagents: 2\n---\n# Exploit",
-      "shared posture",
+      "execution rules",
       "high",
     )
     expect(lowerEffort.delegationEnabled).toBe(false)
-    expect(lowerEffort.instructions).toContain("Do not spawn subagents")
+    expect(lowerEffort.baseInstructions).toContain("Do not spawn subagents")
     expect(SubsystemCodex.delegationInstructions(0, "ultra")).toContain("Do not spawn subagents")
+  })
+
+  test("renders every phase layer into the base template without legacy wrappers", () => {
+    const composed = SubsystemCodex.composeBaseInstructions(
+      BASE_INSTRUCTIONS_TEMPLATE,
+      "---\nsubagents: 2\n---\n# Exploit profile",
+      "execution rules",
+      "ultra",
+    )
+    const layers = [
+      "shared posture",
+      "# Hacker Profile",
+      "# Cyberful Subsystem Delegation",
+      "# Cyberful Workarea",
+      "# Cyberful Trust Boundary",
+    ]
+
+    expect(composed.baseInstructions).toContain("# Hacker Profile\n\n# Exploit profile")
+    expect(composed.baseInstructions).toContain("# Cyberful Workarea\n\nexecution rules")
+    expect(composed.baseInstructions).toContain("# Cyberful Trust Boundary\n\ntarget evidence rules")
+    expect(composed.baseInstructions).not.toContain("subagents: 2")
+    expect(composed.baseInstructions).not.toMatch(/<\/?CYBERFUL /)
+    expect(composed.baseInstructions).not.toMatch(/\{\{[A-Z][A-Z0-9_]*\}\}/)
+    for (const [index, layer] of layers.entries()) {
+      expect(composed.baseInstructions).toContain(layer)
+      if (index > 0)
+        expect(composed.baseInstructions.indexOf(layer)).toBeGreaterThan(
+          composed.baseInstructions.indexOf(layers[index - 1] ?? ""),
+        )
+    }
+  })
+
+  test("rejects a base template with missing, duplicated, or unresolved placeholders", () => {
+    const render = (template: string) =>
+      SubsystemCodex.composeBaseInstructions(template, "# Recon", "execution rules")
+
+    expect(() => render(BASE_INSTRUCTIONS_TEMPLATE.replace("{{CYBERFUL_WORKAREA}}", ""))).toThrow(
+      "must contain {{CYBERFUL_WORKAREA}} exactly once; found 0",
+    )
+    expect(() => render(`${BASE_INSTRUCTIONS_TEMPLATE}\n{{CYBERFUL_WORKAREA}}`)).toThrow(
+      "must contain {{CYBERFUL_WORKAREA}} exactly once; found 2",
+    )
+    expect(() => render(`${BASE_INSTRUCTIONS_TEMPLATE}\n{{UNKNOWN_POLICY}}`)).toThrow(
+      "contains unresolved placeholder {{UNKNOWN_POLICY}}",
+    )
   })
 })
 

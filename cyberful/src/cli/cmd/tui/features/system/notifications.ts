@@ -1,15 +1,13 @@
-// ── Session Attention Feature ────────────────────────────────────
+// ── Session Attention ────────────────────────────────────────────
 // Converts completed, failed, and blocked session events into bounded terminal
 //   attention requests while suppressing duplicate and child notifications.
 // ─────────────────────────────────────────────────────────────────
 
 import type { Event } from "@/server/client"
-import type { TuiFeature, TuiFeatureApi } from "@/cli/cmd/tui/api-types"
-import type { InternalTuiFeature } from "../../feature/internal"
+import type { TuiFeatureApi } from "@/cli/cmd/tui/api-types"
 import { observePromise } from "@/util/promise"
 import * as Log from "@/util/log"
 
-const id = "internal:notifications"
 const log = Log.create({ service: "tui.notifications" })
 
 type SessionError = Extract<Event, { type: "session.error" }>["properties"]["error"]
@@ -38,57 +36,52 @@ function sessionErrorMessage(error: SessionError) {
   return "Session error"
 }
 
-const tui: TuiFeature = async (api) => {
+export function installNotifications(api: TuiFeatureApi) {
   const active = new Set<string>()
   const errored = new Set<string>()
   const questions = new Set<string>()
 
-  api.event.on("question.asked", (event) => {
-    if (questions.has(event.properties.id)) return
-    questions.add(event.properties.id)
-    notify(api, event.properties.sessionID, "Question needs input")
-  })
+  const dispose = [
+    api.event.on("question.asked", (event) => {
+      if (questions.has(event.properties.id)) return
+      questions.add(event.properties.id)
+      notify(api, event.properties.sessionID, "Question needs input")
+    }),
+    api.event.on("question.replied", (event) => {
+      questions.delete(event.properties.requestID)
+    }),
+    api.event.on("question.rejected", (event) => {
+      questions.delete(event.properties.requestID)
+    }),
+    api.event.on("session.status", (event) => {
+      const sessionID = event.properties.sessionID
+      if (event.properties.status.type === "busy") {
+        active.add(sessionID)
+        errored.delete(sessionID)
+        return
+      }
 
-  api.event.on("question.replied", (event) => {
-    questions.delete(event.properties.requestID)
-  })
+      if (event.properties.status.type !== "idle") return
+      if (!active.has(sessionID)) return
+      active.delete(sessionID)
 
-  api.event.on("question.rejected", (event) => {
-    questions.delete(event.properties.requestID)
-  })
+      if (errored.has(sessionID)) {
+        errored.delete(sessionID)
+        return
+      }
 
-  api.event.on("session.status", (event) => {
-    const sessionID = event.properties.sessionID
-    if (event.properties.status.type === "busy") {
-      active.add(sessionID)
-      errored.delete(sessionID)
-      return
-    }
+      notify(api, sessionID, "Session done")
+    }),
+    api.event.on("session.error", (event) => {
+      const sessionID = event.properties.sessionID
+      if (!sessionID) return
+      if (!active.has(sessionID)) return
+      errored.add(sessionID)
+      notify(api, sessionID, sessionErrorMessage(event.properties.error))
+    }),
+  ]
 
-    if (event.properties.status.type !== "idle") return
-    if (!active.has(sessionID)) return
-    active.delete(sessionID)
-
-    if (errored.has(sessionID)) {
-      errored.delete(sessionID)
-      return
-    }
-
-    notify(api, sessionID, "Session done")
-  })
-
-  api.event.on("session.error", (event) => {
-    const sessionID = event.properties.sessionID
-    if (!sessionID) return
-    if (!active.has(sessionID)) return
-    errored.add(sessionID)
-    notify(api, sessionID, sessionErrorMessage(event.properties.error))
-  })
+  return () => {
+    for (const off of dispose.reverse()) off()
+  }
 }
-
-const feature: InternalTuiFeature = {
-  id,
-  tui,
-}
-
-export default feature

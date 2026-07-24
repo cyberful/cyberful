@@ -122,13 +122,22 @@ describe("browser profile tool routing", () => {
 })
 
 describe("upstreamProcessEnv", () => {
-  test("confines engagement keys to the ZAP bridge", () => {
+  test("confines engagement keys to their ZAP or Ghidra bridge", () => {
     const inherited = {
       PATH: "/usr/bin",
       CYBER_ZAP_API_KEY: "api-secret",
       CYBER_ZAP_MCP_KEY: "mcp-secret",
+      CYBER_GHIDRA_MCP_KEY: "ghidra-secret",
     }
-    expect(upstreamProcessEnv("zap", inherited)).toMatchObject(inherited)
+    expect(upstreamProcessEnv("zap", inherited)).toEqual({
+      PATH: "/usr/bin",
+      CYBER_ZAP_API_KEY: "api-secret",
+      CYBER_ZAP_MCP_KEY: "mcp-secret",
+    })
+    expect(upstreamProcessEnv("ghidra", inherited)).toEqual({
+      PATH: "/usr/bin",
+      CYBER_GHIDRA_MCP_KEY: "ghidra-secret",
+    })
     expect(upstreamProcessEnv("browser", inherited)).toEqual({ PATH: "/usr/bin" })
     expect(upstreamProcessEnv("cyberful-os", inherited)).toEqual({ PATH: "/usr/bin" })
   })

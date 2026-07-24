@@ -1,6 +1,6 @@
 // ── Codex Runtime Identity And Policy ────────────────────────────
-// Defines the sole production phase subsystem's identity, effort, persona
-// delegation, worker transport, settings attestation, and preflight verification.
+// Defines the sole production phase subsystem's identity, effort, rendered base
+// instructions, worker transport, settings attestation, and preflight verification.
 // → cyberful/src/dependency/codex.ts — probes the installed Codex executable.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ export interface Runtime extends Descriptor {
 const VERSION_ENV = "CYBERFUL_CODEX_VERSION"
 const VERSION_NOTE_ENV = "CYBERFUL_CODEX_VERSION_NOTE"
 const EFFORT_ENV = "CYBERFUL_SUBSYSTEM_EFFORT"
-export const DEFAULT_EFFORT = "xhigh"
+export const DEFAULT_EFFORT = "ultra"
 export const MULTI_AGENT_MODE = "explicitRequestOnly"
 const log = Log.create({ service: "subsystem.codex" })
 
@@ -57,34 +57,73 @@ export function parsePersona(source: string): Persona {
   return { content: parsed.content.trim(), subagents: value ?? 0 }
 }
 
+// ── Delegated Work Retains Phase Execution Authority ────────────
+// A child is a concurrent actor inside the owning phase, not an advisory tier.
+// It inherits the same authorization and safety boundary and owns its task
+// through a verdict. Shared mutable resources still require non-overlapping or
+// serialized use, but coordination cannot turn executable work into a blocker.
+//
+// @docs/concepts/execution-model.md
+// ─────────────────────────────────────────────────────────────────
 export function delegationInstructions(subagents: number, requestedEffort = effort()): string {
   if (requestedEffort !== "ultra" || subagents === 0)
     return "Do not spawn subagents during this phase; complete the work directly."
   return [
     `Direct subagents are available for genuinely parallelizable work, with no more than ${subagents} subagents active at the same time.`,
-    "When the phase instructions or user explicitly require a direct subagent, you must attempt that bounded spawn once; otherwise use delegation only when it materially helps.",
-    'Give each subagent a self-contained, bounded, non-overlapping task and spawn it without parent history (`fork_turns: "none"`); wait for its result and remain solely responsible for synthesis, the phase deliverable, and handoff.',
-    "If a child fails to initialize, do not repeat the delegation: continue that task directly and record the degraded delegation in the deliverable.",
+    "Delegate only bounded, non-overlapping work that benefits from parallel execution, then synthesize the results and own the phase handoff.",
+    "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. It executes its task directly and returns a verdict; no passive, offline, discovery-only, or deferred-to-parent mode exists.",
   ].join("\n")
 }
 
-export function composeDeveloperInstructions(
+const BASE_INSTRUCTION_PLACEHOLDERS = {
+  hackerProfile: "{{CYBERFUL_HACKER_PROFILE}}",
+  subsystemDelegation: "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
+  workarea: "{{CYBERFUL_WORKAREA}}",
+} as const
+
+// ── One Template Owns The Complete Cyberful Base Contract ───────
+// The checked-in template keeps stable behavior reviewable while phase identity,
+// delegation, and workarea mechanics remain runtime values. The invariant trust
+// boundary lives directly in the template, so it cannot disappear through a
+// missing secondary file or a failed replacement.
+// Every placeholder must occur exactly once, and no placeholder-shaped token may
+// survive rendering; malformed custom configuration therefore fails before Codex
+// starts instead of silently dropping or duplicating a dynamic layer.
+//
+// @docs/concepts/execution-model.md
+// ─────────────────────────────────────────────────────────────────
+export function composeBaseInstructions(
+  templateSource: string,
   personaSource: string,
-  sharedSources: string | readonly string[],
+  workareaSource: string,
   requestedEffort = effort(),
 ) {
   const persona = parsePersona(personaSource)
-  const shared = typeof sharedSources === "string" ? [sharedSources] : sharedSources
+  const template = templateSource.trim()
+  const workarea = workareaSource.trim()
+  if (!template) throw new Error("base instructions template is empty")
   if (!persona.content) throw new Error("persona instruction file is empty")
-  if (!shared.length || shared.some((source) => !source.trim())) throw new Error("shared instruction file is empty")
+  if (!workarea) throw new Error("workarea instructions are empty")
+
+  const replacements = new Map<string, string>([
+    [BASE_INSTRUCTION_PLACEHOLDERS.hackerProfile, persona.content],
+    [BASE_INSTRUCTION_PLACEHOLDERS.subsystemDelegation, delegationInstructions(persona.subagents, requestedEffort)],
+    [BASE_INSTRUCTION_PLACEHOLDERS.workarea, workarea],
+  ])
+  let baseInstructions = template
+  for (const [placeholder, replacement] of replacements) {
+    const occurrences = baseInstructions.split(placeholder).length - 1
+    if (occurrences !== 1)
+      throw new Error(`base instructions template must contain ${placeholder} exactly once; found ${occurrences}`)
+    baseInstructions = baseInstructions.replace(placeholder, replacement)
+  }
+  const unresolved = baseInstructions.match(/\{\{[A-Z][A-Z0-9_]*\}\}/)?.[0]
+  if (unresolved) throw new Error(`base instructions template contains unresolved placeholder ${unresolved}`)
+
   return {
     subagents: persona.subagents,
     delegationEnabled: requestedEffort === "ultra" && persona.subagents > 0,
-    instructions: [
-      persona.content,
-      `<CYBERFUL CODEX DELEGATION>\n${delegationInstructions(persona.subagents, requestedEffort)}\n</CYBERFUL CODEX DELEGATION>`,
-      ...shared.map((source) => source.trim()),
-    ].join("\n\n"),
+    baseInstructions,
   }
 }
 

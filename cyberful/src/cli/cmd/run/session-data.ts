@@ -97,8 +97,8 @@ export function createSessionData(
   }
 }
 
-function modelKey(provider: string, model: string): string {
-  return `${provider}/${model}`
+function modelKey(subsystem: string, model: string): string {
+  return `${subsystem}/${model}`
 }
 
 function formatUsage(tokens: Tokens | undefined, limit: number | undefined): string | undefined {
@@ -765,7 +765,7 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
       next = { status: "assistant responding" }
     }
 
-    const usage = formatUsage(info.tokens, input.limits[modelKey(info.providerID, info.modelID)])
+    const usage = formatUsage(info.tokens, input.limits[modelKey(info.subsystemID, info.modelID)])
     if (usage) {
       next = {
         ...next,

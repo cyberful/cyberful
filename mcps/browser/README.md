@@ -80,9 +80,10 @@ active challenge and brings the same Chromium window to the front. It returns
 immediately so the agent can call the gateway `question` tool with
 `kind: "captcha"`; that TUI question, not a short browser timeout, owns the
 human pause. After the answer, `browser_captcha_status` must attest that the
-challenge cleared. The engagement-wide gateway circuit breaker denies other
-active tools and handoff until that observation. It never solves, bypasses,
-injects tokens, or automates CAPTCHA challenges.
+challenge cleared. The scoped gateway circuit breaker denies further actions
+only for that browser profile and origin until that observation. Other
+profiles, origins, tabs, and non-browser tools continue. It never solves,
+bypasses, injects tokens, or automates CAPTCHA challenges.
 
 ## Isolation
 

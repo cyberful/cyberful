@@ -4,7 +4,7 @@
 // → cyberful/src/subsystem/container.ts — owns the tested cleanup registry.
 // ─────────────────────────────────────────────────────────────────
 
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { SubsystemContainer } from "./container"
 
 // ── Shutdown Owns Containers Left By Interrupted Sessions ───────
@@ -22,6 +22,8 @@ describe("SubsystemContainer reaping", () => {
     })
     SubsystemContainer.setOwnedContainerListerForTests(async () => [])
   })
+
+  afterEach(() => SubsystemContainer.resetTestDoubles())
 
   test("removeAll reaps every remembered container and clears the registry", async () => {
     SubsystemContainer.remember("cyberful-os-expert-alpha")
@@ -174,8 +176,6 @@ describe("SubsystemContainer reaping", () => {
     expect(filters).toEqual([
       "--filter",
       `label=${SubsystemContainer.OWNER_LABEL}=${SubsystemContainer.ownerToken("run-alpha")}`,
-      "--filter",
-      `label=${SubsystemContainer.RUNTIME_LABEL}=${SubsystemContainer.EXPERT_RUNTIME}`,
     ])
     expect(filters.join(" ")).not.toContain("run-alpha")
   })

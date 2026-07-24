@@ -28,6 +28,11 @@ available through `/agents`, `/status`, and `/diff`. Terminal-title, diff-wrap,
 and session-directory-filter toggles are also intentionally absent from the
 palette.
 
+Press `Ctrl+Alt+K` to open the built-in keyboard guide. Its layout, pending-key
+preview, home hint, diff route, notifications, and footer are part of the
+terminal itself and are available for every session; they are not optional
+plugins loaded from configuration.
+
 ## Welcome screen
 
 The **Workarea** field selects the durable engagement directory used for
@@ -45,10 +50,9 @@ selected workflow, and updates the hint immediately when the workflow changes.
 While the composer has focus, its white **×** clears all text and attachments.
 
 Near the bottom edge, the welcome screen shows a compact dark translucent panel
-centered on the screen. Its two left-aligned rows identify the active primary
-subsystem first and the optional local fallback model below it. The state text
-is green when available, yellow while checking, degraded, or deliberately
-disabled, and red when the probe could not reach a usable runtime. The snapshot
+centered on the screen. Its left-aligned row identifies the active Codex
+subsystem. The state text is green when available, yellow while checking or
+degraded, and red when the probe could not reach a usable runtime. The snapshot
 is refreshed whenever the welcome route mounts; it does not start a phase or
 keep an additional background service alive.
 
@@ -62,6 +66,31 @@ feed shows user messages, assistant output, tool activity, and workflow status.
 The composer remains available for the next prompt or for steering an active
 turn, while dialogs and full-screen feature views use higher overlay layers than
 prompt autocomplete.
+
+## Findings sidebar
+
+Pentest, Bug Bounty, and Code Audit findings are available in a scrollable
+sidebar on the right. When open, the sidebar—including its divider—uses exactly
+two fifths of the available row and the session feed uses the remaining three
+fifths. The two panes scroll independently.
+
+The sidebar groups active findings by descending severity: **CRITICAL**,
+**HIGH**, **MEDIUM**, **LOW**, **INFO**, then historical **UNRATED** entries.
+Disproved findings remain visible in a final section. Each preview reserves
+three wrapped description lines and shows the stable alias, provisional or
+verified severity, current review/technical state, and Bug Bounty submission
+decision as colored tags. Historical findings use **TO BE REVIEWED** and active
+revisits use **IN REVIEW** without breaking severity order. Click a row, or
+focus it and press `Enter`, to open the scrollable detail with evidence, gaps,
+next step, and observation history by run and phase. The sidebar is
+informational; it does not edit registry state.
+
+Use `Ctrl+X`, then `F`, choose **Toggle findings** in the command palette, type
+`/findings`, or click the **Findings N** composer indicator to show or hide it.
+Cyberful opens it automatically when the first finding arrives only if no
+preference has been recorded, then preserves the chosen visibility. Reopening
+or recovering a session refreshes the sidebar from the authoritative workarea
+registry, including for completed sessions.
 
 ## Following live work
 

@@ -13,4 +13,10 @@ services:
       - SYS_PTRACE
     tty: true
     stdin_open: true
+    labels:
+      org.cyberful.managed: ${CYBERFUL_MANAGED:-dependency}
+      org.cyberful.owner-pid: ${CYBERFUL_OWNER_PID:-0}
+      org.cyberful.run-owner: ${CYBERFUL_RUN_OWNER:-unowned}
+      org.cyberful.runtime: ${CYBERFUL_RUNTIME:-dependency}
+      org.cyberful.session: ${CYBERFUL_SESSION:-shared}
     command: ["sleep", "infinity"]

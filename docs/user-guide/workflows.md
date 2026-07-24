@@ -32,6 +32,30 @@ Blocking questions pause both the process group and active-time budget. The
 workarea, sealed artifacts, Code Graph, and evidence are the durable memory;
 model conversation state does not cross phase boundaries.
 
+Live-target phases also keep an append-only lifecycle ledger for synthetic
+target objects. The model records intent before creation and ends each object as
+`not_created`, `cleaned`, or `residual`; only a forgotten intermediate state
+blocks handoff. A residual object is visible but is not itself an approval gate.
+
+Exploit and Hacker handoffs carry one mutually exclusive verdict per hypothesis:
+`CONFIRMED`, `DISPROVED`, `SUSPECTED`, `INCONCLUSIVE`, or `UNTESTABLE`.
+`SUSPECTED` requires affirmative target evidence. `INCONCLUSIVE` means a valid
+test ran but its oracle remained ambiguous. `UNTESTABLE` means the discriminating
+test never ran and therefore records a typed blocker plus an exact next step.
+This prevents missing access, tools, applicability, authority, or budget from
+inflating the suspected-finding count.
+
+Before using `UNTESTABLE` for a credible, high-value path, Exploit and Hacker
+actively seek safe prerequisites in existing evidence, ordinary product flows,
+and authoritative first-party material. They create reversible tester-owned
+state within existing authority and ask one exact blocking question only when a
+human fact, login, decision, or additional authority unlocks the discriminator.
+
+Exploit and Hacker subagents inherit the phase's complete execution authority
+and retain ownership of each task through its verdict. They may start passively,
+but run safe in-scope discriminators themselves; task partitioning and shared-
+resource contention are not `UNTESTABLE` blockers.
+
 ## Pentest
 
 ```text
@@ -49,10 +73,17 @@ Pentest tests a live target within an explicit authorization boundary.
 | **Verify**  | Independently retest every material claim                                                                                                    | `VERIFY.md`       |
 | **Report**  | Produce the client-facing security report                                                                                                    | `REPORT.md`       |
 
-Pentest can use cyberful-os, isolated Chromium, and headless OWASP ZAP. Bounded,
-reversible tests inside the mission run autonomously. Irreversible,
-value-moving, disruptive, cross-scope, or uncontrolled-user actions require a
-human decision. Tool availability never expands the mission.
+Pentest can use cyberful-os, isolated Chromium, headless OWASP ZAP, and the
+persistent headless Ghidra project from Recon through Verify. Ghidra imports,
+analysis, call graphs, names, and annotations survive phase and runtime
+replacement; portable results are indexed under `raw/ghidra/`. See the
+[Ghidra runtime](../runtimes/ghidra.md). Bounded
+tests using tester-owned or uniquely marked synthetic state inside the mission
+run autonomously. Cleanup is attempted when the target exposes a supported
+mechanism; the absence of cleanup for one residual synthetic record does not by
+itself require a human decision. Persistent code or retained reusable access,
+value-moving, disruptive, cross-scope, or uncontrolled-user actions still do.
+Tool availability never expands the mission.
 
 The terminal result is `reports/security-report.pdf`.
 
@@ -87,6 +118,47 @@ gating the handoff on session readiness. Recon consumes that access context and
 owns login, authenticated target navigation, profile comparison, and observed
 application-dependency mapping within the recorded policy.
 
+Bug Bounty uses longer wall-clock ceilings suited to sustained research: Brief
+30 minutes, Recon 240, Exploit 360, Hacker 360, Verify 180, and Report 90.
+Recon, Exploit, and Hacker receive a qualitative novelty contract. The ledger
+treats endpoint, payload-spelling, or version variations of one mechanism as
+convergence and emits one runtime signal when the search narrows. Each phase
+then performs a contrarian pivot and writes a synthesis of semantically distinct
+avenues, or explains with target-specific evidence why further diversification
+is exhausted. There are no numeric quotas or minimum route, click, hypothesis,
+or family counts that block handoff.
+
+Recon prioritizes real authenticated journeys and broad route/action coverage.
+Redacted browser metadata produces an append-only surface map; Exploit and
+Hacker consume its unexplored and failed areas when choosing pivots. Additional
+routes of the same mechanism improve coverage but do not count as new causal
+creativity.
+
+### Smart-contract source and EVM lab
+
+Brief and Recon may use `source_import` for up to eight approved public HTTPS
+repositories. Each stable alias records an exact root commit, ref mapping,
+content fingerprint, and recursive submodules at their Gitlink commits. After
+Recon the collection is immutable; later phases can inventory, read, search,
+snapshot, and materialize selected repositories without modifying the
+host-owned imports. Existing Code Audit manifest v2 imports remain readable.
+
+Recon, Exploit, Hacker, and Verify may use `evm_lab` to prepare one managed
+Anvil chain in `fresh` or `fork` mode. Forks can pin a block and resolve
+`{{var:name}}` RPC URLs. The tool returns a host/browser loopback endpoint and a
+`host.docker.internal` endpoint for Forge or Cast in cyberful-os, synthetic
+account addresses plus redacted session-variable names, an automatic baseline
+snapshot, and named snapshot/revert operations. The node survives phase changes
+and is destroyed with its variables and compiler cache on engagement exit.
+
+The managed path is optional convenience. Forge, Cast, the shell, and additional
+Anvil nodes remain directly usable. Cyberful adds no RPC proxy, method filter,
+or rewriting layer; the mission and supplied program rules govern direct public
+RPC access. `evm_evidence` hashes an existing candidate-finding artifact into
+`raw/evm/evidence.json` with its command, source commit, toolchain, lab, fork,
+seed/runs, and local transaction provenance. Generic stdout and routine Cast
+calls are not archived automatically. See [EVM runtime](../runtimes/evm.md).
+
 Verify assigns stable `BBP-###` IDs and one of `SUBMISSION_READY`,
 `NEEDS_MORE_EVIDENCE`, or `NOT_REPORTABLE`. Report emits only ready findings:
 
@@ -120,6 +192,10 @@ user's checkout.
 | **Attack** | Build and attack a disposable local lab; retain controlled runtime evidence                           | `CODE_ATTACK.md`       |
 | **Verify** | Independently refute or confirm every candidate in a fresh context and lab                            | `CODE_VERIFY.md`       |
 | **Report** | Synthesize verified risk, coverage, limitations, remediation, and structured exports                  | `CODE_AUDIT_REPORT.md` |
+
+Index through Verify can use the same persistent Ghidra project for native
+artifacts. Scope and Report receive only the captured `raw/ghidra/` evidence,
+not the live mutation surface.
 
 Terminal outputs are:
 
@@ -161,10 +237,12 @@ authority in the blast radius.
 
 Scope may request one credential-free public Git URL over HTTPS. Before the
 network call, the TUI presents the fixed hostname for explicit approval. The
-importer blocks credentials, redirects, hooks, submodules, Git LFS, non-HTTPS
-transports, private/local destinations, and dependency installation. It seals
-the exact commit and local ref mapping, including the history needed for local
-merge-base analysis.
+importer blocks credentials, redirects, hooks, Git LFS, non-HTTPS transports,
+private/local destinations, and dependency installation. When recursive
+submodules are selected, it resolves only credential-free HTTPS URLs and
+materializes each exact Gitlink commit. It seals the root and submodule commits,
+content fingerprints, and local ref mapping, including the history needed for
+local merge-base analysis.
 
 The authoritative import or source snapshot lives in an owner-only host store
 outside the model-writable workarea. Phases use bounded read-only source tools

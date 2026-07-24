@@ -10,16 +10,17 @@ import path from "node:path"
 import * as Builtin from "@/builtin"
 import * as ConfigAgent from "@/config/agent"
 import { SubsystemCodex } from "@/subsystem/codex"
+import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
 import * as SubsystemPhase from "@/subsystem/phase"
 import { isRecord } from "@/util/record"
 
 const PHASES = [
-  ["brief", "MISSION.md", 10],
-  ["recon", "RECON.md", 60],
-  ["exploit", "EXPLOIT.md", 120],
-  ["hacker", "HACKER.md", 90],
-  ["verify", "BUG_BOUNTY_VERIFY.md", 45],
-  ["report", "BUG_BOUNTY_REPORT.md", 30],
+  ["brief", "MISSION.md", 30],
+  ["recon", "RECON.md", 240],
+  ["exploit", "EXPLOIT.md", 360],
+  ["hacker", "HACKER.md", 360],
+  ["verify", "BUG_BOUNTY_VERIFY.md", 180],
+  ["report", "BUG_BOUNTY_REPORT.md", 90],
 ] as const
 
 describe("built-in Bug Bounty Program workflow", () => {
@@ -32,8 +33,8 @@ describe("built-in Bug Bounty Program workflow", () => {
 
     expect(workflow.title).toBe("Bug Bounty Program")
     expect(workflow.phases.map((phase) => phase.name)).toEqual(PHASES.map(([phase]) => phase))
-    expect(workflow.sourcePolicy).toBe("none")
-    expect(workflow.capabilities).toEqual(["isolated-exec", "browser", "zap"])
+    expect(workflow.sourcePolicy).toBe("read")
+    expect(workflow.capabilities).toEqual(["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab"])
     expect(workflow.zapLifecycle).toBe("engagement")
     expect(workflow.completionTitle).toBe("Bug bounty assessment completed")
     expect(workflow.nextWorkflow).toBe("ask")
@@ -75,7 +76,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     )
   })
 
-  test("packages the Pentest-equivalent budgets, artifacts, successors, and delegation limits", () => {
+  test("packages long Bug Bounty budgets, artifacts, successors, and delegation limits", () => {
     const budgets: unknown = JSON.parse(fs.readFileSync(SubsystemPhase.budgetsPath(home), "utf8"))
     if (!isRecord(budgets)) throw new Error("Bug Bounty budgets must be an object")
 
@@ -85,6 +86,11 @@ describe("built-in Bug Bounty Program workflow", () => {
       expect(SubsystemPhase.nextAfterExpertPhase("bug-bounty", phase)).toBe(successor)
       expect(budgets[phase]).toBe(minutes)
     }
+    expect(budgets.$novelty).toEqual({
+      recon: { required: true },
+      exploit: { required: true },
+      hacker: { required: true },
+    })
 
     expect(
       Object.fromEntries(
@@ -94,34 +100,49 @@ describe("built-in Bug Bounty Program workflow", () => {
             .subagents,
         ]),
       ),
-    ).toEqual({ brief: 0, recon: 3, exploit: 2, hacker: 2, verify: 0, report: 0 })
+    ).toEqual({ brief: 0, recon: 3, exploit: 3, hacker: 3, verify: 0, report: 0 })
+  })
+
+  test("research personas diversify qualitatively, execute directly, and preserve honest verdicts", () => {
+    const recon = fs.readFileSync(SubsystemPhase.personaPath(home, "recon", "bug-bounty"), "utf8")
+    const exploit = fs.readFileSync(SubsystemPhase.personaPath(home, "exploit", "bug-bounty"), "utf8")
+    const hacker = fs.readFileSync(SubsystemPhase.personaPath(home, "hacker", "bug-bounty"), "utf8")
+
+    expect(recon).toMatch(/maximize meaningful browser\s+navigation/i)
+    expect(recon).toMatch(/candidate findings and coverage hypotheses/i)
+    expect(recon).toMatch(/no route, click, hypothesis, or family quota/i)
+    expect(exploit).toMatch(/subagents inherit[\s\S]*execute their discriminators directly/i)
+    expect(exploit).toContain("`UNTESTABLE`")
+    expect(exploit).toMatch(/typed blocker and next step/i)
+    expect(exploit).toMatch(/prerequisite-resolution pass[\s\S]*call\s+`question`/i)
+    expect(hacker).toMatch(/semantic pivots over endpoint or payload variants/i)
+    expect(hacker).toMatch(/resolve safe prerequisites[\s\S]*call\s+`question`/i)
+    for (const persona of [recon, exploit, hacker]) expect(persona).toMatch(/novelty/i)
   })
 
   test("brief records program policy without inventing missing rules", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
     for (const anchor of [
-      "Safe harbor and authorization",
-      "Eligible and ineligible vulnerability classes",
-      "Data handling",
-      "Disclosure and submission rules",
-      "Open questions and missing policy",
-      "program_name",
-      "program_platform",
-      "program_policy_url",
+      "authorization",
+      "in/out-of-scope assets",
+      "eligible/ineligible",
+      "data rules",
+      "disclosure rules",
+      "provided identities",
     ]) {
       expect(brief).toContain(anchor)
     }
-    expect(brief).toContain("Not provided")
-    expect(brief).toMatch(/Never infer authorization/i)
-    expect(brief).toContain('artifact: "MISSION.md"')
-    expect(brief).toContain("target `recon`")
+    expect(brief).toContain("`POLICY_UNKNOWN`")
+    expect(brief).toMatch(/Do not infer authorization or a restriction/i)
+    expect(brief).not.toContain("MISSION GUARDRAIL")
+    expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
   })
 
   test("brief records supplied access without preflighting target accounts", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
 
-    expect(brief).toContain("Provided access")
-    expect(brief).toContain("target `recon`")
+    expect(brief).toContain("provided identities")
+    expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
     for (const obsoletePreflightInstruction of [
       "Account, proxy, and application preflight",
       "`browser_status`",
@@ -140,16 +161,44 @@ describe("built-in Bug Bounty Program workflow", () => {
 
     for (const verdict of ["SURVIVES", "REVISE", "DEMOTE"]) expect(verify).toContain(verdict)
     for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"]) expect(verify).toContain(status)
-    expect(verify).toContain("Not assessed")
-    expect(verify).toContain('artifact: "BUG_BOUNTY_VERIFY.md"')
+    expect(verify).toMatch(/Write `BUG_BOUNTY_VERIFY\.md`/i)
 
     expect(report).toContain("reports/bug-bounty/BBP-###.md")
-    expect(report).toContain("CVSS 3.1")
-    expect(report).toContain("No submission-ready findings")
-    expect(report).toMatch(/Report\s+only entries marked exactly `SUBMISSION_READY`/)
-    expect(report).toMatch(/Do not include SOC 2 or ISO mappings/i)
-    expect(report).toMatch(/payout estimates/i)
-    expect(report).toContain('artifact: "BUG_BOUNTY_REPORT.md"')
-    expect(report).toContain("target `complete`")
+    expect(report).toMatch(/Assign CVSS only when every metric is supported/i)
+    expect(report).toMatch(/even with zero ready findings/i)
+    expect(report).toContain("`Not assessed`")
+    expect(report).toMatch(/For each `SUBMISSION_READY` entry/i)
+    expect(report).toMatch(/estimate rewards/i)
+    expect(report).toMatch(/Write `BUG_BOUNTY_REPORT\.md`/i)
+    expect(report).toMatch(/to `complete`/i)
+  })
+
+  test("keeps the permanent Bug Bounty instruction corpus within 2,500 words", () => {
+    const personas = PHASES.map(([phase]) =>
+      fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
+    )
+    const skills = ["NUCLEI.md", "ZAP.md"].map((name) =>
+      fs.readFileSync(path.join(Builtin.DIR, "skills", name), "utf8"),
+    )
+    const runners = PHASES.map(([phase]) =>
+      SubsystemPhaseRunner.buildPhasePrompt(
+        {
+          phase,
+          workflow: "bug-bounty",
+          sessionID: "budget-test",
+          workareaCwd: "/workarea",
+          home,
+          objective: "objective",
+          timeoutMs: 1,
+          handoff: { successor: phase === "report" ? undefined : "next" },
+        },
+        1,
+        ["recon", "exploit", "hacker"].includes(phase) ? { required: true } : undefined,
+      ),
+    )
+    const runner = runners.toSorted((left, right) => right.split(/\s+/).length - left.split(/\s+/).length)[0] ?? ""
+    const permanentWords = [runner, ...personas, ...skills].join("\n").trim().split(/\s+/).length
+
+    expect(permanentWords).toBeLessThanOrEqual(2_500)
   })
 })

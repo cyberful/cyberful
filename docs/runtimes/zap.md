@@ -4,6 +4,9 @@ Cyberful uses a headless OWASP ZAP 2.17.0 runtime and a separate stdio bridge
 image. Startup prepares both images; traffic-capable engagements then receive
 an isolated runtime with disposable phase gateways.
 
+Bridge-owned tool definitions live in one static catalog and are merged with
+the official upstream ZAP tools at startup without renaming either surface.
+
 The browser is proxied through ZAP by default. Trust is scoped to the runtime's
 CA public-key pin, while bridge and API keys live in owner-only temporary host
 files rather than model arguments or environment output.
@@ -36,9 +39,9 @@ subcomponents before transport. A justified callback test therefore uses a
 separate engagement-owned one-shot harness with a successful self-test,
 bounded polling, redacted evidence, and cleanup.
 
-An HTTP `403`, `429`, or managed challenge applies to the current request or
-scan and is not a phase-wide stop. Do not retry or disguise the rejected
-experiment. Continue independent authorized work only while the target is
-stable; explicit mission stop conditions, scope uncertainty, systemic
+An individual HTTP outcome applies to the current request or scan and is not a
+phase-wide stop. A request or scan that returns `429` is not retried. Continue
+independent authorized work only while the target is stable; explicit mission
+stop conditions, scope uncertainty, systemic
 instability, unexpected private data, and unplanned side effects still stop
 target traffic.

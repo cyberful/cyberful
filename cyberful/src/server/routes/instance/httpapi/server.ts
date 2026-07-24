@@ -32,10 +32,9 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { SessionVariable } from "@/session/variable"
-import { EventV2Bridge } from "@/event-v2-bridge"
+import { Event } from "@/event"
 import { Skill } from "@/skill"
 import { Snapshot } from "@/snapshot"
-import { SyncEvent } from "@/sync"
 import { lazy } from "@/util/lazy"
 import { Vcs } from "@/project/vcs"
 import { isAllowedCorsOrigin } from "@/server/cors"
@@ -161,8 +160,7 @@ export function createRoutes(): Layer.Layer<never, EffectConfig.ConfigError, Rou
     SessionStatus.defaultLayer,
     SessionSummary.defaultLayer,
     Snapshot.defaultLayer,
-    SyncEvent.defaultLayer,
-    EventV2Bridge.defaultLayer,
+    Event.defaultLayer,
     Skill.defaultLayer,
   )
   const routePlatformLayer = Layer.mergeAll(

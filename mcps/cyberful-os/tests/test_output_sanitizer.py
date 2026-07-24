@@ -80,6 +80,61 @@ class OutputSanitizerTest(unittest.TestCase):
         self.assertIn("stdout:\nok", text)
         self.assertNotIn("stderr:", text)
 
+    def test_shell_egress_metadata_records_host_changes_without_blocking(self) -> None:
+        command_result = cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="curl",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=4,
+            stdout="ok",
+            stderr="",
+            truncated=False,
+        )
+        with mock.patch.object(cyberful_os_mcp, "run_in_container", return_value=command_result):
+            result = cyberful_os_mcp.handle_shell({
+                "command": "curl -X POST https://other.example.test/v1/items/123?token=secret",
+                "egress": {
+                    "host": "expected.example.test",
+                    "method": "POST",
+                    "path_family": "/v1/items/:id",
+                    "attempts": 1,
+                },
+            })
+
+        self.assertFalse(result["isError"])
+        observation = result["_meta"][cyberful_os_mcp.EGRESS_META_KEY]
+        self.assertEqual(observation["host"], "other.example.test")
+        self.assertEqual(observation["path_family"], "/v1/items/:id")
+        self.assertTrue(observation["destination_changed"])
+        self.assertNotIn("token", str(observation))
+
+    def test_shell_execution_survives_observation_failure(self) -> None:
+        command_result = cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="true",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=1,
+            stdout="ok",
+            stderr="",
+            truncated=False,
+        )
+        with mock.patch.object(cyberful_os_mcp, "run_in_container", return_value=command_result), mock.patch.object(
+            cyberful_os_mcp, "_shell_egress_metadata", side_effect=ValueError("collector failed")
+        ), redirect_stderr(io.StringIO()):
+            result = cyberful_os_mcp.handle_shell({"command": "true"})
+
+        self.assertFalse(result["isError"])
+        self.assertNotIn("_meta", result)
+
+    def test_declared_path_family_keeps_redaction_sentinels(self) -> None:
+        self.assertEqual(cyberful_os_mcp._redacted_path_family("/v1/items/:id"), "/v1/items/:id")
+        self.assertEqual(
+            cyberful_os_mcp._redacted_path_family("/users/alice@example.test/sessions/opaqueBearerValue12345"),
+            "/users/:id/sessions/:id",
+        )
+
 
 class DockerEnvironmentTest(unittest.TestCase):
     def test_preserves_existing_docker_context(self) -> None:

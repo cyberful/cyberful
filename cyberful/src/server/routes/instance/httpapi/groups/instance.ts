@@ -36,10 +36,6 @@ export const RuntimeStatus = Schema.Struct({
     version: Schema.optional(Schema.String),
     status: Schema.Literals(["available", "degraded", "unavailable"]),
   }),
-  fallback: Schema.Struct({
-    model: Schema.optional(Schema.String),
-    status: Schema.Literals(["available", "disabled", "unavailable"]),
-  }),
 }).annotate({ identifier: "RuntimeStatus" })
 
 export const VcsDiffQuery = Schema.Struct({
@@ -197,12 +193,12 @@ export const InstanceApi = HttpApi.make("instance")
         ),
         HttpApiEndpoint.get("runtimeStatus", InstancePaths.runtimeStatus, {
           query: DirectoryRoutingQuery,
-          success: described(RuntimeStatus, "Subsystem and fallback readiness"),
+          success: described(RuntimeStatus, "Subsystem readiness"),
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "runtime.status",
             summary: "Get runtime status",
-            description: "Probe the active subsystem and optional local fallback server.",
+            description: "Probe the active Codex subsystem.",
           }),
         ),
       )

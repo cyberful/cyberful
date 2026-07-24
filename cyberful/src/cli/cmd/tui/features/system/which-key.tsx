@@ -9,8 +9,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { useBindings, useKeymapSelector } from "../../keymap"
 import type { ActiveKey } from "@opentui/keymap"
-import type { TuiFeature, TuiFeatureApi } from "@/cli/cmd/tui/api-types"
-import type { InternalTuiFeature } from "../../feature/internal"
+import type { TuiFeatureApi } from "@/cli/cmd/tui/api-types"
 
 const command = {
   toggle: "which-key.toggle",
@@ -538,12 +537,12 @@ function WhichKeyPanel(props: {
   )
 }
 
-const tui: TuiFeature = async (api) => {
+export function installWhichKey(api: TuiFeatureApi) {
   const [pinned, setPinned] = createSignal(false)
   const [mode, setMode] = createSignal(layout(api.kv.get(KV_LAYOUT, "dock")))
   const [pendingPreview, setPendingPreview] = createSignal(api.kv.get(KV_PENDING_PREVIEW, false))
 
-  api.keymap.registerLayer({
+  const offKeymap = api.keymap.registerLayer({
     priority: LAYER_PRIORITY,
     commands: [
       {
@@ -584,7 +583,7 @@ const tui: TuiFeature = async (api) => {
     bindings: api.tuiConfig.keybinds.gather("which-key.toggle", toggleCommands),
   })
 
-  api.slots.register({
+  const offSlots = api.slots.register({
     order: 200,
     slots: {
       home_bottom() {
@@ -606,12 +605,9 @@ const tui: TuiFeature = async (api) => {
       },
     },
   })
-}
 
-const feature: InternalTuiFeature = {
-  id: "which-key",
-  enabled: false,
-  tui,
+  return () => {
+    offSlots()
+    offKeymap()
+  }
 }
-
-export default feature

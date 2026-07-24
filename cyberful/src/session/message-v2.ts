@@ -4,11 +4,10 @@
 // → cyberful/src/session/prompt.ts — produces and consumes these lifecycle records.
 // ─────────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
+import { Event as EventDefinition } from "@/event"
 import { SessionID, MessageID, PartID } from "./schema"
 import { NamedError } from "@/util/error"
 import { Snapshot } from "@/snapshot"
-import { SyncEvent } from "../sync"
 import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
@@ -19,7 +18,7 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { isMedia } from "@/util/media"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { Effect, Schema } from "effect"
 import { NonNegativeInt } from "@/schema"
 import { EngagementStatus } from "./engagement-status"
@@ -187,7 +186,7 @@ export const SubtaskPart = Schema.Struct({
   agent: Schema.String,
   model: Schema.optional(
     Schema.Struct({
-      providerID: ProviderID,
+      subsystemID: SubsystemID,
       modelID: ModelID,
     }),
   ),
@@ -308,7 +307,7 @@ export const User = Schema.Struct({
   ),
   agent: Schema.String,
   model: Schema.Struct({
-    providerID: ProviderID,
+    subsystemID: SubsystemID,
     modelID: ModelID,
     variant: Schema.optional(Schema.String),
   }),
@@ -416,7 +415,7 @@ export const SubtaskPartInput = Schema.Struct({
   agent: Schema.String,
   model: Schema.optional(
     Schema.Struct({
-      providerID: ProviderID,
+      subsystemID: SubsystemID,
       modelID: ModelID,
     }),
   ),
@@ -434,7 +433,7 @@ export const Assistant = Schema.Struct({
   error: Schema.optional(AssistantErrorSchema),
   parentID: MessageID,
   modelID: ModelID,
-  providerID: ProviderID,
+  subsystemID: SubsystemID,
   /**
    * @deprecated
    */
@@ -498,25 +497,25 @@ const PartRemovedEventSchema = Schema.Struct({
 })
 
 export const Event = {
-  Updated: SyncEvent.define({
+  Updated: EventDefinition.define({
     type: "message.updated",
     version: 1,
     aggregate: "sessionID",
     schema: UpdatedEventSchema,
   }),
-  Removed: SyncEvent.define({
+  Removed: EventDefinition.define({
     type: "message.removed",
     version: 1,
     aggregate: "sessionID",
     schema: RemovedEventSchema,
   }),
-  PartUpdated: SyncEvent.define({
+  PartUpdated: EventDefinition.define({
     type: "message.part.updated",
     version: 1,
     aggregate: "sessionID",
     schema: PartUpdatedEventSchema,
   }),
-  PartDelta: BusEvent.define(
+  PartDelta: EventDefinition.define(
     "message.part.delta",
     Schema.Struct({
       sessionID: SessionID,
@@ -527,7 +526,7 @@ export const Event = {
       mode: Schema.optional(Schema.Literals(["append", "replace"])),
     }),
   ),
-  PartRemoved: SyncEvent.define({
+  PartRemoved: EventDefinition.define({
     type: "message.part.removed",
     version: 1,
     aggregate: "sessionID",

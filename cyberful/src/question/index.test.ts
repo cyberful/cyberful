@@ -11,6 +11,8 @@ import path from "node:path"
 import os from "node:os"
 import { rm } from "node:fs/promises"
 import { Bus } from "@/bus"
+import { Event } from "@/event"
+import { EventProjection } from "@/event-projection"
 import { InstanceDisposalRegistry } from "@/effect/instance-registry"
 import { InstanceRef } from "@/effect/instance-ref"
 import { ProjectID } from "@/project/schema"
@@ -30,10 +32,13 @@ const context = {
 }
 
 const busLayer = Bus.layer
+const eventLayer = Event.layer.pipe(
+  Layer.provide(Layer.merge(busLayer, EventProjection.layer.pipe(Layer.provide(busLayer)))),
+)
 const mailboxRoot = path.join(os.tmpdir(), `question-mailbox-test-${process.pid}`)
 const questionLayer = Layer.merge(
   busLayer,
-  Question.layer.pipe(Layer.provide(busLayer), Layer.provide(ApprovalMailbox.layer(mailboxRoot))),
+  Question.layer.pipe(Layer.provide(eventLayer), Layer.provide(ApprovalMailbox.layer(mailboxRoot))),
 ).pipe(Layer.provide(InstanceDisposalRegistry.layer))
 
 beforeEach(() => rm(mailboxRoot, { recursive: true, force: true }))

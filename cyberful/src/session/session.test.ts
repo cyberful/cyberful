@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { MessageID, SessionID } from "./schema"
-import { ModelID, ProviderID } from "@/provider/schema"
+import { ModelID, SubsystemID } from "@/subsystem/identity"
 import { MessageV2 } from "./message-v2"
 import { SessionPhaseEpoch } from "./phase-epoch"
 import { SessionWriteCoordinator } from "./write-coordinator"
@@ -55,7 +55,7 @@ describe("Session message write gate", () => {
     const writerA = coordinator.run
     const writerB = coordinator.run
     const sessionID = SessionID.make("ses_stale_steer")
-    const model = { providerID: ProviderID.make("test"), modelID: ModelID.make("model") }
+    const model = { subsystemID: SubsystemID.make("test"), modelID: ModelID.make("model") }
     const user = (id: string, created: number): MessageV2.WithParts => ({
       info: {
         id: MessageID.make(id),

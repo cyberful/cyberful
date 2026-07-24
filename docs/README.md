@@ -19,8 +19,8 @@ You do not need to learn every internal component before using it.
   evidence, and reports.
 - [**How Cyberful works**](concepts/architecture.md) explains phases and safety
   boundaries without assuming you know the codebase.
-- [**Security tools**](runtimes/README.md) covers cyberful-os, the browser, and
-  OWASP ZAP when you need more control.
+- [**Security tools**](runtimes/README.md) covers cyberful-os, the browser,
+  OWASP ZAP, Ghidra, and the EVM lab when you need more control.
 - [**Build with us**](development/README.md) is for contributors and maintainers.
 
 Cyberful is for systems you own or are explicitly authorized to test. Its local

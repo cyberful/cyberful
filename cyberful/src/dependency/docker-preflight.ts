@@ -12,18 +12,24 @@ import {
   cyberfulOsBuildCommand,
   cyberfulOsDir,
   cyberfulOsImage,
+  cyberGhidraBridgeBuildCommand,
+  cyberGhidraBridgeImage,
+  cyberGhidraBuildCommand,
+  cyberGhidraDir,
+  cyberGhidraImage,
   cyberZapBridgeBuildCommand,
   cyberZapBridgeImage,
   cyberZapBuildCommand,
   cyberZapDir,
   cyberZapImage,
   shouldEnableCyberZap,
+  shouldEnableCyberGhidra,
   shouldStartCyberfulOs,
 } from "./config"
 
 const log = Log.create({ service: "docker-preflight" })
 const DOCKER_COMMAND_TIMEOUT_MS = 30_000
-const DOCKER_BUILD_TIMEOUT_MS = 15 * 60_000
+const DOCKER_BUILD_TIMEOUT_MS = 30 * 60_000
 const DOCKER_VERIFY_TIMEOUT_MS = 2 * 60_000
 const DOCKER_OUTPUT_LIMIT_BYTES = 1024 * 1024
 const DOCKER_KILL_GRACE_MS = 1_000
@@ -61,7 +67,7 @@ async function runExitCode(
 export async function requireDockerDaemon(
   run: (command: string[]) => Promise<number | null> = (command) => runExitCode(command),
 ): Promise<void> {
-  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap()) return
+  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap() && !shouldEnableCyberGhidra()) return
   if ((await run(["docker", "version", "--format", "{{.Server.Version}}"])) === 0) return
   throw new Error(
     "Docker is required but its daemon is not reachable. Start Docker Desktop (or the configured Docker daemon) and relaunch Cyberful.",
@@ -92,7 +98,7 @@ function processIsAlive(value: string) {
   }
 }
 
-async function reapOrphanedZapContainers() {
+async function reapOrphanedManagedContainers() {
   const containers = (await runText(["docker", "ps", "--all", "--quiet", "--filter", "label=org.cyberful.managed"]))
     .split("\n")
     .filter(Boolean)
@@ -118,7 +124,7 @@ async function reapOrphanedZapContainers() {
 }
 
 export async function runDockerPreflight(): Promise<void> {
-  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap()) return
+  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap() && !shouldEnableCyberGhidra()) return
 
   line()
   line(dim("Cyberful preflight — preparing container images"))
@@ -142,8 +148,9 @@ export async function runDockerPreflight(): Promise<void> {
   }
   line(`  ${green("✓")} Docker daemon reachable`)
 
-  const reaped = await reapOrphanedZapContainers()
-  if (reaped > 0) line(`  ${green("✓")} removed ${reaped} orphaned ZAP container${reaped === 1 ? "" : "s"}`)
+  const reaped = await reapOrphanedManagedContainers()
+  if (reaped > 0)
+    line(`  ${green("✓")} removed ${reaped} orphaned Cyberful container${reaped === 1 ? "" : "s"}`)
 
   const images: { name: string; image: string; command: string[]; cwd?: string; verify?: string[] }[] = [
     ...(shouldStartCyberfulOs()
@@ -174,6 +181,32 @@ export async function runDockerPreflight(): Promise<void> {
             image: cyberZapBridgeImage(),
             command: cyberZapBridgeBuildCommand(),
             cwd: cyberZapDir(),
+          },
+        ]
+      : []),
+    ...(shouldEnableCyberGhidra()
+      ? [
+          {
+            name: "headless Ghidra",
+            image: cyberGhidraImage(),
+            command: cyberGhidraBuildCommand(),
+            cwd: cyberGhidraDir(),
+            verify: [
+              "docker",
+              "run",
+              "--rm",
+              "--entrypoint",
+              "python3",
+              cyberGhidraImage(),
+              "-c",
+              "import pyghidra",
+            ],
+          },
+          {
+            name: "Ghidra MCP bridge",
+            image: cyberGhidraBridgeImage(),
+            command: cyberGhidraBridgeBuildCommand(),
+            cwd: cyberGhidraDir(),
           },
         ]
       : []),

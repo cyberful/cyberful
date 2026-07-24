@@ -22,7 +22,7 @@ const HTTP_METHOD = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 export type DockerResource = {
   name: string
   action: "remove" | "stop"
-  kind: "expert" | "zap" | "dependency"
+  kind: "expert" | "zap" | "ghidra" | "dependency"
 }
 
 function fail(label: string, expectation: string): never {
@@ -198,8 +198,13 @@ function dockerResource(value: unknown): DockerResource {
   if (source.action !== "remove" && source.action !== "stop") {
     fail("Docker resource action", "must be remove or stop")
   }
-  if (source.kind !== "expert" && source.kind !== "zap" && source.kind !== "dependency") {
-    fail("Docker resource kind", "must be expert, zap, or dependency")
+  if (
+    source.kind !== "expert" &&
+    source.kind !== "zap" &&
+    source.kind !== "ghidra" &&
+    source.kind !== "dependency"
+  ) {
+    fail("Docker resource kind", "must be expert, zap, ghidra, or dependency")
   }
   return { name, action: source.action, kind: source.kind }
 }

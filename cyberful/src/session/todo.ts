@@ -3,8 +3,8 @@
 // → cyberful/src/session/session.sql.ts — stores todo items and positions.
 // ────────────────────────────────────────────────────────────────────────
 
-import { BusEvent } from "@/bus/bus-event"
-import { Bus } from "@/bus"
+import { Event as EventDefinition } from "@/event"
+import { Event as EventSystem } from "@/event"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context, Schema } from "effect"
 import { Database } from "@/storage/db"
@@ -22,7 +22,7 @@ export const Info = Schema.Struct({
 export type Info = Schema.Schema.Type<typeof Info>
 
 export const Event = {
-  Updated: BusEvent.define(
+  Updated: EventDefinition.define(
     "todo.updated",
     Schema.Struct({
       sessionID: SessionID,
@@ -41,7 +41,7 @@ export class Service extends Context.Service<Service, Interface>()("@cyberful/Se
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bus = yield* Bus.Service
+    const events = yield* EventSystem.Service
 
     const update = Effect.fn("Todo.update")(function* (input: { sessionID: SessionID; todos: Info[] }) {
       yield* Effect.sync(() =>
@@ -61,7 +61,7 @@ export const layer = Layer.effect(
             .run()
         }),
       )
-      yield* bus.publish(Event.Updated, input)
+      yield* events.publish(Event.Updated, input)
     })
 
     const get = Effect.fn("Todo.get")(function* (sessionID: SessionID) {
@@ -81,6 +81,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+export const defaultLayer = layer.pipe(Layer.provide(EventSystem.defaultLayer))
 
 export * as Todo from "./todo"

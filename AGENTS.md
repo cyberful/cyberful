@@ -47,14 +47,9 @@ host gateway. Phase advancement requires a validated `handoff`; the current
 process and gateway must exit before the successor starts. Native Codex
 delegation is persona-controlled: only Ultra plus a positive `subagents`
 frontmatter value permits direct children, which remain inside the phase's
-workarea and gateway. An optional operator-owned loopback Responses server may
-provide serialized, model-initiated assistance and one recovery for each
-recoverable primary execution through the `AgenticSubsystemAdapter` contract.
-Calls have no numeric cap but must inherit the same scope, workarea, controls,
-approval ledger, and remaining budget; fallback cannot recurse and is not a
-user-selectable replacement for the primary chain. Do not introduce host-owned
-phase fan-out, hidden delegation, or another unconstrained production model path.
-See [`docs/runtimes/fallback-inference.md`](docs/runtimes/fallback-inference.md).
+workarea and gateway. Codex is the only production model path. Do not introduce
+host-owned phase fan-out, hidden delegation, or another unconstrained model
+execution route.
 
 ## Operational constraints
 

@@ -1,15 +1,16 @@
 // ── Installed Codex Compatibility Gate ──────────────────────────
 // Exercises real strict configuration, app-server JSON-RPC, and gateway MCP
 // discovery before authentication so incompatible installed CLIs fail the build.
-// → cyberful/src/subsystem/provider.ts — supplies the production argument builders under test.
+// → cyberful/src/subsystem/subsystem.ts — supplies the production argument builders under test.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import os from "node:os"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
-import { codex } from "./provider"
-import type { SubsystemRunSpec } from "./provider"
+import { SubsystemCli } from "./cli"
+import { codex } from "./subsystem"
+import type { SubsystemRunSpec } from "./subsystem"
 import { errorMessage } from "@/util/error"
 import { run as runProcess } from "@/util/process"
 
@@ -362,6 +363,8 @@ async function driveAppServer(
     await send({ method: "initialized" })
     const thread = await request("thread/start", {
       model: null,
+      baseInstructions: "Cyberful Codex compatibility probe.",
+      developerInstructions: null,
       cwd,
       runtimeWorkspaceRoots: [cwd],
       approvalPolicy: {
@@ -514,6 +517,63 @@ describe("codex", () => {
       expect(recorded).toContain("mcp-initialize")
       expect(recorded).toContain("tools-list")
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }, 60000)
+
+  test("the production adapter routes a versioned Cyberful elicitation to the human selector", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cyberful-codex-approval-"))
+    const marker = path.join(dir, "mcp-marker.txt")
+    const model = startResponsesModelProbe()
+    const spec: SubsystemRunSpec = {
+      cwd: dir,
+      permission: { kind: "readonly" },
+      mcpServer: {
+        name: "expert-gateway",
+        command: "bun",
+        args: [FIXTURE_MCP],
+        env: { MCP_MARKER: marker, MCP_CYBERFUL_APPROVAL: "1" },
+      },
+    }
+    const subsystem = {
+      ...codex,
+      buildAppServerArgs(runSpec: SubsystemRunSpec) {
+        const built = codex.buildAppServerArgs(runSpec)
+        return { ...built, args: [...built.args, ...loopbackModelArgs(model.baseURL)] }
+      },
+    }
+    const expectedQuestions = [
+      {
+        question: "Continue the compatibility probe?",
+        header: "Compatibility",
+        options: [{ label: "Proceed", description: "Continue the compatibility probe." }],
+        multiple: false,
+        custom: false,
+      },
+    ]
+    let observedQuestions: unknown
+    try {
+      const result = await SubsystemCli.runStreaming(
+        {
+          subsystem,
+          spec,
+          command: "codex",
+          prompt: "Call the eliciting compatibility tool now.",
+          timeoutMs: 30_000,
+          sessionID: "ses_compat_approval",
+          askQuestion: async (questions) => {
+            observedQuestions = questions
+            return [["Proceed"]]
+          },
+        },
+        () => {},
+      )
+      expect(result.termination).toBe("completed")
+      expect(observedQuestions).toEqual(expectedQuestions)
+      expect(JSON.stringify(model.requests)).toContain("elicitation-accept")
+      expect(await readFile(marker, "utf8")).toContain("elicitation-accept")
+    } finally {
+      await model.stop()
       await rm(dir, { recursive: true, force: true })
     }
   }, 60000)
