@@ -1,0 +1,4 @@
+interface:
+  display_name: "EVM Security Toolchain"
+  short_description: "Foundry and managed Anvil evidence workflows"
+  default_prompt: "Use $operate-evm-security-toolchain to prepare and verify reproducible EVM security evidence."
