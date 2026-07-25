@@ -32,6 +32,7 @@ test.skipIf(!enabled)(
       process.env.CYBERFUL_SUBSYSTEM_EFFORT = "ultra"
       const persona = SubsystemCodex.composeBaseInstructions(
         [
+          "=={{AUTHORIZATION}}==",
           "Native delegation smoke test.",
           "{{CYBERFUL_HACKER_PROFILE}}",
           "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
@@ -40,6 +41,7 @@ test.skipIf(!enabled)(
         ].join("\n\n"),
         "---\nsubagents: 1\n---\n# Native delegation smoke persona\n\nFollow the requested harmless read-only check.",
         "Stay inside the supplied directory and do not modify its files.",
+        "ask",
       )
       expect(persona.delegationEnabled).toBe(true)
 

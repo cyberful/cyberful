@@ -35,6 +35,7 @@ const NDJSON =
 
 const TRANSCRIPT = "/tmp/cyberful-logs/session-ses_test.expert-recon.jsonl"
 const BASE_INSTRUCTIONS_TEMPLATE = [
+  "=={{AUTHORIZATION}}==",
   "shared posture",
   "# Hacker Profile",
   "{{CYBERFUL_HACKER_PROFILE}}",
@@ -774,7 +775,7 @@ describe("runPhase transcript persistence", () => {
   test("leaves REPORT.md sealing to the terminal host render", async () => {
     let wrote = false
     const result = await SubsystemPhaseRunner.runPhase(
-      spec({ phase: "report" }),
+      spec({ phase: "report", workflow: "pentest" }),
       deps({
         writeArtifactManifest: async () => {
           wrote = true

@@ -57,11 +57,14 @@ boundary.
 
 Every primary thread replaces Codex's model-specific base instructions with one
 rendered Cyberful template. The stable opening defines the common adversarial
-posture and phase-execution behavior. The host then replaces exactly one
-placeholder each for the selected hacker profile, calculated Codex delegation
-policy, and workarea rules. The invariant target-content trust boundary is
-written directly in the template. Rendering fails before process spawn when a
-placeholder is missing, duplicated, or remains unresolved. Cyberful sends
+posture and phase-execution behavior. The host then replaces exactly one tag for
+the selected workflow's authorization and one placeholder each for the selected
+hacker profile, calculated Codex delegation policy, and workarea rules. The
+workflow, rather than the reused persona, selects the authorization text, so Bug
+Bounty research phases retain their program authorization. The invariant
+target-content trust boundary is written directly in the template. Rendering
+fails before process spawn when a tag or placeholder is missing, duplicated, or
+remains unresolved, or when the workflow is unknown. Cyberful sends
 `developerInstructions: null`; Codex may still add its own runtime-owned
 developer messages for enabled native capabilities.
 

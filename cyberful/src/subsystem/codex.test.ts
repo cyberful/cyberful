@@ -14,6 +14,7 @@ function requireValue<T>(value: T | null | undefined, message: string): T {
 }
 
 const BASE_INSTRUCTIONS_TEMPLATE = [
+  "=={{AUTHORIZATION}}==",
   "shared posture",
   "# Hacker Profile",
   "{{CYBERFUL_HACKER_PROFILE}}",
@@ -83,6 +84,7 @@ describe("Codex effort and persona delegation policy", () => {
       BASE_INSTRUCTIONS_TEMPLATE,
       "---\nsubagents: 2\n---\n# Exploit",
       "execution rules",
+      "pentest",
       "ultra",
     )
     expect(enabled.delegationEnabled).toBe(true)
@@ -100,6 +102,7 @@ describe("Codex effort and persona delegation policy", () => {
       BASE_INSTRUCTIONS_TEMPLATE,
       "---\nsubagents: 2\n---\n# Exploit",
       "execution rules",
+      "pentest",
       "high",
     )
     expect(lowerEffort.delegationEnabled).toBe(false)
@@ -112,6 +115,7 @@ describe("Codex effort and persona delegation policy", () => {
       BASE_INSTRUCTIONS_TEMPLATE,
       "---\nsubagents: 2\n---\n# Exploit profile",
       "execution rules",
+      "pentest",
       "ultra",
     )
     const layers = [
@@ -137,10 +141,36 @@ describe("Codex effort and persona delegation policy", () => {
     }
   })
 
+  test("renders the authorization owned by each workflow without template markers", () => {
+    const authorizations = {
+      pentest:
+        "This is an authorized penetration testing session. You are permitted to assess the targets and perform the security-testing activities defined by the engagement scope and rules of engagement.",
+      "bug-bounty":
+        "This is an authorized Bug Bounty Program session. You are permitted to test the assets and perform the activities allowed by the supplied program policy and the recorded engagement scope;",
+      "code-audit":
+        "This is an authorized code audit session covering the source snapshot and related artifacts supplied for the engagement.",
+      ask: "This is an authorized follow-up session for an existing Cyberful engagement. You may inspect and act on the engagement workarea only within the authorization and scope already recorded there; this follow-up does not create or expand testing authority.",
+    }
+
+    for (const [workflow, authorization] of Object.entries(authorizations)) {
+      const rendered = SubsystemCodex.composeBaseInstructions(
+        BASE_INSTRUCTIONS_TEMPLATE,
+        "# Persona",
+        "execution rules",
+        workflow,
+      ).baseInstructions
+      expect(rendered.startsWith(`${authorization}\n\nshared posture`)).toBe(true)
+      expect(rendered).not.toContain("==")
+    }
+  })
+
   test("rejects a base template with missing, duplicated, or unresolved placeholders", () => {
     const render = (template: string) =>
-      SubsystemCodex.composeBaseInstructions(template, "# Recon", "execution rules")
+      SubsystemCodex.composeBaseInstructions(template, "# Recon", "execution rules", "pentest")
 
+    expect(() => render(BASE_INSTRUCTIONS_TEMPLATE.replace("=={{AUTHORIZATION}}==", ""))).toThrow(
+      "must contain =={{AUTHORIZATION}}== exactly once; found 0",
+    )
     expect(() => render(BASE_INSTRUCTIONS_TEMPLATE.replace("{{CYBERFUL_WORKAREA}}", ""))).toThrow(
       "must contain {{CYBERFUL_WORKAREA}} exactly once; found 0",
     )
@@ -150,6 +180,9 @@ describe("Codex effort and persona delegation policy", () => {
     expect(() => render(`${BASE_INSTRUCTIONS_TEMPLATE}\n{{UNKNOWN_POLICY}}`)).toThrow(
       "contains unresolved placeholder {{UNKNOWN_POLICY}}",
     )
+    expect(() =>
+      SubsystemCodex.composeBaseInstructions(BASE_INSTRUCTIONS_TEMPLATE, "# Recon", "execution rules", "unknown"),
+    ).toThrow("unknown workflow 'unknown'")
   })
 })
 

@@ -24,11 +24,13 @@ cyberful/builtin/
 
 Each Markdown filename below a workflow or follow-up namespace is a phase or
 persona identifier used by the orchestrator. The host renders
-`baseInstructions.md` once for each phase, replacing its hacker-profile,
-delegation, and workarea placeholders with the current runtime values. The
-invariant target-content trust boundary lives directly in the template. The
-rendered document replaces Codex's model-specific base instructions; Cyberful
-supplies no separate developer-instruction content.
+`baseInstructions.md` once for each phase, replacing its workflow authorization,
+hacker-profile, delegation, and workarea placeholders with the current runtime
+values. The authorization remains tied to the selected workflow even when Bug
+Bounty reuses a Pentest persona. The invariant target-content trust boundary
+lives directly in the template. The rendered document replaces Codex's
+model-specific base instructions; Cyberful supplies no separate
+developer-instruction content.
 
 Persona frontmatter declares a non-negative integer `subagents`. The host
 removes it from model-visible prose and permits native delegation only when the

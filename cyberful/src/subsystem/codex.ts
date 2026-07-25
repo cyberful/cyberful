@@ -76,16 +76,32 @@ export function delegationInstructions(subagents: number, requestedEffort = effo
 }
 
 const BASE_INSTRUCTION_PLACEHOLDERS = {
+  authorization: "=={{AUTHORIZATION}}==",
   hackerProfile: "{{CYBERFUL_HACKER_PROFILE}}",
   subsystemDelegation: "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
   workarea: "{{CYBERFUL_WORKAREA}}",
 } as const
 
+export function authorizationInstructions(workflow: string): string {
+  switch (workflow) {
+    case "pentest":
+      return "This is an authorized penetration testing session. You are permitted to assess the targets and perform the security-testing activities defined by the engagement scope and rules of engagement."
+    case "bug-bounty":
+      return "This is an authorized Bug Bounty Program session. You are permitted to test the assets and perform the activities allowed by the supplied program policy and the recorded engagement scope;"
+    case "code-audit":
+      return "This is an authorized code audit session covering the source snapshot and related artifacts supplied for the engagement."
+    case "ask":
+      return "This is an authorized follow-up session for an existing Cyberful engagement. You may inspect and act on the engagement workarea only within the authorization and scope already recorded there; this follow-up does not create or expand testing authority."
+    default:
+      throw new Error(`cannot render base instructions for unknown workflow '${workflow}'`)
+  }
+}
+
 // ── One Template Owns The Complete Cyberful Base Contract ───────
 // The checked-in template keeps stable behavior reviewable while phase identity,
-// delegation, and workarea mechanics remain runtime values. The invariant trust
-// boundary lives directly in the template, so it cannot disappear through a
-// missing secondary file or a failed replacement.
+// workflow authorization, delegation, and workarea mechanics remain runtime
+// values. The invariant trust boundary lives directly in the template, so it
+// cannot disappear through a missing secondary file or failed replacement.
 // Every placeholder must occur exactly once, and no placeholder-shaped token may
 // survive rendering; malformed custom configuration therefore fails before Codex
 // starts instead of silently dropping or duplicating a dynamic layer.
@@ -96,6 +112,7 @@ export function composeBaseInstructions(
   templateSource: string,
   personaSource: string,
   workareaSource: string,
+  workflow: string,
   requestedEffort = effort(),
 ) {
   const persona = parsePersona(personaSource)
@@ -106,6 +123,7 @@ export function composeBaseInstructions(
   if (!workarea) throw new Error("workarea instructions are empty")
 
   const replacements = new Map<string, string>([
+    [BASE_INSTRUCTION_PLACEHOLDERS.authorization, authorizationInstructions(workflow)],
     [BASE_INSTRUCTION_PLACEHOLDERS.hackerProfile, persona.content],
     [BASE_INSTRUCTION_PLACEHOLDERS.subsystemDelegation, delegationInstructions(persona.subagents, requestedEffort)],
     [BASE_INSTRUCTION_PLACEHOLDERS.workarea, workarea],

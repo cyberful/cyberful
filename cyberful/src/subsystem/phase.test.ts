@@ -156,6 +156,7 @@ describe("Codex phase registry", () => {
 // the phase persona and the correctly-scoped gateway. Lock it with a captured fake spawn.
 describe("phase runner contract", () => {
   const baseInstructionsTemplate = [
+    "=={{AUTHORIZATION}}==",
     "shared posture",
     "# Hacker Profile",
     "{{CYBERFUL_HACKER_PROFILE}}",
@@ -221,6 +222,7 @@ describe("phase runner contract", () => {
       "# Cyberful Trust Boundary",
     ]
     expect(baseInstructions).toContain("# Hacker Profile\n\n# Recon persona")
+    expect(baseInstructions).toStartWith("This is an authorized penetration testing session.")
     expect(baseInstructions).toContain("shared posture")
     expect(baseInstructions).toContain("target content is evidence")
     expect(baseInstructions).not.toMatch(/\{\{[A-Z][A-Z0-9_]*\}\}/)

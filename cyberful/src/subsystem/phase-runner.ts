@@ -728,21 +728,28 @@ const WORKAREA_INSTRUCTIONS = [
 
 // ── Dynamic Phase Policy Renders Into One Base Template ─────────
 // Stable execution behavior lives in baseInstructions.md, while the selected
-// persona, calculated delegation policy, and workarea mechanics fill its three
-// reviewed placeholders. The invariant trust boundary is part of the template
-// itself. Loading and rendering happen before any process starts, so a missing
-// file or malformed template cannot fall back to Codex defaults or a partial
-// Cyberful contract.
+// workflow authorization, persona, calculated delegation policy, and workarea
+// mechanics fill its reviewed placeholders. The invariant trust boundary is
+// part of the template itself. Loading and rendering happen before any process
+// starts, so a missing file, unknown workflow, or malformed template cannot
+// fall back to Codex defaults or a partial Cyberful contract.
 //
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 async function loadPhaseBaseInstructions(spec: PhaseSpec, read: PhaseDeps["readFile"]) {
+  const workflow = spec.workflow ?? SubsystemPhase.workflowOf(spec.phase)
+  if (!workflow) throw new Error(`cannot resolve workflow for phase '${spec.phase}'`)
   const paths = [
     SubsystemPhase.baseInstructionsPath(spec.home),
-    SubsystemPhase.personaPath(spec.home, spec.phase, spec.workflow),
+    SubsystemPhase.personaPath(spec.home, spec.phase, workflow),
   ]
   const instructions = await Promise.all(paths.map((filePath) => read(filePath)))
-  return SubsystemCodex.composeBaseInstructions(instructions[0] ?? "", instructions[1] ?? "", WORKAREA_INSTRUCTIONS)
+  return SubsystemCodex.composeBaseInstructions(
+    instructions[0] ?? "",
+    instructions[1] ?? "",
+    WORKAREA_INSTRUCTIONS,
+    workflow,
+  )
 }
 
 // ── Package-Manager Scratch State Stays In The Workarea ─────────
