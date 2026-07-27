@@ -1,0 +1,55 @@
+diff --git a/dist/api/openai-codex-responses.js b/dist/api/openai-codex-responses.js
+index f34cf240bbd0034c2189bf299058569ec9082753..495909f167672a98bc477ad7b9fcdf6c116441e0 100644
+--- a/dist/api/openai-codex-responses.js
++++ b/dist/api/openai-codex-responses.js
+@@ -277,7 +277,12 @@ export const stream = (model, context, options) => {
+                         statusText: response.statusText,
+                     });
+                     const info = await parseErrorResponse(fakeResponse);
+-                    throw new Error(info.friendlyMessage || info.message);
++                    const providerError = new Error(info.friendlyMessage || info.message);
++                    if (info.code)
++                        providerError.code = info.code;
++                    if (info.cyberPolicy)
++                        providerError.codexErrorInfo = { cyberPolicy: {} };
++                    throw providerError;
+                 }
+                 catch (error) {
+                     if (error instanceof Error) {
+@@ -314,6 +319,9 @@ export const stream = (model, context, options) => {
+                 // partialJson is only a streaming scratch buffer; never persist it.
+                 delete block.partialJson;
+             }
++            appendAssistantMessageDiagnostic(output, createAssistantMessageDiagnostic("provider_request_failure", error, error?.codexErrorInfo
++                ? { codexErrorInfo: error.codexErrorInfo }
++                : undefined));
+             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+             output.errorMessage = formatProviderError(normalizeProviderError(error));
+             stream.push({ type: "error", reason: output.stopReason, error: output });
+@@ -1143,11 +1151,16 @@ async function parseErrorResponse(response) {
+     const raw = await response.text();
+     let message = raw || response.statusText || "Request failed";
+     let friendlyMessage;
++    let code;
++    let cyberPolicy = false;
+     try {
+         const parsed = JSON.parse(raw);
+         const err = parsed?.error;
+         if (err) {
+-            const code = err.code || err.type || "";
++            code = err.code || err.type || undefined;
++            cyberPolicy = typeof err.codexErrorInfo === "object" &&
++                err.codexErrorInfo !== null &&
++                Object.hasOwn(err.codexErrorInfo, "cyberPolicy");
+             if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
+                 const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
+                 const mins = err.resets_at
+@@ -1160,7 +1173,7 @@ async function parseErrorResponse(response) {
+         }
+     }
+     catch { }
+-    return { message, friendlyMessage };
++    return { message, friendlyMessage, code, cyberPolicy };
+ }
+ // ============================================================================
+ // Auth & Headers
