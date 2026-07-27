@@ -1,6 +1,6 @@
 // ── Runtime Dependency Policy Tests ──────────────────────────────
 // Exercises the environment-driven dependency policy users encounter when
-// enabling browser, ZAP, Ghidra, and Codex phase execution in normal engagements.
+// enabling browser, ZAP, Ghidra, and Pi phase execution in normal engagements.
 // → cyberful/src/dependency/config.ts — implements the policy under test.
 // ─────────────────────────────────────────────────────────────────
 
@@ -17,7 +17,6 @@ import {
   cyberZapImage,
   cyberZapProxyPort,
   cyberZapStartupTimeoutSeconds,
-  expertPhaseTimeoutSeconds,
   expertSessionModel,
   expertRuntime,
   isExpertSessionModel,
@@ -25,9 +24,7 @@ import {
   shouldEnableCyberBrowserMcp,
   shouldEnableCyberGhidra,
   shouldEnableCyberZap,
-  webSearchMode,
 } from "./config"
-import { SubsystemCodex } from "@/subsystem/codex"
 
 const ENV_KEYS = [
   "CYBER_BROWSER_MCP_COMMAND",
@@ -51,10 +48,6 @@ const ENV_KEYS = [
   "CYBER_GHIDRA_CONTAINER",
   "CYBER_GHIDRA_MCP_KEY",
   "CYBER_BROWSER_PROXY_CA_SPKI",
-  "CYBERFUL_SUBSYSTEM_MODEL",
-  "CYBERFUL_SUBSYSTEM_EFFORT",
-  "CYBERFUL_SUBSYSTEM_PHASE_TIMEOUT_SECONDS",
-  "WEB_SEARCH",
 ] as const
 
 function snapshotEnv() {
@@ -80,38 +73,17 @@ async function withEnv<T>(values: Partial<Record<(typeof ENV_KEYS)[number], stri
   }
 }
 
-describe("Codex runtime config", () => {
-  test("defaults to Codex with gpt-5.6-sol and ultra reasoning", async () => {
+describe("Pi runtime config", () => {
+  test("keeps Pi as immutable journal and execution identity", async () => {
     await withEnv({}, () => {
-      expect(expertRuntime()).toEqual({ backend: "codex", command: "codex", model: "gpt-5.6-sol" })
-      expect(SubsystemCodex.effort()).toBe("ultra")
-    })
-  })
-
-  test("only Codex model and effort are configurable", async () => {
-    await withEnv({ CYBERFUL_SUBSYSTEM_MODEL: "custom-model", CYBERFUL_SUBSYSTEM_EFFORT: "high" }, () => {
-      expect(expertRuntime()).toEqual({ backend: "codex", command: "codex", model: "custom-model" })
-      expect(SubsystemCodex.effort()).toBe("high")
-      expect(expertSessionModel()).toEqual({ subsystemID: "codex-cli", modelID: "custom-model" })
+      expect(expertRuntime()).toEqual({ backend: "pi" })
+      expect(expertSessionModel()).toEqual({
+        subsystemID: "pi-agent",
+        modelID: "configured-provider",
+      })
       expect(isExpertSessionModel(expertSessionModel())).toBe(true)
       expect(isExpertSessionModel({ subsystemID: "openai", modelID: "gpt" })).toBe(false)
     })
-  })
-
-  test("maps the generic web search switch to explicit Codex modes", async () => {
-    await withEnv({}, () => expect(webSearchMode()).toBe("live"))
-    await withEnv({ WEB_SEARCH: "1" }, () => expect(webSearchMode()).toBe("live"))
-    await withEnv({ WEB_SEARCH: "0" }, () => expect(webSearchMode()).toBe("disabled"))
-  })
-
-  test("rejects malformed switches and out-of-range phase deadlines", async () => {
-    await withEnv({ WEB_SEARCH: "sometimes" }, () => expect(() => webSearchMode()).toThrow("WEB_SEARCH"))
-    await withEnv({ CYBERFUL_SUBSYSTEM_PHASE_TIMEOUT_SECONDS: "45junk" }, () =>
-      expect(() => expertPhaseTimeoutSeconds()).toThrow("decimal integer"),
-    )
-    await withEnv({ CYBERFUL_SUBSYSTEM_PHASE_TIMEOUT_SECONDS: "86401" }, () =>
-      expect(() => expertPhaseTimeoutSeconds()).toThrow("between 1 and 86400"),
-    )
   })
 })
 

@@ -194,7 +194,7 @@ export function workareaSystemPrompt(input: string) {
     `Active workarea: ${rel}/`,
     "When you need to write any files, including scratch files, plans, reports, or notes, write only inside this workarea.",
     `The native file tools (write, read, edit) run on the host — address workarea files by this path, e.g. ${rel}/notes.txt. The cyberful-os container tools see the same files under /workspace/, e.g. /workspace/${rel}/notes.txt; use that /workspace/ form only in cyberful-os command arguments, never with the native file tools.`,
-    "The Codex phase runs from this workarea under the configured sandbox; keep every engagement artifact inside it.",
+    "The Pi AgentRun executes from this workarea under the configured sandbox; keep every engagement artifact inside it.",
     "</system-reminder>",
   ].join("\n")
 }

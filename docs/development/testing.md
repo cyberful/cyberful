@@ -6,20 +6,21 @@ rejects a generic test command so package-specific isolation is preserved.
 | Command                 | Coverage                                             |
 | ----------------------- | ---------------------------------------------------- |
 | `make typecheck`        | Code-principle checks and TypeScript type checking   |
-| `make test-bun`         | Application and browser MCP unit tests               |
+| `make test-bun`         | Application, Pi runtime, provider, and browser tests  |
 | `make test-python`      | cyberful-os Python unit tests                        |
 | `make test-cyberful-os` | Real image, catalog, MCP, and gateway contract       |
 | `make test-network`     | Browser socket integration                            |
 | `make test-zap`         | Docker ZAP, bridge, browser proxy, scan, and cleanup |
 | `make test-ghidra`      | Real Ghidra import, analysis, MCP, and restart state |
-| `make test-codex`       | Pinned Codex app-server and MCP compatibility        |
 | `make docs-build`       | Strict documentation build and link validation       |
 
 Before publishing a change, scan the checkout for secrets. This is a safety net,
 not permission to place a real credential in Git history even briefly.
 
 `make test` runs the default Bun, Python, and live cyberful-os tiers;
-`make test-all` adds network, ZAP, Ghidra, and Codex contracts.
+`make test-all` adds network, ZAP, and Ghidra contracts. Pi provider-wire,
+system-message, security-block, delegation, and fallback behavior is covered by
+the isolated Bun tier without requiring a live model turn.
 
 The network tier exercises the browser socket contract. It remains outside the
 default Bun tier because restricted sandboxes may forbid binding a loopback

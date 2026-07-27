@@ -22,10 +22,7 @@
     "test:cyberful-os": "bun test --isolate --no-orphans --timeout 300000 src/subsystem/cyberful-os.integration.test.ts",
     "test:network": "CYBERFUL_TEST_LOOPBACK=1 bun test --isolate --timeout 10000 src/subsystem/browser-cdp.integration.test.ts",
     "test:zap": "bun test --isolate --no-orphans src/subsystem/zap/runtime.integration.test.ts",
-    "test:codex-compat": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-compat.integration.test.ts",
-    "test:approval-long": "CYBERFUL_APPROVAL_LONG_TEST=1 bun test --isolate --no-orphans --timeout 660000 src/subsystem/codex-compat.integration.test.ts -t 'historical response after 628 seconds'",
-    "test-codex": "bun test --isolate --no-orphans --timeout 60000 src/subsystem/codex-version.integration.test.ts src/subsystem/codex-compat.integration.test.ts",
-    "test:all": "bun run test && bun run test:network && bun run test:zap && bun run test-codex",
+    "test:all": "bun run test && bun run test:network && bun run test:zap",
     "dev": "bun run --conditions=browser ./src/index.ts"
   },
   "bin": {
@@ -57,6 +54,8 @@
     "typescript": "catalog:"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.81.1",
+    "@earendil-works/pi-ai": "0.81.1",
     "@effect/platform-node": "catalog:",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@npmcli/arborist": "9.4.0",
@@ -86,6 +85,7 @@
     "remeda": "catalog:",
     "solid-js": "catalog:",
     "strip-ansi": "7.1.2",
+    "typebox": "1.1.38",
     "ulid": "catalog:",
     "web-tree-sitter": "0.25.10",
     "which": "6.0.1",
@@ -93,6 +93,7 @@
     "yargs": "18.0.0"
   },
   "overrides": {
+    "@earendil-works/pi-ai": "0.81.1",
     "drizzle-orm": "catalog:"
   }
 }

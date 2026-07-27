@@ -1,6 +1,6 @@
 // ── Session Run Ownership ─────────────────────────────────────────────────
 // Serializes active work per session and owns busy status, cancellation, and interruption results.
-// → cyberful/src/session/prompt.ts — executes Codex work through this owner.
+// → cyberful/src/session/prompt.ts — executes phase AgentRuns through this owner.
 // → cyberful/src/session/status.ts — publishes user-visible busy state.
 // ─────────────────────────────────────────────────────────────────────────
 

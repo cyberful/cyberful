@@ -1,7 +1,7 @@
 // ── Nuclei Autonomy Contract Test ───────────────────────────────
 // Verifies the shipped skill exposes the complete CLI, keeps preview optional,
 //   and introduces no scanner-specific limits beyond update-check suppression.
-// → cyberful/builtin/skills/NUCLEI.md — contains the workflow under test.
+// → cyberful/builtin/skills/nuclei/SKILL.md — contains the workflow under test.
 // ─────────────────────────────────────────────────────────────────
 
 import { expect, test } from "bun:test"
@@ -10,7 +10,7 @@ import path from "node:path"
 import * as Builtin from "@/builtin"
 
 test("the Nuclei skill preserves caller-controlled scan capability", async () => {
-  const skill = await readFile(path.join(Builtin.DIR, "skills", "NUCLEI.md"), "utf8")
+  const skill = await readFile(path.join(Builtin.DIR, "skills", "nuclei", "SKILL.md"), "utf8")
 
   expect(skill).toContain("`nuclei`")
   expect(skill).toContain("`nuclei_templates`")

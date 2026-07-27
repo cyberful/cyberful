@@ -22,12 +22,12 @@ export interface GatewayOptions {
   env?: Readonly<Record<string, string>>
 }
 
-// ── Gateway Secrets Never Enter Codex Arguments ──────────────────
+// ── Gateway Secrets Never Enter Agent Context ────────────────────
 // The standalone gateway cannot depend on inheriting the TUI environment, but
 // forwarding the whole environment would expose unrelated host credentials.
 // Only the browser namespace and explicit engagement values enter privateEnv.
-// The CLI materializes that map in an owner-only file; Codex receives only its
-// path, and per-run values deliberately override the browser defaults.
+// The host materializes that map in an owner-only file; AgentRuns receive
+// capabilities rather than secret values, and per-run values override defaults.
 // ──────────────────────────────────────────────────────────────
 function browserRuntimeEnv(): Record<string, string> {
   return Object.fromEntries(

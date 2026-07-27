@@ -1,6 +1,12 @@
 # Sessions, configuration, and reports
 
-Cyberful layers configuration in descending precedence:
+Agent routing has one strict source: `settings.yaml` in the launch directory.
+It selects the Pi primary and optional fallback providers, models, delegation
+limits, fallback policy, and explicitly trusted persona or skill roots. It
+never contains credentials. See
+[Agent providers and fallback](settings.md).
+
+Operational environment configuration uses descending precedence:
 
 1. the real process environment;
 2. `.env` in the directory where Cyberful is launched;
@@ -23,15 +29,21 @@ reports/<timestamp>/    generated report output
 
 Authoritative public-source imports and immutable source snapshots are the
 exception: Cyberful keeps them below the platform application-data directory in
-an owner-only `cyberful/source-store/<workarea-hash>/` tree, outside the Codex
-writable root. The store is durable for resume and should follow the same
-engagement retention policy as the corresponding workarea. Its import key is
-host-only and independent from session variables and the Code Graph ledger.
+an owner-only `cyberful/source-store/<workarea-hash>/` tree, outside the
+model-writable workarea. The store is durable for resume and should follow the
+same engagement retention policy as the corresponding workarea. Its import key
+is host-only and independent from session variables and the Code Graph ledger.
 
 Session metadata is stored in a global local SQLite database keyed by launch
 directory. On Unix its database and sidecars use owner-only permissions. Resume
 from the same directory with `cyberful run --continue` or select an id with
 `cyberful run --session <id>`.
+
+An active turn created by the removed Codex runtime cannot be resumed through
+Pi: Cyberful rejects both additional prompts and execution for that turn before
+contacting a provider. Its completed reports, transcripts, artifacts, and
+history remain readable. Once the legacy workflow is complete, a new Ask turn
+may be started normally and is recorded as a Pi run.
 
 These files are local evidence, not telemetry. They may contain prompts, target
 data, cookies, tool output, findings, and proof-of-concept material. Apply the
@@ -40,10 +52,9 @@ sanitization.
 
 Actual gateway tool calls are summarized in the workarea's metadata-only
 `raw/operations/tool-usage.csv`, which omits tool arguments and response
-content. Phase transcripts are a separate evidence record: they are enabled by
-default and can contain complete tool calls. Set
-`CYBERFUL_SUBSYSTEM_TRANSCRIPT=0` only when the engagement retention policy
-calls for disabling those raw transcripts.
+content. Phase transcripts are a separate evidence record and can contain
+complete tool calls. Provider credentials, private gateway environment, and the
+complete compiled system message are excluded.
 
 ## Session variables
 

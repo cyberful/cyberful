@@ -1,4 +1,4 @@
-.PHONY: all help deps subsystems install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-ghidra test-codex test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
+.PHONY: all help deps install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-ghidra test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
 
 PYTHON ?= python3
 
@@ -7,7 +7,6 @@ all: typecheck test test-network build
 help:
 	@echo "Cyberful targets:"
 	@echo "  make deps         Install workspace and MCP dependencies"
-	@echo "  make subsystems   Update, verify, and pin registered host subsystems"
 	@echo "  make typecheck    Type-check the workspace"
 	@echo "  make test         Run Bun, Python, and the live Docker cyberful-os contract"
 	@echo "  make test-bun     Run the isolated application and browser MCP Bun tests"
@@ -17,9 +16,8 @@ help:
 	@echo "  make test-network Run loopback/socket integration tests"
 	@echo "  make test-zap     Run the real Docker ZAP, bridge, browser, scan, and cleanup suite"
 	@echo "  make test-ghidra  Run Ghidra host/MCP tests plus real persistence and restart checks"
-	@echo "  make test-codex   Verify the installed Codex satisfies cyberful's contract (no account needed)"
-	@echo "  make test-all     Run local, network, ZAP, and Codex contract suites"
-	@echo "  make build        Build standalone binaries for all platforms (gated on test-codex)"
+	@echo "  make test-all     Run local, network, ZAP, and Ghidra contract suites"
+	@echo "  make build        Build standalone binaries for all platforms"
 	@echo "  make install      Build and install the 'cyberful' command for this system"
 	@echo "  make run          Launch Cyberful from the repository root"
 	@echo "  make browser-run-{1..5} Open a persistent browser profile for target pre-authentication"
@@ -30,11 +28,6 @@ help:
 deps:
 	bun install
 	cd mcps && npm install
-
-# Discover each registered subsystem release, install and verify it, then persist its exact
-# runtime and CI pins. Documentation is never consulted. Limit with `SUBSYSTEMS=codex`.
-subsystems:
-	bun run cyberful/script/subsystems.ts $(SUBSYSTEMS)
 
 typecheck:
 	bun run typecheck
@@ -83,13 +76,7 @@ test-ghidra:
 	$(PYTHON) -m unittest discover -s mcps/ghidra/tests -p 'test_*.py' -v
 	$(PYTHON) mcps/ghidra/tests/integration_test.py -v
 
-# Verify the installed Codex CLI satisfies cyberful's phase contract: the pinned version, the
-# `--strict-config` config keys, the app-server JSON-RPC handshake, and the MCP spawn->connect->tools/list
-# round-trip. Needs Codex on PATH but NOT a logged-in account. `make build`/`make install` run it too.
-test-codex:
-	bun run --cwd cyberful test-codex
-
-test-all: test test-network test-zap test-ghidra test-codex
+test-all: test test-network test-zap test-ghidra
 
 # Build standalone binaries for every supported platform (macOS, Linux, Windows).
 build:

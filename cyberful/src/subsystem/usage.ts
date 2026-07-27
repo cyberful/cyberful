@@ -1,7 +1,7 @@
 // ── Subsystem-Neutral Session Token Accounting ───────────────────
 // Aggregates cumulative token snapshots per runtime process and derives bounded
 // context-reuse/churn metrics without interpreting subsystem-specific event shapes.
-// → cyberful/src/subsystem/subsystem.ts — translates Codex events into these snapshots.
+// → cyberful/src/subsystem/subsystem.ts — translates AgentRun events into these snapshots.
 // ─────────────────────────────────────────────────────────────────
 
 export interface Snapshot {

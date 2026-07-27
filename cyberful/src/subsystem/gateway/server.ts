@@ -1056,7 +1056,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           ...(browserProfile === undefined ? {} : { browserProfile }),
           // ── Tool Calls Share One Explicit Ten-Minute Ceiling ─────────────
           // Authorized scanners can legitimately run beyond the MCP SDK's
-          // one-minute default. The gateway and Codex registration therefore
+          // one-minute default. The gateway and Pi registration therefore
           // share a ten-minute ceiling: long enough for routine full scans, but
           // still finite when an upstream stalls. Both timeout fields match so
           // no hidden outer deadline aborts a call earlier than its policy.
@@ -1162,8 +1162,8 @@ export async function createGatewayServer(opts?: {
   let closing: Promise<void> | undefined
 
   // ── Gateway Close Owns Every Upstream Resource ────────────────
-  // Upstream MCP processes are not guaranteed to share the outer Codex process
-  // group, so the CLI reaper cannot prove their shutdown. The gateway closes
+  // Upstream MCP processes are not guaranteed to share the owning Cyberful
+  // process group, so the CLI reaper cannot prove their shutdown. The gateway closes
   // every client, usage journal, and code-graph handler itself. One memoized
   // cleanup promise makes transport close, stdin EOF, signals, and explicit host
   // shutdown idempotent while preserving aggregated cleanup failures.
@@ -1550,12 +1550,13 @@ export async function createGatewayServer(opts?: {
 
 // ── One Root PID Owns An Inherited Gateway Family ─────────────────
 // The host must identify the root gateway even when an upstream fails during
-// startup or Codex kills the MCP server directly. Native subagents inherit the
-// same MCP registration and therefore start sibling gateway processes with the
-// same signal path. The first process claims that path exclusively; later
-// gateways accept only its validated marker and never replace it, so phase
-// teardown retains one stable lifecycle root. The host's teardown path, rather
-// than a sandbox-sensitive cross-process signal probe, owns liveness checks.
+// startup or the in-process Pi owner closes the MCP server directly. Delegated
+// AgentRuns inherit the same MCP registration and therefore start sibling
+// gateway processes with the same signal path. The first process claims that
+// path exclusively; later gateways accept only its validated marker and never
+// replace it, so phase teardown retains one stable lifecycle root. The host's
+// teardown path, rather than a sandbox-sensitive cross-process signal probe,
+// owns liveness checks.
 // ───────────────────────────────────────────────────────────────
 export async function writeGatewayPidSignal(signalPath: string, pid = process.pid): Promise<void> {
   if (!path.isAbsolute(signalPath)) throw new Error("expert-gateway PID signal path must be absolute")
@@ -1599,10 +1600,11 @@ export function parentUnavailable(originalParentPID: number, currentParentPID = 
 
 // ── Gateway Main Owns Orphan Detection And Shutdown ─────────────
 // The gateway runs over stdio but the SDK does not close its upstream children
-// when that input pipe ends. EOF, host signals, and a changed or dead Codex
-// parent therefore converge on one idempotent shutdown promise. Parent polling
-// is only a backstop for runtimes that fail to deliver EOF. Keeping this wiring
-// out of module initialization lets tests use in-memory transports safely.
+// when that input pipe ends. EOF, host signals, and a changed or dead owning
+// Cyberful process therefore converge on one idempotent shutdown promise.
+// Parent polling is only a backstop for runtimes that fail to deliver EOF.
+// Keeping this wiring out of module initialization lets tests use in-memory
+// transports safely.
 // ─────────────────────────────────────────────────────────────
 export async function runGatewayMain() {
   await loadPrivateGatewayEnvironment()

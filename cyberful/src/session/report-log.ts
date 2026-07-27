@@ -139,7 +139,7 @@ function projectRoot(input: { directory: string; worktree: string }) {
 }
 
 // ── Journals And Transcripts Share One Evidence Directory ────────
-// Each session owns a turn-by-turn JSONL journal and each of its Codex phases
+// Each session owns a turn-by-turn JSONL journal and each of its Pi phases
 // owns a separate raw stream transcript. Both resolve from the same project-root
 // rule and live under the gitignored logs tree, keeping one run's evidence
 // together without allowing later phases to overwrite earlier phase streams.

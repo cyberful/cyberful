@@ -25,7 +25,7 @@ claim Windows support.
 
 ```mermaid
 flowchart LR
-    Phase["Current Codex phase"] --> Gateway["Private phase gateway"]
+    Phase["Current in-process Pi phase owner"] --> Gateway["Private phase gateway"]
     Gateway --> Bridge["Disposable Ghidra stdio bridge"]
     Bridge -->|"authenticated loopback"| Runtime["Persistent Ghidra + PyGhidra container"]
     Runtime -->|"read only"| Workarea["Engagement workarea binaries"]

@@ -22,14 +22,13 @@ same workarea and evidence without expanding its scope.
 
 ## Getting started
 
-Cyberful requires an authenticated Codex CLI and Docker. Install the validated
-Codex version, authenticate, then launch Cyberful:
+Cyberful includes the Pi Agent runtime and requires Docker. Install Cyberful,
+authenticate the default OpenAI Codex provider through Cyberful, then launch
+the terminal:
 
 ```sh
-npm install --global @openai/codex@0.145.0
-codex login
-
 npm install --global @cyberful/cli
+cyberful auth login
 cyberful
 ```
 
@@ -84,7 +83,7 @@ cybersecurity look simple, but to make its complexity navigable.
 
 ## Pentest
 
-Pentest uses one authorized mission across six fresh Codex processes:
+Pentest uses one authorized mission across six fresh in-process Pi phase owners:
 
 ```text
 brief → recon → exploit → hacker → verify → report
@@ -218,24 +217,33 @@ limitations; they never cause fallback to an external deployment.
 
 ## Execution and evidence contract
 
-Every sequential phase owns one fresh Codex app-server process and private host
-gateway. It must write its required artifact and request the exact successor
-through `handoff`. The host validates and seals the artifact, stops the current
-process and gateway, and only then starts the next phase.
+Every sequential phase owns one fresh in-process Pi worker owner and private
+host gateway. The owner can host a root `AgentRun`, its delegated children, and
+complete fallback `AgentRun` trees. The original root alone may request the
+exact successor through `handoff`. The host validates and seals the artifact,
+shuts down the current owner and gateway, and only then starts the next phase.
 
-If a phase exhausts its active-time budget, Cyberful advances in degraded mode
+If a phase exhausts its active-execution budget, Cyberful advances in degraded mode
 only when the required partial artifact can be sealed and cleanup succeeds.
 Missing artifacts, invalid handoffs, failed integrity gates, and incomplete
-cleanup halt the chain. Blocking human questions pause the phase deadline and
-process group until answered or explicitly rejected. Authorities that differ by
-host, method, identity, credential, effect, risk, or traffic bound use separate
-questions, so one answer cannot authorize or reject unrelated work. Parent and
-native-child requests share this contract, and Cyberful attributes a decline to
+cleanup halt the chain. Blocking human questions pause every AgentRun budget
+timer and leave the requesting tool invocation waiting until answered,
+explicitly rejected, timed out, or cancelled; no Pi process is suspended.
+Authorities that differ by host, method, identity, credential, effect, risk, or
+traffic bound use separate
+questions, so one answer cannot authorize or reject unrelated work. Root and
+child requests share this contract, and Cyberful attributes a decline to
 the operator only when its human selector attests that decision.
 
 Durable context lives in the workarea, transcripts, and Code Graph—not hidden
 conversation state. Repository instructions, documentation, comments, web
 content, and tool output are treated as untrusted evidence.
+
+The root uses the primary provider configured in `settings.yaml`. Root and
+subagent runs may request a bounded fallback task, and a provider-structured
+security-policy block can trigger it automatically. Fallback runs are complete:
+they keep the phase's persona, tools, skills, authorization, and ability to
+delegate, while their full descendant tree remains on the fallback provider.
 
 All three workflows persist supported findings and their per-run history in
 `raw/findings/registry.json`. The TUI presents that live registry in an optional
@@ -263,15 +271,18 @@ and structured evidence from the validated Code Graph ledger.
 - `mcps/zap/` — headless OWASP ZAP runtime and bridge for live-target workflows.
 - `mcps/ghidra/` — persistent headless PyGhidra runtime and disposable phase bridge.
 
-Codex is the model backend. Each phase runs in one ephemeral app-server process
-with a private gateway, and only a validated handoff can advance the chain.
+Pi Agent is the only runtime. Provider and model routing are host-owned and
+configured in `settings.yaml`; an OpenAI Codex OAuth account is one supported
+provider, not a separate runtime. Each phase runs under one ephemeral in-process
+Pi worker owner with a private gateway, and only a validated handoff from the
+original root can advance the chain.
 
 Cyberful emits no outbound telemetry, metrics, or analytics.
 
 ## Requirements
 
 - Bun 1.3.14 or compatible for source builds
-- the Codex CLI version declared in `cyberful/src/dependency/codex.ts`
+- one provider configured in `settings.yaml` and its required credentials
 - Docker with Compose
 - Python 3.10+ for cyberful-os host control
 - Node.js 18+ for the npm launcher and browser MCP
@@ -288,7 +299,7 @@ make deps        # install workspace and MCP dependencies
 make typecheck   # run source policy checks and TypeScript checks
 make test        # run Bun/Python tests and live container contracts
 make test-ghidra # real binary import, decompilation, call graph, annotation, and restart
-make test-all    # include loopback, ZAP, Ghidra, and Codex contracts
+make test-all    # include loopback, ZAP, Ghidra, and Pi/provider contracts
 make build       # build standalone binaries
 make install     # build and install for the current system
 make run         # launch from source
@@ -304,6 +315,10 @@ directly, so persona and skill edits take effect without rebuilding.
 Environment variables are documented in [`.env-example`](.env-example). Shell
 variables take precedence over a `.env` in the launch directory, which takes
 precedence over build defaults.
+
+Agent providers, models, delegation, fallback, and trusted instruction roots
+are configured in `settings.yaml`. Cyberful creates a secret-free default file
+on first launch. See [Agent providers and fallback](docs/user-guide/settings.md).
 
 Workareas live under `work/<name>/`; session transcripts live under
 `logs/session-logs/`. Imported repositories, authoritative snapshots, and

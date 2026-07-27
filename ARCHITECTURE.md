@@ -1,8 +1,9 @@
 # Cyberful TUI Architecture
 
-The terminal application is a local control plane around Codex. Session storage,
-orchestration, policy, MCP lifecycle, and reporting are host responsibilities;
-model reasoning occurs in one ephemeral Codex process per phase.
+The terminal application is a local control plane around Pi Agent. Session
+storage, orchestration, policy, provider routing, MCP lifecycle, and reporting
+are host responsibilities. Model reasoning occurs in complete, phase-scoped
+`AgentRun` contexts.
 
 ## Runtime shape
 
@@ -10,99 +11,131 @@ The supported path is:
 
 ```text
 TUI input
-  -> SessionPrompt journal + orchestration
-  -> ephemeral Codex app-server
+  -> session journal + workflow controller
+  -> fresh phase-scoped in-process Pi worker owner
+       -> root AgentRun on the primary provider
+       -> bounded delegated AgentRun tree
+       -> optional provider-affined fallback AgentRun tree
   -> private host MCP gateway
   -> read-only source store / Code Graph / cyberful-os / browser / ZAP / Ghidra / variables / question / handoff
   -> workarea artifacts
-  -> validated successor
+  -> root-only validated successor
 ```
 
-Codex app-server owns the phase path. The TUI has no session-level executor
-selector.
+`PiAgentSubsystem` is the only production implementation of the
+`AgentSubsystem` contract. OpenAI Codex OAuth, OpenAI-compatible GLM, and other
+reviewed adapters are inference providers inside Pi; they are not alternate
+Cyberful runtimes. Provider, model, delegation bounds, fallback policy, and
+trusted extension roots come from `settings.yaml`.
 
 Important host services under `cyberful/src` include:
 
-- `Config.Service` for project and host policy;
-- `SessionPrompt.Service` for journal writes, input delivery, and Codex-chain execution;
+- `Settings` for strict operator-owned provider and runtime configuration;
+- `SessionPrompt.Service` for journal writes, input delivery, and phase-chain execution;
 - `SessionStatus` and `SessionVariable` for durable control state;
-- the phase runtime under `src/subsystem/` for app-server, budgets, native delegation, steering, handoff, and transcripts;
+- the phase runtime under `src/subsystem/` for prompts, AgentRuns, budgets, delegation, fallback, steering, handoff, and transcripts;
 - the gateway under `src/subsystem/gateway/` for approved MCP capabilities.
 
 The session journal records user input and the public projection of subsystem
-activity. Host-owned runtime manifests record termination, provider failures,
-usage, context churn, settings attestation, novelty policy, and verdict counts
-without credentials, prompts, or reasoning text.
+activity. Host-owned runtime and prompt manifests record role, parentage,
+provider route, termination, normalized failures, usage, system-component
+hashes, novelty policy, and verdict counts without credentials or private
+reasoning.
 
 ## Phase lifecycle
 
 For each sequential phase the orchestrator:
 
-1. resolves the Cyberful base template, phase persona, required artifact, and wall-clock budget, then renders the current delegation and workarea values;
-2. creates a temporary Codex home and private gateway definition;
-3. starts `codex app-server` over stdio;
-4. starts one thread and one turn;
-5. maps public text, tool activity, and delegated-actor lifecycle into TUI events and the phase transcript;
+1. loads strict `settings.yaml`, the embedded base template, the workflow-scoped
+   persona, the skill catalog, the required artifact, and the active-execution budget;
+2. compiles one complete, immutable Cyberful system message and hashes every
+   component before provider execution;
+3. creates one phase-scoped in-process Pi worker owner and one private gateway connection;
+4. starts the original root `AgentRun` on the resolved primary provider;
+5. maps public text, tool activity, child lifecycle, fallback routing, and usage
+   into TUI events and the redacted phase transcript;
 6. forwards live user steering and TUI-backed questions while pausing the active
-   process budget for each pending human decision;
-7. validates the required artifact and constrained `handoff` request;
-8. proves the process and gateway tree have exited, then seals the final artifact with a host-generated
-   SHA-256 manifest before launching the successor.
+   budget for each pending human decision;
+7. validates the required artifact and a constrained `handoff` request emitted
+   only by the original root;
+8. shuts down the complete AgentRun tree and gateway, then seals the final
+   artifact with a host-generated SHA-256 manifest before starting the successor.
 
-The phase runner supplies Markdown cleanup with only the required deliverable
-path; it never traverses the complete workarea. Code Audit also verifies a
-host-keyed, full-inventory graph readiness record before accepting
-`index → trace`, binding the post-gateway source preflight, graph snapshot, and
-coverage rows to the transition. Attack and Verify can each create a separate
-mutable runtime lab. Dependency bootstrap mounts manifests only; after that
-networked container exits, the host materializes source for offline loopback
-execution in the phase-owned cyberful-os container and removes the lab after
-the container stops.
+Root, delegated, and fallback runs are distinct Pi contexts. Every child gets a
+fresh complete system message, the same authorization and persona, a bounded
+task capsule, the phase tools and skill catalog, and no parent transcript.
+Persona metadata plus `settings.yaml` bound depth, concurrency, and descendants.
+Only the original phase root owns `handoff`.
 
-The host always runs one phase process at a time. Selected Pentest and Code
-Audit personas can permit native direct Codex children when the resolved
-effort is Ultra; those children do not become host phases or own handoffs.
-The subsystem activity interface represents actor identity, parentage, state,
-and stable transitions independently of Codex. Each run owns its actor registry,
-and the TUI scopes grouping and call pairing by subsystem descriptor so future
-concurrent subsystem implementations cannot merge their activity accidentally.
+Primary roots and children may request a specific proactive fallback task.
+Cyberful admits those requests against the session quota and chooses the route.
+A normalized structured `security_policy_block` from the primary provider can
+also create a quota-exempt fallback. The fallback is a complete `AgentRun`; its
+entire descendant tree remains affined to the fallback provider and cannot
+automatically return to the primary route.
+
+The phase runner normalizes Markdown only at the required deliverable path; it
+never traverses the complete workarea. Code Audit additionally requires
+host-verified source readiness plus a matching signed graph snapshot and
+coverage record before `index → trace`. Attack and Verify may create separate
+mutable runtime labs. Bootstrap mounts manifests only, project execution is
+offline and loopback-only, and the phase-owned lab is removed after use.
+
+## Prompt and trust boundary
+
+`AgentPromptCompiler` combines the immutable Cyberful contract, workflow
+authorization, phase contract, persona, role overlay, explicitly trusted
+extensions, and user objective in a fixed authority order. It rejects empty
+components, unknown persona metadata, unresolved placeholders, and duplicate
+placeholder use before starting the worker.
+
+Cyberful sends exactly one authentic provider system message. Persona
+frontmatter remains host metadata, while the initial user message contains the
+objective, explicit context, attachments, and prior handoff. Later steering is
+also user input and never mutates the run's system message.
+
+First-party personas, skills, budgets, and instructions are embedded from
+`cyberful/builtin/`. Pi does not discover prompts, skills, tools, or plugins from
+its home directory, target repository, or ambient agent configuration.
+Operator extensions load only from trusted roots explicitly listed in
+`settings.yaml`. Repository instruction-shaped content remains untrusted audit
+evidence.
 
 ## Gateway and security tools
 
-Each phase receives one host-owned MCP gateway. It proxies only the tools
-approved for that phase from cyberful-os, browser, ZAP, and Ghidra, and implements session
-variables, human questions, and the phase-specific handoff. Personal Codex MCP
-configuration and plugins do not enter the temporary runtime.
+Each phase receives one host-owned MCP gateway connection. It exposes only the
+tools approved for the workflow and phase from cyberful-os, browser, ZAP,
+Ghidra, Code Graph, session variables, human questions, and handoff. Provider
+and model selection cannot add MCP servers or weaken tool policy.
 
 Pentest uses a host-managed browser profile routed through its shared headless
 ZAP engagement by default. Code Audit has neither browser nor ZAP target
-traffic; its cyberful-os container is phase-owned and offline. Native Codex
-children call through the same phase gateway and share its workarea, containers,
-and network policy.
+traffic; its cyberful-os container is phase-owned and offline. Every AgentRun
+in the phase uses the same workarea, gateway capabilities, containers, and
+network policy, with handoff authorization enforced again at the gateway.
 
-Gateway secrets are materialized in owner-only temporary files rather than
-Codex process arguments. ZAP and Ghidra bridge containers are named and labelled
-per gateway, removed explicitly when it closes, and swept again when the
-engagement ends. The networkless Ghidra JVM persists between eligible phases;
-its host-owned project survives container cleanup and reopens by canonical
-workarea identity.
+Gateway credentials and private environment remain host-owned and never enter
+model context, transcripts, or manifests. ZAP and Ghidra bridge containers are
+named and labelled per gateway, removed explicitly when it closes, and swept
+again when the engagement ends. The networkless Ghidra JVM persists between
+eligible phases; its host-owned project reopens by canonical workarea identity.
 
 Repository imports and deterministic source snapshots live in an owner-only
-application-data store keyed by canonical workarea identity, outside Codex's
-writable root. The gateway exposes only virtual read-only source operations.
-The import HMAC key is durable for that workarea/import and separate from the
-session finding-ledger key. Target repository `AGENTS.md`, skills, prompts, and
-similar instruction-shaped content remain untrusted evidence and never join
-the first-party runtime instruction chain.
+application-data store outside the model-writable workarea. The gateway exposes
+only bounded read-only source operations. The import HMAC key is durable for
+that workarea/import and separate from the session finding-ledger key.
 
 ## Host extensions
 
 External host plugins remain opt-in for behavior such as events, commands, and
-shell environment shaping. They cannot perform model execution.
+shell environment shaping. They cannot perform model execution or alter the
+provider and tool routes resolved by Cyberful.
 
 ## Verification
 
-Run `bun typecheck` from each package for type checking and
-`bun run build` for the application bundle. MCP smoke tests should verify cyberful-os command
-execution, browser navigation through ZAP, Ghidra project restart persistence,
-shared history, and bridge discovery through the gateway.
+Run `make typecheck` for repository type checking and `make build` for
+standalone binaries. Focused contracts cover system-message preservation,
+provider security-block normalization, nested delegation, fallback affinity,
+quota behavior, gateway ownership, and credential redaction. MCP integration
+tiers verify cyberful-os command execution, browser navigation through ZAP,
+Ghidra project restart persistence, and bridge discovery through the gateway.

@@ -6,31 +6,58 @@
 
 import { describe, expect, test } from "bun:test"
 import { Effect, Fiber } from "effect"
+import { Type } from "typebox"
+import { Settings } from "@/config/settings"
 import { SubsystemPhase } from "./phase"
 import { SubsystemPhaseRunner, type PhaseDeps, type PhaseResult, type PhaseSpec } from "./phase-runner"
 import { SubsystemOrchestrator } from "./orchestrator"
 import { Subsystem } from "./subsystem"
 import type { SubsystemCli } from "./cli"
 import { SessionID } from "@/session/schema"
+import type { SkillRegistry } from "./pi-skills"
 
 function requireValue<T>(value: T | null | undefined, message: string): T {
   if (value === undefined || value === null) throw new Error(message)
   return value
 }
 
-// The registry is the single source of truth for the Codex chain. Unknown names remain outside the
+const TEST_SETTINGS = Settings.parse(Settings.DEFAULT_YAML, "test-settings.yaml")
+const EMPTY_SKILL_PARAMETERS = Type.Object(
+  {
+    skill: Type.String({ minLength: 1 }),
+    path: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+)
+const EMPTY_SKILLS = {
+  catalog: [],
+  tool: {
+    name: "skill_read",
+    label: "Read trusted skill",
+    description: "No skills are configured in this isolated phase test.",
+    parameters: EMPTY_SKILL_PARAMETERS,
+    execute: async () => {
+      throw new Error("no test skills are configured")
+    },
+  },
+  read: async () => {
+    throw new Error("no test skills are configured")
+  },
+} satisfies SkillRegistry
+
+// The registry is the single source of truth for the Pi chain. Unknown names remain outside the
 // runtime instead of falling through to a generic Agent owner.
-describe("Codex phase registry", () => {
-  test("persisted Expert turns keep a session on the providerless Codex runtime", () => {
+describe("Pi phase registry", () => {
+  test("persisted Expert turns keep a session on the configured Pi runtime", () => {
     expect(SubsystemPhase.listWorkflows()).not.toHaveLength(0)
-    expect(SubsystemPhase.sessionUsesCodexRuntime("pentest", [{ role: "user", agent: "brief" }])).toBe(true)
+    expect(SubsystemPhase.sessionUsesAgentRuntime("pentest", [{ role: "user", agent: "brief" }])).toBe(true)
     expect(
-      SubsystemPhase.sessionUsesCodexRuntime("pentest", [
+      SubsystemPhase.sessionUsesAgentRuntime("pentest", [
         { role: "assistant", agent: "brief" },
         { role: "user", agent: "exploit" },
       ]),
     ).toBe(true)
-    expect(SubsystemPhase.sessionUsesCodexRuntime("pentest", [{ role: "user", agent: "ordinary-agent" }])).toBe(false)
+    expect(SubsystemPhase.sessionUsesAgentRuntime("pentest", [{ role: "user", agent: "ordinary-agent" }])).toBe(false)
   })
 
   test("phase names are direct and workflow-scoped", () => {
@@ -47,7 +74,7 @@ describe("Codex phase registry", () => {
     expect(SubsystemPhase.phaseOwner("pentest", "small-worker")).toBe("unknown")
   })
 
-  test("deliverableFor names every required Codex artifact; unknown phases have none", () => {
+  test("deliverableFor names every required Pi phase artifact; unknown phases have none", () => {
     expect(SubsystemPhase.deliverableFor("pentest", "brief")).toBe("MISSION.md")
     expect(SubsystemPhase.deliverableFor("pentest", "recon")).toBe("RECON.md")
     expect(SubsystemPhase.deliverableFor("pentest", "recon-consolidate")).toBeUndefined()
@@ -178,10 +205,7 @@ describe("phase runner contract", () => {
     run: async (input) => {
       capture.input = input
       return {
-        stdout: JSON.stringify({
-          method: "item/completed",
-          params: { item: { type: "agentMessage", text: "phase done: wrote RECON.md" } },
-        }),
+        stdout: JSON.stringify({ type: "result", result: "phase done: wrote RECON.md" }),
         stderr: "",
         exitCode: 0,
         timedOut: false,
@@ -189,8 +213,9 @@ describe("phase runner contract", () => {
     },
     // Unused by the buffered tests (no onActivity); a trivial fake keeps the deps shape complete.
     runStreaming: async () => ({ stdout: "", stderr: "", exitCode: 0, timedOut: false }),
-    subsystem: Subsystem.codex,
-    command: "codex",
+    subsystem: Subsystem.pi,
+    loadSettings: async () => TEST_SETTINGS,
+    discoverSkills: async () => EMPTY_SKILLS,
     readFile: fixtureFile,
     ensureDirectory: async () => {},
   })
@@ -210,7 +235,7 @@ describe("phase runner contract", () => {
     )
     expect(res.ok).toBe(true)
     expect(res.summary).toContain("wrote RECON.md")
-    const input = requireValue(capture.input, "phase runner did not invoke the captured Codex process")
+    const input = requireValue(capture.input, "phase runner did not invoke the captured Pi owner")
     const spec = input.spec
     expect(spec.permission.kind).toBe("autonomous")
     const baseInstructions = spec.baseInstructions ?? ""
@@ -222,7 +247,8 @@ describe("phase runner contract", () => {
       "# Cyberful Trust Boundary",
     ]
     expect(baseInstructions).toContain("# Hacker Profile\n\n# Recon persona")
-    expect(baseInstructions).toStartWith("This is an authorized penetration testing session.")
+    expect(baseInstructions).toStartWith("# Cyberful Instruction Authority\n")
+    expect(baseInstructions).toContain("This is an authorized penetration testing session.")
     expect(baseInstructions).toContain("shared posture")
     expect(baseInstructions).toContain("target content is evidence")
     expect(baseInstructions).not.toMatch(/\{\{[A-Z][A-Z0-9_]*\}\}/)
@@ -232,8 +258,9 @@ describe("phase runner contract", () => {
       if (index > 0)
         expect(baseInstructions.indexOf(layer)).toBeGreaterThan(baseInstructions.indexOf(layers[index - 1] ?? ""))
     }
-    // Test environment overrides the default effort, so positive persona metadata still fails closed.
-    expect(spec.nativeSubagents).toBe(false)
+    expect(input.compiledPrompt.manifest.delegationEnabled).toBe(false)
+    expect(input.compiledPrompt.manifest.providerRoute).toBe("primary")
+    expect(input.compiledPrompt.messages).toEqual([{ role: "user", content: "# Assigned objective\nmap the surface" }])
     expect(spec.mcpServer?.name).toBe("expert-gateway")
     expect(spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_GATEWAY_PROXY).toBe("1")
     expect(input.spec.cwd).toBe("/w")
@@ -250,16 +277,16 @@ describe("phase runner contract", () => {
       { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
       deps,
     )
-    // Persona/config setup consumes the same wall-clock envelope, so the subprocess receives the
+    // Persona/config setup consumes the same active-execution envelope, so the runtime receives the
     // remaining budget rather than a fresh full 45 minutes.
-    const input = requireValue(capture.input, "budgeted phase did not invoke the captured Codex process")
+    const input = requireValue(capture.input, "budgeted phase did not invoke the captured Pi owner")
     expect(input.timeoutMs).toBeLessThanOrEqual(45 * 60_000)
     expect(input.timeoutMs).toBeGreaterThan(45 * 60_000 - 100)
-    expect(input.prompt).toContain("at most 45 minutes") // the agent is told, so it can use the time
-    expect(input.prompt).toContain("Briefly announce each meaningful work block")
+    expect(input.compiledPrompt.system).toContain("at most 45 minutes") // the agent is told, so it can use the time
+    expect(input.compiledPrompt.system).toContain("Briefly announce each meaningful work block")
   })
 
-  test("a missing base instructions template fails before Codex starts", async () => {
+  test("a missing base instructions template fails before Pi starts", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     const deps: PhaseDeps = {
       ...fakeDeps(capture),
@@ -279,7 +306,7 @@ describe("phase runner contract", () => {
     expect(capture.input).toBeUndefined()
   })
 
-  test("invalid subagent frontmatter fails phase setup before Codex starts", async () => {
+  test("invalid subagent frontmatter fails phase setup before Pi starts", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     const deps: PhaseDeps = {
       ...fakeDeps(capture),
@@ -289,13 +316,12 @@ describe("phase runner contract", () => {
         return "---\nsubagents: 1.5\n---\n# Recon persona"
       },
     }
-    const result = await SubsystemPhaseRunner.runPhase(
-      { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
-      deps,
-    )
-    expect(result.ok).toBe(false)
-    expect(result.termination).toBe("spawn_failed")
-    expect(result.warnings.join(" ")).toContain("subagents")
+    await expect(
+      SubsystemPhaseRunner.runPhase(
+        { phase: "recon", sessionID: "s", workareaCwd: "/w", home: "/h", objective: "x", timeoutMs: 1000 },
+        deps,
+      ),
+    ).rejects.toThrow("subagents")
     expect(capture.input).toBeUndefined()
   })
 
@@ -311,27 +337,25 @@ describe("phase runner contract", () => {
     expect(res.ok).toBe(false)
   })
 
-  test("with an observer it streams: sets spec.stream and forwards mapped activity items in order", async () => {
+  test("with an observer it streams Pi activity items in order", async () => {
     const activities: Subsystem.PhaseActivity[] = []
-    let streamedSpec: Parameters<typeof SubsystemCli.runStreaming>[0]["spec"] | undefined
+    let streamedInput: Parameters<typeof SubsystemCli.runStreaming>[0] | undefined
     const deps: PhaseDeps = {
       ...fakeDeps({}),
       runStreaming: async (input, onEvent) => {
-        streamedSpec = input.spec
-        // Events the Codex app-server emits: an assistant message and an MCP tool call.
+        streamedInput = input
         onEvent({
-          method: "item/completed",
-          params: { item: { id: "msg-1", type: "agentMessage", text: "mapping the surface" } },
+          type: "activity",
+          runID: "root",
+          activity: { kind: "text", text: "mapping the surface" },
         })
         onEvent({
-          method: "item/started",
-          params: { item: { id: "call-1", type: "mcpToolCall", tool: "browser_navigate", arguments: {} } },
+          type: "activity",
+          runID: "root",
+          activity: { kind: "tool", tool: "browser_navigate", input: {}, callID: "call-1" },
         })
         return {
-          stdout: JSON.stringify({
-            method: "item/completed",
-            params: { item: { type: "agentMessage", text: "phase done" } },
-          }),
+          stdout: JSON.stringify({ type: "result", result: "phase done" }),
           stderr: "",
           exitCode: 0,
           timedOut: false,
@@ -344,15 +368,14 @@ describe("phase runner contract", () => {
       deps,
     )
     expect(res.ok).toBe(true)
-    expect(streamedSpec?.stream).toBe(true)
-    // Mapped by the real subsystem.streamActivities and delivered in stream order.
+    expect(streamedInput?.compiledPrompt.manifest.role).toBe("root")
     expect(activities).toEqual([
       { kind: "text", text: "mapping the surface" },
       { kind: "tool", tool: "browser_navigate", input: {}, callID: "call-1" },
     ])
   })
 
-  test("keeps gateway routing and ZAP keys out of the Codex process environment", async () => {
+  test("keeps gateway routing and ZAP keys out of Pi messages", async () => {
     const capture: { input?: Parameters<typeof SubsystemCli.run>[0] } = {}
     await SubsystemPhaseRunner.runPhase(
       {
@@ -372,11 +395,13 @@ describe("phase runner contract", () => {
       fakeDeps(capture),
     )
 
-    const input = requireValue(capture.input, "private-environment phase did not invoke the captured Codex process")
-    expect(input.spec.env?.CYBER_BROWSER_HEADLESS).toBeUndefined()
-    expect(input.spec.env?.CYBER_ZAP_API_KEY).toBeUndefined()
-    expect(input.spec.env?.CYBERFUL_SOURCE_STORE_ROOT).toBeUndefined()
-    expect(input.spec.env?.CYBERFUL_SOURCE_IMPORT_ATTESTATION_KEY).toBeUndefined()
+    const input = requireValue(capture.input, "private-environment phase did not invoke the captured Pi owner")
+    const providerMessages = `${input.compiledPrompt.system}\n${input.compiledPrompt.messages
+      .map((message) => message.content)
+      .join("\n")}`
+    expect(providerMessages).not.toContain("engagement-secret")
+    expect(providerMessages).not.toContain("host-import-attestation-secret")
+    expect(providerMessages).not.toContain("/host/source-store")
     expect(input.spec.mcpServer?.privateEnv?.CYBER_BROWSER_HEADLESS).toBe("true")
     expect(input.spec.mcpServer?.privateEnv?.CYBER_ZAP_API_KEY).toBe("engagement-secret")
     expect(input.spec.mcpServer?.privateEnv?.CYBERFUL_SOURCE_STORE_ROOT).toBe("/host/source-store")
@@ -386,8 +411,8 @@ describe("phase runner contract", () => {
   })
 })
 
-// The orchestrator walks one sequential Codex-only chain. Recon is an ordinary phase whose native
-// subagents, when enabled, remain descendants of that one process and do not create a host-side branch.
+// The orchestrator walks one sequential Pi chain. Delegated and fallback runs
+// remain inside the active in-process phase owner and never create host-side phase fan-out.
 describe("phase orchestration (runAndAdvance)", () => {
   const completedPhase = (phase: string): PhaseResult => ({
     phase,
@@ -396,7 +421,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     exitCode: 0,
     timedOut: false,
     termination: "completed",
-    backend: "codex",
+    backend: "pi",
     durationMs: 100,
     limitMs: 60_000,
     effectiveLimitMs: 60_000,
@@ -411,11 +436,12 @@ describe("phase orchestration (runAndAdvance)", () => {
     objective: "kickoff",
     workareaCwd: "/w",
     home: "/h",
+    settingsDirectory: "/settings",
     path: { cwd: "/c", root: "/r" },
     timeoutMs: 1000,
   })
 
-  test("brief reaches report through six sequential Codex phases", async () => {
+  test("brief reaches report through six sequential Pi phases", async () => {
     const phases: string[] = []
     const specs: PhaseSpec[] = []
     const out = await Effect.runPromise(
@@ -441,7 +467,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     ])
   })
 
-  test("the Recon summary seeds Exploit in a fresh Codex context", async () => {
+  test("the Recon summary seeds Exploit in a fresh Pi context", async () => {
     const specs: PhaseSpec[] = []
     await Effect.runPromise(
       SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
@@ -482,7 +508,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(rejected.summary).toContain("adapter rejected")
   })
 
-  test("interrupting Recon aborts the exact signal passed to its one phase process", async () => {
+  test("interrupting Recon aborts the exact signal passed to its one phase execution", async () => {
     const started = Promise.withResolvers<AbortSignal>()
     const fiber = Effect.runFork(
       SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {

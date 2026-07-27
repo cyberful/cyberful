@@ -198,7 +198,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "runtime.status",
             summary: "Get runtime status",
-            description: "Probe the active Codex subsystem.",
+            description: "Probe the active Pi subsystem and configured provider.",
           }),
         ),
       )

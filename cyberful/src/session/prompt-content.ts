@@ -1,6 +1,6 @@
 // ── Prompt Content Projection ────────────────────────────────────
 // Converts journal attachments and message parts into bounded, human-readable
-//   Codex objective text.
+//   bounded AgentRun objective text.
 // ─────────────────────────────────────────────────────────────────
 
 import { MessageV2 } from "./message-v2"

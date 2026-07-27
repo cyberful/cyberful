@@ -1,6 +1,6 @@
 // ── Durable Approval Mailbox ─────────────────────────────────────
 // Publishes owner-only pending questions and accepts one atomically validated
-//   decision from the TUI, CLI, or a remote Codex task on the same host.
+//   decision from the TUI, CLI, or a remote Cyberful task on the same host.
 // → cyberful/src/question/index.ts — waits on mailbox decisions for live requests.
 // → cyberful/src/cli/cmd/approval.ts — exposes the external selector interface.
 // @docs/concepts/execution-model.md

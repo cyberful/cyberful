@@ -9,7 +9,7 @@ import fs from "node:fs"
 import path from "node:path"
 import * as Builtin from "@/builtin"
 import * as ConfigAgent from "@/config/agent"
-import { SubsystemCodex } from "@/subsystem/codex"
+import { AgentPromptCompiler } from "@/subsystem/prompt-compiler"
 import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
 import * as SubsystemPhase from "@/subsystem/phase"
 import { isRecord } from "@/util/record"
@@ -96,8 +96,9 @@ describe("built-in Bug Bounty Program workflow", () => {
       Object.fromEntries(
         PHASES.map(([phase]) => [
           phase,
-          SubsystemCodex.parsePersona(fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"))
-            .subagents,
+          AgentPromptCompiler.parsePersona(
+            fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
+          ).subagents,
         ]),
       ),
     ).toEqual({ brief: 0, recon: 3, exploit: 3, hacker: 3, verify: 0, report: 0 })
@@ -177,8 +178,8 @@ describe("built-in Bug Bounty Program workflow", () => {
     const personas = PHASES.map(([phase]) =>
       fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
     )
-    const skills = ["NUCLEI.md", "ZAP.md"].map((name) =>
-      fs.readFileSync(path.join(Builtin.DIR, "skills", name), "utf8"),
+    const skills = ["nuclei", "zap"].map((name) =>
+      fs.readFileSync(path.join(Builtin.DIR, "skills", name, "SKILL.md"), "utf8"),
     )
     const runners = PHASES.map(([phase]) =>
       SubsystemPhaseRunner.buildPhasePrompt(

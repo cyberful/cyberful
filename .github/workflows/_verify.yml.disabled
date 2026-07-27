@@ -19,7 +19,6 @@ permissions:
 
 env:
   BUN_VERSION: 1.3.14
-  CODEX_VERSION: 0.145.0
 
 jobs:
   quality:
@@ -106,24 +105,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: make test-network
 
-  codex:
-    name: Codex contract
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      CODEX_HOME: ${{ github.workspace }}/.codex-home
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
-        with:
-          ref: ${{ inputs.ref }}
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - run: bun install --frozen-lockfile
-      - run: npm install --global "@openai/codex@${CODEX_VERSION}"
-      - run: mkdir -p "$CODEX_HOME"
-      - run: make test-codex
-
   docs:
     name: Documentation
     runs-on: ubuntu-24.04
@@ -143,7 +124,7 @@ jobs:
   required:
     name: Verification aggregate
     if: always()
-    needs: [quality, cyberful_os, zap, network, codex, docs]
+    needs: [quality, cyberful_os, zap, network, docs]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every verification stage
@@ -152,5 +133,4 @@ jobs:
           test "${{ needs.cyberful_os.result }}" = success
           test "${{ needs.zap.result }}" = success
           test "${{ needs.network.result }}" = success
-          test "${{ needs.codex.result }}" = success
           test "${{ needs.docs.result }}" = success

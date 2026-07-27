@@ -48,9 +48,9 @@ appear before the header.
 
 ```ts
 // ── Phase Runtime Lifecycle ──────────────────────────────────────
-// Starts one Codex app-server and retains its private gateway until
-//   handoff, cancellation, or failure completes cleanup.
-// → cyberful/src/subsystem/codex.ts — owns the app-server protocol.
+// Starts one phase-scoped Pi worker and retains its private gateway
+//   until handoff, cancellation, or failure completes cleanup.
+// → cyberful/src/subsystem/pi-agent.ts — owns AgentRun execution.
 // → cyberful/src/subsystem/gateway/server.ts — creates the gateway.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
@@ -95,10 +95,10 @@ not count.
 
 ```text
 // ── Phase Advancement Requires A Validated Handoff ───────────────
-// Each phase owns a private Codex process and gateway that must not overlap
+// Each phase owns a private Pi worker and gateway that must not overlap
 // with its successor. A handoff records the requested transition, but does not
 // authorize the next phase by itself. The host first validates its target and
-// artifact, then waits for the current process and gateway to exit. Only after
+// artifact, then waits for the current worker and gateway to exit. Only after
 // both conditions hold may the successor start, preserving single-phase
 // ownership even when shutdown or validation fails.
 //
@@ -305,7 +305,7 @@ Python source must support the version declared in the requirements guide.
 - Every bug fix must add or strengthen a test that fails for the original defect
   when such a test is technically possible.
 - Do not replace live contract tests with duplicated simulations. MCP, network,
-  process cleanup, and Codex compatibility behavior require their existing
+  process cleanup, and provider wire compatibility require their existing
   integration tiers.
 - Tests must close clients, servers, databases, files, processes, and other
   external resources they create. Intermittent failures are defects, not

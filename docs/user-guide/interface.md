@@ -50,11 +50,11 @@ selected workflow, and updates the hint immediately when the workflow changes.
 While the composer has focus, its white **×** clears all text and attachments.
 
 Near the bottom edge, the welcome screen shows a compact dark translucent panel
-centered on the screen. Its left-aligned row identifies the active Codex
-subsystem. The state text is green when available, yellow while checking or
-degraded, and red when the probe could not reach a usable runtime. The snapshot
-is refreshed whenever the welcome route mounts; it does not start a phase or
-keep an additional background service alive.
+centered on the screen. Its left-aligned row identifies the active Pi subsystem
+and primary provider. The state text is green when available,
+yellow while checking or degraded, and red when the probe could not reach a
+usable runtime. The snapshot is refreshed whenever the welcome route mounts; it
+does not start a phase or keep an additional background service alive.
 
 `Tab` cycles the available workflows before the first submission. The selected
 workflow is fixed when the session starts.

@@ -1,7 +1,7 @@
 // ── Sequential Workflow Orchestrator ──────────────────────────────
-// Advances any registered Codex-owned workflow through validated handoffs,
-// preserving one process and one private gateway at a time.
-// → cyberful/src/subsystem/phase-runner.ts — owns each phase process lifecycle.
+// Advances any registered Pi-owned workflow through validated handoffs,
+// preserving one in-process phase owner and one private gateway at a time.
+// → cyberful/src/subsystem/phase-runner.ts — owns each phase execution lifecycle.
 // ─────────────────────────────────────────────────────────────────
 
 import { Effect } from "effect"
@@ -23,12 +23,10 @@ export interface AdvanceInput {
   workflow: string
   sourceRoot?: string
   home: string
+  settingsDirectory: string
   path: { cwd: string; root: string }
-  // Codex model identity for phase runs. Effort is private Codex application policy.
-  expertModel?: string
-  expertBackend?: string
   timeoutMs: number
-  // Private gateway environment; never forwarded to the Codex process.
+  // Private gateway environment; never forwarded to the model.
   env?: Record<string, string>
   // A warning from an earlier phase remains visible in the terminal result.
   degraded?: boolean
@@ -76,7 +74,7 @@ function rejectedPhase(phase: string, input: AdvanceInput, error: unknown): Phas
     exitCode: 1,
     timedOut: false,
     termination: "subsystem_failed",
-    backend: input.expertBackend ?? "unknown",
+    backend: "pi",
     durationMs: 0,
     limitMs,
     effectiveLimitMs: limitMs,
@@ -103,8 +101,8 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           workareaCwd: input.workareaCwd,
           sourceRoot: input.sourceRoot,
           home: input.home,
+          settingsDirectory: input.settingsDirectory,
           objective,
-          model: input.expertModel,
           timeoutMs: input.timeoutMs,
           abort,
           env: input.env,
@@ -157,14 +155,15 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         haltedAt: phase,
         terminal: false,
         status: "completed_with_warnings",
-        summary: `Invalid Codex-only successor '${next}' after '${phase}'. No successor was started.\n${lastSummary}`,
+        summary: `Invalid Pi workflow successor '${next}' after '${phase}'. No successor was started.\n${lastSummary}`,
       } satisfies AdvanceOutcome
     }
 
     // ── A Validated Handoff Cannot Overlap Its Successor ────────────
     // The gateway records a requested successor, but the orchestrator advances
     // only after runPhase has validated that request and completed its lifecycle.
-    // At this point the old Codex process and private gateway are both gone.
+    // At this point the old in-process Pi worker owner has shut down and its
+    // private gateway is gone.
     // Assigning the next phase here therefore preserves single-phase ownership,
     // including when the prior phase needed forced shutdown or cleanup warnings.
     // ──────────────────────────────────────────────────────────────

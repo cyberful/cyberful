@@ -47,7 +47,7 @@ export interface GhidraStore {
 
 // ── Persistent Projects Never Enter The Model Workarea ──────────
 // A Ghidra project contains mutable databases, user-defined names, comments,
-// bookmarks, and job history that must outlive every disposable phase process.
+// bookmarks, and job history that must outlive every disposable phase owner and bridge.
 // Its identity derives from the canonical workarea, but its physical root is a
 // protected application-data directory. Checking both containment directions
 // prevents a misconfigured data root from silently placing authoritative state

@@ -16,14 +16,14 @@ const lastUser = (over: Partial<MessageV2.User> = {}): MessageV2.User => ({
   time: { created: 1 },
   agent: "exploit",
   model: {
-    subsystemID: SubsystemID.make("codex-cli"),
-    modelID: ModelID.make("codex"),
+    subsystemID: SubsystemID.make("pi-agent"),
+    modelID: ModelID.make("configured-provider"),
   },
   metadata: { workarea: "target-2026" },
   ...over,
 })
 
-describe("Codex live steering", () => {
+describe("Pi live steering", () => {
   test("carries only phase, workarea and continuation metadata", () => {
     expect(steerHeadFields(lastUser())).toEqual({
       agent: "exploit",

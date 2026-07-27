@@ -453,7 +453,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("lets a native child gateway join the validated root PID claim without replacing it", async () => {
+  test("lets a delegated child gateway join the validated root PID claim without replacing it", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-child-pid-test-"))
     const signal = path.join(dir, "gateway-pid.json")
     try {
@@ -465,7 +465,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("detects a gateway whose original CLI parent disappeared or changed", () => {
+  test("detects a gateway whose original worker parent disappeared or changed", () => {
     // The test runner's parent may exit independently; this process is the stable live PID we own.
     expect(parentUnavailable(process.pid, process.pid)).toBe(false)
     expect(parentUnavailable(process.pid, 1)).toBe(true)

@@ -16,7 +16,7 @@ import { pipe, sortBy, values } from "remeda"
 // This service projects only primary personas into the UI and session API and
 // never turns those records into provider or model configuration. Keeping that
 // boundary explicit prevents catalog metadata from becoming a second executor
-// selection path beside the host-owned Codex runtime.
+// selection path beside the host-owned Pi runtime.
 // ─────────────────────────────────────────────────────────────────
 export const Info = Schema.Struct({
   name: Schema.String,

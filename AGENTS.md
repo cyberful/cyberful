@@ -1,8 +1,8 @@
 # Cyberful Agent Instructions
 
-Cyberful is a Codex-backed application-security workbench. The repository root is
+Cyberful is a Pi Agent-backed application-security workbench. The repository root is
 the Bun/TypeScript workspace; its application package lives under `cyberful/`
-and provides the terminal control plane, session storage, Codex phase orchestration,
+and provides the terminal control plane, session storage, Pi phase orchestration,
 gateway lifecycle, handoffs, and reporting. The `mcps/` collection provides
 cyberful-os, the isolated browser, and the headless OWASP ZAP runtime and bridge.
 
@@ -24,11 +24,11 @@ When working under `mcps/`, follow [`mcps/AGENTS.md`](mcps/AGENTS.md).
 
 ## Runtime contract
 
-Pentest uses Codex as its primary backend. Its chain is:
+Pentest uses Pi Agent as its runtime. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
 
-Bug Bounty Program also uses Codex, with a dedicated Brief, Verify, and Report around the shared
+Bug Bounty Program also uses Pi Agent, with a dedicated Brief, Verify, and Report around the shared
 Pentest Recon, Exploit, and Hacker personas. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
@@ -42,14 +42,15 @@ phase-owned disposable lab: dependency bootstrap sees manifests only, project
 execution is offline and loopback-only, and the mutable lab is destroyed when
 the gateway closes.
 
-Each sequential phase owns one fresh Codex app-server process and a private
-host gateway. Phase advancement requires a validated `handoff`; the current
-process and gateway must exit before the successor starts. Native Codex
-delegation is persona-controlled: only Ultra plus a positive `subagents`
-frontmatter value permits direct children, which remain inside the phase's
-workarea and gateway. Codex is the only production model path. Do not introduce
-host-owned phase fan-out, hidden delegation, or another unconstrained model
-execution route.
+Each sequential phase owns one fresh phase-scoped in-process Pi worker owner
+and a private host gateway. Root, delegated, and fallback `AgentRun` instances
+are separate Pi contexts inside that owner. Phase advancement requires a
+validated `handoff`; the owner must shut down and the gateway must exit before
+the successor starts. Only the original phase root owns `handoff`. Persona
+`subagents` metadata and the limits in `settings.yaml` bound nested delegation.
+A fallback is a complete `AgentRun`, but its whole descendant tree remains
+affined to the configured fallback provider. Do not introduce host-owned phase
+fan-out, hidden delegation, or another unconstrained model execution route.
 
 ## Operational constraints
 

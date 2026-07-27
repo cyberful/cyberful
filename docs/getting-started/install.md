@@ -5,32 +5,36 @@ to build its binaries yourself.
 
 ## Install the release
 
-Install the Codex version validated by Cyberful, then authenticate it:
-
-```sh
-npm install --global @openai/codex@0.145.0
-codex login
-```
-
-Install Cyberful and verify both commands:
+Install Cyberful and verify the command:
 
 ```sh
 npm install --global @cyberful/cli
-codex --version
 cyberful --version
 ```
 
 The `@cyberful/cli` package installs a native Cyberful binary. This path does
 not require Bun.
 
+Cyberful creates a secret-free `settings.yaml` with OpenAI Codex as the default
+Pi provider. Authenticate that route through Cyberful:
+
+```sh
+cyberful auth login
+cyberful auth status
+```
+
+The OAuth tokens remain in Cyberful's owner-only credential store and never
+enter `settings.yaml`, prompts, transcripts, or reports. Use `cyberful auth
+logout` to remove the profile.
+
 ## Build from source
 
-From the repository root, install the workspace dependencies and verify that
-the installed Codex CLI satisfies Cyberful's app-server and MCP contract:
+From the repository root, install the workspace dependencies and run the local
+Pi, prompt, provider, and gateway contract tests:
 
 ```sh
 make deps
-make test-codex
+make test-bun
 ```
 
 Build standalone binaries for every supported platform:

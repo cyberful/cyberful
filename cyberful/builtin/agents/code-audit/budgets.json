@@ -1,5 +1,5 @@
 {
-  "$comment": "Wall-clock budgets in minutes for the deep code-audit workflow.",
+  "$comment": "Active-execution budgets in minutes for the deep code-audit workflow.",
   "scope": 30,
   "index": 60,
   "trace": 75,

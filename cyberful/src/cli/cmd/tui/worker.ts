@@ -1,6 +1,6 @@
 // ── TUI Control-Plane Worker ─────────────────────────────────────
 // Boots the worker-owned application runtime and RPC server, forwards global
-//   events, and disposes phase processes, gateways, instances, and dependencies
+//   events, and disposes in-process phase owners, gateways, instances, and dependencies
 //   before the worker exits.
 // → cyberful/src/cli/cmd/tui/thread.ts — launches the worker and owns emergency reaping.
 // ─────────────────────────────────────────────────────────────────

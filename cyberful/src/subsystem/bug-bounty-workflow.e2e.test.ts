@@ -1,6 +1,6 @@
 // ── Local Bug Bounty Workflow E2E ───────────────────────────────
 // Exercises the research contracts together without target traffic: browser
-//   coverage, causal pivots, child usage, effort evidence, and full handoff.
+//   coverage, causal pivots, child usage, Pi provenance, and full handoff.
 // → cyberful/src/subsystem/orchestrator.ts — owns sequential advancement.
 // ─────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,36 @@ import { SurfaceCoverage } from "./gateway/surface-coverage"
 import { SubsystemOrchestrator } from "./orchestrator"
 import { SubsystemPhase } from "./phase"
 import type { PhaseResult } from "./phase-runner"
+import { AgentPromptCompiler } from "./prompt-compiler"
 import { SubsystemUsage } from "./usage"
+
+const PROMPT_TEMPLATE = [
+  "=={{AUTHORIZATION}}==",
+  "# Hacker Profile",
+  "{{CYBERFUL_HACKER_PROFILE}}",
+  "# Cyberful Subsystem Delegation",
+  "{{CYBERFUL_SUBSYSTEM_DELEGATION}}",
+  "# Cyberful Workarea",
+  "{{CYBERFUL_WORKAREA}}",
+].join("\n\n")
+
+function phasePrompt(phase: string) {
+  const sharedPentestPersona = ["recon", "exploit", "hacker"].includes(phase)
+  return AgentPromptCompiler.compile({
+    templateSource: PROMPT_TEMPLATE,
+    personaSource: `---\nsubagents: ${sharedPentestPersona ? 3 : 0}\n---\n# ${phase} persona`,
+    workareaSource: "Use only the phase workarea and gateway.",
+    runtimeInstructions: "Preserve evidence, write the deliverable, and let only the root perform handoff.",
+    workflow: "bug-bounty",
+    phase,
+    personaID: `${sharedPentestPersona ? "pentest" : "bug-bounty"}/${phase}`,
+    role: "root",
+    providerRoute: "primary",
+    handoffOwner: true,
+    delegationEnabled: true,
+    userTask: `Complete the Bug Bounty ${phase} phase.`,
+  })
+}
 
 function browserResult(action: string, family: string, route: string, profile = 1) {
   return {
@@ -82,6 +111,8 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
     usage.observe({}, { scopeID: "subagent-01", generatedTokens: 15, inputTokens: 60, reasoningTokens: 6 })
 
     const phases: string[] = []
+    const systems: string[] = []
+    const personaIDs: string[] = []
     const workflow = await Effect.runPromise(
       SubsystemOrchestrator.runAndAdvance(
         {
@@ -91,12 +122,16 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
           objective: "local contract exercise",
           workareaCwd: workarea,
           home: workarea,
+          settingsDirectory: workarea,
           path: { cwd: workarea, root: workarea },
           timeoutMs: 1_000,
         },
         {
           runPhase: async (spec): Promise<PhaseResult> => {
             phases.push(spec.phase)
+            const prompt = phasePrompt(spec.phase)
+            systems.push(prompt.system)
+            personaIDs.push(prompt.manifest.personaID)
             return {
               phase: spec.phase,
               ok: true,
@@ -104,7 +139,7 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
               exitCode: 0,
               timedOut: false,
               termination: "completed",
-              backend: "codex",
+              backend: "pi",
               durationMs: 10,
               limitMs: 1_000,
               effectiveLimitMs: 1_000,
@@ -124,7 +159,18 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
                 deltaItems: 0,
                 textStatus: "only counters received",
               },
-              codexSettings: { requestedEffort: "ultra", resolvedEffort: "ultra", attested: true },
+              agentRun: {
+                id: `run-${spec.phase}`,
+                provider: "primary-test",
+                model: "gpt-5.4",
+                providerAffinity: "primary",
+                promptManifest: prompt.manifest,
+                childRunIDs: spec.phase === "recon" ? ["run-recon-child"] : [],
+                skillsUsed: [],
+                toolCalls: 0,
+                fallbackAdmissions: 0,
+                fallbackDescendants: 0,
+              },
             }
           },
         },
@@ -138,6 +184,16 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
     expect(summary.ui_action_families).toEqual(["navigation", "ui_input", "ui_interaction"])
     expect(usage.usage()).toMatchObject({ input: 160, output: 35, reasoning: 14 })
     expect(phases).toEqual(["brief", "recon", "exploit", "hacker", "verify", "report"])
+    expect(personaIDs).toEqual([
+      "bug-bounty/brief",
+      "pentest/recon",
+      "pentest/exploit",
+      "pentest/hacker",
+      "bug-bounty/verify",
+      "bug-bounty/report",
+    ])
+    expect(systems.every((system) => system.startsWith("# Cyberful Instruction Authority"))).toBe(true)
+    expect(systems.every((system) => system.includes("This is an authorized Bug Bounty Program session."))).toBe(true)
     expect(workflow).toMatchObject({ terminal: true, status: "completed" })
   } finally {
     await rm(workarea, { recursive: true, force: true })

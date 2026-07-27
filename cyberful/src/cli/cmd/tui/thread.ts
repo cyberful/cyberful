@@ -23,16 +23,13 @@ import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
 import { writeHeapSnapshot } from "node:v8"
 import { TuiConfig } from "./config/tui"
 import { DockerPreflight } from "@/dependency/docker-preflight"
-import { SubsystemCodex } from "@/subsystem/codex"
 import { BrowserPreflight } from "@/dependency/browser-preflight"
+import { Settings } from "@/config/settings"
+import { SubsystemStatus } from "@/subsystem/status"
 import { CYBERFUL_PROCESS_ROLE, CYBERFUL_RUN_ID, ensureRunID, sanitizedProcessEnv } from "@/util/cyberful-process"
 import { validateSession } from "./validate-session"
 import { TuiRpcContract, type DockerResource } from "./rpc-contract"
-import {
-  cleanupAfterWorker,
-  reapDockerResourcesSync,
-  reapRunOwnedDockerResourcesSync,
-} from "./thread-cleanup"
+import { cleanupAfterWorker, reapDockerResourcesSync, reapRunOwnedDockerResourcesSync } from "./thread-cleanup"
 
 declare global {
   const CYBERFUL_WORKER_PATH: string
@@ -157,20 +154,40 @@ export const TuiThreadCommand = cmd({
         return
       }
       // ── Preflight Completes Before The Worker Owns The Terminal ──────
-      // Codex is mandatory and inexpensive to verify, so authentication failure
-      // stops before the slower Docker preparation begins. Docker readiness is
-      // blocking because session creation depends on it; browser preparation is
-      // best-effort but still completes before the worker takes the terminal.
-      // The verified Codex descriptor then crosses as worker-owned environment.
+      // The primary Pi provider is mandatory, so its model and authentication
+      // must pass before the slower Docker preparation begins. A configured
+      // fallback is optional capacity: an unavailable credential is rendered as
+      // degraded and disables that route without preventing a primary-backed
+      // session. Settings remain launch-directory owned, while the worker
+      // inherits only ordinary host environment and run identity.
       // ────────────────────────────────────────────────────────────────
-      const codexSubsystem = await SubsystemCodex.preflight()
-
       const cwd = Filesystem.resolve(process.cwd())
+      const settings = await Settings.load(cwd)
+      const agentStatus = await SubsystemStatus.preflight(settings)
+      UI.empty()
+      UI.println(`${UI.Style.TEXT_DIM}Cyberful preflight — Pi Agent${UI.Style.TEXT_NORMAL}`)
+      for (const provider of agentStatus.providers) {
+        const marker = provider.authenticated
+          ? `${UI.Style.TEXT_SUCCESS}✓${UI.Style.TEXT_NORMAL}`
+          : provider.route === "fallback"
+            ? `${UI.Style.TEXT_WARNING}!${UI.Style.TEXT_NORMAL}`
+            : `${UI.Style.TEXT_DANGER}✗${UI.Style.TEXT_NORMAL}`
+        UI.println(`  ${marker} ${provider.route} · ${provider.id}/${provider.model}`)
+      }
+      if (!agentStatus.ready) {
+        throw new Error(`Pi Agent preflight failed: ${agentStatus.errors.join("; ")}`)
+      }
+      if (agentStatus.degraded) {
+        UI.println(
+          `  ${UI.Style.TEXT_WARNING}! fallback unavailable; continuing with the primary provider${UI.Style.TEXT_NORMAL}`,
+        )
+      }
+      UI.empty()
+
       const runID = ensureRunID()
       const env = sanitizedProcessEnv({
         [CYBERFUL_PROCESS_ROLE]: "worker",
         [CYBERFUL_RUN_ID]: runID,
-        ...SubsystemCodex.workerEnv(codexSubsystem),
       })
 
       await DockerPreflight.runDockerPreflight()

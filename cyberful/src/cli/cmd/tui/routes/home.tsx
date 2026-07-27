@@ -1,7 +1,7 @@
 // ── TUI Home Route ───────────────────────────────────────────────
 // Renders workarea selection, the initial composer, runtime readiness, feature
 //   slots, and startup prompt submission before a persisted session exists.
-// → cyberful/src/subsystem/status.ts — supplies Codex runtime readiness.
+// → cyberful/src/subsystem/status.ts — supplies Pi and provider readiness.
 // @docs/user-guide/interface.md
 // ─────────────────────────────────────────────────────────────────
 
@@ -18,7 +18,6 @@ import { Slot } from "@/cli/cmd/tui/feature/slots"
 import { useProject } from "@tui/context/project"
 import { useTheme } from "@tui/context/theme"
 import { getLastWorkarea, normalizeWorkarea, workareaProjectRoot } from "@/workarea"
-import { SubsystemCodex } from "@/subsystem/codex"
 import { observePromise } from "@/util/promise"
 import * as Log from "@/util/log"
 import { PROMPT_OVERLAY_Z_INDEX } from "@tui/component/prompt/autocomplete"
@@ -41,9 +40,6 @@ const SHELL_PLACEHOLDERS = ["ls -la", "git status", "pwd"]
 const WORKAREA_PLACEHOLDER = "Type your workarea"
 const WORKAREA_Z_INDEX = 1000
 export const HOME_STATUS_PANEL_BACKGROUND = RGBA.fromValues(0.025, 0.025, 0.04, 0.72)
-
-// A deliberately small, unobtrusive splash note when the installed Codex differs from the pinned version.
-const codexVersionNote = SubsystemCodex.preflightNote()
 
 type RuntimeStatusValue = RuntimeStatus["primary"]["status"] | "checking"
 type RuntimeStatusTone = "success" | "warning" | "error"
@@ -253,7 +249,7 @@ export function Home() {
     initialPromptApplied = true
   }
 
-  // Wait for session state before auto-submitting --prompt. Codex phases do not need a model-selection store.
+  // Wait for session state before auto-submitting --prompt. Pi phases do not need a model-selection store.
   createEffect(() => {
     const r = ref()
     if (sent) return
@@ -353,13 +349,6 @@ export function Home() {
       <box width="100%" alignItems="center" flexShrink={0} zIndex={1} paddingLeft={2} paddingRight={2}>
         <HomeRuntimeRecap readiness={runtimeReadiness()} />
       </box>
-      <Show when={codexVersionNote}>
-        <box width="100%" alignItems="center" flexShrink={0} zIndex={1}>
-          <text fg={theme.textMuted} selectable={false}>
-            {codexVersionNote}
-          </text>
-        </box>
-      </Show>
       <box width="100%" flexShrink={0} zIndex={1}>
         <Slot name="home_footer" mode="single_winner" />
       </box>

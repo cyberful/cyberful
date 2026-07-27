@@ -299,8 +299,8 @@ export function isExpertPhase(workflowName: string, agent: string): boolean {
   return def(workflowName, agent) !== undefined
 }
 
-// A recorded Expert or interactive turn keeps the session on its Codex runtime while idle.
-export function sessionUsesCodexRuntime(
+// A recorded Expert or interactive turn keeps the session on its Pi runtime while idle.
+export function sessionUsesAgentRuntime(
   workflowName: string,
   messages: readonly { role: string; agent?: string }[],
 ): boolean {

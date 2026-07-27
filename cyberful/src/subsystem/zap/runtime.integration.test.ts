@@ -14,7 +14,6 @@ import { cyberZapBridgeImage } from "@/dependency/config"
 import { run } from "@/util/process"
 import { startEngagement, type EngagementRuntime } from "./runtime"
 import { SubsystemGateway } from "../gateway/config"
-import { SubsystemCli } from "../cli"
 
 const runtimes: EngagementRuntime[] = []
 const clients: Client[] = []
@@ -690,27 +689,17 @@ describe("real headless ZAP containers", () => {
     const runtime = await startEngagement({ sessionID: "integration-gateway-lifecycle", workarea })
     runtimes.push(runtime)
     expect(runtime.degraded).toBe(false)
-    const directory = await mkdtemp(path.join(workarea, "gateway-private-"))
-    const materialized = SubsystemCli.materializePrivateMcpEnvironment(
-      {
-        cwd: workarea,
-        permission: { kind: "readonly" },
-        mcpServer: SubsystemGateway.gatewayMcpServer("ses_integration_gateway", {
-          proxy: true,
-          phase: "recon",
-          env: {
-            ...runtime.env,
-            CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
-            CYBERFUL_OS_MCP_ENABLED: "0",
-            CYBER_BROWSER_MCP_ENABLED: "0",
-            CYBER_ZAP_ENABLED: "1",
-          },
-        }),
+    const configured = SubsystemGateway.gatewayMcpServer("ses_integration_gateway", {
+      proxy: true,
+      phase: "recon",
+      env: {
+        ...runtime.env,
+        CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
+        CYBERFUL_OS_MCP_ENABLED: "0",
+        CYBER_BROWSER_MCP_ENABLED: "0",
+        CYBER_ZAP_ENABLED: "1",
       },
-      directory,
-    )
-    const configured = materialized.mcpServer
-    if (!configured) throw new Error("gateway lifecycle fixture did not materialize an MCP server")
+    })
     const client = new Client({ name: "cyberful-gateway-lifecycle", version: "0" })
     const filters = ["label=org.cyberful.managed=zap-bridge", "label=org.cyberful.session=ses_integration_gateway"]
     let gatewayFailure: unknown
@@ -720,7 +709,12 @@ describe("real headless ZAP containers", () => {
           command: configured.command,
           args: [...configured.args],
           stderr: "pipe",
-          env: { PATH: process.env.PATH ?? "", HOME: os.homedir(), ...configured.env },
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: os.homedir(),
+            ...configured.env,
+            ...configured.privateEnv,
+          },
         }),
       )
       await client.connect(transport)
@@ -741,7 +735,6 @@ describe("real headless ZAP containers", () => {
       throw new Error(`phase gateway lifecycle failed:\n${diagnostics}`, { cause: gatewayFailure })
     }
     expect(await waitForDockerFilter(filters, false)).toBe("")
-    await rm(directory, { recursive: true, force: true })
     await releaseRuntimes(runtime)
   }, 180_000)
 

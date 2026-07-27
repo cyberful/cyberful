@@ -28,10 +28,7 @@ test("routes aggregate persistence and transient fan-out exactly once", async ()
     run: (definition, data, options) =>
       Effect.sync(() => projected.push({ type: definition.type, data, publish: options?.publish })),
   })
-  const dependencies = Layer.merge(
-    Layer.succeed(Bus.Service, bus),
-    Layer.succeed(EventProjection.Service, projection),
-  )
+  const dependencies = Layer.merge(Layer.succeed(Bus.Service, bus), Layer.succeed(EventProjection.Service, projection))
   const eventLayer = Event.layer.pipe(Layer.provide(dependencies))
   const context = {
     directory: "/workspace",
@@ -60,7 +57,7 @@ test("routes aggregate persistence and transient fan-out exactly once", async ()
           timestamp,
           sessionID,
           phase: "recon",
-          subsystem: { name: "codex", version: "test", label: "Codex" },
+          subsystem: { name: "pi", version: "test", label: "Pi Agent" },
           kind: "start",
           text: "",
           tool: "",
@@ -89,7 +86,7 @@ test("routes aggregate persistence and transient fan-out exactly once", async ()
         timestamp,
         sessionID,
         phase: "recon",
-        subsystem: { name: "codex", version: "test", label: "Codex" },
+        subsystem: { name: "pi", version: "test", label: "Pi Agent" },
         kind: "start",
         text: "",
         tool: "",

@@ -1,6 +1,6 @@
 // ── TUI Home Route Tests ─────────────────────────────────────────
 // Verifies welcome-screen overlay ordering and the semantic colors assigned to
-//   Codex subsystem readiness states.
+//   Pi subsystem readiness states.
 // → cyberful/src/cli/cmd/tui/routes/home.tsx — owns the tested welcome surface.
 // ─────────────────────────────────────────────────────────────────
 
@@ -41,9 +41,9 @@ test("the runtime panel uses a dark translucent surface over the splash", () => 
 test("the runtime panel adds four columns to its longest row", () => {
   expect(
     homeRuntimePanelWidth([
-      { title: "Subsystem", identity: "codex · gpt-5.6-sol", status: "available" },
+      { title: "Subsystem", identity: "pi/openai-codex · gpt-5.4", status: "available" },
     ]),
-  ).toBe("Subsystem codex · gpt-5.6-sol on".length + 4)
+  ).toBe("Subsystem pi/openai-codex · gpt-5.4 on".length + 4)
 })
 
 test("a workarea loaded after mount stays below slash suggestions", async () => {

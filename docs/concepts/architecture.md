@@ -1,7 +1,7 @@
 # How Cyberful is put together
 
 Cyberful is the coordinator. It keeps the scope, session, evidence, tools, and
-report under control while Codex works on one phase at a time. Cyberful does not
+report under control while Pi Agent works on one phase at a time. Cyberful does not
 ship its own AI model.
 
 ```text
@@ -9,31 +9,43 @@ TUI and session journal
         │
 workflow and phase controller
         │
-fresh Codex app-server ── private phase gateway
+in-process Pi phase owner ─── private phase gateway
         │                         ├── read-only host source store
         │                         ├── Code Graph
         │                         ├── cyberful-os
         │                         ├── isolated browser
         │                         ├── headless OWASP ZAP
         │                         └── persistent headless Ghidra
-        └── validated handoff ── next fresh process
+        ├── root AgentRun
+        ├── delegated AgentRun tree
+        ├── fallback AgentRun tree
+        └── root-only handoff ── next fresh owner
 ```
 
-Every sequential phase gets a new Codex process and private gateway. Advancement
-requires a validated handoff and required artifact; the current process and
-gateway exit before the successor starts. Durable state lives in the workarea,
-session journal, local Code Graph, host source store, and host Ghidra project
-store rather than hidden model context. Both stores are outside the
-model-writable workarea. The source store exposes authoritative imports and
-snapshots only through bounded read-only operations; the Ghidra store exposes
-its project through the authenticated headless MCP and retains annotations
-between runtime instances.
+Every sequential phase gets a new in-process Pi worker owner and private
+gateway. Advancement
+requires a validated handoff from the original root and a required artifact;
+the owner shuts down and the gateway exits before the successor starts. Durable
+state lives in the workarea, session journal, local Code Graph, host source
+store, and host Ghidra project store rather than hidden model context. Both
+stores are outside the model-writable workarea. The source store exposes
+authoritative imports and snapshots only through bounded read-only operations;
+the Ghidra store exposes its project through the authenticated headless MCP and
+retains annotations between phase owners.
 
-Codex is the current app-server implementation behind the `Subsystem`
-boundary. That boundary owns runtime identity, lifecycle, usage, failure, and
-completion contracts without making session or gateway code Codex-specific.
-Adding another app-server therefore requires a new subsystem implementation,
-not a parallel execution path.
+`PiAgentSubsystem` is the only production implementation of the
+`AgentSubsystem` lifecycle boundary. It starts complete `AgentRun` instances
+for roots, subagents, and fallback tasks and publishes a common stream of
+events, result, usage, and normalized failure data. OpenAI Codex OAuth,
+OpenAI-compatible GLM, and other reviewed adapters are inference providers
+inside Pi; they are not parallel runtimes.
+
+The host resolves provider and model before starting a run. The original phase
+root uses the primary route. Primary children normally retain that route.
+Fallback roots use the configured fallback route and their entire descendant
+tree retains fallback affinity. Only the original root receives the `handoff`
+capability, while every allowed child can still use phase tools, skills, write
+artifacts, and create bounded descendants.
 
 Runtime notifications have one `Event` definition and publication surface.
 Versioned aggregate events enter transactional projection once and reach live
@@ -55,6 +67,9 @@ and trust-boundary reference is in the repository's
 Repository files that resemble those first-party controls—including
 `AGENTS.md`, skills, and prompts—are target-controlled evidence. They are not
 loaded as operational policy and cannot override the embedded instruction set.
+Likewise, Pi does not discover configuration from `~/.pi`, `.codex`, `.agents`,
+`.claude`, or the target repository. Operator extensions are available only
+from trusted roots explicitly listed in `settings.yaml`.
 
 The terminal's home footer, notifications, keyboard guide, and diff viewer are
 host-owned capabilities wired directly into the TUI. Their commands, listeners,

@@ -189,7 +189,7 @@ export function decodeExpertToolActivity(text: string): { callID: string; input:
 // Text and tool activities append rows, but an output joins the prior tool row
 // with the same call identity so users see one complete card. An unmatched
 // output remains a standalone row rather than disappearing. Host event identity
-// prevents ordinary re-delivery, while native call identity catches a source
+// prevents ordinary re-delivery, while provider call identity catches a source
 // item wrapped in a new bus event. The fold stays pure for deterministic replay.
 // ─────────────────────────────────────────────────────────────────
 export function foldExpertActivity(
@@ -263,7 +263,7 @@ export function foldExpertActivity(
   if (entries.some((e) => e.id === a.id)) return entries
   if (a.kind === "tool") {
     const { callID, input } = decodeExpertToolActivity(a.text)
-    // App-server may redeliver the same native item through more than one transport notification. Bus
+    // A provider may redeliver the same tool item through more than one transport notification. Bus
     // event ids are host-generated, so callID is the stable source identity that prevents duplicate
     // spawn/activity cards even when the wrapper event receives a fresh id.
     if (

@@ -40,6 +40,7 @@ import { SessionReportLog } from "./report-log"
 import { DockerPreflight } from "@/dependency/docker-preflight"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
+import { deleteDurableFallbackLedger } from "@/subsystem/pi-fallback-ledger"
 import { SessionWriteCoordinator } from "./write-coordinator"
 
 const log = Log.create({ service: "session" })
@@ -492,6 +493,7 @@ export const layer: Layer.Layer<
     const removeUnlocked = Effect.fnUntraced(function* (sessionID: SessionID) {
       const session = yield* get(sessionID)
       yield* Effect.promise(() => SubsystemAskRuntime.stop(sessionID))
+      yield* Effect.promise(() => deleteDurableFallbackLedger(sessionID))
       try {
         const hasInstance = yield* InstanceState.directory.pipe(
           Effect.as(true),
@@ -591,7 +593,7 @@ export const layer: Layer.Layer<
       // CLI startup performs the visible image preparation, but session creation is
       // the irreversible persistence boundary and is also reachable through HTTP.
       // Rechecking daemon reachability here prevents alternate clients or future
-      // bootstrap paths from recording a Codex engagement that cannot run its tools.
+      // bootstrap paths from recording an engagement whose AgentRun cannot use its tools.
       // ─────────────────────────────────────────────────────────────────
       if (workflow) {
         yield* Effect.promise(() => DockerPreflight.requireDockerDaemon())

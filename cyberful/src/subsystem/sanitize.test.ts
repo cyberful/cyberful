@@ -10,7 +10,7 @@ import os from "os"
 import path from "path"
 import { sanitizeMarkdownArtifacts } from "./sanitize"
 
-describe("Codex Markdown sanitization", () => {
+describe("AgentRun Markdown sanitization", () => {
   test("folds only the declared phase Markdown artifact", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "expert-sanitize-"))
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "expert-outside-"))

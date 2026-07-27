@@ -217,7 +217,7 @@ export function Session() {
     return typeof value === "string" ? value : undefined
   })
   const skills = createMemo(() => sync.data.skill[route.sessionID] ?? [])
-  // Codex phase-excursion activity joins the main transcript so feedItems can interleave it by timestamp
+  // Pi phase activity joins the main transcript so feedItems can interleave it by timestamp
   // with messages and skills.
   const expertPhase = createMemo(() => sync.data.expert_phase[route.sessionID] ?? [])
   const feedItems = createMemo(() =>
@@ -1132,7 +1132,7 @@ export function Session() {
                         </Match>
                         <Match when={entry.type === "expert_phase" ? entry.expertPhase : undefined}>
                           {(phase) => {
-                            // Public prose starts a fresh Agent-style turn inside a long Codex phase. Its
+                            // Public prose starts a fresh Agent-style turn inside a long Pi phase. Its
                             // following tools stay under that header until the next public update.
                             const items = feedItems()
                             const phaseEntry = (o: (typeof items)[number] | undefined) =>
@@ -1315,7 +1315,7 @@ export function Session() {
 }
 
 // ── Expert Phase Activity Row ─────────────────────────────────────
-// While Codex runs a pentest phase it streams what it is doing — each
+// While Pi runs a pentest phase it streams what it is doing — each
 // tool it calls and short prose snippets. These used to scroll inside the panel; merged into the
 // feed they arrive as a burst of cheap single-line rows the reader can watch in place. A "tool" item
 // names the tool it called; a "text" item is a flattened snippet. The colored ◇ phase label identifies
@@ -1402,7 +1402,7 @@ function ExpertPhaseRow(props: {
   }
   return (
     <>
-      {/* One `◇ phase · codex v<version>` header per public progress turn — the same shape AssistantMessage gives an
+      {/* One `◇ phase · pi v<version>` header per public progress turn — the same shape AssistantMessage gives an
           Agent turn, so long sequential phases stay readable without repeating the marker on every tool. */}
       <Show when={props.showHeader}>
         <box marginTop={1} paddingLeft={3} flexShrink={0}>

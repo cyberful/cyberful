@@ -1,14 +1,16 @@
-// ── Codex Phase Runner Tests ──────────────────────────────────────
+// ── Pi Phase Runner Tests ─────────────────────────────────────────
 // Verifies phase invocation, handoff validation, artifact manifests, deadlines,
 // cancellation, process reaping, and cleanup through observable run outcomes.
 // → cyberful/src/subsystem/phase-runner.ts — owns the tested single-phase lifecycle.
 // ─────────────────────────────────────────────────────────────────
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
+import { Type } from "typebox"
 import { mkdir, mkdtemp, readFile as readFileFromDisk, realpath, rm, symlink } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import { createHash } from "node:crypto"
+import { Settings } from "@/config/settings"
 import {
   SubsystemPhaseRunner,
   waitForGatewayExit,
@@ -18,22 +20,47 @@ import {
 } from "./phase-runner"
 import { Subsystem } from "./subsystem"
 import { isRecord } from "@/util/record"
+import type { AgentEvent } from "./agent-subsystem"
+import type { SkillRegistry } from "./pi-skills"
 
 // ── Transcript Tests Exercise Headless And Observed Runs ────────────
-// A configured transcript must retain the full stream-json record even when no
+// A configured transcript must retain the full redacted AgentEvent record even when no
 // TUI observer is attached. These cases cross the real phase-runner decision
-// boundary with injected process and filesystem adapters, proving transport
+// boundary with injected runtime and filesystem adapters, proving stream
 // selection, destination, contents, and failure reporting without contacting a
 // live model or weakening the production orchestration path.
 // ──────────────────────────────────────────────────────────────
 
-// A minimal two-line stream-json stdout: one assistant turn + the terminal result envelope — what
-// consumeNdjson would buffer from a real streaming run.
+// A minimal two-line AgentEvent transcript: one assistant turn plus the terminal
+// result envelope that a real persisted phase run buffers.
 const NDJSON =
   '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}\n' +
   '{"type":"result","result":"phase summary"}\n'
 
 const TRANSCRIPT = "/tmp/cyberful-logs/session-ses_test.expert-recon.jsonl"
+const TEST_SETTINGS = Settings.parse(Settings.DEFAULT_YAML, "test-settings.yaml")
+const EMPTY_SKILL_PARAMETERS = Type.Object(
+  {
+    skill: Type.String({ minLength: 1 }),
+    path: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+)
+const EMPTY_SKILLS = {
+  catalog: [],
+  tool: {
+    name: "skill_read",
+    label: "Read trusted skill",
+    description: "No skills are configured in this isolated phase-runner test.",
+    parameters: EMPTY_SKILL_PARAMETERS,
+    execute: async () => {
+      throw new Error("no test skills are configured")
+    },
+  },
+  read: async () => {
+    throw new Error("no test skills are configured")
+  },
+} satisfies SkillRegistry
 const BASE_INSTRUCTIONS_TEMPLATE = [
   "=={{AUTHORIZATION}}==",
   "shared posture",
@@ -71,9 +98,7 @@ function phaseInstructionFile(filePath: string) {
 }
 
 const subsystem: Subsystem.Subsystem = {
-  ...Subsystem.codex,
-  buildArgs: () => ({ args: [], extraEnv: {} }),
-  buildAppServerArgs: () => ({ args: [], extraEnv: {} }),
+  ...Subsystem.pi,
   extractResultText: () => "phase summary",
   streamActivities: () => [],
 }
@@ -93,7 +118,8 @@ function deps(over: Partial<PhaseDeps> = {}): PhaseDeps {
       return { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
     },
     subsystem,
-    command: "codex",
+    loadSettings: async () => TEST_SETTINGS,
+    discoverSkills: async () => EMPTY_SKILLS,
     readFile: async (filePath) => phaseInstructionFile(filePath) ?? "{}",
     ensureDirectory: async () => {},
     fileExists: async () => true,
@@ -102,15 +128,7 @@ function deps(over: Partial<PhaseDeps> = {}): PhaseDeps {
 }
 
 describe("runPhase transcript persistence", () => {
-  // Isolate from ambient env: the persisting tests assume the on-by-default flag is on.
-  beforeEach(() => {
-    process.env.CYBERFUL_SUBSYSTEM_TRANSCRIPT = "1"
-  })
-  afterEach(() => {
-    delete process.env.CYBERFUL_SUBSYSTEM_TRANSCRIPT
-  })
-
-  test("persists the full stream-json transcript to spec.transcriptPath", async () => {
+  test("persists the full AgentEvent transcript to spec.transcriptPath", async () => {
     const writes: Array<{ filePath: string; ndjson: string }> = []
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ transcriptPath: TRANSCRIPT }),
@@ -133,7 +151,7 @@ describe("runPhase transcript persistence", () => {
     if (!isRecord(status)) throw new Error("persisted terminal status is not an object")
     expect(status.type).toBe("cyberful.phase.status")
     expect(status.termination).toBe("completed")
-    expect(status.backend).toBe("codex")
+    expect(status.backend).toBe("pi")
   })
 
   test("forces stream mode when persisting even with no live observer (runStreaming, not run)", async () => {
@@ -154,21 +172,7 @@ describe("runPhase transcript persistence", () => {
   test("persists subsystem usage and derived context churn without inferring prompt text", async () => {
     const usageProvider: Subsystem.Subsystem = {
       ...subsystem,
-      streamActivities: (event) =>
-        event === "usage"
-          ? [
-              {
-                kind: "progress",
-                usage: {
-                  generatedTokens: 100,
-                  inputTokens: 400,
-                  reasoningTokens: 30,
-                  cacheReadTokens: 250,
-                  cacheWriteTokens: 20,
-                },
-              },
-            ]
-          : [],
+      streamActivities: Subsystem.pi.streamActivities,
     }
     const result = await SubsystemPhaseRunner.runPhase(
       spec(),
@@ -176,7 +180,20 @@ describe("runPhase transcript persistence", () => {
         subsystem: usageProvider,
         onActivity: () => {},
         runStreaming: async (_input, onEvent) => {
-          onEvent("usage")
+          onEvent({
+            type: "activity",
+            runID: "root",
+            activity: {
+              kind: "progress",
+              usage: {
+                generatedTokens: 100,
+                inputTokens: 400,
+                reasoningTokens: 30,
+                cacheReadTokens: 250,
+                cacheWriteTokens: 20,
+              },
+            },
+          })
           return { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
         },
       }),
@@ -217,28 +234,32 @@ describe("runPhase transcript persistence", () => {
   })
 
   test("the phase prompt routes blocking human decisions through the TUI question tool", async () => {
-    let prompt = ""
+    let system = ""
+    let userMessage = ""
     let skillRoots: readonly string[] | undefined
     await SubsystemPhaseRunner.runPhase(
       spec(),
       deps({
         run: async (input) => {
-          prompt = input.prompt
+          system = input.compiledPrompt.system
+          userMessage = input.compiledPrompt.messages[0]?.content ?? ""
           skillRoots = input.spec.skillRoots
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
         },
       }),
     )
-    expect(prompt).toMatch(/question.*concrete missing authorization, fact, or human CAPTCHA action/i)
-    expect(prompt).toContain("`question kind=captcha`")
-    expect(prompt).toMatch(/Other work continues/i)
-    expect(prompt).toContain("Do not retry a target request that returns HTTP `429`")
-    expect(prompt).not.toMatch(/403|WAF|managed challenge|reset/i)
+    expect(system).toMatch(/question.*concrete missing authorization, fact, or human CAPTCHA action/i)
+    expect(system).toContain("`question kind=captcha`")
+    expect(system).toMatch(/Other work continues/i)
+    expect(system).toContain("Do not retry a target request that returns HTTP `429`")
+    expect(system).not.toMatch(/403|WAF|managed challenge|reset/i)
+    expect(userMessage).toContain("carry out recon")
+    expect(userMessage).not.toContain("Cyberful Host Runtime Contract")
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
-    let prompt = ""
+    let system = ""
     let privateEnv: Readonly<Record<string, string>> | undefined
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ workflow: "bug-bounty", phase: "recon" }),
@@ -252,15 +273,15 @@ describe("runPhase transcript persistence", () => {
           return phaseInstructionFile(filePath) ?? "{}"
         },
         run: async (input) => {
-          prompt = input.prompt
+          system = input.compiledPrompt.system
           privateEnv = input.spec.mcpServer?.privateEnv
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
         },
       }),
     )
 
-    expect(prompt).toContain("## Contrarian pass")
-    expect(prompt).toMatch(/no numeric quotas/i)
+    expect(system).toContain("## Contrarian pass")
+    expect(system).toMatch(/no numeric quotas/i)
     expect(JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"))
       .toEqual(result.noveltyContract)
   })
@@ -298,19 +319,19 @@ describe("runPhase transcript persistence", () => {
   })
 
   test("the phase prompt maps account descriptions to isolated browser profile selectors", async () => {
-    let prompt = ""
+    let system = ""
     await SubsystemPhaseRunner.runPhase(
       spec(),
       deps({
         run: async (input) => {
-          prompt = input.prompt
+          system = input.compiledPrompt.system
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
         },
       }),
     )
 
-    expect(prompt).toMatch(/Browser profiles 1–5 are separate identities/i)
-    expect(prompt).toMatch(/keep their state and evidence separate/i)
+    expect(system).toMatch(/Browser profiles 1–5 are separate identities/i)
+    expect(system).toMatch(/keep their state and evidence separate/i)
   })
 
   test("routes imported-source execution through cyberful-os without hardcoding a host path", async () => {
@@ -337,9 +358,9 @@ describe("runPhase transcript persistence", () => {
     expect(baseInstructions).not.toContain("</CYBERFUL WORKAREA>")
   })
 
-  test("keeps shell and Bun package-manager scratch state inside the workarea", async () => {
-    let env: Record<string, string> | undefined
+  test("keeps worker scratch state in the workarea and gateway secrets out of the Pi system message", async () => {
     let privateEnv: Record<string, string> | undefined
+    let system = ""
     const directories: string[] = []
     const removed: string[] = []
     await SubsystemPhaseRunner.runPhase(
@@ -352,20 +373,18 @@ describe("runPhase transcript persistence", () => {
           removed.push(directory)
         },
         run: async (input) => {
-          env = input.spec.env
+          system = input.compiledPrompt.system
           privateEnv = input.spec.mcpServer?.privateEnv
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
         },
       }),
     )
     expect(directories).toEqual(["/tmp/wa/.cyberful-tmp"])
-    expect(env?.TMPDIR).toBe("/tmp/wa/.cyberful-tmp")
-    expect(env?.TMPPREFIX).toBe("/tmp/wa/.cyberful-tmp/zsh")
-    expect(env?.BUN_TMPDIR).toBe("/tmp/wa/.cyberful-tmp")
-    expect(env?.BUN_INSTALL_CACHE_DIR).toBe("/tmp/wa/.cyberful-tmp/bun-install-cache")
-    expect(env?.PYTHONDONTWRITEBYTECODE).toBe("1")
     expect(removed).toEqual(["/tmp/wa/.cyberful-tmp"])
     expect(privateEnv?.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH).toContain("expert-circuit-breaker-ses_test/engagement.json")
+    expect(system).not.toContain(
+      requireValue(privateEnv, "gateway private environment missing").CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH,
+    )
   })
 
   test("counts only distinct deliverable checkpoints as semantic progress", async () => {
@@ -402,8 +421,42 @@ describe("runPhase transcript persistence", () => {
       deps({
         onActivity: () => {},
         runStreaming: async (_input, onEvent) => {
-          onEvent({ method: "item/started" })
-          onEvent({ method: "item/completed" })
+          const events: readonly AgentEvent[] = [
+            {
+              type: "run_started",
+              runID: "root",
+              phaseRootID: "root",
+              role: "root",
+              provider: "primary-test",
+              model: "gpt-5.4",
+              providerAffinity: "primary",
+              promptSystemSha256: "sha256",
+              promptManifest: {
+                workflow: "pentest",
+                phase: "exploit",
+                personaID: "pentest/exploit",
+                role: "root",
+                providerRoute: "primary",
+                systemSha256: "sha256",
+                componentHashes: {},
+                delegationEnabled: true,
+                delegationLimit: 1,
+                handoffOwner: true,
+              },
+            },
+            {
+              type: "run_finished",
+              runID: "root",
+              termination: "completed",
+              usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+              skillsUsed: [],
+              childRunIDs: [],
+              fallbackAdmissions: 0,
+              fallbackDescendants: 0,
+              toolCalls: 0,
+            },
+          ]
+          for (const event of events) onEvent(event)
           return { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
         },
         writeArtifactCheckpoint: async () => {
@@ -424,7 +477,7 @@ describe("runPhase transcript persistence", () => {
     expect(result.warnings).not.toContain("deliverable not written yet")
   })
 
-  test("requires and returns the constrained handoff after the Codex process exits", async () => {
+  test("requires and returns the constrained handoff after the Pi owner shuts down", async () => {
     let processExited = false
     let handoffReadBeforeExit = false
     let gatewayWaitBeforeExit = false
@@ -622,7 +675,7 @@ describe("runPhase transcript persistence", () => {
       phase: "exploit",
       successor: "hacker",
       summary:
-        "The exploit phase exhausted its wall-clock budget. Continue from the sealed partial deliverable 'EXPLOIT.md' and treat unfinished coverage as degraded.\n\nphase summary",
+        "The exploit phase exhausted its active-execution budget. Continue from the sealed partial deliverable 'EXPLOIT.md' and treat unfinished coverage as degraded.\n\nphase summary",
       artifact: "EXPLOIT.md",
     })
     expect(manifests).toEqual(["/tmp/wa/raw/phase-manifests/exploit.sha256"])
@@ -687,21 +740,28 @@ describe("runPhase transcript persistence", () => {
     expect(result.warnings).toContain("Handoff successor does not match the configured chain.")
   })
 
-  test("CYBERFUL_SUBSYSTEM_TRANSCRIPT=0 disables persistence and keeps the buffered path", async () => {
+  test("ignores the removed transcript environment toggle and keeps host-owned audit persistence", async () => {
     process.env.CYBERFUL_SUBSYSTEM_TRANSCRIPT = "0"
     let wrote = false
     let ranBuffered = false
+    let ranStreaming = false
     await SubsystemPhaseRunner.runPhase(
       spec({ transcriptPath: TRANSCRIPT }),
       deps({
         run: async () => ((ranBuffered = true), { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }),
+        runStreaming: async () => (
+          (ranStreaming = true),
+          { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
+        ),
         writeTranscript: async () => {
           wrote = true
         },
       }),
     )
-    expect(wrote).toBe(false)
-    expect(ranBuffered).toBe(true)
+    delete process.env.CYBERFUL_SUBSYSTEM_TRANSCRIPT
+    expect(wrote).toBe(true)
+    expect(ranStreaming).toBe(true)
+    expect(ranBuffered).toBe(false)
   })
 
   test("a transcript write failure does not fail the phase", async () => {
@@ -724,7 +784,7 @@ describe("runPhase transcript persistence", () => {
     expect(result.warnings.join("\n")).toContain("Required deliverable 'RECON.md' is missing")
   })
 
-  test("writes the authoritative deliverable manifest only after process and gateway exit", async () => {
+  test("writes the authoritative deliverable manifest only after owner shutdown and gateway exit", async () => {
     let processExited = false
     let gatewayExited = false
     const writes: Array<{ manifestPath: string; artifactPath: string }> = []
@@ -912,7 +972,7 @@ describe("runPhase transcript persistence", () => {
       expect(manifest).toMatchObject({
         version: 3,
         phase: "recon",
-        backend: "codex",
+        backend: "pi",
       })
       expect(contents).not.toContain("developerInstructions")
       expect(contents).not.toContain("baseInstructions")
@@ -938,14 +998,16 @@ describe("runPhase transcript persistence", () => {
 
 describe("interactive Ask excursion", () => {
   test("is autonomous and has no deliverable or handoff contract", async () => {
-    let prompt = ""
+    let system = ""
+    let userMessage = ""
     let permission = ""
     let privateEnv: Record<string, string> | undefined
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ phase: "ask", kind: "interactive", home: "/tmp/agents/ask", objective: "Explain the report" }),
       deps({
         run: async (input) => {
-          prompt = input.prompt
+          system = input.compiledPrompt.system
+          userMessage = input.compiledPrompt.messages[0]?.content ?? ""
           permission = input.spec.permission.kind
           privateEnv = input.spec.mcpServer?.privateEnv
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
@@ -954,9 +1016,9 @@ describe("interactive Ask excursion", () => {
     )
     expect(result.ok).toBe(true)
     expect(permission).toBe("autonomous")
-    expect(prompt).toContain("one autonomous Ask turn")
-    expect(prompt).toContain("Explain the report")
-    expect(prompt).not.toContain("Required deliverable")
+    expect(system).toContain("one autonomous Ask turn")
+    expect(userMessage).toContain("Explain the report")
+    expect(system).not.toContain("Required deliverable")
     expect(privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH).toBeUndefined()
   })
 
@@ -997,7 +1059,7 @@ describe("phase gateway lifecycle", () => {
     }
   }
 
-  test("accepts a gateway that Codex already killed because its startup PID remains provable", async () => {
+  test("accepts a gateway that the Pi owner already closed because its startup PID remains provable", async () => {
     const signals: string[] = []
     const result = await waitForGatewayExit(
       "/tmp/gateway-pid.json",
@@ -1016,7 +1078,7 @@ describe("phase gateway lifecycle", () => {
     expect(signals).toEqual([])
   })
 
-  test("asks a live gateway to close gracefully after the Codex leader exits", async () => {
+  test("asks a live gateway to close gracefully after the Pi owner closes its bridge", async () => {
     let alive = true
     const signals: string[] = []
     const result = await waitForGatewayExit(

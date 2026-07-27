@@ -832,7 +832,7 @@ export class Runtime extends HeyApiClient {
   /**
    * Get runtime status
    *
-   * Probe the active Codex subsystem.
+   * Probe the active Pi subsystem and configured provider.
    */
   public status<ThrowOnError extends boolean = false>(
     parameters?: {
