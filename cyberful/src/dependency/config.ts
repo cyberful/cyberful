@@ -299,8 +299,6 @@ export function cyberZapBridgeCommand(
     "--env",
     "CYBER_ZAP_API_KEY",
     "--env",
-    "CYBER_ZAP_ALLOWED_ORIGINS",
-    "--env",
     "CYBER_ZAP_WORKAREA=/zap/wrk",
     cyberZapBridgeImage(),
   ]

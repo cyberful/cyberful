@@ -15,13 +15,13 @@ import {
   type AuthTerminal,
 } from "./auth"
 
-const oauthSettings = Settings.parse(Settings.DEFAULT_YAML)
+const subscriptionSettings = Settings.parse(Settings.DEFAULT_YAML)
 
 const fallbackSettings = Settings.parse(`version: 1
 
 agent:
   subsystem: pi
-  primary_provider: openai-codex
+  main_provider: openai-codex
   fallback_provider: glm-5-2
 
   subagents:
@@ -40,10 +40,9 @@ agent:
   providers:
     openai-codex:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default
+        type: subscription
 
     glm-5-2:
       adapter: openai-completions
@@ -55,6 +54,33 @@ agent:
       context_window: 1000000
       max_output_tokens: 131072
 
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false
+`)
+
+const namedKimiSettings = Settings.parse(`version: 1
+agent:
+  subsystem: pi
+  main_provider: moonshot-plan
+  subagents:
+    enabled: true
+    max_per_run: 4
+    max_concurrent: 2
+    max_depth: 2
+  fallback:
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+  providers:
+    moonshot-plan:
+      adapter: kimi-coding
+      model: k3
+      auth:
+        type: subscription
 instructions:
   persona_roots: []
   skill_roots: []
@@ -99,7 +125,7 @@ function authHarness(input: {
   const services: AuthCommandServices = {
     async loadSettings(directory) {
       calls.settingsDirectory = directory
-      return input.settings ?? oauthSettings
+      return input.settings ?? subscriptionSettings
     },
     createModels: () => models,
     createInteraction() {
@@ -120,7 +146,7 @@ function authHarness(input: {
 }
 
 describe("auth command", () => {
-  test("uses the primary provider by default without printing returned OAuth credentials", async () => {
+  test("uses the main provider key by default without printing returned subscription credentials", async () => {
     const harness = authHarness({})
 
     await runAuthCommand({ action: "login", directory: "/workspace/project" }, harness.services)
@@ -133,7 +159,7 @@ describe("auth command", () => {
     expect(harness.output.join("")).not.toContain("refresh-material")
   })
 
-  test("does not reflect provider response material when OAuth login fails", async () => {
+  test("does not reflect provider response material when subscription login fails", async () => {
     const harness = authHarness({
       models: {
         login: async () => {
@@ -150,8 +176,24 @@ describe("auth command", () => {
     }
 
     expect(failure).toBeInstanceOf(Error)
-    expect(String(failure)).toContain("OAuth login failed for provider 'openai-codex'")
+    expect(String(failure)).toContain("Subscription login failed for provider 'openai-codex'")
     expect(String(failure)).not.toContain("secret-access-token")
+  })
+
+  test("logs in the subscription provider selected by its settings key", async () => {
+    const harness = authHarness({ settings: namedKimiSettings })
+
+    await runAuthCommand(
+      {
+        action: "login",
+        directory: "/workspace/project",
+        provider: "moonshot-plan",
+      },
+      harness.services,
+    )
+
+    expect(harness.calls.loginProvider).toBe("moonshot-plan")
+    expect(harness.output.join("")).toContain("Authenticated provider moonshot-plan")
   })
 
   test("reports the selected provider, route, and active environment source", async () => {

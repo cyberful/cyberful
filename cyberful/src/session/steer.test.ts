@@ -54,8 +54,8 @@ describe("Pi live steering", () => {
 describe("busy human steer engagement status", () => {
   test("inherits a degraded chain status", () => {
     const previousMetadata = { expert_engagement_status: "completed_with_warnings" }
-    expect(carryEngagementStatus({ metadata: undefined, delivery: "immediate", previousMetadata })).toEqual(
-      previousMetadata,
-    )
+    expect(carryEngagementStatus({ metadata: undefined, delivery: "immediate", previousMetadata })).toEqual({
+      expert_engagement_status: "warning",
+    })
   })
 })

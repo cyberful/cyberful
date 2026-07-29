@@ -36,12 +36,12 @@ retains annotations between phase owners.
 `PiAgentSubsystem` is the only production implementation of the
 `AgentSubsystem` lifecycle boundary. It starts complete `AgentRun` instances
 for roots, subagents, and fallback tasks and publishes a common stream of
-events, result, usage, and normalized failure data. OpenAI Codex OAuth,
-OpenAI-compatible GLM, and other reviewed adapters are inference providers
-inside Pi; they are not parallel runtimes.
+events, result, usage, and normalized failure data. OpenAI Codex, Z.AI Coding
+Plan, Kimi For Coding, and reviewed OpenAI-compatible adapters are inference
+providers inside Pi; they are not parallel runtimes.
 
 The host resolves provider and model before starting a run. The original phase
-root uses the primary route. Primary children normally retain that route.
+root uses the main route. Main-route children normally retain that route.
 Fallback roots use the configured fallback route and their entire descendant
 tree retains fallback affinity. Only the original root receives the `handoff`
 capability, while every allowed child can still use phase tools, skills, write

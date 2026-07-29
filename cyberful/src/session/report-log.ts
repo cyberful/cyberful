@@ -63,6 +63,10 @@ type LogEntry =
       workarea?: string
       artifacts: MessageV2.CompletionArtifact[]
       nextWorkflow?: string
+      startedPhase?: string
+      lastPhase?: string
+      ranPhases?: string[]
+      failure?: MessageV2.CompletionFailure
     })
   | (BaseLog & {
       type: "tool_call"
@@ -260,6 +264,10 @@ function completionEntries(state: JournalState, part: MessageV2.CompletionPart):
     workarea: part.workarea,
     artifacts: part.artifacts,
     nextWorkflow: part.nextWorkflow,
+    startedPhase: part.startedPhase,
+    lastPhase: part.lastPhase,
+    ranPhases: part.ranPhases,
+    failure: part.failure,
   })
   return item ? [item] : []
 }

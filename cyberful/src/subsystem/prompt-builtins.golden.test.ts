@@ -149,26 +149,26 @@ const GOLDEN_CASES = [
 type GoldenID = (typeof GOLDEN_CASES)[number]["id"]
 
 const EXPECTED_SYSTEM_SHA256 = {
-  "pentest/brief": "c705273abda72dda7b645f06ab09de363be756c4fd794dd90283eaf331ca1b11",
-  "pentest/recon": "b60ee1c59144eda9b89f883dc512bd64b11fc6a3b5a444b06537ea47e6beb6de",
-  "pentest/exploit": "11c206c104fe8bf8d428a7107391043f8c8d28c2a7c23802324ae89df2dd691c",
-  "pentest/hacker": "b03b924be7672537d6065246d675d08479c221841a13560dbb69013177ca986e",
-  "pentest/verify": "94abd112d789ac2a0003efb6b70e00459546c6461920b1f5659ad32e68ea267f",
-  "pentest/report": "f0449fa00ed76a292b7a5e27753f171f4293a7275146cbb76750c262154b4edf",
-  "bug-bounty/brief": "c869899132ec85f5bc6978092041ca91b5f170d3112d3af2adf28ee61ac24bad",
-  "bug-bounty/recon": "db68a9b9779e373b849ac6ba54b18dd7b1dfefd8b4161016d322806af82c45e9",
-  "bug-bounty/exploit": "d8e823b7f361ffad3f10d195f29b5b872281867d6de258142acabeada9968ee0",
-  "bug-bounty/hacker": "c5c7650f0537260c1055c2af1e18a30fbcb44fa50a814611db3e29c6a778f0f6",
-  "bug-bounty/verify": "94878feff8c9e673ea27da4d886399515a177794f6db30e708aada7b53687c2d",
-  "bug-bounty/report": "a8ba71e29eaea362868fafe10299ebe34fcd43d27882d9ea7eaa57602d95c186",
-  "code-audit/scope": "72677bc2b9cfefbc975c90926f8a88b9350db500bce4995d72f249dc6bfe41a1",
-  "code-audit/index": "283893f7a26d1983c3932c31ac0faa9768437878816558918d9e0c8830ca8ea8",
-  "code-audit/trace": "7d20b608a74d7bd6d91d117e79a31d9b982e44397941b9c11862886ad5633f04",
-  "code-audit/hunt": "3f7b478bb47ccf904cd477bec223a25c4f6c748d33dc831a250ee4367209bf05",
-  "code-audit/attack": "8e6cbd585aa44e7a9f2fb36b11a000c15a43bd856abb696477f4a2d12f15885a",
-  "code-audit/verify": "05a83c4dd237daedee7b53e7b19c8e590b72b4f5a07798a89eacb2edde9d902b",
-  "code-audit/report": "84fc3ac137a198e90857e58c839e5a82c9fcd16c9e8937a428900ab2083ec714",
-  "ask/ask": "85c7db66404ae9fd40e4b3e491ef5f4f80176c47f38d30800a72744407bfb66e",
+  "pentest/brief": "c0a8b2702eaf4189fdb72ccfb53b042a0057184a890d6b4a997d7e01a8f64b88",
+  "pentest/recon": "aa605d4c49b6435a0a2f04323b83f9ff4f76db36fce8ecbd73038fb59dfa9b29",
+  "pentest/exploit": "d8ed355e8184e0a5ca779b8d4d985dd4a3525de0b90e0617d810abb5938ca72c",
+  "pentest/hacker": "b45e56206311cc7f7a50f9a33788828e65220d07cca183b83e57cc704176057a",
+  "pentest/verify": "d6c7ff8b5bb9f11e0986351e636a4db91e5f18705675bd3cc911af4e66b0b18d",
+  "pentest/report": "34235ab63e20666abb3124c3fcc16896e319ae3471a8774974fb95c9cfe7a195",
+  "bug-bounty/brief": "1995d9aa4082c2a71f773a07db688913705c0c0c2284517eba1923cef372e6ee",
+  "bug-bounty/recon": "d833364a3d1239d63239106c1715319324a2c29c35a1d122ac4edb640923c439",
+  "bug-bounty/exploit": "a14066543ea7c54a9891c5f253f8e904b651c3ee09dcbdbcb2d0fd44a4f3fc40",
+  "bug-bounty/hacker": "6ac3e42d689946a2a9197e25de9965192db7b43218adb9841fe3ce7ab36f2165",
+  "bug-bounty/verify": "c150f070d89923d1e958ed8bae85866fcb35caee8482248d8acb8df778600247",
+  "bug-bounty/report": "38d782adf3b6873aabb6aef031e448bfb7b427a1da8fcc086f670068f7e6cb07",
+  "code-audit/scope": "fa031df3236a6e80dda2715abe1cc3ed7988e8a0c2a3b57e0bcaa1f8ff4f623d",
+  "code-audit/index": "6ec07ab39807ee37b1cdf0c450d71d676a57cc70c6c7e89445d9bce18ac2d2a6",
+  "code-audit/trace": "d5e50b7091020e4710820f613996cd98447deb3fd6067d0d16a9c673d0305d80",
+  "code-audit/hunt": "77de806b1a8f9e3cf691ee29a63c8afbcfc4e0c177e0e7d22a075d773590b044",
+  "code-audit/attack": "826edb61c659bc72651002ddd99e8f6282288a2e3cdb2298961207c696524a5e",
+  "code-audit/verify": "45e1e6ed947304f0c6888b30ccdf07f50e183fc7c05572617566fc872d26d17f",
+  "code-audit/report": "507a9879ea3ec450b52f489641a05ef6428f088b50ca5372379eeb4fb7b3c6ce",
+  "ask/ask": "e35503b2574c4c561f600fbf14b2d7379e82169398e143cd23fcdbc84ee7dc5a",
 } satisfies Record<GoldenID, string>
 
 const AUTHORIZATION_PREFIX = {
@@ -240,8 +240,7 @@ function personaPath(entry: GoldenCase): string {
 async function compileBuiltIn(entry: GoldenCase): Promise<CompiledAgentPrompt> {
   let captured: SubsystemCli.RunInput | undefined
   const home = path.join(Builtin.DIR, "agents", entry.workflow)
-  const deliverable =
-    entry.workflow === "ask" ? undefined : SubsystemPhase.deliverableFor(entry.workflow, entry.phase)
+  const deliverable = entry.workflow === "ask" ? undefined : SubsystemPhase.deliverableFor(entry.workflow, entry.phase)
   const deps: PhaseDeps = {
     run: async (input) => {
       captured = input
@@ -285,13 +284,10 @@ async function compileBuiltIn(entry: GoldenCase): Promise<CompiledAgentPrompt> {
     settingsDirectory: "/golden/settings",
     objective: `Golden objective for ${entry.id}.`,
     timeoutMs: 60_000,
-    ...(entry.workflow === "ask"
-      ? {}
-      : { handoff: { successor: "successor" in entry ? entry.successor : undefined } }),
+    ...(entry.workflow === "ask" ? {} : { handoff: { successor: "successor" in entry ? entry.successor : undefined } }),
   }
   await SubsystemPhaseRunner.runPhase(spec, deps)
-  return required(captured, `golden case '${entry.id}' did not compile a Pi run`)
-    .compiledPrompt
+  return required(captured, `golden case '${entry.id}' did not compile a Pi run`).compiledPrompt
 }
 
 // ── Golden Inputs Cover Policy, Not Machine State ────────────────
@@ -363,7 +359,7 @@ test("every built-in workflow/persona compiles to its reviewed complete system c
       phase: entry.phase,
       personaID: entry.personaID,
       role: "root",
-      providerRoute: "primary",
+      providerRoute: "main",
       delegationEnabled: parsedPersona.subagents > 0,
       delegationLimit: parsedPersona.subagents,
       handoffOwner: entry.workflow !== "ask",
@@ -389,9 +385,7 @@ test("every built-in workflow/persona compiles to its reviewed complete system c
     const bugBounty = required(compiledByID.get(`bug-bounty/${phase}`), `missing bug-bounty/${phase} golden`)
     expect(bugBounty.manifest.personaID).toBe(`pentest/${phase}`)
     expect(bugBounty.manifest.componentHashes.persona).toBe(pentest.manifest.componentHashes.persona)
-    expect(bugBounty.manifest.componentHashes.authorization).not.toBe(
-      pentest.manifest.componentHashes.authorization,
-    )
+    expect(bugBounty.manifest.componentHashes.authorization).not.toBe(pentest.manifest.componentHashes.authorization)
   }
 
   expect(actualHashes).toEqual(EXPECTED_SYSTEM_SHA256)

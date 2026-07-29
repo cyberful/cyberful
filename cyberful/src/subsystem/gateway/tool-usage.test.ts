@@ -41,6 +41,13 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
       egress_destination_changed: false,
       suspected_count: 1,
     })
+    await recorder.record({
+      tool: "browser_navigate",
+      duration_ms: 12,
+      outcome: "error",
+      error_code: "ECONNRESET",
+      browser_profile: 1,
+    })
     await recorder.close()
 
     const csv = await readFile(path.join(root, "raw", "operations", "tool-usage.csv"), "utf8")
@@ -51,7 +58,13 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     expect(csv).not.toContain("decision")
     expect(csv).not.toContain("reason_code")
     expect(csv).not.toContain("rationale")
-    expect(csv.trim().split("\n")).toHaveLength(2)
+    const [header, ok, failed] = csv.trim().split("\n")
+    expect([header, ok, failed]).toHaveLength(3)
+    const columns = header!.split(",")
+    const failedValues = failed!.split(",")
+    expect(failedValues[columns.indexOf("error_class")]).toBe("tool_reported_error")
+    expect(failedValues[columns.indexOf("error_code")]).toBe("ECONNRESET")
+    expect(failedValues[columns.indexOf("browser_profile")]).toBe("1")
   } finally {
     if (previous.root === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
     else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.root

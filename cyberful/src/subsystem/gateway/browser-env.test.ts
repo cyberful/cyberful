@@ -127,6 +127,8 @@ describe("upstreamProcessEnv", () => {
       PATH: "/usr/bin",
       CYBER_ZAP_API_KEY: "api-secret",
       CYBER_ZAP_MCP_KEY: "mcp-secret",
+      CYBER_ZAP_SCOPE_PROMPT: "Assess https://target.example within the authorized engagement.",
+      CYBER_ZAP_ALLOWED_ORIGINS: '["https://target.example"]',
       CYBER_GHIDRA_MCP_KEY: "ghidra-secret",
     }
     expect(upstreamProcessEnv("zap", inherited)).toEqual({

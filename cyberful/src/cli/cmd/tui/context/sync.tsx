@@ -15,6 +15,7 @@ import type {
   FormatterStatus,
   SessionStatus,
   FindingRegistryView,
+  EventSessionNextSubsystemPhaseActivity,
 } from "@/server/client"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
@@ -30,6 +31,7 @@ import path from "node:path"
 import { useKV } from "./kv"
 import { aggregateFailures } from "./aggregate-failures"
 import { foldExpertActivity, type ExpertPhaseEntry } from "./expert-feed"
+import { FrameBatcher } from "./frame-batcher"
 
 export type SkillFeedEntry = {
   id: string
@@ -150,6 +152,30 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       return Date.now()
     }
 
+    function finiteEventNumber(value: unknown) {
+      return typeof value === "number" && Number.isFinite(value) ? value : undefined
+    }
+
+    function phaseActivityActor(value: EventSessionNextSubsystemPhaseActivity["properties"]["actor"]) {
+      if (!value) return undefined
+      const { startedAt, lastActivityAt, toolCalls, ...identity } = value
+      return {
+        ...identity,
+        ...(finiteEventNumber(startedAt) !== undefined ? { startedAt: finiteEventNumber(startedAt) } : {}),
+        ...(finiteEventNumber(lastActivityAt) !== undefined
+          ? { lastActivityAt: finiteEventNumber(lastActivityAt) }
+          : {}),
+        ...(finiteEventNumber(toolCalls) !== undefined ? { toolCalls: finiteEventNumber(toolCalls) } : {}),
+      }
+    }
+
+    function phaseActivityArtifact(value: EventSessionNextSubsystemPhaseActivity["properties"]["artifact"]) {
+      if (!value) return undefined
+      const bytes = finiteEventNumber(value.bytes)
+      if (bytes === undefined) return undefined
+      return { path: value.path, sha256: value.sha256, bytes }
+    }
+
     function stringArray(value: unknown) {
       return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
     }
@@ -194,6 +220,110 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const response = await sdk.client.session.findings({ sessionID }, { signal })
       signal?.throwIfAborted()
       if (response.data) setStore("finding", sessionID, reconcile(response.data))
+    }
+
+    // ── Bursty Phase Activity Commits Once Per Frame ──────────────
+    // Tool runtimes can emit hundreds of lifecycle, progress, and result events
+    // in one scheduler slice. Preserve their source order in a per-session queue,
+    // fold every item locally, and publish one store transaction after 16 ms.
+    // Progress frames naturally coalesce to their greatest token count while
+    // call/result and lifecycle ordering remains exact.
+    // ─────────────────────────────────────────────────────────────────
+    function flushPhaseActivities(sessionID: string, frames: readonly EventSessionNextSubsystemPhaseActivity[]) {
+      let tokens = store.expert_generated_tokens[sessionID] ?? 0
+      let running = store.expert_phase_running[sessionID]
+      let feed = store.expert_phase[sessionID] ?? []
+      for (const frame of frames) {
+        const activity = frame.properties
+        if (activity.kind === "start") {
+          running = { phase: activity.phase, tokens }
+          continue
+        }
+        if (activity.kind === "end") {
+          running = undefined
+          continue
+        }
+        if (activity.kind === "progress") {
+          tokens = Math.max(tokens, Number(activity.text) || 0)
+          running = running
+            ? { ...running, tokens: Math.max(running.tokens ?? 0, tokens) }
+            : { phase: activity.phase, tokens }
+          continue
+        }
+        if (activity.kind !== "status")
+          running = running
+            ? { ...running, phase: activity.phase, lastKind: activity.kind }
+            : { phase: activity.phase, tokens, lastKind: activity.kind }
+        feed = foldExpertActivity(feed, {
+          id: frame.id,
+          sessionID,
+          timestamp: timestampMillis(activity.timestamp),
+          phase: activity.phase,
+          subsystem: activity.subsystem,
+          kind:
+            activity.kind === "tool"
+              ? "tool"
+              : activity.kind === "output"
+                ? "output"
+                : activity.kind === "agent"
+                  ? "agent"
+                  : activity.kind === "status"
+                    ? "status"
+                    : "text",
+          text: activity.text,
+          tool: activity.tool,
+          actor: phaseActivityActor(activity.actor),
+          actorState: activity.actorState,
+          actorTransitionID: activity.actorTransitionID,
+          artifact: phaseActivityArtifact(activity.artifact),
+        })
+      }
+      if (feed.length > EXPERT_PHASE_HISTORY_CAP) feed = feed.slice(feed.length - EXPERT_PHASE_HISTORY_CAP)
+      setStore(
+        produce((draft) => {
+          draft.expert_generated_tokens[sessionID] = tokens
+          draft.expert_phase_running[sessionID] = running
+          draft.expert_phase[sessionID] = feed
+        }),
+      )
+    }
+
+    const phaseActivityBatcher = new FrameBatcher<string, EventSessionNextSubsystemPhaseActivity>(
+      16,
+      flushPhaseActivities,
+    )
+
+    // ── Finding Revisions Coalesce Without Losing The Newest ──────
+    // One in-flight read per session is sufficient. Revisions observed while it
+    // runs replace the pending revision, causing exactly one follow-up refresh.
+    // The completed request then drains that newest revision before releasing
+    // ownership, preventing both request storms and stale sidebar snapshots.
+    // ─────────────────────────────────────────────────────────────────
+    const findingRefreshes = new Map<string, { running: boolean; pendingRevision?: number }>()
+
+    function queueFindingRefresh(sessionID: string, revision: number) {
+      const state = findingRefreshes.get(sessionID) ?? { running: false }
+      state.pendingRevision = Math.max(state.pendingRevision ?? revision, revision)
+      findingRefreshes.set(sessionID, state)
+      if (state.running) return
+      state.running = true
+      void (async () => {
+        while (state.pendingRevision !== undefined) {
+          const current = state.pendingRevision
+          state.pendingRevision = undefined
+          try {
+            await refreshFindings(sessionID)
+          } catch (error) {
+            Log.Default.warn("finding registry refresh failed", {
+              sessionID,
+              revision: current,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+        state.running = false
+        findingRefreshes.delete(sessionID)
+      })()
     }
 
     event.subscribe((event) => {
@@ -244,13 +374,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "finding.registry.updated":
-          void refreshFindings(event.properties.sessionID).catch((error) => {
-            Log.Default.warn("finding registry refresh failed", {
-              sessionID: event.properties.sessionID,
-              revision: event.properties.revision,
-              error: error instanceof Error ? error.message : String(error),
-            })
-          })
+          queueFindingRefresh(event.properties.sessionID, finiteEventNumber(event.properties.revision) ?? 0)
           break
 
         case "session.deleted": {
@@ -351,75 +475,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "session.next.subsystem.phase_activity": {
-          const activity = event.properties
-          // ── Phase Activity Has Transient And Durable Projections ───
-          // Start and end frames own only the live header and spinner, while progress
-          // updates the session token total without adding a feed row. Text, tool,
-          // output, actor-lifecycle, and status frames enter the durable feed through
-          // one pure fold.
-          // Non-terminal activity may recover a missed start frame, but a terminal
-          // status cannot resurrect state after an end frame has already cleared it.
-          // Folding precedes the history cap so a result can update its existing call.
-          // ─────────────────────────────────────────────────────────────────
-          if (activity.kind === "start") {
-            setStore("expert_phase_running", activity.sessionID, {
-              phase: activity.phase,
-              tokens: store.expert_generated_tokens[activity.sessionID],
-            })
-            break
-          }
-          if (activity.kind === "end") {
-            setStore("expert_phase_running", activity.sessionID, undefined)
-            break
-          }
-          if (activity.kind === "progress") {
-            const tokens = Number(activity.text) || 0
-            const sessionTokens = Math.max(store.expert_generated_tokens[activity.sessionID] ?? 0, tokens)
-            setStore("expert_generated_tokens", activity.sessionID, sessionTokens)
-            setStore("expert_phase_running", activity.sessionID, (prev) =>
-              prev
-                ? { ...prev, tokens: Math.max(prev.tokens ?? 0, sessionTokens) }
-                : { phase: activity.phase, tokens: sessionTokens },
-            )
-            break
-          }
-          if (activity.kind !== "status")
-            setStore("expert_phase_running", activity.sessionID, (prev) =>
-              prev
-                ? { ...prev, phase: activity.phase, lastKind: activity.kind }
-                : {
-                    phase: activity.phase,
-                    tokens: store.expert_generated_tokens[activity.sessionID],
-                    lastKind: activity.kind,
-                  },
-            )
-          const sid = activity.sessionID
-          const folded = foldExpertActivity(store.expert_phase[sid] ?? [], {
-            id: event.id,
-            sessionID: sid,
-            timestamp: timestampMillis(activity.timestamp),
-            phase: activity.phase,
-            subsystem: activity.subsystem,
-            kind:
-              activity.kind === "tool"
-                ? "tool"
-                : activity.kind === "output"
-                  ? "output"
-                  : activity.kind === "agent"
-                    ? "agent"
-                    : activity.kind === "status"
-                      ? "status"
-                      : "text",
-            text: activity.text,
-            tool: activity.tool,
-            actor: activity.actor,
-            actorState: activity.actorState,
-            actorTransitionID: activity.actorTransitionID,
-          })
-          const capped =
-            folded.length > EXPERT_PHASE_HISTORY_CAP ? folded.slice(folded.length - EXPERT_PHASE_HISTORY_CAP) : folded
-          if (!store.expert_phase[sid]) setStore("expert_phase", sid, capped)
-          else setStore("expert_phase", sid, reconcile(capped))
+          phaseActivityBatcher.add(event.properties.sessionID, event)
           break
         }
         case "message.removed": {
@@ -591,6 +647,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     onCleanup(() => {
       disposed = true
+      phaseActivityBatcher.dispose()
     })
 
     const result = {

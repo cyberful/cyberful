@@ -9,7 +9,7 @@ a first penetration test in the terminal interface.
 
 ## 1. Confirm the installation
 
-Complete [Install Cyberful](install.md) and confirm that Cyberful, its primary
+Complete [Install Cyberful](install.md) and confirm that Cyberful, its main
 provider, and Docker are ready:
 
 ```sh

@@ -60,9 +60,9 @@ describe("Pi credential store", () => {
   test("serializes updates for different providers without losing either credential", async () => {
     const harness = await temporaryStore()
     await Promise.all([
-      harness.store.modify("primary", async () => ({
+      harness.store.modify("main", async () => ({
         type: "api_key",
-        key: "primary-test-key",
+        key: "main-test-key",
       })),
       harness.store.modify("fallback", async () => ({
         type: "api_key",
@@ -72,7 +72,7 @@ describe("Pi credential store", () => {
 
     expect(await harness.store.list()).toEqual([
       { providerId: "fallback", type: "api_key" },
-      { providerId: "primary", type: "api_key" },
+      { providerId: "main", type: "api_key" },
     ])
   })
 

@@ -17,6 +17,8 @@ export type FailureCode =
   | "invalid_chat_instruction_count"
   | "invalid_chat_instruction_role"
   | "invalid_chat_instruction_content"
+  | "invalid_anthropic_system"
+  | "invalid_anthropic_instruction_message"
   | "invalid_system_occurrence_count"
 
 export class SystemWireValidationError extends Error {
@@ -123,7 +125,7 @@ function fail(code: FailureCode, model: Model<Api>, systemSha256: string, detail
 // ── Provider Payload Is A Security Boundary ─────────────────────
 // Pi constructs this object after Cyberful has compiled and hashed the prompt,
 // but before provider transport begins. The callback therefore accepts only
-// the two reviewed wire contracts and returns the original object identity.
+// the three reviewed wire contracts and returns the original object identity.
 // It never serializes payloads or embeds prompt text in failures, preventing
 // the attestation path itself from becoming a transcript or secret sink.
 // ─────────────────────────────────────────────────────────────────
@@ -185,6 +187,39 @@ function attestChatCompletions(
     fail("invalid_chat_instruction_content", model, systemSha256, "instruction content must equal the compiled system")
 }
 
+function attestAnthropicMessages(
+  payload: Readonly<Record<string, unknown>>,
+  model: Model<Api>,
+  system: string,
+  systemSha256: string,
+): void {
+  if (!Array.isArray(payload.system) || payload.system.length !== 1) {
+    const count = Array.isArray(payload.system) ? payload.system.length : 0
+    fail(
+      "invalid_anthropic_system",
+      model,
+      systemSha256,
+      `expected one system text block, received ${count}`,
+    )
+  }
+
+  const systemBlock = record(payload.system[0])
+  if (systemBlock?.type !== "text" || systemBlock.text !== system)
+    fail("invalid_anthropic_system", model, systemSha256, "system text must equal the compiled system")
+
+  const nestedInstructionMessages = [
+    ...messagesWithRole(payload.messages, "system"),
+    ...messagesWithRole(payload.messages, "developer"),
+  ]
+  if (nestedInstructionMessages.length > 0)
+    fail(
+      "invalid_anthropic_instruction_message",
+      model,
+      systemSha256,
+      "messages must not contain an additional instruction message",
+    )
+}
+
 export function createOnPayload(input: GuardInput): OnPayload {
   const system = input.prompt.system
   const systemSha256 = sha256(system)
@@ -203,6 +238,8 @@ export function createOnPayload(input: GuardInput): OnPayload {
       attestResponses(body, model, system, systemSha256)
     } else if (model.api === "openai-completions") {
       attestChatCompletions(body, model, system, systemSha256)
+    } else if (model.api === "anthropic-messages") {
+      attestAnthropicMessages(body, model, system, systemSha256)
     } else {
       fail("unsupported_provider_api", model, systemSha256)
     }

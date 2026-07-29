@@ -1128,7 +1128,7 @@ function isTextMime(mimeType) {
   )
 }
 
-function formatSnapshot(snapshot, maxTextChars) {
+export function formatSnapshot(snapshot) {
   refSelectors.clear()
   for (const element of snapshot.elements) {
     refSelectors.set(element.ref, element.selector)
@@ -1137,9 +1137,17 @@ function formatSnapshot(snapshot, maxTextChars) {
   const lines = [
     `url: ${snapshot.url}`,
     `title: ${snapshot.title}`,
+    `scope: ${snapshot.selector === null ? "document" : `selector ${JSON.stringify(snapshot.selector)}`}`,
+    `selector_match_count: ${snapshot.selectorMatchCount}`,
+    `visible_text_range: ${snapshot.textStart}-${snapshot.textEnd}/${snapshot.totalTextChars}`,
+    ...(snapshot.nextTextOffset === null ? [] : [`next_text_offset: ${snapshot.nextTextOffset}`]),
+    `interactive_elements_range: 0-${snapshot.elements.length}/${snapshot.totalInteractiveElements}`,
+    `text_truncated: ${snapshot.textTruncated}`,
+    `elements_truncated: ${snapshot.elementsTruncated}`,
+    `truncated: ${snapshot.textTruncated || snapshot.elementsTruncated}`,
     "",
     "visible_text:",
-    trimText(snapshot.text, maxTextChars).trim(),
+    snapshot.text,
     "",
     "interactive_elements:",
   ]
@@ -1165,118 +1173,150 @@ function formatSnapshot(snapshot, maxTextChars) {
 // ── Snapshot Converts The Live DOM Into Stable Agent Refs ────────────
 // The page DOM is mutable and selector choice is error-prone. Each snapshot
 // removes stale markers, stamps visible actionable elements with fresh short
-// refs, and stores their selectors. Later actions can then target the reviewed
-// page state through the same resolver instead of guessing a selector.
+// refs inside one explicit scope, and stores their selectors. Text is sliced in
+// the page before it crosses the MCP boundary, so large documents remain
+// deterministic and bounded without hiding the full text length from callers.
+// Later actions can target the reviewed page state through the same resolver
+// instead of guessing a selector.
 // ─────────────────────────────────────────────────────────────────────
 
-async function captureSnapshot(page, maxTextChars, maxElements) {
-  return page.evaluate(
-    ({ maxTextChars: textLimit, maxElements: elementLimit }) => {
-      const refAttr = "data-cyber-browser-ref"
-      document.querySelectorAll(`[${refAttr}]`).forEach((element) => element.removeAttribute(refAttr))
+export function captureSnapshotDocument({ maxTextChars: textLimit, maxElements: elementLimit, selector, textOffset }) {
+  const refAttr = "data-cyber-browser-ref"
+  document.querySelectorAll(`[${refAttr}]`).forEach((element) => element.removeAttribute(refAttr))
 
-      const trim = (value, limit) => {
-        const text = String(value || "")
-          .replace(/\s+/g, " ")
-          .trim()
-        return text.length > limit ? `${text.slice(0, limit)}...` : text
-      }
+  const trim = (value, limit) => {
+    const text = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+    return text.length > limit ? `${text.slice(0, limit)}...` : text
+  }
 
-      const isVisible = (element) => {
-        const style = window.getComputedStyle(element)
-        if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) {
-          return false
-        }
-        const rect = element.getBoundingClientRect()
-        return rect.width > 0 && rect.height > 0
-      }
+  const isVisible = (element) => {
+    const style = window.getComputedStyle(element)
+    if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) {
+      return false
+    }
+    const rect = element.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0
+  }
 
-      const implicitRole = (element) => {
-        const tag = element.tagName.toLowerCase()
-        if (tag === "a") return "link"
-        if (tag === "button") return "button"
-        if (tag === "textarea") return "textbox"
-        if (tag === "select") return "combobox"
-        if (tag === "input") {
-          const type = (element.getAttribute("type") || "text").toLowerCase()
-          if (["button", "submit", "reset"].includes(type)) return "button"
-          if (type === "checkbox") return "checkbox"
-          if (type === "radio") return "radio"
-          return "textbox"
-        }
-        return element.getAttribute("role") || tag
-      }
+  const implicitRole = (element) => {
+    const tag = element.tagName.toLowerCase()
+    if (tag === "a") return "link"
+    if (tag === "button") return "button"
+    if (tag === "textarea") return "textbox"
+    if (tag === "select") return "combobox"
+    if (tag === "input") {
+      const type = (element.getAttribute("type") || "text").toLowerCase()
+      if (["button", "submit", "reset"].includes(type)) return "button"
+      if (type === "checkbox") return "checkbox"
+      if (type === "radio") return "radio"
+      return "textbox"
+    }
+    return element.getAttribute("role") || tag
+  }
 
-      const labelText = (element) => {
-        const fromLabels = element.labels
-          ? Array.from(element.labels)
-              .map((label) => label.innerText)
-              .join(" ")
-          : ""
-        const candidates = [
-          element.getAttribute("aria-label"),
-          fromLabels,
-          element.innerText,
-          element.getAttribute("value"),
-          element.getAttribute("placeholder"),
-          element.getAttribute("title"),
-          element.getAttribute("alt"),
-          element.getAttribute("name"),
-          element.getAttribute("href"),
-        ]
-        return trim(candidates.find((candidate) => String(candidate || "").trim()) || "", 240)
-      }
+  const labelText = (element) => {
+    const fromLabels = element.labels
+      ? Array.from(element.labels)
+          .map((label) => label.innerText)
+          .join(" ")
+      : ""
+    const candidates = [
+      element.getAttribute("aria-label"),
+      fromLabels,
+      element.innerText,
+      element.getAttribute("value"),
+      element.getAttribute("placeholder"),
+      element.getAttribute("title"),
+      element.getAttribute("alt"),
+      element.getAttribute("name"),
+      element.getAttribute("href"),
+    ]
+    return trim(candidates.find((candidate) => String(candidate || "").trim()) || "", 240)
+  }
 
-      const selector = [
-        "a[href]",
-        "button",
-        "input",
-        "textarea",
-        "select",
-        "summary",
-        "[role]",
-        "[contenteditable='true']",
-        "[onclick]",
-        "[tabindex]:not([tabindex='-1'])",
-      ].join(",")
+  const actionableSelector = [
+    "a[href]",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "summary",
+    "[role]",
+    "[contenteditable='true']",
+    "[onclick]",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",")
 
-      const elements = []
-      const nodes = Array.from(document.querySelectorAll(selector))
-      for (const node of nodes) {
-        if (elements.length >= elementLimit) break
-        if (!isVisible(node)) continue
-        const ref = `e${elements.length + 1}`
-        node.setAttribute(refAttr, ref)
-        const rect = node.getBoundingClientRect()
-        elements.push({
-          ref,
-          tag: node.tagName.toLowerCase(),
-          role: node.getAttribute("role") || implicitRole(node),
-          name: labelText(node),
-          type: node.getAttribute("type") || "",
-          placeholder: node.getAttribute("placeholder") || "",
-          href: node.href || "",
-          value: node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement ? trim(node.value, 160) : "",
-          selector: `[${refAttr}="${ref}"]`,
-          rect: {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-          },
-        })
-      }
+  let scopeMatches
+  if (selector === null) {
+    const root = document.body || document.documentElement
+    if (!root) throw new Error("browser_snapshot cannot find a document root")
+    scopeMatches = [root]
+  } else {
+    try {
+      scopeMatches = Array.from(document.querySelectorAll(selector))
+    } catch (error) {
+      throw new Error(`browser_snapshot selector is invalid: ${error.message || String(error)}`)
+    }
+    if (scopeMatches.length === 0) {
+      throw new Error(`browser_snapshot selector matched no elements: ${selector}`)
+    }
+  }
 
-      const bodyText = document.body?.innerText || ""
-      return {
-        url: window.location.href,
-        title: document.title,
-        text: bodyText.length > textLimit ? `${bodyText.slice(0, textLimit)}\n[truncated]` : bodyText,
-        elements,
-      }
-    },
-    { maxTextChars, maxElements },
-  )
+  const scopeRoot = scopeMatches[0]
+  const descendants = Array.from(scopeRoot.querySelectorAll(actionableSelector))
+  const candidates = scopeRoot.matches?.(actionableSelector) ? [scopeRoot, ...descendants] : descendants
+  const visibleNodes = candidates.filter(isVisible)
+  const elements = []
+  for (const node of visibleNodes.slice(0, elementLimit)) {
+    const ref = `e${elements.length + 1}`
+    node.setAttribute(refAttr, ref)
+    const rect = node.getBoundingClientRect()
+    const tag = node.tagName.toLowerCase()
+    elements.push({
+      ref,
+      tag,
+      role: node.getAttribute("role") || implicitRole(node),
+      name: labelText(node),
+      type: node.getAttribute("type") || "",
+      placeholder: node.getAttribute("placeholder") || "",
+      href: node.href || "",
+      value: tag === "input" || tag === "textarea" ? trim(node.value, 160) : "",
+      selector: `[${refAttr}="${ref}"]`,
+      rect: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+    })
+  }
+
+  const scopedText = String(scopeRoot.innerText ?? scopeRoot.textContent ?? "")
+  const textStart = Math.min(textOffset, scopedText.length)
+  const textEnd = Math.min(scopedText.length, textStart + textLimit)
+  const textTruncated = textEnd < scopedText.length
+  return {
+    url: window.location.href,
+    title: document.title,
+    selector,
+    selectorMatchCount: scopeMatches.length,
+    text: scopedText.slice(textStart, textEnd),
+    textStart,
+    textEnd,
+    totalTextChars: scopedText.length,
+    nextTextOffset: textTruncated ? textEnd : null,
+    textTruncated,
+    elements,
+    totalInteractiveElements: visibleNodes.length,
+    elementsTruncated: visibleNodes.length > elementLimit,
+  }
+}
+
+async function captureSnapshot(page, options) {
+  return page.evaluate(captureSnapshotDocument, options)
 }
 
 function filteredNetwork(args) {
@@ -1386,19 +1426,29 @@ function captchaNetworkSignals(maxSignals, startedAfterMs = null) {
   return signals
 }
 
-function captchaConfidence(signals) {
-  if (!signals.length) return "none"
+export function captchaAssessment(signals) {
+  if (!signals.length) return { detected: false, confidence: "none" }
+
+  const visible = signals.filter((signal) => signal.visible === true && signal.kind !== "network")
   if (
-    signals.some(
+    visible.some(
       (signal) =>
-        signal.provider !== "generic" ||
-        ["iframe", "widget", "response_field", "challenge", "network", "url"].includes(signal.kind),
+        signal.provider !== "generic" &&
+        ["iframe", "widget", "challenge", "url"].includes(signal.kind),
     )
   ) {
-    return "high"
+    return { detected: true, confidence: "high" }
   }
-  if (signals.some((signal) => signal.kind === "element" || signal.kind === "text")) return "medium"
-  return "low"
+  if (
+    visible.some(
+      (signal) =>
+        signal.kind === "element" ||
+        (signal.kind === "text" && signal.evidence !== "captcha"),
+    )
+  ) {
+    return { detected: true, confidence: "medium" }
+  }
+  return { detected: false, confidence: "low" }
 }
 
 // ── CAPTCHA Handling Detects And Hands Off Only ──────────────────────
@@ -1581,11 +1631,10 @@ async function detectCaptcha(page, maxSignals = 50, options = {}) {
       : captchaNetworkSignals(Math.max(0, maxSignals - domDetection.signals.length), options.networkStartedAfterMs)
   const signals = [...domDetection.signals, ...networkSignals].slice(0, maxSignals)
   const providers = [...new Set(signals.map((signal) => signal.provider))].sort()
-  const confidence = captchaConfidence(signals)
+  const assessment = captchaAssessment(signals)
 
   return {
-    detected: confidence !== "none",
-    confidence,
+    ...assessment,
     providers,
     signal_count: signals.length,
     signals,
@@ -1859,7 +1908,7 @@ registerTool(
 
 registerTool(
   "browser_snapshot",
-  "Return visible page text and actionable element refs for browser_click/fill/type.",
+  "Return a bounded slice of visible page text and actionable refs. Prefer the 12k default, narrow long pages with a CSS selector, and follow next_text_offset for later non-overlapping slices; increase limits only when necessary.",
   {
     type: "object",
     additionalProperties: false,
@@ -1869,16 +1918,34 @@ registerTool(
         minimum: 100,
         maximum: 100_000,
         default: DEFAULT_MAX_TEXT_CHARS,
+        description: "Maximum visible-text characters returned from text_offset; prefer the 12,000 default.",
       },
       max_elements: { type: "integer", minimum: 1, maximum: MAX_SNAPSHOT_ELEMENTS, default: DEFAULT_MAX_ELEMENTS },
+      selector: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2048,
+        description:
+          "Optional CSS selector. Text and actionable refs are confined to the first matching subtree; the result reports the total match count.",
+      },
+      text_offset: {
+        type: "integer",
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 0,
+        description:
+          "Zero-based character offset within the selected subtree. Continue with next_text_offset to read long text without gaps or overlap.",
+      },
     },
   },
   async (args) => {
     const page = await currentPage()
     const maxTextChars = intArg(args.max_text_chars, DEFAULT_MAX_TEXT_CHARS, 100, 100_000)
     const maxElements = intArg(args.max_elements, DEFAULT_MAX_ELEMENTS, 1, MAX_SNAPSHOT_ELEMENTS)
-    const snapshot = await captureSnapshot(page, maxTextChars, maxElements)
-    return toolResult(formatSnapshot(snapshot, maxTextChars))
+    const textOffset = intArg(args.text_offset, 0, 0, Number.MAX_SAFE_INTEGER)
+    const selector = args.selector === undefined ? null : String(args.selector)
+    const snapshot = await captureSnapshot(page, { maxTextChars, maxElements, selector, textOffset })
+    return toolResult(formatSnapshot(snapshot))
   },
 )
 
@@ -1944,7 +2011,8 @@ registerTool(
           detected: false,
           resolved: true,
           action: "no_handoff_needed",
-          message: "No CAPTCHA/challenge signals were detected on the active page.",
+          message:
+            "No active CAPTCHA/challenge was detected on the page. Any reported passive provider signals do not require a human handoff.",
           status: initial,
         })}\n`,
       )

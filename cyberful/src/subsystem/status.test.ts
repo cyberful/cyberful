@@ -13,7 +13,7 @@ import { SubsystemStatus } from "./status"
 const settings = Settings.parse(`version: 1
 agent:
   subsystem: pi
-  primary_provider: primary
+  main_provider: main
   fallback_provider: fallback
   subagents:
     enabled: true
@@ -27,13 +27,13 @@ agent:
     automatic_security_block:
       enabled: true
   providers:
-    primary:
+    main:
       adapter: openai-completions
-      base_url: https://primary.example/v1
-      model: primary-model
+      base_url: https://main.example/v1
+      model: main-model
       auth:
         type: environment
-        variable: PRIMARY_API_KEY
+        variable: MAIN_API_KEY
       context_window: 100000
       max_output_tokens: 10000
     fallback:
@@ -52,25 +52,25 @@ instructions:
 `)
 
 function subsystemStatus(options?: {
-  primaryAuthenticated?: boolean
+  mainAuthenticated?: boolean
   fallbackAuthenticated?: boolean
 }): AgentSubsystemStatus {
-  const primaryAuthenticated = options?.primaryAuthenticated ?? true
+  const mainAuthenticated = options?.mainAuthenticated ?? true
   const fallbackAuthenticated = options?.fallbackAuthenticated ?? true
   const errors = [
-    ...(primaryAuthenticated ? [] : ["Provider 'primary' has no configured environment"]),
+    ...(mainAuthenticated ? [] : ["Provider 'main' has no configured environment"]),
     ...(fallbackAuthenticated ? [] : ["Provider 'fallback' has no configured environment"]),
   ]
   return {
-    ready: primaryAuthenticated,
-    degraded: primaryAuthenticated && !fallbackAuthenticated,
+    ready: mainAuthenticated,
+    degraded: mainAuthenticated && !fallbackAuthenticated,
     subsystem: "pi",
     providers: [
       {
-        id: "primary",
-        model: "primary-model",
-        route: "primary",
-        authenticated: primaryAuthenticated,
+        id: "main",
+        model: "main-model",
+        route: "main",
+        authenticated: mainAuthenticated,
       },
       {
         id: "fallback",
@@ -91,16 +91,16 @@ describe("subsystem readiness", () => {
         inspectSubsystem: async () => subsystemStatus(),
       }),
     ).resolves.toEqual({
-      primary: {
-        name: "pi/primary",
-        model: "primary-model",
+      main: {
+        name: "pi/main",
+        model: "main-model",
         version: piAgentPackage.version,
         status: "available",
       },
     })
   })
 
-  test("degrades when primary works but the configured fallback is unavailable", async () => {
+  test("degrades when main works but the configured fallback is unavailable", async () => {
     const preflight = subsystemStatus({ fallbackAuthenticated: false })
     expect(preflight.ready).toBe(true)
     expect(preflight.degraded).toBe(true)
@@ -111,28 +111,28 @@ describe("subsystem readiness", () => {
         inspectSubsystem: async () => subsystemStatus({ fallbackAuthenticated: false }),
       }),
     ).resolves.toEqual({
-      primary: {
-        name: "pi/primary",
-        model: "primary-model",
+      main: {
+        name: "pi/main",
+        model: "main-model",
         version: piAgentPackage.version,
         status: "degraded",
       },
     })
   })
 
-  test("reports unavailable for a failed primary probe or unreadable settings", async () => {
-    const failedPreflight = subsystemStatus({ primaryAuthenticated: false })
+  test("reports unavailable for a failed main probe or unreadable settings", async () => {
+    const failedPreflight = subsystemStatus({ mainAuthenticated: false })
     expect(failedPreflight.ready).toBe(false)
     expect(failedPreflight.degraded).toBe(false)
 
-    const primaryUnavailable = await SubsystemStatus.inspect({
+    const mainUnavailable = await SubsystemStatus.inspect({
       settings,
       inspectSubsystem: async () => failedPreflight,
     })
-    expect(primaryUnavailable).toEqual({
-      primary: {
-        name: "pi/primary",
-        model: "primary-model",
+    expect(mainUnavailable).toEqual({
+      main: {
+        name: "pi/main",
+        model: "main-model",
         version: piAgentPackage.version,
         status: "unavailable",
       },
@@ -144,7 +144,7 @@ describe("subsystem readiness", () => {
       },
     })
     expect(unconfigured).toEqual({
-      primary: {
+      main: {
         name: "pi",
         model: "unconfigured",
         version: piAgentPackage.version,

@@ -1,7 +1,8 @@
 // ── Pi OAuth Standalone Bootstrap Contract ──────────────────────
-// Compiles and executes the provider-auth boundary that release binaries use,
-//   proving OpenAI Codex OAuth remains available without runtime package files.
-// → cyberful/src/bootstrap-pi-oauth.ts — statically registers Pi OAuth flows.
+// Compiles and executes the provider registry imported by the TUI Worker,
+// proving OpenAI Codex OAuth remains available without the main entrypoint or
+// runtime package files.
+// → cyberful/src/subsystem/pi-models.ts — imports the registration invariant.
 // ─────────────────────────────────────────────────────────────────
 
 import { afterEach, describe, expect, test } from "bun:test"
@@ -23,36 +24,68 @@ describe("Pi OAuth standalone bootstrap", () => {
       const root = await mkdtemp(path.join(tmpdir(), "cyberful-pi-oauth-"))
       temporaryRoots.push(root)
       const entrypoint = path.join(root, "probe.ts")
+      const workerEntrypoint = path.join(root, "oauth-worker.ts")
       const outfile = path.join(root, process.platform === "win32" ? "oauth-probe.exe" : "oauth-probe")
-      const bootstrapPath = path.join(import.meta.dir, "bootstrap-pi-oauth.ts")
-      const providerPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/providers/openai-codex"))
+      const modelsPath = path.join(import.meta.dir, "subsystem/pi-models.ts")
+      const piPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))
 
       await Bun.write(
         entrypoint,
         [
-          "// ── Generated Pi OAuth Standalone Probe ──────────────────────────",
-          "// Exercises the compiled provider loader without network or credentials.",
+          "// ── Generated Compiled Worker Owner Probe ────────────────────────",
+          "// Mirrors Cyberful's standalone main/Worker entrypoint separation.",
           "// ─────────────────────────────────────────────────────────────────",
-          `import ${JSON.stringify(bootstrapPath)}`,
-          `import { openaiCodexProvider } from ${JSON.stringify(providerPath)}`,
+          "declare const OAUTH_WORKER_PATH: string",
+          "const worker = new Worker(OAUTH_WORKER_PATH)",
+          "const outcome = await new Promise<string>((resolve, reject) => {",
+          "  worker.onmessage = (event) => resolve(String(event.data))",
+          "  worker.onerror = (event) => reject(event.error ?? new Error(event.message))",
+          "})",
+          "await worker.terminate()",
+          'process.stdout.write(`${outcome}\\n`)',
           "",
-          'const oauth = openaiCodexProvider().auth.oauth',
-          'if (!oauth) throw new Error("OpenAI Codex OAuth is unavailable")',
-          "const resolved = await oauth.toAuth({",
+        ].join("\n"),
+      )
+      await Bun.write(
+        workerEntrypoint,
+        [
+          "// ── Generated Pi OAuth Worker Probe ──────────────────────────────",
+          "// Exercises Worker-owned provider auth without network or real credentials.",
+          "// ─────────────────────────────────────────────────────────────────",
+          `import { createPiModels } from ${JSON.stringify(modelsPath)}`,
+          `import { InMemoryCredentialStore } from ${JSON.stringify(piPath)}`,
+          "",
+          "const credentials = new InMemoryCredentialStore()",
+          "await credentials.modify(\"openai-codex\", async () => ({",
           '  type: "oauth",',
           '  refresh: "probe-refresh",',
           '  access: "probe-access",',
           "  expires: Date.now() + 60_000,",
-          "})",
-          'if (resolved.apiKey !== "probe-access") throw new Error("OpenAI Codex OAuth did not resolve")',
-          'process.stdout.write("oauth-ready\\n")',
+          "}))",
+          "const registry = createPiModels({",
+          '  main_provider: "openai-codex",',
+          "  providers: {",
+          '    "openai-codex": {',
+          '      adapter: "openai-codex",',
+          '      model: "gpt-5.6-sol",',
+          '      auth: { type: "subscription" },',
+          "    },",
+          "  },",
+          "}, credentials)",
+          'const model = registry.model("openai-codex")',
+          "const resolved = await registry.models.getAuth(model)",
+          'if (resolved?.auth.apiKey !== "probe-access") throw new Error("OpenAI Codex OAuth did not resolve")',
+          'postMessage("oauth-ready")',
           "",
         ].join("\n"),
       )
 
       const build = await Bun.build({
-        entrypoints: [entrypoint],
+        entrypoints: [entrypoint, workerEntrypoint],
         conditions: ["browser"],
+        define: {
+          OAUTH_WORKER_PATH: JSON.stringify("./oauth-worker.ts"),
+        },
         format: "esm",
         minify: true,
         splitting: true,

@@ -1,6 +1,6 @@
 // ── Pi Runtime Settings Boundary ─────────────────────────────────
 // Owns strict settings.yaml parsing, semantic provider routing validation, and
-//   first-run creation of a secret-free OpenAI Codex OAuth configuration.
+//   first-run creation of a secret-free OpenAI Codex subscription configuration.
 // → cyberful/src/config/config.ts — owns the separate legacy JSONC application config.
 // ─────────────────────────────────────────────────────────────────
 
@@ -33,10 +33,36 @@ const ProviderName = Schema.String.check(Schema.isPattern(PROVIDER_NAME_PATTERN)
 const NonEmptyString = Schema.String.check(Schema.isPattern(/\S/))
 const EnvironmentVariable = Schema.String.check(Schema.isPattern(ENVIRONMENT_VARIABLE_PATTERN))
 const Percentage = Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(100))
+const CompactionPercentage = Schema.Int.check(Schema.isGreaterThanOrEqualTo(50), Schema.isLessThanOrEqualTo(85))
+const RetryCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))
+const RetryDelayMs = Schema.Int.check(Schema.isGreaterThanOrEqualTo(100), Schema.isLessThanOrEqualTo(60_000))
 
-const OAuthAuth = Schema.Struct({
-  type: Schema.Literal("oauth"),
-  profile: NonEmptyString,
+export const DEFAULT_COMPACTION = {
+  enabled: true,
+  trigger_percentage: 68,
+} as const
+
+export interface CompactionPolicy {
+  readonly enabled: boolean
+  readonly trigger_percentage: number
+}
+
+export const DEFAULT_RETRY = {
+  enabled: true,
+  max_retries: 3,
+  base_delay_ms: 1_000,
+  max_delay_ms: 15_000,
+} as const
+
+export interface RetryPolicy {
+  readonly enabled: boolean
+  readonly max_retries: number
+  readonly base_delay_ms: number
+  readonly max_delay_ms: number
+}
+
+const SubscriptionAuth = Schema.Struct({
+  type: Schema.Literal("subscription"),
 })
 
 const EnvironmentAuth = Schema.Struct({
@@ -47,7 +73,7 @@ const EnvironmentAuth = Schema.Struct({
 export const Provider = Schema.Struct({
   adapter: NonEmptyString,
   model: NonEmptyString,
-  auth: Schema.Union([OAuthAuth, EnvironmentAuth]),
+  auth: Schema.Union([SubscriptionAuth, EnvironmentAuth]),
   base_url: Schema.optional(NonEmptyString),
   context_window: Schema.optional(PositiveInt),
   max_output_tokens: Schema.optional(PositiveInt),
@@ -58,7 +84,7 @@ export const Info = Schema.Struct({
   version: Schema.Literal(1),
   agent: Schema.Struct({
     subsystem: Schema.Literal("pi"),
-    primary_provider: ProviderName,
+    main_provider: ProviderName,
     fallback_provider: Schema.optional(ProviderName),
     subagents: Schema.Struct({
       enabled: Schema.Boolean,
@@ -66,6 +92,20 @@ export const Info = Schema.Struct({
       max_concurrent: PositiveInt,
       max_depth: PositiveInt,
     }),
+    compaction: Schema.optional(
+      Schema.Struct({
+        enabled: Schema.Boolean,
+        trigger_percentage: CompactionPercentage,
+      }),
+    ),
+    retry: Schema.optional(
+      Schema.Struct({
+        enabled: Schema.Boolean,
+        max_retries: RetryCount,
+        base_delay_ms: RetryDelayMs,
+        max_delay_ms: RetryDelayMs,
+      }),
+    ),
     fallback: Schema.Struct({
       proactive: Schema.Struct({
         enabled: Schema.Boolean,
@@ -89,13 +129,23 @@ export const DEFAULT_YAML = `version: 1
 
 agent:
   subsystem: pi
-  primary_provider: openai-codex
+  main_provider: openai-codex
 
   subagents:
     enabled: true
     max_per_run: 4
     max_concurrent: 2
     max_depth: 2
+
+  compaction:
+    enabled: true
+    trigger_percentage: 68
+
+  retry:
+    enabled: true
+    max_retries: 3
+    base_delay_ms: 1000
+    max_delay_ms: 15000
 
   fallback:
     proactive:
@@ -107,10 +157,9 @@ agent:
   providers:
     openai-codex:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default
+        type: subscription
 
 instructions:
   persona_roots: []
@@ -144,8 +193,8 @@ export class InvalidError extends Error {
 // The YAML document is untrusted and may contain a credential even when its key
 // is outside the public schema. Detect well-known secret fields before Effect
 // formats validation issues, because a third-party formatter may echo rejected
-// values. Valid authentication stores only an OAuth profile name or environment
-// variable reference, so no inline credential is necessary or accepted here.
+// values. Valid authentication selects provider-owned subscription login or an
+// environment-variable reference, so inline credentials are never necessary.
 // ─────────────────────────────────────────────────────────────────
 function rejectInlineSecrets(value: unknown, filePath: string, segments: readonly string[] = []): void {
   if (Array.isArray(value)) {
@@ -159,7 +208,7 @@ function rejectInlineSecrets(value: unknown, filePath: string, segments: readonl
     const normalizedKey = key.toLowerCase().replaceAll("-", "").replaceAll("_", "")
     if (INLINE_SECRET_KEYS.has(normalizedKey)) {
       throw new InvalidError(filePath, [
-        `${itemPath.join(".")} contains an inline secret; reference an OAuth profile or environment variable`,
+        `${itemPath.join(".")} contains an inline secret; use subscription login or reference an environment variable`,
       ])
     }
     rejectInlineSecrets(item, filePath, itemPath)
@@ -191,7 +240,7 @@ function decode(value: unknown, filePath: string): Info {
 }
 
 // ── Routing References Are Validated Once At The File Boundary ───
-// Provider names are user-authored map keys, while primary and fallback routes
+// Provider names are user-authored map keys, while main and fallback routes
 // are independent scalar references. Schema decoding proves each local shape;
 // this pass proves the cross-field relationships and disables ambiguous routing.
 // A single-provider file may run normally, but cannot enable proactive or
@@ -202,15 +251,15 @@ function validateRouting(settings: Info, filePath: string): Info {
   if (providerNames.length === 0) {
     throw new InvalidError(filePath, ["agent.providers must contain at least one provider"])
   }
-  if (!settings.agent.providers[settings.agent.primary_provider]) {
+  if (!settings.agent.providers[settings.agent.main_provider]) {
     throw new InvalidError(filePath, [
-      `agent.primary_provider references unconfigured provider "${settings.agent.primary_provider}"`,
+      `agent.main_provider references unconfigured provider "${settings.agent.main_provider}"`,
     ])
   }
 
   const fallbackName = settings.agent.fallback_provider
-  if (fallbackName === settings.agent.primary_provider) {
-    throw new InvalidError(filePath, ["agent.fallback_provider must be different from agent.primary_provider"])
+  if (fallbackName === settings.agent.main_provider) {
+    throw new InvalidError(filePath, ["agent.fallback_provider must be different from agent.main_provider"])
   }
   if (fallbackName && !settings.agent.providers[fallbackName]) {
     throw new InvalidError(filePath, [`agent.fallback_provider references unconfigured provider "${fallbackName}"`])
@@ -222,6 +271,12 @@ function validateRouting(settings: Info, filePath: string): Info {
     throw new InvalidError(filePath, [
       "agent.fallback_provider is required when proactive or automatic fallback is enabled",
     ])
+  }
+  if (
+    settings.agent.retry !== undefined &&
+    settings.agent.retry.max_delay_ms < settings.agent.retry.base_delay_ms
+  ) {
+    throw new InvalidError(filePath, ["agent.retry.max_delay_ms must be greater than or equal to base_delay_ms"])
   }
 
   for (const [providerName, provider] of Object.entries(settings.agent.providers)) {
@@ -241,6 +296,14 @@ function validateRouting(settings: Info, filePath: string): Info {
   }
 
   return settings
+}
+
+export function retryPolicy(settings: Info): RetryPolicy {
+  return settings.agent.retry ?? DEFAULT_RETRY
+}
+
+export function compactionPolicy(settings: Info): CompactionPolicy {
+  return settings.agent.compaction ?? DEFAULT_COMPACTION
 }
 
 export function parse(text: string, source = SETTINGS_FILENAME): Info {

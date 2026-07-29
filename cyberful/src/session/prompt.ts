@@ -38,7 +38,7 @@ import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { SubsystemOrchestrator } from "@/subsystem/orchestrator"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
-import type { PhaseActivityActor, PhaseActivityActorState } from "@/subsystem/subsystem"
+import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/subsystem/subsystem"
 import { SubsystemUsage } from "@/subsystem/usage"
 import { SubsystemVerdict } from "@/subsystem/verdict"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
@@ -972,6 +972,7 @@ export const layer = Layer.effect(
         actor?: PhaseActivityActor,
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
+        artifact?: PhaseActivityArtifact,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -984,6 +985,7 @@ export const layer = Layer.effect(
           ...(actor ? { actor } : {}),
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
+          ...(artifact ? { artifact } : {}),
         })
       const runPhaseStreaming = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
         const run = {}
@@ -1042,7 +1044,7 @@ export const layer = Layer.effect(
                 publishPhase(
                   spec.phase,
                   activity.kind,
-                  activity.kind === "text" || activity.kind === "output"
+                  activity.kind === "text" || activity.kind === "output" || activity.kind === "status"
                     ? activity.text
                     : activity.kind === "tool"
                       ? JSON.stringify({ callID: activity.callID, input: activity.input })
@@ -1053,6 +1055,7 @@ export const layer = Layer.effect(
                   activity.actor,
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
+                  activity.kind === "output" ? activity.artifact : undefined,
                 ),
               )
             },
@@ -1084,6 +1087,7 @@ export const layer = Layer.effect(
               deadlineAt: result.deadlineAt,
               approvalWaitMs: result.approvalWaitMs,
               exitCode: result.exitCode,
+              failure: result.phaseFailure,
               subsystemFailure: result.subsystemFailure,
               warnings: result.warnings,
               handoff: result.handoff
@@ -1311,13 +1315,13 @@ export const layer = Layer.effect(
           workflow,
           paths: missingTerminalArtifacts.map((artifact) => artifact.path),
         })
-      const completionOutcome: MessageV2.CompletionPart["outcome"] = outcome.terminal
-        ? outcome.status === "completed_with_warnings" || !terminalReportPath || missingTerminalArtifacts.length > 0
+      const completionOutcome: MessageV2.CompletionPart["outcome"] =
+        outcome.terminal && outcome.outcome === "success" && (!terminalReportPath || missingTerminalArtifacts.length > 0)
           ? "warning"
-          : "success"
-        : outcome.termination === "subsystem_failed" || outcome.termination === "spawn_failed"
-          ? "failed"
-          : "blocked"
+          : outcome.outcome
+      const lastPhase = outcome.ranPhases.at(-1) ?? startPhase
+      assistant.agent = lastPhase
+      assistant.mode = lastPhase
       const nextWorkflow = SubsystemPhase.nextWorkflow(workflow)
       const finished = yield* finishCompletion({
         assistant,
@@ -1338,6 +1342,10 @@ export const layer = Layer.effect(
           workarea,
           artifacts,
           nextWorkflow,
+          startedPhase: startPhase,
+          lastPhase,
+          ranPhases: outcome.ranPhases,
+          failure: outcome.failure,
         },
       })
       if (nextWorkflow) {
@@ -1381,6 +1389,7 @@ export const layer = Layer.effect(
         actor?: PhaseActivityActor,
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
+        artifact?: PhaseActivityArtifact,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -1393,6 +1402,7 @@ export const layer = Layer.effect(
           ...(actor ? { actor } : {}),
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
+          ...(artifact ? { artifact } : {}),
         })
       const runtimeObjective = [
         history,
@@ -1453,7 +1463,7 @@ export const layer = Layer.effect(
               bridge.fork(
                 publish(
                   activity.kind,
-                  activity.kind === "text" || activity.kind === "output"
+                  activity.kind === "text" || activity.kind === "output" || activity.kind === "status"
                     ? activity.text
                     : activity.kind === "tool"
                       ? JSON.stringify({ callID: activity.callID, input: activity.input })
@@ -1464,6 +1474,7 @@ export const layer = Layer.effect(
                   activity.actor,
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
+                  activity.kind === "output" ? activity.artifact : undefined,
                 ),
               )
             },
@@ -1482,6 +1493,7 @@ export const layer = Layer.effect(
           deadlineAt: result.deadlineAt,
           approvalWaitMs: result.approvalWaitMs,
           exitCode: result.exitCode,
+          failure: result.phaseFailure,
           warnings: result.warnings,
         }),
       )

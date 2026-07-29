@@ -1,5 +1,5 @@
 diff --git a/dist/api/openai-codex-responses.js b/dist/api/openai-codex-responses.js
-index f34cf240bbd0034c2189bf299058569ec9082753..495909f167672a98bc477ad7b9fcdf6c116441e0 100644
+index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e2fb67a89 100644
 --- a/dist/api/openai-codex-responses.js
 +++ b/dist/api/openai-codex-responses.js
 @@ -277,7 +277,12 @@ export const stream = (model, context, options) => {
@@ -26,7 +26,68 @@ index f34cf240bbd0034c2189bf299058569ec9082753..495909f167672a98bc477ad7b9fcdf6c
              output.stopReason = options?.signal?.aborted ? "aborted" : "error";
              output.errorMessage = formatProviderError(normalizeProviderError(error));
              stream.push({ type: "error", reason: output.stopReason, error: output });
-@@ -1143,11 +1151,16 @@ async function parseErrorResponse(response) {
+@@ -434,11 +442,13 @@ async function processStream(response, output, stream, model, options) {
+ class CodexApiError extends Error {
+     code;
+     payload;
++    codexErrorInfo;
+     constructor(message, options) {
+         super(message);
+         this.name = "CodexApiError";
+         this.code = options?.code;
+         this.payload = options?.payload;
++        this.codexErrorInfo = options?.cyberPolicy ? { cyberPolicy: {} } : undefined;
+         this.cause = options?.cause;
+     }
+ }
+@@ -457,6 +467,10 @@ function isCodexNonTransportError(error) {
+ function isWebSocketConnectionLimitReachedError(error) {
+     return error instanceof CodexApiError && error.code === WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE;
+ }
++function hasCodexCyberPolicy(value) {
++    const info = value && typeof value === "object" ? value.codexErrorInfo : undefined;
++    return typeof info === "object" && info !== null && Object.hasOwn(info, "cyberPolicy");
++}
+ function extractCodexEventError(event) {
+     const nested = event.error && typeof event.error === "object" ? event.error : undefined;
+     return {
+@@ -466,6 +480,7 @@ function extractCodexEventError(event) {
+             : typeof nested?.message === "string"
+                 ? nested.message
+                 : undefined,
++        cyberPolicy: hasCodexCyberPolicy(nested),
+     };
+ }
+ async function* mapCodexEvents(events) {
+@@ -474,17 +489,23 @@ async function* mapCodexEvents(events) {
+         if (!type)
+             continue;
+         if (type === "error") {
+-            const { code, message } = extractCodexEventError(event);
++            const { code, message, cyberPolicy } = extractCodexEventError(event);
+             throw new CodexApiError(`Codex error: ${message || code || JSON.stringify(event)}`, {
+                 code,
+                 payload: event,
++                cyberPolicy,
+             });
+         }
+         if (type === "response.failed") {
+             const response = event.response;
+-            const code = response?.error?.code;
+-            const message = response?.error?.message;
+-            throw new CodexApiError(message || "Codex response failed", { code, payload: event });
++            const responseError = response?.error;
++            const code = responseError?.code;
++            const message = responseError?.message;
++            throw new CodexApiError(message || "Codex response failed", {
++                code,
++                payload: event,
++                cyberPolicy: hasCodexCyberPolicy(responseError),
++            });
+         }
+         if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
+             const response = event.response;
+@@ -1143,11 +1164,16 @@ async function parseErrorResponse(response) {
      const raw = await response.text();
      let message = raw || response.statusText || "Request failed";
      let friendlyMessage;
@@ -44,7 +105,7 @@ index f34cf240bbd0034c2189bf299058569ec9082753..495909f167672a98bc477ad7b9fcdf6c
              if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
                  const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
                  const mins = err.resets_at
-@@ -1160,7 +1173,7 @@ async function parseErrorResponse(response) {
+@@ -1160,7 +1186,7 @@ async function parseErrorResponse(response) {
          }
      }
      catch { }

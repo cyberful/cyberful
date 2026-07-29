@@ -193,6 +193,14 @@ export type CompletionArtifact = {
   primary?: boolean
 }
 
+export type CompletionFailure = {
+  phase: string
+  source: "provider" | "contract" | "lifecycle"
+  class: string
+  code?: string
+  detail: string
+}
+
 export type CompletionPart = {
   id: string
   sessionID: string
@@ -205,6 +213,10 @@ export type CompletionPart = {
   workarea?: string
   artifacts: Array<CompletionArtifact>
   nextWorkflow?: string
+  startedPhase?: string
+  lastPhase?: string
+  ranPhases?: Array<string>
+  failure?: CompletionFailure
 }
 
 export type SubtaskPart = {
@@ -931,7 +943,7 @@ export type FormatterStatus = {
 }
 
 export type RuntimeStatus = {
-  primary: {
+  main: {
     name: string
     model: string
     version?: string
@@ -1885,6 +1897,19 @@ export type SessionPhaseActivityActor = {
   id: string
   label?: string
   parentID?: string
+  sourceCallID?: string
+  provider?: string
+  model?: string
+  startedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  lastActivityAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  toolCalls?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  failure?: string
+}
+
+export type SessionPhaseActivityArtifact = {
+  path: string
+  sha256: string
+  bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type EventSessionNextSubsystemPhaseActivity = {
@@ -1901,6 +1926,7 @@ export type EventSessionNextSubsystemPhaseActivity = {
     actor?: SessionPhaseActivityActor
     actorState?: "started" | "active" | "interacted" | "completed" | "interrupted" | "failed"
     actorTransitionID?: string
+    artifact?: SessionPhaseActivityArtifact
   }
 }
 
@@ -2224,6 +2250,25 @@ export type EventGlobalDisposed = {
 }
 
 export type SessionDelivery = "immediate" | "deferred"
+
+export type SessionPhaseActivityActor1 = {
+  id: string
+  label?: string
+  parentID?: string
+  sourceCallID?: string
+  provider?: string
+  model?: string
+  startedAt?: number | "NaN" | "Infinity" | "-Infinity"
+  lastActivityAt?: number | "NaN" | "Infinity" | "-Infinity"
+  toolCalls?: number | "NaN" | "Infinity" | "-Infinity"
+  failure?: string
+}
+
+export type SessionPhaseActivityArtifact1 = {
+  path: string
+  sha256: string
+  bytes: number | "NaN" | "Infinity" | "-Infinity"
+}
 
 export type EventFindingRegistryUpdated1 = {
   id: string
@@ -3750,6 +3795,49 @@ export type SessionFindingsResponses = {
 
 export type SessionFindingsResponse = SessionFindingsResponses[keyof SessionFindingsResponses]
 
+export type SessionToolArtifactData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query: {
+    directory?: string
+    path: string
+    offset?: string
+    limit?: string
+  }
+  url: "/session/{sessionID}/tool-artifact"
+}
+
+export type SessionToolArtifactErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionToolArtifactError = SessionToolArtifactErrors[keyof SessionToolArtifactErrors]
+
+export type SessionToolArtifactResponses = {
+  /**
+   * Bounded tool-result artifact chunk
+   */
+  200: {
+    path: string
+    content: string
+    offset: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    end: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    nextOffset?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type SessionToolArtifactResponse = SessionToolArtifactResponses[keyof SessionToolArtifactResponses]
+
 export type SessionDiffData = {
   body?: never
   path: {
@@ -4041,6 +4129,41 @@ export type SessionPromptAsyncResponses = {
 }
 
 export type SessionPromptAsyncResponse = SessionPromptAsyncResponses[keyof SessionPromptAsyncResponses]
+
+export type SessionSteerData = {
+  body?: {
+    text: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/steer"
+}
+
+export type SessionSteerErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionSteerError = SessionSteerErrors[keyof SessionSteerErrors]
+
+export type SessionSteerResponses = {
+  /**
+   * Whether the active AgentRun accepted the steering message
+   */
+  200: boolean
+}
+
+export type SessionSteerResponse = SessionSteerResponses[keyof SessionSteerResponses]
 
 export type SessionCommandData = {
   body?: {

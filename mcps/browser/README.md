@@ -52,6 +52,19 @@ mcps/browser/bin/cyber-browser
 - `browser_cookies`
 - `browser_close`
 
+## DOM snapshots
+
+`browser_snapshot` returns at most 12,000 text characters and 80 actionable
+elements by default. For a long document, narrow the result with a CSS
+`selector`; text and refs then come only from the first matching subtree. Follow
+`next_text_offset` with `text_offset` to read subsequent character ranges
+without overlap or gaps. The result always reports scope, selector match count,
+`start-end/total`, truncation, and interactive-element counts.
+
+Prefer the defaults plus selector/pagination before raising
+`max_text_chars` or `max_elements`. Their hard limits remain 100,000 and 500.
+Invalid selectors and selectors with no matches return explicit errors.
+
 ## Navigation waits
 
 Use the default `wait_until="domcontentloaded"` for ordinary page opens.
@@ -72,7 +85,10 @@ the current page URL/title with a warning so the agent can continue with
 
 `browser_captcha_status` detects common CAPTCHA and anti-bot challenge signals
 such as reCAPTCHA, hCaptcha, Cloudflare Turnstile, Cloudflare challenge pages,
-Arkose/FunCaptcha, Geetest, and generic CAPTCHA markers.
+Arkose/FunCaptcha, Geetest, and generic CAPTCHA markers. Provider SDK requests,
+response fields, and a lone generic CAPTCHA mention remain visible in its
+diagnostics, but do not count as an active challenge without stronger visible
+page evidence.
 
 The agent first performs the ordinary page action that makes the challenge
 visible. `browser_captcha_handoff` then refuses unless detection attests that
@@ -83,7 +99,9 @@ human pause. After the answer, `browser_captcha_status` must attest that the
 challenge cleared. The scoped gateway circuit breaker denies further actions
 only for that browser profile and origin until that observation. Other
 profiles, origins, tabs, and non-browser tools continue. It never solves,
-bypasses, injects tokens, or automates CAPTCHA challenges.
+bypasses, injects tokens, or automates CAPTCHA challenges. If the foregrounded
+browser has no visible challenge, the human can choose `No challenge visible`
+to clear that false-positive pause explicitly.
 
 ## Isolation
 

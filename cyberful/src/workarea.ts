@@ -181,6 +181,92 @@ export async function replaceWorkareaFile(
   return destination
 }
 
+export interface WorkareaFileChunk {
+  readonly content: string
+  readonly offset: number
+  readonly end: number
+  readonly total: number
+  readonly nextOffset?: number
+}
+
+// ── Bounded Artifact Reads Preserve The Same Boundary ────────────
+// Live tool output artifacts are host-owned files below a canonical workarea.
+// Expansion reads must not follow a symlink introduced after persistence, nor
+// load a multi-megabyte result merely to render its first page. Validate every
+// directory component, open the leaf with O_NOFOLLOW, and return at most one
+// UTF-8-aligned block.
+// ─────────────────────────────────────────────────────────────────
+export async function readWorkareaFileChunk(
+  workareaRoot: string,
+  relativePath: string,
+  options: { readonly offset?: number; readonly limit?: number } = {},
+): Promise<WorkareaFileChunk> {
+  const segments = containedWorkareaSegments(relativePath, "Workarea file read")
+  const filename = segments.pop()
+  if (!filename) throw new Error("Workarea file read path must name a regular leaf.")
+  let directory = await canonicalPlainWorkarea(workareaRoot)
+  for (const segment of segments) {
+    const child = path.join(directory, segment)
+    const info = await lstat(child)
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error("Workarea file read path contains a non-directory or symlink.")
+    const canonical = await realpath(child)
+    const relation = path.relative(directory, canonical)
+    if (!relation || relation === ".." || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation))
+      throw new Error("Workarea file read path escapes its canonical parent.")
+    directory = canonical
+  }
+
+  const target = path.join(directory, filename)
+  const leaf = await lstat(target)
+  if (!leaf.isFile() || leaf.isSymbolicLink())
+    throw new Error("Workarea file read destination must be a regular file, not a link or special file.")
+
+  const offset = options.offset ?? 0
+  const limit = options.limit ?? 64 * 1024
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Workarea file read offset must be non-negative.")
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64 * 1024)
+    throw new Error("Workarea file read limit must be between 1 and 65536 bytes.")
+
+  const handle = await open(
+    target,
+    constants.O_RDONLY | (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+  )
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new Error("Workarea file read destination changed type during open.")
+    const total = stat.size
+    if (offset > total) throw new Error("Workarea file read offset exceeds the artifact size.")
+    const requested = Math.min(limit, total - offset)
+    const buffer = Buffer.alloc(requested)
+    const { bytesRead } = requested > 0 ? await handle.read(buffer, 0, requested, offset) : { bytesRead: 0 }
+    let visible = buffer.subarray(0, bytesRead)
+    if (offset + bytesRead < total) {
+      const decoder = new TextDecoder("utf-8", { fatal: true })
+      for (let trim = 0; trim <= Math.min(3, visible.length); trim++) {
+        const candidate = visible.subarray(0, visible.length - trim)
+        try {
+          decoder.decode(candidate)
+          visible = candidate
+          break
+        } catch {
+          continue
+        }
+      }
+    }
+    const end = offset + visible.length
+    return {
+      content: visible.toString("utf8"),
+      offset,
+      end,
+      total,
+      ...(end < total ? { nextOffset: end } : {}),
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
 export async function ensureWorkarea(projectPath: string, input: string) {
   const project = await realpath(path.resolve(projectPath))
   const work = await ensurePlainChildDirectory(project, "work")

@@ -67,6 +67,9 @@ export type SubsystemFailureKind =
 export interface SubsystemFailure {
   readonly kind: SubsystemFailureKind
   readonly providerCode?: string
+  readonly httpStatus?: number
+  /** Bounded, credential-redacted provider text intended for operator diagnostics. */
+  readonly detail?: string
   readonly retryable: boolean
 }
 
@@ -74,9 +77,22 @@ export type PhaseActivityActor = {
   id: string
   label?: string
   parentID?: string
+  sourceCallID?: string
+  provider?: string
+  model?: string
+  startedAt?: number
+  lastActivityAt?: number
+  toolCalls?: number
+  failure?: string
 }
 
 export type PhaseActivityActorState = "started" | "active" | "interacted" | "completed" | "interrupted" | "failed"
+
+export type PhaseActivityArtifact = {
+  path: string
+  sha256: string
+  bytes: number
+}
 
 type PhaseActivityContext = { actor?: PhaseActivityActor }
 
@@ -84,8 +100,9 @@ export type PhaseActivity = PhaseActivityContext &
   (
     | { kind: "text"; text: string }
     | { kind: "tool"; tool: string; input: unknown; callID: string }
-    | { kind: "output"; text: string; callID: string }
+    | { kind: "output"; text: string; callID: string; artifact?: PhaseActivityArtifact }
     | { kind: "progress"; usage: SubsystemUsage.Snapshot }
+    | { kind: "status"; text: string }
     | {
         kind: "reasoning"
         itemID: string
@@ -180,6 +197,12 @@ export const pi: Subsystem = {
     return {
       kind,
       ...(typeof event.failure.providerCode === "string" ? { providerCode: event.failure.providerCode } : {}),
+      ...(typeof event.failure.httpStatus === "number" && Number.isInteger(event.failure.httpStatus)
+        ? { httpStatus: event.failure.httpStatus }
+        : {}),
+      ...(typeof event.failure.detail === "string" && event.failure.detail.trim()
+        ? { detail: event.failure.detail }
+        : {}),
       retryable: event.failure.retryable === true,
     }
   },

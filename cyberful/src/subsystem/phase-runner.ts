@@ -9,7 +9,7 @@ import path from "path"
 import os from "os"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { writeFile, readFile, mkdir, access, rm, lstat, open, rename } from "fs/promises"
+import { readFile, mkdir, access, rm, lstat, open } from "fs/promises"
 import { Settings } from "@/config/settings"
 import { Subsystem } from "./subsystem"
 import { SubsystemCli } from "./cli"
@@ -69,6 +69,16 @@ export interface PhaseHandoff {
   verdicts?: VerdictLedger
 }
 
+export type PhaseFailureSource = "provider" | "contract" | "lifecycle"
+
+export interface PhaseFailure {
+  readonly phase: string
+  readonly source: PhaseFailureSource
+  readonly class: string
+  readonly code?: string
+  readonly detail: string
+}
+
 export interface PhaseResult {
   phase: string
   // Authorizes the orchestrator to accept this phase's handoff. A budget-exhausted phase can remain
@@ -99,6 +109,9 @@ export interface PhaseResult {
   semanticCheckpoints?: number
   lastSemanticProgressAt?: number
   subsystemFailure?: SubsystemFailure
+  // One authoritative terminal cause drives orchestration and presentation.
+  // Additional non-primary degradation remains in warnings.
+  phaseFailure?: PhaseFailure
   // Subsystem-neutral counters and derived context-reuse metrics cover the phase
   // root and its descendant AgentRuns.
   usage?: UsageTotals
@@ -114,7 +127,7 @@ export interface PhaseResult {
     readonly id: string
     readonly provider: string
     readonly model: string
-    readonly providerAffinity: "primary" | "fallback"
+    readonly providerAffinity: "main" | "fallback"
     readonly promptManifest: PromptManifest
     readonly childRunIDs: readonly string[]
     readonly skillsUsed: readonly string[]
@@ -132,6 +145,11 @@ export interface SemanticProgress {
   sha256: string
   count: number
   timestamp: number
+}
+
+export interface TranscriptWriter {
+  append(line: string): Promise<void>
+  close(): Promise<void>
 }
 
 // Injected so the spawn contract is testable without a live external CLI or real filesystem.
@@ -164,8 +182,8 @@ export interface PhaseDeps {
   // working live. Unset (the default) runs the CLI buffered.
   onActivity?: (activity: Subsystem.PhaseActivity) => void
   onSemanticProgress?: (progress: SemanticProgress) => void
-  // Optional writer for the phase's complete AgentEvent transcript.
-  writeTranscript?: (filePath: string, ndjson: string) => Promise<void>
+  // Opens one private append-only transcript owned by the phase.
+  createTranscript?: (filePath: string) => Promise<TranscriptWriter>
   // Production binds this to the session's in-process Question service. When absent (small unit adapters
   // and non-interactive callers), the gateway correctly omits `question` instead of exposing a dead tool.
   askQuestion?: AskHuman
@@ -235,12 +253,36 @@ export function defaultDeps(): PhaseDeps {
     removeDirectory: (directory) => rm(directory, { recursive: true, force: true }),
     waitForGatewayExit,
     verifyCodeGraphReadiness,
-    writeTranscript: async (filePath, ndjson) => {
+    createTranscript: async (filePath) => {
       await mkdir(path.dirname(filePath), { recursive: true })
-      const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`
-      await writeFile(temporary, ndjson, { mode: 0o600, flag: "wx" })
-        .then(() => rename(temporary, filePath))
-        .finally(() => rm(temporary, { force: true }))
+      const handle = await open(
+        filePath,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_TRUNC |
+          (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+        0o600,
+      )
+      await handle.chmod(0o600)
+      let queue = Promise.resolve()
+      const failures: unknown[] = []
+      return {
+        append(line) {
+          const task = queue.then(() => handle.write(line).then(() => {}))
+          queue = task.catch((error) => {
+            failures.push(error)
+          })
+          return queue
+        },
+        async close() {
+          await queue
+          await handle.close().catch((error) => {
+            failures.push(error)
+          })
+          if (failures.length > 0)
+            throw new AggregateError(failures, `phase transcript '${filePath}' could not be finalized`)
+        },
+      }
     },
   }
 }
@@ -479,7 +521,7 @@ export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty
   const workflow = spec.workflow ?? SubsystemPhase.workflowOf(spec.phase) ?? "security"
   return [
     `You are running the ${spec.phase} phase of the Cyberful ${workflow} workflow to completion, autonomously.`,
-    `Your working directory is the workarea (${spec.workareaCwd}); write all files there.`,
+    `Your working directory is the workarea root (${spec.workareaCwd} on the host and \`/workspace\` inside cyberful-os); write all files relative to that root.`,
     "",
     "## Live TUI narration",
     "Briefly announce each meaningful work block and material result without exposing private reasoning.",
@@ -490,6 +532,7 @@ export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty
       ? [
           "## Required deliverable",
           `Write the complete phase deliverable as \`${deliverable}\`; supporting files do not replace it.`,
+          `Inside cyberful-os its exact path is \`/workspace/${deliverable}\`; do not recreate a host \`work/...\` prefix below \`/workspace\`.`,
           "",
         ]
       : []),
@@ -643,6 +686,92 @@ function processTermination(result: SubsystemCli.RunResult): SubsystemCli.RunTer
   return result.exitCode === 0 ? "completed" : "subsystem_failed"
 }
 
+// ── One Primary Failure Owns The Terminal Explanation ────────────
+// A provider error often causes missing output and handoff evidence downstream.
+// Rendering every consequence as an equal warning obscures the initiating fault.
+// This classifier therefore selects one stable, redacted cause in causal order;
+// remaining cleanup and validation diagnostics stay as secondary warnings.
+// Orchestration and the TUI consume this field instead of inferring severity from
+// warning text or an otherwise successful process exit.
+// ─────────────────────────────────────────────────────────────────
+function phaseFailure(input: {
+  readonly spec: PhaseSpec
+  readonly run: SubsystemCli.RunResult
+  readonly termination: SubsystemCli.RunTermination
+  readonly deliverable?: string
+  readonly deliverableExists: boolean
+  readonly manifestWarning?: string
+  readonly gatewayExited: boolean
+  readonly handoffWarning?: string
+  readonly readinessWarning?: string
+  readonly summary: string
+}): PhaseFailure | undefined {
+  const provider = input.run.failure
+  if (provider)
+    return {
+      phase: input.spec.phase,
+      source: "provider",
+      class: provider.kind,
+      ...(provider.providerCode ? { code: provider.providerCode } : {}),
+      detail: provider.detail ?? `The configured provider ended the phase with ${provider.kind}.`,
+    }
+  if (!input.deliverableExists && input.deliverable)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "required_deliverable_missing",
+      code: input.deliverable,
+      detail: `Required deliverable '${input.deliverable}' is missing.`,
+    }
+  if (input.manifestWarning)
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: "artifact_manifest_failed",
+      detail: input.manifestWarning,
+    }
+  if (!input.gatewayExited)
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: "gateway_exit_unverified",
+      detail: "The phase gateway did not exit cleanly, so no successor may start.",
+    }
+  if (input.handoffWarning)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "handoff_invalid",
+      detail: input.handoffWarning,
+    }
+  if (input.readinessWarning)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "successor_readiness_failed",
+      detail: input.readinessWarning,
+    }
+  if (
+    (input.termination !== "completed" || input.run.exitCode !== 0) &&
+    input.termination !== "budget_exhausted" &&
+    input.termination !== "shutdown"
+  )
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: input.termination,
+      code: String(input.run.exitCode),
+      detail: input.run.failureReason ?? `The phase runtime exited with code ${input.run.exitCode}.`,
+    }
+  if (!input.summary.trim())
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "summary_missing",
+      detail: "The phase returned no final summary.",
+    }
+}
+
 function statusTranscript(stdout: string, result: PhaseResult): string {
   const status = JSON.stringify({
     type: "cyberful.phase.status",
@@ -657,6 +786,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     approvalWaitMs: result.approvalWaitMs,
     exitCode: result.exitCode,
     subsystemFailure: result.subsystemFailure,
+    phaseFailure: result.phaseFailure,
     warnings: result.warnings,
     handoff: result.handoff
       ? {
@@ -691,11 +821,13 @@ export async function persistStatusOnly(
     else result.runtimeManifest = path.relative(spec.workareaCwd, manifestPath)
   }
   const transcriptPath = spec.transcriptPath
-  const writeTranscript = deps.writeTranscript
-  if (!transcriptPath || !writeTranscript) return
-  const warning = await operationWarning("Could not persist the phase status transcript", () =>
-    writeTranscript(transcriptPath, statusTranscript("", result)),
-  )
+  const createTranscript = deps.createTranscript
+  if (!transcriptPath || !createTranscript) return
+  const warning = await operationWarning("Could not persist the phase status transcript", async () => {
+    const transcript = await createTranscript(transcriptPath)
+    await transcript.append(statusTranscript("", result))
+    await transcript.close()
+  })
   if (warning) result.warnings.push(warning)
 }
 
@@ -707,7 +839,7 @@ function failedBeforeSpawn(input: {
   effectiveLimitMs: number
   deadlineAt: number
   termination: "budget_exhausted" | "spawn_failed"
-  warning: string
+  detail: string
   budgetWarnings: string[]
 }): PhaseResult {
   return {
@@ -722,7 +854,18 @@ function failedBeforeSpawn(input: {
     limitMs: input.limitMs,
     effectiveLimitMs: input.effectiveLimitMs,
     deadlineAt: input.deadlineAt,
-    warnings: [...input.budgetWarnings, input.warning],
+    warnings: [...input.budgetWarnings],
+    ...(input.termination === "spawn_failed"
+      ? {
+          phaseFailure: {
+            phase: input.spec.phase,
+            source: "lifecycle",
+            class: "phase_setup_failed",
+            code: "127",
+            detail: input.detail,
+          } satisfies PhaseFailure,
+        }
+      : {}),
   }
 }
 
@@ -823,7 +966,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs: initialEffectiveLimitMs,
       deadlineAt: initialDeadline,
       termination: "spawn_failed",
-      warning: `Phase setup failed: could not compile Pi runtime inputs: ${
+      detail: `Phase setup failed: could not compile Pi runtime inputs: ${
         promptSetup.error instanceof Error ? promptSetup.error.message : String(promptSetup.error)
       }`,
       budgetWarnings,
@@ -864,7 +1007,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     questionEnabled: Boolean(askQuestion),
     circuitBreakerPath: engagementCircuitBreakerPath,
     ...(handoffPath
-      ? { handoff: { phase: spec.phase, successor: spec.handoff?.successor, signalPath: handoffPath } }
+      ? {
+          handoff: {
+            phase: spec.phase,
+            successor: spec.handoff?.successor,
+            signalPath: handoffPath,
+            artifact: phaseDeliverable(spec),
+          },
+        }
       : {}),
   }
   const mcpServer = SubsystemGateway.gatewayMcpServer(spec.sessionID, gatewayOptions)
@@ -885,7 +1035,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs: initialEffectiveLimitMs,
       deadlineAt: initialDeadline,
       termination: "spawn_failed",
-      warning: `Phase setup failed: ${error instanceof Error ? error.message : String(error)}`,
+      detail: `Phase setup failed: ${error instanceof Error ? error.message : String(error)}`,
       budgetWarnings,
     })
     if (setupCleanupWarning) result.warnings.push(setupCleanupWarning)
@@ -906,7 +1056,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs,
       deadlineAt,
       termination: "budget_exhausted",
-      warning: "The phase budget elapsed during setup.",
+      detail: "The phase budget elapsed during setup.",
       budgetWarnings,
     })
     result.warnings.push(
@@ -979,16 +1129,27 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
         semanticCheckpointWarning = `Could not capture the latest artifact checkpoint: ${errorDetail(error)}`
       })
   }
-  // ── Transcript Persistence Selects The AgentEvent Stream ───────
-  // Only the event stream contains every turn and tool call; buffered output
-  // contains the final AgentRun result alone. A configured transcript path
-  // therefore selects streaming even when no live TUI observer exists. The
-  // same bounded output feeds persistence and final-result extraction, so
-  // headless and interactive runs retain an identical execution record.
-  // ──────────────────────────────────────────────────────────────
-  const writeTranscript = deps.writeTranscript
-  const persist = Boolean(spec.transcriptPath) && Boolean(writeTranscript)
-  const stream = Boolean(onActivity) || persist
+  // ── Transcript Persistence Is Incremental And Phase-Owned ──────
+  // A multi-hour phase can produce megabytes of AgentEvents before its terminal
+  // result. Retaining those lines in memory and rewriting them only at shutdown
+  // made live diagnosis impossible and amplified failure paths. The phase opens
+  // one private writer before the AgentRun starts; the runtime serially appends
+  // each already-redacted event, while the host appends its terminal status and
+  // closes the resource after all validation is complete.
+  // ─────────────────────────────────────────────────────────────────
+  const transcriptPath = spec.transcriptPath
+  const transcriptAttempt =
+    transcriptPath && deps.createTranscript
+      ? await deps.createTranscript(transcriptPath).then(
+          (writer) => ({ writer, warning: undefined }),
+          (error) => ({
+            writer: undefined,
+            warning: `Could not create the phase transcript: ${errorDetail(error)}`,
+          }),
+        )
+      : { writer: undefined, warning: undefined }
+  const transcript = transcriptAttempt.writer
+  const stream = Boolean(onActivity) || Boolean(transcript)
   const runtimeInstructions = buildPhasePrompt(
     spec,
     Number((effectiveLimitMs / 60_000).toFixed(2)),
@@ -996,7 +1157,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   )
   const compilePrompt = (
     role: "root" | "subagent" | "fallback",
-    providerRoute: "primary" | "fallback",
+    providerRoute: "main" | "fallback",
     userTask: string,
     handoffOwner: boolean,
   ) =>
@@ -1022,7 +1183,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       userTask,
       skills: promptSetup.value.skills.catalog,
     })
-  const rootPrompt = compilePrompt("root", "primary", spec.objective, Boolean(spec.handoff))
+  const rootPrompt = compilePrompt("root", "main", spec.objective, Boolean(spec.handoff))
   const runInput: SubsystemCli.RunInput = {
     settings: promptSetup.value.settings,
     sessionID: spec.sessionID,
@@ -1049,7 +1210,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     askQuestion,
     approvalState,
     handoffOwner: Boolean(spec.handoff),
-    transcriptEnabled: persist,
+    transcript,
     spec: {
       cwd: spec.workareaCwd,
       permission: { kind: "autonomous" },
@@ -1066,9 +1227,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   await checkpointQueue
   const projectActivityActor = Subsystem.createActivityActorProjection()
 
-  // When streaming, forward each event's activity items to any live observer; output is buffered
-  // either way, so extractResultText unwraps the phase summary identically. When persistence is
-  // enabled, the same buffer contains the complete redacted AgentEvent transcript written below.
+  // Streaming forwards activity to the live observer while Pi appends every
+  // complete redacted event through the phase-owned transcript writer. The
+  // terminal AgentRun result remains the authoritative summary in either mode.
   const primaryRun = await (
     stream
       ? deps.runStreaming(runInput, (event) => {
@@ -1118,7 +1279,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       ["Could not remove the phase gateway PID signal", removeFile ? () => removeFile(gatewayPidPath) : undefined],
     ])),
   )
-  const primarySummary = deps.subsystem.extractResultText(primaryRun.stdout)
+  const primarySummary = primaryRun.agentResult?.output ?? deps.subsystem.extractResultText(primaryRun.stdout)
   const deliverable = phaseDeliverable(spec)
   const inspectDeliverable = async (): Promise<{ exists: boolean; warning?: string }> =>
     deliverable && deps.fileExists
@@ -1232,21 +1393,30 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     gatewayExited &&
     !handoffWarning &&
     !readinessWarning
+  const primaryFailure = ok
+    ? undefined
+    : phaseFailure({
+        spec,
+        run: primaryRun,
+        termination: rawTermination,
+        deliverable,
+        deliverableExists,
+        manifestWarning,
+        gatewayExited,
+        handoffWarning,
+        readinessWarning,
+        summary,
+      })
   const warnings = [
     ...budgetWarnings,
-    ...(primaryRun.failureReason ? [primaryRun.failureReason] : []),
-    ...(primaryRun.exitCode !== 0 ? [`Expert process exited with code ${primaryRun.exitCode}.`] : []),
-    ...(!summary.trim() ? ["Expert returned no final summary."] : []),
-    ...(!deliverableExists && deliverable ? [`Required deliverable '${deliverable}' is missing.`] : []),
-    ...(deliverableCheck.warning ? [deliverableCheck.warning] : []),
-    ...(manifestWarning ? [manifestWarning] : []),
+    ...(transcriptAttempt.warning ? [transcriptAttempt.warning] : []),
+    ...(deliverableCheck.warning && primaryFailure?.class !== "required_deliverable_missing"
+      ? [deliverableCheck.warning]
+      : []),
     ...(runtimeCleanupWarning ? [runtimeCleanupWarning] : []),
     ...(semanticCheckpointWarning ? [semanticCheckpointWarning] : []),
     ...lifecycleWarnings,
-    ...(gatewayExit.warning ? [gatewayExit.warning] : []),
-    ...(!gatewayExited ? ["Phase gateway did not exit cleanly; no successor may start."] : []),
-    ...(handoffWarning ? [handoffWarning] : []),
-    ...(readinessWarning ? [readinessWarning] : []),
+    ...(gatewayExit.warning && primaryFailure?.class !== "gateway_exit_unverified" ? [gatewayExit.warning] : []),
     ...(budgetAdvanceWarning ? [budgetAdvanceWarning] : []),
   ]
   const observedUsage = phaseUsage.usage()
@@ -1275,6 +1445,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     semanticCheckpoints: semanticCheckpoints || undefined,
     lastSemanticProgressAt,
     subsystemFailure: primaryRun.failure,
+    phaseFailure: primaryFailure,
     usage: hasObservedUsage ? observedUsage : undefined,
     contextChurn: hasObservedUsage ? SubsystemUsage.contextChurn(observedUsage) : undefined,
     reasoningObservability: {
@@ -1320,11 +1491,11 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
 
   // A killed phase retains every subsystem event received before the group kill, followed by one host
   // status record. This makes a partial excursion auditable without placing stderr or secrets on the bus.
-  const transcriptPath = spec.transcriptPath
-  if (persist && writeTranscript && transcriptPath) {
-    const transcriptWarning = await operationWarning("Could not persist the phase transcript", () =>
-      writeTranscript(transcriptPath, statusTranscript(primaryRun.stdout, result)),
-    )
+  if (transcript) {
+    const transcriptWarning = await operationWarning("Could not persist the phase transcript", async () => {
+      await transcript.append(statusTranscript("", result))
+      await transcript.close()
+    })
     if (transcriptWarning) result.warnings.push(transcriptWarning)
   }
   if (result.ok && spec.handoff && !spec.handoff.successor && removeDirectory) {

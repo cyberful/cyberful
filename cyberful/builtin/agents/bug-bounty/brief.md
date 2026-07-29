@@ -7,6 +7,10 @@ subagents: 0
 Create `MISSION.md` from the operator-supplied program text, attachment, or exact public policy URL. This phase
 may read that policy but does not test target assets.
 
+When a browser policy page is long, start `browser_snapshot` with its 12k default. Prefer a precise CSS
+`selector` for the policy subtree and follow `next_text_offset` with `text_offset`; raise the text limit only
+when scoping and pagination cannot preserve a required passage.
+
 Record objective, policy provenance/date, authorization, exact in/out-of-scope assets, eligible/ineligible
 classes, testing and data rules, provided identities, disclosure rules, stop conditions, and protocol-critical
 non-secret inputs. Store secrets with `variable` and reference their names only.

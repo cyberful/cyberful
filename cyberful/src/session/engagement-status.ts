@@ -6,14 +6,15 @@
 // ────────────────────────────────────────────────────────────────────
 
 export const METADATA_KEY = "expert_engagement_status"
-export const DEGRADED = "completed_with_warnings"
+export const WARNING = "warning"
+const LEGACY_DEGRADED = "completed_with_warnings"
 
 export function isDegraded(metadata: Record<string, unknown> | undefined): boolean {
-  return metadata?.[METADATA_KEY] === DEGRADED
+  return metadata?.[METADATA_KEY] === WARNING || metadata?.[METADATA_KEY] === LEGACY_DEGRADED
 }
 
 export function metadata(degraded: boolean): Record<string, string> {
-  return degraded ? { [METADATA_KEY]: DEGRADED } : {}
+  return degraded ? { [METADATA_KEY]: WARNING } : {}
 }
 
 export * as EngagementStatus from "./engagement-status"

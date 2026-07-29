@@ -14,13 +14,13 @@ import type { PhaseActivity, SubsystemMcpServer } from "./subsystem"
 
 export type AgentRunID = string
 export type AgentRunRole = "root" | "subagent" | "fallback"
-export type ProviderAffinity = "primary" | "fallback"
+export type ProviderAffinity = "main" | "fallback"
 export type AgentRunTermination = "completed" | "budget_exhausted" | "cancelled" | "provider_failed" | "failed"
 
 export interface SubsystemStatus {
-  /** The mandatory primary route can start an AgentRun. */
+  /** The mandatory main route can start an AgentRun. */
   readonly ready: boolean
-  /** Optional configured capacity is unavailable while the primary remains ready. */
+  /** Optional configured capacity is unavailable while the main route remains ready. */
   readonly degraded: boolean
   readonly subsystem: "pi"
   readonly providers: ReadonlyArray<{
@@ -79,6 +79,7 @@ export interface AgentRunSpec {
   readonly sessionID: string
   readonly role: AgentRunRole
   readonly parentID?: AgentRunID
+  readonly sourceCallID?: string
   readonly phaseRootID?: AgentRunID
   readonly depth: number
   readonly provider: string
@@ -131,11 +132,32 @@ export type AgentEvent =
       readonly quotaExempt: boolean
       readonly reason?: string
       readonly quota?: {
-        readonly primaryActorRuns: number
+        readonly mainActorRuns: number
         readonly admitted: number
         readonly limit: number
       }
       readonly subtreeSize?: number
+    }
+  | {
+      readonly type: "provider_retry"
+      readonly runID: AgentRunID
+      readonly state: "scheduled" | "attempting" | "succeeded" | "exhausted" | "cancelled"
+      readonly attempt: number
+      readonly maxRetries: number
+      readonly delayMs?: number
+      readonly failure?: Failure
+    }
+  | {
+      readonly type: "context_compaction"
+      readonly runID: AgentRunID
+      readonly state: "scheduled" | "started" | "completed" | "recovered" | "failed"
+      readonly mode: "proactive" | "emergency"
+      readonly estimatedTokensBefore: number
+      readonly estimatedTokensAfter: number
+      readonly triggerTokens: number
+      readonly messagesRemoved: number
+      readonly toolResultsVirtualized: number
+      readonly artifactsPreserved: number
     }
   | {
       readonly type: "run_finished"

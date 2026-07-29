@@ -6,6 +6,10 @@ an isolated runtime with disposable phase gateways.
 
 Bridge-owned tool definitions live in one static catalog and are merged with
 the official upstream ZAP tools at startup without renaming either surface.
+The bridge exposes the complete discovered ZAP API catalog and does not enforce
+an origin allowlist, redirect policy, or a separate operation denylist. This is
+deliberate: the active workflow mission and agent instructions own engagement
+scope, while ZAP remains a fully capable analysis runtime.
 
 The browser is proxied through ZAP by default. Trust is scoped to the runtime's
 CA public-key pin, while bridge and API keys live in owner-only temporary host

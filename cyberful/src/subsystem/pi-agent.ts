@@ -2,15 +2,22 @@
 // Runs complete root, delegated, and fallback AgentRuns inside one
 // phase-scoped in-process Pi worker owner with host-owned routing and delegation policy.
 // → cyberful/src/subsystem/agent-subsystem.ts — defines the public contract.
+// → cyberful/src/subsystem/pi-context-compaction.ts — projects long transcripts safely.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { Agent, type AgentEvent as PiAgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core"
+import {
+  Agent,
+  type AgentEvent as PiAgentEvent,
+  type AgentMessage,
+  type AgentTool,
+  type StreamFn,
+} from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, ToolResultMessage, UserMessage, Usage } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
-import type { Settings } from "@/config/settings"
+import { Settings } from "@/config/settings"
 import { SubsystemControl } from "./control"
 import type {
   AgentEvent,
@@ -30,6 +37,16 @@ import type { PiModels } from "./pi-models"
 import { PiAudit } from "./pi-audit"
 import { PiSecurity, type Failure } from "./pi-security"
 import { PiSystemWire } from "./pi-system-wire"
+import {
+  compactAgentContext,
+  contextCompactionNeed,
+  estimateAgentContextTokens,
+  projectAgentContext,
+  type ContextArtifactReference,
+  type ContextCompactionMode,
+  type ContextCompactionResult,
+  type ContextProjectionEntry,
+} from "./pi-context-compaction"
 import {
   clearFallbackLedger,
   fallbackLedgerForSession,
@@ -93,12 +110,37 @@ const FallbackTaskParameters = Type.Object(
   { additionalProperties: false },
 )
 
+const ToolSearchParameters = Type.Object(
+  {
+    query: Type.String({
+      minLength: 1,
+      maxLength: 200,
+      description:
+        'Tool name or capability to find. Use "*" to enumerate the complete authorized catalog page by page.',
+    }),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, default: 8 })),
+    cursor: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 20,
+        pattern: "^(0|[1-9][0-9]*)$",
+        description: "Cursor returned by the previous tool_search call for the same query.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+)
+
+type CatalogAgentTool = AgentTool & { readonly deferLoading?: boolean }
+
 interface PiAgentSubsystemOptions {
   readonly settings: Settings.Info
   readonly registry: PiModels
   readonly fallbackLedger?: PiFallbackLedger
   readonly streamFn?: StreamFn
   readonly now?: () => number
+  readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>
+  readonly random?: () => number
   readonly createRunID?: () => AgentRunID
   readonly onPayload?: (payload: unknown, system: string, adapter: string) => unknown
   readonly onShutdown?: () => Promise<void>
@@ -129,6 +171,19 @@ interface RunState {
   fallbackDescendants: number
   automaticFallbackUsed: boolean
   cumulativeUsage: AgentRunUsage
+  providerRetryAttempt: number
+  providerRetryActive: boolean
+  readonly contextArtifacts: Map<string, ContextArtifactReference>
+  readonly contextProjections: Map<string, ContextProjectionEntry>
+  readonly contextRecoveryKeys: Set<string>
+  contextCompactionEmergency: boolean
+  contextCompactionMessagesRemoved: number
+  contextProjection?: {
+    readonly signature: string
+    readonly messages: AgentMessage[]
+  }
+  lastContextCompaction?: ContextCompactionResult
+  retryWaitAbort?: AbortController
   lastHTTPStatus?: number
   lastTool?: {
     readonly name: string
@@ -144,6 +199,7 @@ interface StartChildOptions {
   readonly task: AgentTaskCapsule
   readonly mode?: "proactive" | "automatic"
   readonly quotaExempt?: boolean
+  readonly sourceCallID?: string
 }
 
 class EventQueue<T> implements AsyncIterable<T>, AsyncIterator<T> {
@@ -202,6 +258,87 @@ function emptyProviderUsage(): Usage {
   }
 }
 
+function compactToolDescription(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 237)}...`
+}
+
+function normalizedSearchTokens(value: string): readonly string[] {
+  const infrastructure = new Set(["tool", "tools", "mcp", "cyberful", "os"])
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token && !infrastructure.has(token))
+}
+
+function toolSearchScore(tool: AgentTool, query: string): number | undefined {
+  const normalizedQuery = query.toLowerCase().trim()
+  const name = tool.name.toLowerCase()
+  const label = tool.label.toLowerCase()
+  const description = tool.description.toLowerCase()
+  if (name === normalizedQuery) return 100_000
+  if (label === normalizedQuery) return 90_000
+
+  const tokens = normalizedSearchTokens(normalizedQuery)
+  if (tokens.length === 0) return
+  let score = name.startsWith(normalizedQuery) ? 20_000 : label.startsWith(normalizedQuery) ? 15_000 : 0
+  let matched = 0
+  let matchedWeight = 0
+  for (const token of tokens) {
+    if (name === token) {
+      score += 8_000
+      matched++
+      matchedWeight += 4
+      continue
+    }
+    if (name.startsWith(token)) {
+      score += 5_000
+      matched++
+      matchedWeight += 4
+      continue
+    }
+    if (name.includes(token)) {
+      score += 3_000
+      matched++
+      matchedWeight += 3
+      continue
+    }
+    if (label.includes(token)) {
+      score += 1_200
+      matched++
+      matchedWeight += 2
+      continue
+    }
+    if (description.includes(token)) {
+      score += 250
+      matched++
+      matchedWeight += 1
+    }
+  }
+  if (matched === 0) return
+  const coverage = matched / tokens.length
+  return score + Math.round(coverage * 1_000) + matchedWeight * 10
+}
+
+function sleep(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Provider retry was cancelled"))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, delayMs)
+    timer.unref?.()
+    signal.addEventListener("abort", aborted, { once: true })
+
+    function done() {
+      signal.removeEventListener("abort", aborted)
+      resolve()
+    }
+
+    function aborted() {
+      clearTimeout(timer)
+      reject(signal.reason ?? new Error("Provider retry was cancelled"))
+    }
+  })
+}
+
 function isAssistantMessage(message: unknown): message is AssistantMessage {
   return typeof message === "object" && message !== null && "role" in message && message.role === "assistant"
 }
@@ -213,6 +350,22 @@ function assistantText(message: AssistantMessage | undefined): string {
       .join("\n")
       .trim() ?? ""
   )
+}
+
+const FAILURE_DETAIL_CAP = 1600
+
+function boundedFailureDetail(value: unknown): string | undefined {
+  if (typeof value !== "string") return
+  const redacted = PiAudit.redactText(value).replaceAll(/\s+/g, " ").trim()
+  if (!redacted) return
+  return redacted.length <= FAILURE_DETAIL_CAP
+    ? redacted
+    : `${redacted.slice(0, FAILURE_DETAIL_CAP)}… [provider detail truncated]`
+}
+
+function failureWithDetail(failure: Failure | undefined, detail: unknown): Failure | undefined {
+  const bounded = boundedFailureDetail(detail)
+  return failure && bounded ? ({ ...failure, detail: bounded } as Failure) : failure
 }
 
 function latestAssistant(messages: readonly unknown[]): AssistantMessage | undefined {
@@ -233,9 +386,14 @@ function resultText(result: unknown): string {
 }
 
 function auditedFailure(failure: Failure | undefined): Failure | undefined {
-  if (!failure?.providerCode) return failure
-  const providerCode = PiAudit.redactText(failure.providerCode)
-  return providerCode === failure.providerCode ? failure : ({ ...failure, providerCode } as Failure)
+  if (!failure) return
+  const providerCode = failure.providerCode ? PiAudit.redactText(failure.providerCode) : undefined
+  const detail = boundedFailureDetail(failure.detail)
+  return {
+    ...failure,
+    ...(providerCode ? { providerCode } : {}),
+    ...(detail ? { detail } : {}),
+  } as Failure
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -313,8 +471,8 @@ function validateSpec(spec: AgentRunSpec): void {
   if (spec.prompt.manifest.handoffOwner !== spec.handoffOwner)
     throw new Error("AgentRun prompt handoff ownership does not match host policy")
   if (spec.handoffOwner && spec.role !== "root") throw new Error("Only the original root AgentRun may own handoff")
-  if (spec.role === "root" && spec.providerAffinity !== "primary")
-    throw new Error("The original root AgentRun must use primary provider affinity")
+  if (spec.role === "root" && spec.providerAffinity !== "main")
+    throw new Error("The original root AgentRun must use main provider affinity")
   if (spec.role === "fallback" && spec.providerAffinity !== "fallback")
     throw new Error("A fallback AgentRun must use fallback provider affinity")
   if (spec.role === "root" && (spec.parentID || spec.phaseRootID))
@@ -343,6 +501,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
   readonly #registry: PiModels
   readonly #streamFn: StreamFn
   readonly #now: () => number
+  readonly #sleep: (delayMs: number, signal: AbortSignal) => Promise<void>
+  readonly #random: () => number
   readonly #createRunID: () => AgentRunID
   readonly #fallbackLedger: PiFallbackLedger
 
@@ -359,6 +519,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
     this.#registry = options.registry
     this.#streamFn = options.streamFn ?? options.registry.models.streamSimple.bind(options.registry.models)
     this.#now = options.now ?? Date.now
+    this.#sleep = options.sleep ?? sleep
+    this.#random = options.random ?? Math.random
     this.#createRunID = options.createRunID ?? (() => `run_${randomUUID()}`)
     this.#fallbackLedger = options.fallbackLedger ?? fallbackLedgerForSession(`worker_${randomUUID()}`)
     this.#onPayload = options.onPayload
@@ -367,19 +529,19 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
   async preflight(settings: Settings.Info): Promise<SubsystemStatus> {
     const routes = [
-      { id: settings.agent.primary_provider, route: "primary" as const },
+      { id: settings.agent.main_provider, route: "main" as const },
       ...(settings.agent.fallback_provider
         ? [{ id: settings.agent.fallback_provider, route: "fallback" as const }]
         : []),
     ]
     const providers: SubsystemStatus["providers"][number][] = []
     const errors: string[] = []
-    let primaryAuthenticated = false
+    let mainAuthenticated = false
     for (const route of routes) {
       try {
         const model = this.#registry.model(route.id)
-        const auth = await this.#registry.models.checkAuth(route.id)
-        if (route.route === "primary") primaryAuthenticated = Boolean(auth)
+        const auth = await this.#registry.models.getAuth(model)
+        if (route.route === "main") mainAuthenticated = Boolean(auth)
         providers.push({
           id: route.id,
           model: model.id,
@@ -394,8 +556,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       }
     }
     return {
-      ready: primaryAuthenticated,
-      degraded: primaryAuthenticated && errors.length > 0,
+      ready: mainAuthenticated,
+      degraded: mainAuthenticated && errors.length > 0,
       subsystem: "pi",
       providers,
       errors,
@@ -434,6 +596,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
         id,
         label: `${spec.role} · ${spec.provider}/${spec.model.id}`,
         ...(spec.parentID ? { parentID: spec.parentID } : {}),
+        ...(spec.sourceCallID ? { sourceCallID: spec.sourceCallID } : {}),
+        provider: spec.provider,
+        model: spec.model.id,
+        startedAt: this.#now(),
+        lastActivityAt: this.#now(),
+        toolCalls: 0,
       },
       childStarts: 0,
       toolCalls: 0,
@@ -441,14 +609,21 @@ export class PiAgentSubsystem implements AgentSubsystem {
       fallbackDescendants: 0,
       automaticFallbackUsed: false,
       cumulativeUsage: emptyUsage(),
+      providerRetryAttempt: 0,
+      providerRetryActive: false,
+      contextArtifacts: new Map(),
+      contextProjections: new Map(),
+      contextRecoveryKeys: new Set(),
+      contextCompactionEmergency: false,
+      contextCompactionMessagesRemoved: 0,
       finished: false,
     }
     this.#states.set(id, state)
     parent?.children.add(id)
     if (spec.role !== "root") this.#activeDelegatedRuns++
-    if (spec.providerAffinity === "primary") {
+    if (spec.providerAffinity === "main") {
       try {
-        await this.#fallbackLedger.recordPrimaryActor()
+        await this.#fallbackLedger.recordMainActor()
       } catch (error) {
         parent?.children.delete(id)
         if (spec.role !== "root") this.#activeDelegatedRuns = Math.max(0, this.#activeDelegatedRuns - 1)
@@ -504,11 +679,272 @@ export class PiAgentSubsystem implements AgentSubsystem {
   }
 
   #emitActivity(state: RunState, activity: PhaseActivity): void {
+    const actor = {
+      ...state.actor,
+      ...activity.actor,
+      lastActivityAt: this.#now(),
+      toolCalls: state.toolCalls,
+    }
+    Object.assign(state.actor, actor)
     this.#emit(state, {
       type: "activity",
       runID: state.id,
-      activity: { ...activity, actor: state.actor },
+      activity: { ...activity, actor },
     })
+  }
+
+  #retryFailure(state: RunState, message: AssistantMessage | undefined): Failure | undefined {
+    if (!message) return
+    return PiSecurity.classify(
+      providerObservation(
+        this.#registry.adapter(state.spec.provider),
+        state.spec.provider,
+        state.spec.model.id,
+        message,
+        state.lastHTTPStatus,
+      ),
+    )
+  }
+
+  #canRetryProvider(state: RunState, failure: Failure | undefined): failure is Failure {
+    const policy = Settings.retryPolicy(this.#settings)
+    return (
+      policy.enabled &&
+      failure?.kind === "unavailable" &&
+      failure.retryable &&
+      state.providerRetryAttempt < policy.max_retries &&
+      !state.cancellation &&
+      this.#remainingBudget(state) > 0
+    )
+  }
+
+  #emitProviderRetry(
+    state: RunState,
+    retry: {
+      readonly state: Extract<AgentEvent, { type: "provider_retry" }>["state"]
+      readonly attempt: number
+      readonly delayMs?: number
+      readonly failure?: Failure
+    },
+  ): void {
+    const policy = Settings.retryPolicy(this.#settings)
+    this.#emit(state, {
+      type: "provider_retry",
+      runID: state.id,
+      state: retry.state,
+      attempt: retry.attempt,
+      maxRetries: policy.max_retries,
+      ...(retry.delayMs === undefined ? {} : { delayMs: retry.delayMs }),
+      ...(retry.failure ? { failure: retry.failure } : {}),
+    })
+    const code = retry.failure?.providerCode ? ` (${retry.failure.providerCode})` : ""
+    const delay = retry.delayMs === undefined ? "" : ` after ${retry.delayMs} ms`
+    this.#emitActivity(state, {
+      kind: "status",
+      text: `Provider retry ${retry.state}: attempt ${retry.attempt}/${policy.max_retries}${delay}${code}.`,
+    })
+  }
+
+  #emitContextCompaction(
+    state: RunState,
+    eventState: Extract<AgentEvent, { type: "context_compaction" }>["state"],
+    mode: ContextCompactionMode,
+    stats: {
+      readonly estimatedTokensBefore: number
+      readonly estimatedTokensAfter: number
+      readonly triggerTokens: number
+      readonly messagesRemoved: number
+      readonly toolResultsVirtualized: number
+      readonly artifactsPreserved: number
+    },
+  ): void {
+    this.#emit(state, {
+      type: "context_compaction",
+      runID: state.id,
+      state: eventState,
+      mode,
+      estimatedTokensBefore: stats.estimatedTokensBefore,
+      estimatedTokensAfter: stats.estimatedTokensAfter,
+      triggerTokens: stats.triggerTokens,
+      messagesRemoved: stats.messagesRemoved,
+      toolResultsVirtualized: stats.toolResultsVirtualized,
+      artifactsPreserved: stats.artifactsPreserved,
+    })
+    const visible =
+      eventState === "recovered" ||
+      (mode === "proactive" &&
+        (eventState === "completed" || eventState === "failed"))
+    if (visible)
+      this.#emitActivity(state, {
+        kind: "status",
+        text: JSON.stringify({
+          contextCompaction: {
+            state: eventState,
+            mode,
+            estimatedTokensBefore: stats.estimatedTokensBefore,
+            estimatedTokensAfter: stats.estimatedTokensAfter,
+            messagesRemoved: stats.messagesRemoved,
+            toolResultsVirtualized: stats.toolResultsVirtualized,
+            artifactsPreserved: stats.artifactsPreserved,
+          },
+        }),
+      })
+  }
+
+  async #transformContext(
+    state: RunState,
+    messages: AgentMessage[],
+    initialTools: readonly AgentTool[],
+    signal?: AbortSignal,
+  ): Promise<AgentMessage[]> {
+    const tools = state.agent?.state.tools ?? [...initialTools]
+    const mode: ContextCompactionMode = state.contextCompactionEmergency ? "emergency" : "proactive"
+    const providerMessages = projectAgentContext(messages, state.contextProjections, mode)
+    const estimatedTokens = estimateAgentContextTokens({
+      systemPrompt: state.spec.prompt.system,
+      messages: providerMessages,
+      tools,
+    })
+    const outputLimit = state.spec.budget.maxOutputTokens
+    const maxOutputTokens =
+      outputLimit === undefined
+        ? state.spec.model.maxTokens
+        : Math.max(1, Math.min(state.spec.model.maxTokens, outputLimit - state.cumulativeUsage.output))
+    const need = contextCompactionNeed({
+      mode,
+      policy: Settings.compactionPolicy(this.#settings),
+      contextWindow: state.spec.model.contextWindow,
+      maxOutputTokens,
+      estimatedTokens,
+      hasToolResults:
+        mode === "emergency" || providerMessages.some((message) => message.role === "toolResult"),
+    })
+    if (!need) return providerMessages
+
+    const last = messages.at(-1)
+    const signature = [
+      mode,
+      messages.length,
+      last?.role ?? "none",
+      "timestamp" in (last ?? {}) ? String(last?.timestamp) : "none",
+      estimatedTokens,
+    ].join(":")
+    if (state.contextProjection?.signature === signature) return state.contextProjection.messages
+
+    const pending = {
+      estimatedTokensBefore: need.estimatedTokensBefore,
+      estimatedTokensAfter: need.estimatedTokensBefore,
+      triggerTokens: need.triggerTokens,
+      messagesRemoved: state.contextCompactionMessagesRemoved,
+      toolResultsVirtualized: 0,
+      artifactsPreserved: 0,
+    }
+    this.#emitContextCompaction(state, "scheduled", mode, pending)
+    this.#emitContextCompaction(state, "started", mode, pending)
+
+    try {
+      const result = await compactAgentContext({
+        need,
+        messages,
+        systemPrompt: state.spec.prompt.system,
+        tools,
+        workarea: state.spec.workarea,
+        runID: state.id,
+        artifacts: state.contextArtifacts,
+        projections: state.contextProjections,
+        signal,
+      })
+      state.lastContextCompaction = result
+      state.contextProjection = { signature, messages: result.messages }
+      const stats = {
+        ...result,
+        messagesRemoved: result.messagesRemoved + state.contextCompactionMessagesRemoved,
+      }
+      this.#emitContextCompaction(
+        state,
+        result.toolResultsVirtualized > 0 && result.persistenceFailures === 0 ? "completed" : "failed",
+        mode,
+        stats,
+      )
+      return result.messages
+    } catch {
+      state.lastContextCompaction = undefined
+      state.contextProjection = undefined
+      this.#emitContextCompaction(state, "failed", mode, pending)
+      return providerMessages
+    } finally {
+      state.contextCompactionEmergency = false
+      state.contextCompactionMessagesRemoved = 0
+    }
+  }
+
+  #contextRecoveryKey(state: RunState, failure: Failure | undefined): string | undefined {
+    if (
+      !Settings.compactionPolicy(this.#settings).enabled ||
+      failure?.kind !== "capacity" ||
+      failure.providerCode !== "context_length_exceeded"
+    )
+      return
+    const agent = state.agent
+    const messages = agent?.state.messages
+    if (!agent || !messages || messages.at(-1)?.role !== "assistant") return
+    const retained = messages.slice(0, -1)
+    const last = retained.at(-1)
+    const estimated = estimateAgentContextTokens({
+      systemPrompt: state.spec.prompt.system,
+      messages: retained,
+      tools: agent.state.tools,
+    })
+    return [
+      retained.length,
+      last?.role ?? "none",
+      "timestamp" in (last ?? {}) ? String(last?.timestamp) : "none",
+      estimated,
+    ].join(":")
+  }
+
+  async #recoverContextFailure(
+    state: RunState,
+    failure: Failure | undefined,
+  ): Promise<{ readonly attempted: boolean; readonly failure: Failure | undefined }> {
+    const key = this.#contextRecoveryKey(state, failure)
+    if (!key || state.contextRecoveryKeys.has(key) || state.cancellation || this.#remainingBudget(state) <= 0)
+      return { attempted: false, failure }
+    const agent = state.agent
+    if (!agent) return { attempted: false, failure }
+
+    state.contextRecoveryKeys.add(key)
+    agent.state.messages = agent.state.messages.slice(0, -1)
+    state.contextCompactionEmergency = true
+    state.contextCompactionMessagesRemoved = 1
+    state.contextProjection = undefined
+    state.lastContextCompaction = undefined
+    state.lastHTTPStatus = undefined
+    await agent.continue()
+
+    const next = this.#retryFailure(state, latestAssistant(agent.state.messages))
+    // continue() synchronously awaits transformContext, which may repopulate this
+    // field; TypeScript cannot observe that mutation through the Agent callback.
+    const stats = state.lastContextCompaction as ContextCompactionResult | undefined
+    if (stats) {
+      this.#emitContextCompaction(
+        state,
+        next?.kind === "capacity" && next.providerCode === "context_length_exceeded" ? "failed" : "recovered",
+        "emergency",
+        {
+          ...stats,
+          messagesRemoved: stats.messagesRemoved + 1,
+        },
+      )
+    }
+    return { attempted: true, failure: next }
+  }
+
+  #retryDelayMs(attempt: number): number {
+    const policy = Settings.retryPolicy(this.#settings)
+    const ceiling = Math.min(policy.max_delay_ms, policy.base_delay_ms * 2 ** Math.max(0, attempt - 1))
+    const draw = Math.min(1, Math.max(0, this.#random()))
+    return Math.min(ceiling, Math.floor(draw * (ceiling + 1)))
   }
 
   #toolSet(state: RunState): AgentTool[] {
@@ -518,32 +954,115 @@ export class PiAgentSubsystem implements AgentSubsystem {
         handoffOwner: state.spec.handoffOwner,
         providerAffinity: state.spec.providerAffinity,
       }) ?? []
-    const base = [...state.spec.tools, ...gatewayTools].filter(
+    const hostTools = [...state.spec.tools].filter(
       (tool) =>
         (state.spec.handoffOwner || tool.name !== "handoff") &&
-        (state.spec.providerAffinity === "primary" || tool.name !== "request_fallback_delegation"),
+        (state.spec.providerAffinity === "main" || tool.name !== "request_fallback_delegation"),
     )
-    const reserved = new Set(["delegate_task", "request_fallback_delegation"])
-    for (const tool of base)
+    const eligibleGatewayTools = gatewayTools.filter(
+      (tool) =>
+        (state.spec.handoffOwner || tool.name !== "handoff") &&
+        (state.spec.providerAffinity === "main" || tool.name !== "request_fallback_delegation"),
+    )
+    const allTools = [...hostTools, ...eligibleGatewayTools]
+    const reserved = new Set(["delegate_task", "request_fallback_delegation", "tool_search"])
+    for (const tool of allTools)
       if (reserved.has(tool.name)) throw new Error(`AgentRun tool name '${tool.name}' is reserved by Cyberful`)
 
     const names = new Set<string>()
-    for (const tool of base) {
+    for (const tool of allTools) {
       if (names.has(tool.name)) throw new Error(`AgentRun exposes duplicate tool '${tool.name}'`)
       names.add(tool.name)
     }
 
+    const immediate = [
+      ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading !== true),
+      ...eligibleGatewayTools.filter((tool) => tool.name === "handoff"),
+    ]
+    const deferred = [
+      ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading === true),
+      ...eligibleGatewayTools.filter((tool) => tool.name !== "handoff"),
+    ].toSorted((left, right) => left.name.localeCompare(right.name))
+
     if (state.spec.delegation.enabled && state.spec.prompt.manifest.delegationEnabled) {
-      base.push(this.#delegateTool(state))
+      immediate.push(this.#delegateTool(state))
     }
     if (
-      state.spec.providerAffinity === "primary" &&
+      state.spec.providerAffinity === "main" &&
       state.spec.fallback.providerConfigured &&
       state.spec.fallback.proactiveEnabled
     ) {
-      base.push(this.#fallbackTool(state))
+      immediate.push(this.#fallbackTool(state))
     }
-    return base
+    if (deferred.length > 0) immediate.push(this.#toolSearchTool(state, deferred))
+    return immediate
+  }
+
+  #toolSearchTool(state: RunState, catalog: readonly AgentTool[]): AgentTool<typeof ToolSearchParameters> {
+    const loaded = new Set<string>()
+    return {
+      name: "tool_search",
+      label: "Search Cyberful Tools",
+      description:
+        'Search and load any authorized Cyberful/MCP tool by name or capability. No tool is excluded: use query "*" with the returned cursor to enumerate the full catalog.',
+      parameters: ToolSearchParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const offset = input.cursor === undefined ? 0 : Number(input.cursor)
+        if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("tool_search cursor is invalid")
+        const query = input.query.trim()
+        const candidates =
+          query === "*"
+            ? [...catalog]
+            : catalog
+                .flatMap((tool) => {
+                  const score = toolSearchScore(tool, query)
+                  return score === undefined ? [] : [{ tool, score }]
+                })
+                .sort((left, right) => right.score - left.score || left.tool.name.localeCompare(right.tool.name))
+                .map((candidate) => candidate.tool)
+        const limit = input.limit ?? 8
+        const page = candidates.slice(offset, offset + limit)
+        const additions = page.filter((tool) => !loaded.has(tool.name))
+        const agent = state.agent
+        if (!agent) throw new Error("tool_search requires an active AgentRun")
+        if (additions.length > 0) {
+          const activeNames = new Set(agent.state.tools.map((tool) => tool.name))
+          agent.state.tools = [
+            ...agent.state.tools,
+            ...additions.filter((tool) => !activeNames.has(tool.name)),
+          ]
+          additions.forEach((tool) => loaded.add(tool.name))
+        }
+        const nextOffset = offset + page.length
+        const nextCursor = nextOffset < candidates.length ? String(nextOffset) : undefined
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                query,
+                total: candidates.length,
+                results: page.map((tool) => ({
+                  name: tool.name,
+                  label: tool.label,
+                  description: compactToolDescription(tool.description),
+                  loaded: true,
+                })),
+                ...(nextCursor ? { next_cursor: nextCursor } : {}),
+              }),
+            },
+          ],
+          details: {
+            query,
+            total: candidates.length,
+            returned: page.length,
+            nextCursor,
+          },
+          addedToolNames: additions.map((tool) => tool.name),
+        }
+      },
+    }
   }
 
   #skillName(state: RunState, locator: string): string | undefined {
@@ -560,11 +1079,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
       description:
         "Create one complete child AgentRun for a bounded subtask. The child receives the full Cyberful contract, persona, skills, and phase tools but not this transcript.",
       parameters: DelegateTaskParameters,
-      execute: async (_callID, input) => {
+      execute: async (callID, input) => {
         const child = await this.#startChild(state, {
           role: "subagent",
           route: state.spec.providerAffinity,
           task: taskCapsule(input),
+          sourceCallID: callID,
         })
         const result = await child.result
         return {
@@ -609,7 +1129,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           state: "requested",
           quotaExempt: false,
           quota: {
-            primaryActorRuns: admission.primaryActorRuns,
+            mainActorRuns: admission.mainActorRuns,
             admitted: requestedAdmissions,
             limit: admission.limit,
           },
@@ -624,7 +1144,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             quotaExempt: false,
             reason,
             quota: {
-              primaryActorRuns: admission.primaryActorRuns,
+              mainActorRuns: admission.mainActorRuns,
               admitted: admission.proactiveAdmissions,
               limit: admission.limit,
             },
@@ -645,7 +1165,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         } catch (error) {
           state.fallbackAdmissions--
           const rolledBack = await this.#fallbackLedger.rollbackProactiveAdmission().catch(() => ({
-            primaryActorRuns: admission.primaryActorRuns,
+            mainActorRuns: admission.mainActorRuns,
             proactiveAdmissions: admission.proactiveAdmissions,
           }))
           this.#emit(state, {
@@ -656,10 +1176,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
             quotaExempt: false,
             reason: error instanceof Error ? error.message : String(error),
             quota: {
-              primaryActorRuns: rolledBack.primaryActorRuns,
+              mainActorRuns: rolledBack.mainActorRuns,
               admitted: rolledBack.proactiveAdmissions,
               limit: Math.floor(
-                (rolledBack.primaryActorRuns * state.spec.fallback.proactivePercentage) / 100,
+                (rolledBack.mainActorRuns * state.spec.fallback.proactivePercentage) / 100,
               ) + 1,
             },
           })
@@ -673,7 +1193,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           state: "approved",
           quotaExempt: false,
           quota: {
-            primaryActorRuns: admission.primaryActorRuns,
+            mainActorRuns: admission.mainActorRuns,
             admitted: admission.proactiveAdmissions,
             limit: admission.limit,
           },
@@ -688,7 +1208,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           quotaExempt: false,
           ...(result.failure ? { reason: result.failure.kind } : {}),
           quota: {
-            primaryActorRuns: admission.primaryActorRuns,
+            mainActorRuns: admission.mainActorRuns,
             admitted: admission.proactiveAdmissions,
             limit: admission.limit,
           },
@@ -711,7 +1231,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             model: result.model,
             failure: result.failure,
             quota: {
-              primaryActorRuns: admission.primaryActorRuns,
+              mainActorRuns: admission.mainActorRuns,
               admitted: admission.proactiveAdmissions,
               limit: admission.limit,
             },
@@ -753,10 +1273,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (options.route === "fallback" && !parent.spec.fallback.providerConfigured)
       throw new Error("No fallback provider is configured")
     if (parent.spec.providerAffinity === "fallback" && options.route !== "fallback")
-      throw new Error("A fallback-affine subtree cannot return to the primary provider")
+      throw new Error("A fallback-affine subtree cannot return to the main provider")
 
     const provider =
-      options.route === "primary" ? this.#settings.agent.primary_provider : this.#settings.agent.fallback_provider
+      options.route === "main" ? this.#settings.agent.main_provider : this.#settings.agent.fallback_provider
     if (!provider) throw new Error("No fallback provider is configured")
     const model = this.#registry.model(provider)
     const promptInput: ChildPromptInput = {
@@ -773,6 +1293,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       id: undefined,
       role: options.role,
       parentID: parent.id,
+      sourceCallID: options.sourceCallID,
       phaseRootID: parent.spec.role === "root" ? parent.id : parent.spec.phaseRootID,
       depth: parent.spec.depth + 1,
       provider,
@@ -791,7 +1312,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
   async #automaticFallback(state: RunState, failure: Failure): Promise<boolean> {
     if (
-      state.spec.providerAffinity !== "primary" ||
+      state.spec.providerAffinity !== "main" ||
       state.automaticFallbackUsed ||
       !state.spec.fallback.providerConfigured ||
       !state.spec.fallback.automaticSecurityBlockEnabled ||
@@ -931,6 +1452,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
   async #cancelState(state: RunState, _reason: string, mode: "budget" | "cancel"): Promise<void> {
     if (state.finished) return
     state.cancellation ??= mode
+    state.retryWaitAbort?.abort(new Error(`AgentRun ${mode === "budget" ? "budget expired" : "was cancelled"}`))
     const children = [...state.children]
       .map((id) => this.#states.get(id))
       .filter((child): child is RunState => child !== undefined)
@@ -962,11 +1484,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
       return
     }
     if (event.type === "message_end" && isAssistantMessage(event.message)) {
-      for (const content of event.message.content) {
-        if (content.type !== "text") continue
-        const text = PiAudit.redactText(content.text)
-        if (text) this.#emitActivity(state, { kind: "text", text })
-      }
+      const failure = this.#retryFailure(state, event.message)
+      const contextRecoveryKey = this.#contextRecoveryKey(state, failure)
+      const discardedAttempt =
+        this.#canRetryProvider(state, failure) ||
+        (contextRecoveryKey !== undefined && !state.contextRecoveryKeys.has(contextRecoveryKey))
+      if (!discardedAttempt)
+        for (const content of event.message.content) {
+          if (content.type !== "text") continue
+          const text = PiAudit.redactText(content.text)
+          if (text) this.#emitActivity(state, { kind: "text", text })
+        }
       state.cumulativeUsage = addUsage(state.cumulativeUsage, event.message.usage)
       this.#emitActivity(state, {
         kind: "progress",
@@ -987,6 +1515,18 @@ export class PiAgentSubsystem implements AgentSubsystem {
       ) {
         state.cancellation ??= "budget"
         state.agent?.abort()
+      }
+      if (
+        state.providerRetryActive &&
+        event.message.stopReason !== "error" &&
+        event.message.stopReason !== "aborted"
+      ) {
+        this.#emitProviderRetry(state, {
+          state: "succeeded",
+          attempt: state.providerRetryAttempt,
+        })
+        state.providerRetryAttempt = 0
+        state.providerRetryActive = false
       }
       return
     }
@@ -1065,6 +1605,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       const remaining = state.timerRemainingMs ?? 0
       if (remaining <= 0) {
         state.cancellation = "budget"
+        state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
         return
       }
@@ -1073,6 +1614,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         state.timer = undefined
         state.timerRemainingMs = 0
         state.cancellation ??= "budget"
+        state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
       }, remaining)
       state.timer.unref?.()
@@ -1086,6 +1628,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (state.spec.abort) {
       const abort = () => {
         state.cancellation ??= "cancel"
+        state.retryWaitAbort?.abort(new Error("AgentRun was cancelled"))
         state.agent?.abort()
       }
       state.spec.abort.addEventListener("abort", abort, { once: true })
@@ -1099,14 +1642,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
       if (!state.cancellation) {
         const adapter = this.#registry.adapter(state.spec.provider)
         const attestPayload = PiSystemWire.createOnPayload({ prompt: state.spec.prompt })
+        const initialTools = this.#toolSet(state)
         const agent = new Agent({
           initialState: {
             systemPrompt: state.spec.prompt.system,
             model: state.spec.model,
             thinkingLevel: state.spec.model.reasoning ? "high" : "off",
-            tools: this.#toolSet(state),
+            tools: initialTools,
             messages: [],
           },
+          transformContext: (messages, signal) =>
+            this.#transformContext(state, messages, initialTools, signal),
           streamFn: (model, context, options) => {
             const limit = state.spec.budget.maxOutputTokens
             if (limit === undefined) return this.#streamFn(model, context, options)
@@ -1127,6 +1673,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
           onResponse: (response) => {
             state.lastHTTPStatus = response.status
           },
+          prepareNextTurnWithContext: ({ context }) => ({
+            context: {
+              ...context,
+              tools: state.agent?.state.tools ?? context.tools,
+            },
+          }),
           beforeToolCall: async ({ toolCall, args }) => {
             if (toolCall.name === "handoff" && !state.spec.handoffOwner)
               return { block: true, reason: "Only the original phase root AgentRun may call handoff." }
@@ -1151,15 +1703,65 @@ export class PiAgentSubsystem implements AgentSubsystem {
         await agent.prompt(userMessages(state.spec))
 
         let last = latestAssistant(agent.state.messages)
-        failure = PiSecurity.classify(
-          providerObservation(adapter, state.spec.provider, state.spec.model.id, last, state.lastHTTPStatus),
-        )
+        failure = this.#retryFailure(state, last)
+        const settleRecoverableFailure = async () => {
+          while (!state.cancellation) {
+            const recovery = await this.#recoverContextFailure(state, failure)
+            if (recovery.attempted) {
+              failure = recovery.failure
+              last = latestAssistant(agent.state.messages)
+              continue
+            }
+            if (!this.#canRetryProvider(state, failure)) break
+
+            const messages = agent.state.messages
+            if (messages.at(-1)?.role !== "assistant")
+              throw new Error("Provider retry requires a terminal assistant error message")
+            agent.state.messages = messages.slice(0, -1)
+            last = latestAssistant(agent.state.messages)
+
+            const attempt = state.providerRetryAttempt + 1
+            const delayMs = Math.min(this.#retryDelayMs(attempt), this.#remainingBudget(state))
+            this.#emitProviderRetry(state, { state: "scheduled", attempt, delayMs, failure })
+            const retryWaitAbort = new AbortController()
+            state.retryWaitAbort = retryWaitAbort
+            try {
+              await this.#sleep(delayMs, retryWaitAbort.signal)
+            } catch (error) {
+              if (!state.cancellation) throw error
+            } finally {
+              if (state.retryWaitAbort === retryWaitAbort) state.retryWaitAbort = undefined
+            }
+            if (state.cancellation) {
+              this.#emitProviderRetry(state, { state: "cancelled", attempt, failure })
+              break
+            }
+
+            state.providerRetryAttempt = attempt
+            state.providerRetryActive = true
+            state.lastHTTPStatus = undefined
+            this.#emitProviderRetry(state, { state: "attempting", attempt, failure })
+            await agent.continue()
+            last = latestAssistant(agent.state.messages)
+            failure = this.#retryFailure(state, last)
+          }
+        }
+        await settleRecoverableFailure()
         if (failure && (await this.#automaticFallback(state, failure))) {
           last = latestAssistant(agent.state.messages)
           failure = PiSecurity.classify(
             providerObservation(adapter, state.spec.provider, state.spec.model.id, last, state.lastHTTPStatus),
           )
+          await settleRecoverableFailure()
         }
+        if (failure?.kind === "unavailable" && state.providerRetryActive)
+          this.#emitProviderRetry(state, {
+            state: "exhausted",
+            attempt: state.providerRetryAttempt,
+            failure,
+          })
+        state.providerRetryActive = false
+        failure = failureWithDetail(failure, last?.errorMessage)
         output = PiAudit.redactText(assistantText(last))
       }
     } catch (error) {
@@ -1180,6 +1782,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
             ],
           },
         }) ?? { kind: "unknown", retryable: false }
+      const last = state.agent ? latestAssistant(state.agent.state.messages) : undefined
+      failure = failureWithDetail(failure, last?.errorMessage ?? (error instanceof Error ? error.message : String(error)))
       output ||= state.agent ? PiAudit.redactText(assistantText(latestAssistant(state.agent.state.messages))) : ""
     } finally {
       stopBudgetTimer()
@@ -1227,7 +1831,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
       state.finished = true
       this.#emitActivity(state, {
         kind: "agent",
-        actor: state.actor,
+        actor: {
+          ...state.actor,
+          ...(failure ? { failure: failure.kind } : {}),
+        },
         state:
           termination === "completed"
             ? "completed"

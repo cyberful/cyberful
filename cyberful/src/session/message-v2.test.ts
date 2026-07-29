@@ -58,7 +58,7 @@ describe("MessageV2 continuation metadata", () => {
     ).toEqual({
       think: "max",
       workarea: "launchdarkly",
-      expert_engagement_status: "completed_with_warnings",
+      expert_engagement_status: "warning",
     })
   })
 

@@ -15,9 +15,16 @@ const artifactsDir = await mkdtemp(path.join(os.tmpdir(), "cyberful-browser-mcp-
 const outsideDir = await mkdtemp(path.join(os.tmpdir(), "cyberful-browser-outside-"))
 const previousArtifactsDir = process.env.CYBER_BROWSER_ARTIFACTS_DIR
 process.env.CYBER_BROWSER_ARTIFACTS_DIR = artifactsDir
-const { boundedJsonLines, browserToolDefinitions, envBool, handleToolCall, readBoundedResponseBody } = await import(
-  `./browser_mcp.mjs?boundary-test=${Date.now()}`
-)
+const {
+  boundedJsonLines,
+  browserToolDefinitions,
+  captchaAssessment,
+  captureSnapshotDocument,
+  envBool,
+  formatSnapshot,
+  handleToolCall,
+  readBoundedResponseBody,
+} = await import(`./browser_mcp.mjs?boundary-test=${Date.now()}`)
 if (previousArtifactsDir === undefined) delete process.env.CYBER_BROWSER_ARTIFACTS_DIR
 else process.env.CYBER_BROWSER_ARTIFACTS_DIR = previousArtifactsDir
 
@@ -40,9 +47,11 @@ describe("browser MCP input boundary", () => {
     expect(names).toContain("browser_evaluate")
     expect(names).toContain("browser_artifact_read")
     expect(names).toContain("browser_close")
-    expect(definitions.find((tool) => tool.name === "browser_snapshot")?.inputSchema.properties.max_elements.maximum).toBe(
-      500,
-    )
+    const snapshot = definitions.find((tool) => tool.name === "browser_snapshot")
+    expect(snapshot?.inputSchema.properties.max_elements.maximum).toBe(500)
+    expect(snapshot?.inputSchema.properties.max_text_chars.maximum).toBe(100_000)
+    expect(snapshot?.inputSchema.properties.selector).toMatchObject({ type: "string", minLength: 1 })
+    expect(snapshot?.inputSchema.properties.text_offset).toMatchObject({ type: "integer", minimum: 0, default: 0 })
     for (const tool of definitions) {
       expect(tool.name.startsWith("browser_")).toBe(true)
       expect(tool.inputSchema.type).toBe("object")
@@ -102,6 +111,213 @@ describe("browser MCP input boundary", () => {
     for await (const record of boundedJsonLines(input, 8)) records.push(record)
 
     expect(records).toEqual([{ error: "input line exceeds 8 bytes" }, { line: "{}" }])
+  })
+})
+
+describe("CAPTCHA evidence assessment", () => {
+  test("keeps provider SDK traffic and response fields diagnostic-only", () => {
+    expect(
+      captchaAssessment([
+        { provider: "hcaptcha", kind: "network", evidence: "https://js.hcaptcha.com/1/api.js" },
+        { provider: "hcaptcha", kind: "response_field", visible: true },
+      ]),
+    ).toEqual({ detected: false, confidence: "low" })
+  })
+
+  test("detects a visible provider challenge", () => {
+    expect(captchaAssessment([{ provider: "hcaptcha", kind: "iframe", visible: true }])).toEqual({
+      detected: true,
+      confidence: "high",
+    })
+  })
+
+  test("treats visible human-verification text as medium-confidence evidence", () => {
+    expect(
+      captchaAssessment([
+        { provider: "generic", kind: "text", evidence: "verify you are human", visible: true },
+      ]),
+    ).toEqual({
+      detected: true,
+      confidence: "medium",
+    })
+  })
+
+  test("does not treat a lone CAPTCHA mention as an active challenge", () => {
+    expect(
+      captchaAssessment([{ provider: "generic", kind: "text", evidence: "captcha", visible: true }]),
+    ).toEqual({
+      detected: false,
+      confidence: "low",
+    })
+  })
+})
+
+// ── Scoped Snapshots Stay Bounded And Deterministic ─────────────────
+// A small DOM double exercises the page-side snapshot function directly. This
+// proves text pagination and ref ownership without launching Chromium in the
+// input-boundary suite. The fixture also keeps outside controls present so a
+// passing test demonstrates subtree isolation rather than an empty-page shortcut.
+// ────────────────────────────────────────────────────────────────────
+
+function fakeElement(tagName, innerText, attributes = {}) {
+  const values = new Map(Object.entries(attributes))
+  return {
+    tagName: tagName.toUpperCase(),
+    innerText,
+    textContent: innerText,
+    labels: [],
+    href: values.get("href") || "",
+    value: values.get("value") || "",
+    childrenForSnapshot: [],
+    getAttribute(name) {
+      return values.get(name) ?? null
+    },
+    setAttribute(name, value) {
+      values.set(name, String(value))
+    },
+    removeAttribute(name) {
+      values.delete(name)
+    },
+    matches(selector) {
+      if (selector.includes("button") && this.tagName === "BUTTON") return true
+      if (selector.includes("a[href]") && this.tagName === "A" && values.has("href")) return true
+      return false
+    },
+    querySelectorAll() {
+      return this.childrenForSnapshot
+    },
+    getBoundingClientRect() {
+      return { x: 1, y: 2, width: 80, height: 20 }
+    },
+  }
+}
+
+function withSnapshotDom(run) {
+  const inside = fakeElement("button", "Open policy", { "aria-label": "Open policy" })
+  const outside = fakeElement("a", "Outside", {
+    href: "https://outside.example/",
+    "data-cyber-browser-ref": "stale",
+  })
+  const firstScope = fakeElement("section", "0123456789")
+  firstScope.childrenForSnapshot = [inside]
+  const secondScope = fakeElement("section", "not selected")
+  secondScope.childrenForSnapshot = [outside]
+  const body = fakeElement("body", "whole document")
+  body.childrenForSnapshot = [inside, outside]
+  const fakeDocument = {
+    body,
+    documentElement: body,
+    title: "Policy",
+    querySelectorAll(selector) {
+      if (selector === "[data-cyber-browser-ref]") return [outside]
+      if (selector === "#policy") return [firstScope, secondScope]
+      if (selector === "#missing") return []
+      if (selector === "[") throw new SyntaxError("invalid selector")
+      return []
+    },
+  }
+  const fakeWindow = {
+    location: { href: "https://example.test/policy" },
+    getComputedStyle() {
+      return { visibility: "visible", display: "block", opacity: "1" }
+    },
+  }
+  const previousDocument = globalThis.document
+  const previousWindow = globalThis.window
+  try {
+    globalThis.document = fakeDocument
+    globalThis.window = fakeWindow
+    return run({ body, firstScope, inside, outside })
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+  }
+}
+
+describe("browser snapshot scoping", () => {
+  test("confines text and refs to the first selector match", () => {
+    withSnapshotDom(({ inside, outside }) => {
+      const snapshot = captureSnapshotDocument({
+        maxTextChars: 4,
+        maxElements: 10,
+        selector: "#policy",
+        textOffset: 3,
+      })
+
+      expect(snapshot).toMatchObject({
+        selector: "#policy",
+        selectorMatchCount: 2,
+        text: "3456",
+        textStart: 3,
+        textEnd: 7,
+        totalTextChars: 10,
+        nextTextOffset: 7,
+        textTruncated: true,
+        totalInteractiveElements: 1,
+        elementsTruncated: false,
+      })
+      expect(snapshot.elements.map((element) => element.name)).toEqual(["Open policy"])
+      expect(inside.getAttribute("data-cyber-browser-ref")).toBe("e1")
+      expect(outside.getAttribute("data-cyber-browser-ref")).toBeNull()
+
+      const rendered = formatSnapshot(snapshot)
+      expect(rendered).toContain("scope: selector \"#policy\"")
+      expect(rendered).toContain("visible_text_range: 3-7/10")
+      expect(rendered).toContain("next_text_offset: 7")
+      expect(rendered).toContain("truncated: true")
+    })
+  })
+
+  test("paginates selected text without overlaps or gaps", () => {
+    withSnapshotDom(() => {
+      const page = (textOffset) =>
+        captureSnapshotDocument({
+          maxTextChars: 4,
+          maxElements: 1,
+          selector: "#policy",
+          textOffset,
+        })
+      const snapshots = [page(0), page(4), page(8)]
+
+      expect(snapshots.map((snapshot) => snapshot.text).join("")).toBe("0123456789")
+      expect(snapshots.map((snapshot) => snapshot.nextTextOffset)).toEqual([4, 8, null])
+      expect(snapshots[2]).toMatchObject({ textStart: 8, textEnd: 10, textTruncated: false })
+    })
+  })
+
+  test("reports document scope and rejects missing or invalid selectors", () => {
+    withSnapshotDom(() => {
+      const documentSnapshot = captureSnapshotDocument({
+        maxTextChars: 100,
+        maxElements: 10,
+        selector: null,
+        textOffset: 0,
+      })
+      expect(documentSnapshot).toMatchObject({
+        selector: null,
+        selectorMatchCount: 1,
+        text: "whole document",
+      })
+
+      expect(() =>
+        captureSnapshotDocument({
+          maxTextChars: 100,
+          maxElements: 10,
+          selector: "#missing",
+          textOffset: 0,
+        }),
+      ).toThrow("selector matched no elements")
+      expect(() =>
+        captureSnapshotDocument({
+          maxTextChars: 100,
+          maxElements: 10,
+          selector: "[",
+          textOffset: 0,
+        }),
+      ).toThrow("selector is invalid")
+    })
   })
 })
 

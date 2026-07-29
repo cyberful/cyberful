@@ -12,14 +12,14 @@ import { PiAgentSubsystem } from "./pi-agent"
 import { PiCredentialStore } from "./pi-credentials"
 import { createPiModels } from "./pi-models"
 
-export type PrimaryAvailability = "available" | "degraded" | "unavailable"
+export type MainAvailability = "available" | "degraded" | "unavailable"
 
 export type Readiness = {
-  primary: {
+  main: {
     name: string
     model: string
     version?: string
-    status: PrimaryAvailability
+    status: MainAvailability
   }
 }
 
@@ -57,7 +57,7 @@ export async function inspect(options: InspectOptions = {}): Promise<Readiness> 
     settings = options.settings ?? (await (options.loadSettings ?? (() => Settings.load()))())
   } catch {
     return {
-      primary: {
+      main: {
         name: "pi",
         model: "unconfigured",
         version: piAgentPackage.version,
@@ -66,27 +66,27 @@ export async function inspect(options: InspectOptions = {}): Promise<Readiness> 
     }
   }
 
-  const providerID = settings.agent.primary_provider
+  const providerID = settings.agent.main_provider
   const configuredModel = settings.agent.providers[providerID]?.model ?? "unconfigured"
   try {
     const result = await preflight(settings, options.inspectSubsystem)
-    const primary = result.providers.find((provider) => provider.route === "primary")
-    const status: PrimaryAvailability = !result.ready || !primary?.authenticated
+    const main = result.providers.find((provider) => provider.route === "main")
+    const status: MainAvailability = !result.ready || !main?.authenticated
       ? "unavailable"
       : result.degraded
         ? "degraded"
         : "available"
     return {
-      primary: {
+      main: {
         name: `pi/${providerID}`,
-        model: primary?.model ?? configuredModel,
+        model: main?.model ?? configuredModel,
         version: piAgentPackage.version,
         status,
       },
     }
   } catch {
     return {
-      primary: {
+      main: {
         name: `pi/${providerID}`,
         model: configuredModel,
         version: piAgentPackage.version,

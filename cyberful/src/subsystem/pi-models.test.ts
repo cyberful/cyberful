@@ -1,6 +1,6 @@
 // ── Pi Provider Registry Tests ───────────────────────────────────
-// Captures the resolved OpenAI Codex and OpenAI-compatible GLM model contracts
-// without contacting either provider or accepting an unreviewed system channel.
+// Captures configured provider aliases, subscription login selection, and the
+// reviewed system-message channels without contacting any provider.
 // → cyberful/src/subsystem/pi-models.ts — owns provider materialization.
 // ─────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ import { assertAuthenticSystemChannel, createPiModels } from "./pi-models"
 const GLM_SETTINGS = Settings.parse(`version: 1
 agent:
   subsystem: pi
-  primary_provider: openai-codex
+  main_provider: flagship
   fallback_provider: glm-5-2
   subagents:
     enabled: true
@@ -26,12 +26,11 @@ agent:
     automatic_security_block:
       enabled: true
   providers:
-    openai-codex:
+    flagship:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default
+        type: subscription
     glm-5-2:
       adapter: openai-completions
       base_url: https://api.z.ai/api/paas/v4
@@ -47,17 +46,99 @@ instructions:
   allow_project_discovery: false
 `)
 
-describe("Pi provider registry", () => {
-  test("resolves the pinned OpenAI Codex OAuth catalog model through Pi", () => {
-    const registry = createPiModels(GLM_SETTINGS.agent, new InMemoryCredentialStore())
-    const model = registry.model("openai-codex")
+const SUBSCRIPTION_SETTINGS = Settings.parse(`version: 1
+agent:
+  subsystem: pi
+  main_provider: kimi
+  subagents:
+    enabled: true
+    max_per_run: 4
+    max_concurrent: 2
+    max_depth: 2
+  fallback:
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+  providers:
+    kimi:
+      adapter: kimi-coding
+      model: k3
+      auth:
+        type: subscription
+    zai-plan:
+      adapter: zai
+      model: glm-5.2
+      auth:
+        type: subscription
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false
+`)
 
-    expect(registry.adapter("openai-codex")).toBe("openai-codex")
+describe("Pi provider registry", () => {
+  test("resolves an aliased OpenAI Codex subscription model through Pi", () => {
+    const registry = createPiModels(GLM_SETTINGS.agent, new InMemoryCredentialStore())
+    const model = registry.model("flagship")
+
+    expect(registry.adapter("flagship")).toBe("openai-codex")
+    expect(registry.loginType("flagship")).toBe("oauth")
     expect(model).toMatchObject({
-      provider: "openai-codex",
-      id: "gpt-5.4",
+      provider: "flagship",
+      id: "gpt-5.6-sol",
       api: "openai-codex-responses",
     })
+  })
+
+  test("uses settings keys for Kimi and Z.AI subscription credentials", () => {
+    const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, new InMemoryCredentialStore())
+
+    expect(registry.adapter("kimi")).toBe("kimi-coding")
+    expect(registry.loginType("kimi")).toBe("api_key")
+    expect(registry.model("kimi")).toMatchObject({
+      provider: "kimi",
+      id: "k3",
+      api: "anthropic-messages",
+    })
+    expect(registry.adapter("zai-plan")).toBe("zai")
+    expect(registry.loginType("zai-plan")).toBe("api_key")
+    expect(registry.model("zai-plan")).toMatchObject({
+      provider: "zai-plan",
+      id: "glm-5.2",
+      api: "openai-completions",
+    })
+  })
+
+  test("persists subscription login under the configured settings key", async () => {
+    const credentials = new InMemoryCredentialStore()
+    const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, credentials)
+
+    await registry.models.login("kimi", registry.loginType("kimi"), {
+      prompt: async () => "subscription-secret",
+      notify: () => {},
+    })
+
+    expect(await credentials.read("kimi")).toEqual({
+      type: "api_key",
+      key: "subscription-secret",
+    })
+    expect(await credentials.read("kimi-coding")).toBeUndefined()
+  })
+
+  test("does not resolve ambient keys for a subscription-auth provider", async () => {
+    const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, new InMemoryCredentialStore())
+    const auth = registry.models.getProvider("kimi")?.auth.apiKey
+
+    expect(
+      await auth?.resolve({
+        ctx: {
+          env: async () => "ambient-key-must-not-activate-subscription",
+          fileExists: async () => false,
+        },
+      }),
+    ).toBeUndefined()
   })
 
   test("materializes GLM 5.2 as OpenAI Chat Completions with a real system role", () => {

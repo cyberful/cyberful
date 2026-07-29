@@ -66,11 +66,62 @@ describe("SubsystemUsage.createSessionCounter", () => {
       cache: { read: 50, write: 0 },
     })
     expect(SubsystemUsage.contextChurn(counter.usage())).toEqual({
-      uncachedInput: 320,
-      cacheReadRatio: 0.1351,
-      inputAmplification: 2.96,
-      churnRatio: 0.8649,
+      uncachedInput: 370,
+      cacheReadRatio: 0.119,
+      inputAmplification: 3.36,
+      churnRatio: 0.881,
       reasoningShare: 0.2,
+    })
+  })
+
+  test("treats cache writes as uncached prompt input and cache reads as reused input", () => {
+    expect(
+      SubsystemUsage.contextChurn({
+        input: 100,
+        output: 50,
+        reasoning: 10,
+        cache: { read: 300, write: 100 },
+      }),
+    ).toEqual({
+      uncachedInput: 200,
+      cacheReadRatio: 0.6,
+      inputAmplification: 10,
+      churnRatio: 0.4,
+      reasoningShare: 0.2,
+    })
+  })
+
+  test("reports the observed cached and uncached prompt shares without subtracting cache twice", () => {
+    expect(
+      SubsystemUsage.contextChurn({
+        input: 1_861,
+        output: 1_000,
+        reasoning: 0,
+        cache: { read: 8_139, write: 0 },
+      }),
+    ).toEqual({
+      uncachedInput: 1_861,
+      cacheReadRatio: 0.8139,
+      inputAmplification: 10,
+      churnRatio: 0.1861,
+      reasoningShare: 0,
+    })
+  })
+
+  test("returns bounded zero ratios when no prompt tokens were observed", () => {
+    expect(
+      SubsystemUsage.contextChurn({
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      }),
+    ).toEqual({
+      uncachedInput: 0,
+      cacheReadRatio: 0,
+      inputAmplification: 0,
+      churnRatio: 0,
+      reasoningShare: 0,
     })
   })
 })

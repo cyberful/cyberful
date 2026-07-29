@@ -13,6 +13,7 @@ import {
   activateCircuitBreaker,
   circuitBreakerError,
   clearCircuitBreaker,
+  dismissCircuitBreaker,
   readCircuitBreaker,
 } from "./circuit-breaker"
 
@@ -23,17 +24,49 @@ describe("CAPTCHA circuit breaker", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-"))
     const file = path.join(root, "state.json")
     try {
-      await activateCircuitBreaker(file, "recon", challenged, true)
+      const activation = await activateCircuitBreaker(file, "recon", challenged, true)
       expect((await readCircuitBreaker(file))?.surfacedAt).toBeNumber()
       expect(await circuitBreakerError(file, "browser_click", challenged)).toContain("profile 2")
       expect(await circuitBreakerError(file, "browser_click", { ...challenged, profile: 1 })).toBeUndefined()
       expect(await circuitBreakerError(file, "browser_navigate", { ...challenged, origin: "https://other.test" })).toBeUndefined()
       expect(await circuitBreakerError(file, "zap_http_request", challenged)).toBeUndefined()
       expect(await circuitBreakerError(file, "browser_captcha_status", challenged)).toBeUndefined()
-      await acknowledgeCircuitBreaker(file)
+      expect(await acknowledgeCircuitBreaker(file, activation)).toBe(true)
       expect(await clearCircuitBreaker(file, { ...challenged, pageID: "page-other" })).toBe(false)
       expect(await clearCircuitBreaker(file, challenged)).toBe(true)
       expect(await circuitBreakerError(file, "browser_click", challenged)).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("lets an explicit human false-positive decision clear the active scope", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-dismiss-"))
+    const file = path.join(root, "state.json")
+    try {
+      const activation = await activateCircuitBreaker(file, "recon", challenged, true)
+      expect(await dismissCircuitBreaker(file, activation)).toBe(true)
+      expect((await readCircuitBreaker(file))?.status).toBe("cleared")
+      expect(await circuitBreakerError(file, "browser_click", challenged)).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("does not apply a late human answer to a replacement challenge", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-stale-answer-"))
+    const file = path.join(root, "state.json")
+    try {
+      const original = await activateCircuitBreaker(file, "recon", challenged, true)
+      const replacement = await activateCircuitBreaker(
+        file,
+        "recon",
+        { profile: 3, origin: "https://other.test", pageID: "page-8" },
+        true,
+      )
+      expect(await dismissCircuitBreaker(file, original)).toBe(false)
+      expect(await acknowledgeCircuitBreaker(file, original)).toBe(false)
+      expect(await readCircuitBreaker(file)).toEqual(replacement)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -23,9 +23,9 @@ cyberful auth login
 cyberful auth status
 ```
 
-The OAuth tokens remain in Cyberful's owner-only credential store and never
-enter `settings.yaml`, prompts, transcripts, or reports. Use `cyberful auth
-logout` to remove the profile.
+The subscription credentials remain in Cyberful's owner-only credential store
+and never enter `settings.yaml`, prompts, transcripts, or reports. Use
+`cyberful auth logout` to remove the configured provider credential.
 
 ## Build from source
 

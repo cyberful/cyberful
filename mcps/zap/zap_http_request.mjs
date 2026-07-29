@@ -2,7 +2,7 @@
 // Validates raw request lines and preserves absolute HTTPS destinations before
 // ZAP sees them. Origin-form requests require an explicit same-origin target
 // because ZAP cannot safely infer their scheme from the request bytes alone.
-// → mcps/zap/zap_bridge.mjs — exposes this guarded host-owned API operation.
+// → mcps/zap/zap_bridge.mjs — exposes this normalized convenience operation.
 // ────────────────────────────────────────────────────────────────────
 
 export function normalizedHttpRequest(request, targetUrl) {

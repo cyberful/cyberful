@@ -8,10 +8,21 @@ job.
 required artifact → root handoff or budget cutoff → host validation → owner shutdown/gateway exit → next phase
 ```
 
-A phase cannot move forward just by saying it is done. Cyberful checks the
-required file and handoff, saves the result, shuts down the current owner, and
-only then starts the next phase. The real memory is the saved workarea and
-evidence—not an invisible chat history.
+A phase cannot move forward just by saying it is done. The `handoff` tool first
+checks that the exact required deliverable is a non-empty regular file at the
+workarea root, keeping a wrong-path attempt inside the same AgentRun so it can
+be repaired. Cyberful records the handoff only after that check, then rechecks
+and seals the file after owner shutdown before starting the next phase. The real
+memory is the saved workarea and evidence—not an invisible chat history.
+
+The terminal outcome is one of `success`, `warning`, `blocked`, or `failed`.
+Warnings are secondary, non-terminal degradations only. Exhausted provider
+failures, missing deliverables, invalid handoffs, and unverified lifecycle
+cleanup are `failed`; an operator shutdown or a budget stop that cannot advance
+but violated no contract is `blocked`. The completion record identifies the
+started phase, last phase, and every phase actually run. Its structured primary
+failure contains phase, `provider`/`contract`/`lifecycle` origin, class,
+optional code, and a bounded redacted detail.
 
 The active-execution budget is also a phase boundary. If it expires before the
 model requests a handoff, Cyberful cancels the AgentRun tree, shuts down its
@@ -19,6 +30,19 @@ in-process owner, reaps the gateway process group, verifies and seals the
 required partial artifact, synthesizes the configured handoff, and starts the
 successor in degraded mode. A missing artifact, failed seal, invalid handoff,
 or gateway that cannot be proven stopped still halts the chain.
+
+An `unavailable` provider failure, including `server_error`, transient
+service-saturation signals such as `server_is_overloaded`, and an abnormal
+Codex WebSocket closure (`1006`), can retry the same turn inside the same
+`AgentRun`. Cyberful retains completed tool calls and tool results, removes only
+the failed assistant message, and calls Pi continuation after exponential
+full-jitter backoff. Token usage remains cumulative and text from a discarded
+attempt is not published. The wait is bounded by
+`agent.retry`, cancellation, shutdown, and the remaining active-execution
+budget. Retry scheduling, attempts, success, exhaustion, and cancellation are
+published as redacted status events in the timeline and raw transcript.
+Authentication, security, capacity, rate-limit, and cancellation failures do
+not use this path, and a transient retry never invokes the security fallback.
 
 Blocking human decisions pause active-execution accounting rather than spending
 that budget. The first pending question stops the budget timer of every
@@ -109,6 +133,22 @@ An assistant must submit a decision only after the human explicitly selects or
 rejects that specific pending request; a generic instruction to continue is not
 approval and must not be inferred as one.
 
+Routine guidance has a separate control-plane operation:
+
+```sh
+cyberful --port 4096
+# From another terminal:
+cyberful session steer ses_... \
+  --attach http://localhost:4096 \
+  --message "Recheck the active page and continue."
+```
+
+The dedicated endpoint accepts text only and delivers it only to a busy root
+AgentRun. It returns false if that run is no longer steerable and never falls
+back to creating a new turn. It carries no provider, model, system prompt,
+approval answer, or phase authority. A CAPTCHA or other blocking request must
+still be resolved through its request ID in the approval mailbox.
+
 Phase cleanup owns only the declared output. For Markdown, Cyberful passes the
 single required deliverable path to the normalizer; it never recursively edits
 the workarea. Imported repositories, snapshots, prior artifacts, and arbitrary
@@ -132,6 +172,9 @@ mutually exclusive verdict inventory. Positive-evidence suspicion, an ambiguous
 executed test, and a test that never ran are distinct host-validated states.
 Untestable entries use a bounded blocker taxonomy and retain the exact next
 step, so downstream phases can distinguish product evidence from a coverage gap.
+Confirmed and suspected IDs must resolve to current-run findings. Negative-only
+outcomes that never met the registry admission threshold retain stable backlog
+IDs without being promoted into findings.
 
 Every workarea also owns an authoritative live finding registry at
 `raw/findings/registry.json`. It keeps stable finding IDs and aliases, run
@@ -148,8 +191,10 @@ The registry separates technical state (`SUSPECTED`, `INCONCLUSIVE`,
 `SURVIVES`, `REVISE`, or `DEMOTE`), Bug Bounty submission disposition, and
 severity. Recon through Verify use the host-owned `finding` tool to `record`,
 `revisit`, `update`, `alias`, `list`, or `get`; Report can only `list` and
-`get`. Exploit and Hacker cannot hand off when their verdict inventory diverges
-from the registry, and Verify must record the workflow's final decisions.
+`get`. Exploit and Hacker cannot hand off when a current-run finding is missing,
+duplicated, or state-divergent, or when a positive verdict is not registered.
+Negative-only backlog verdicts do not alter the registry. Verify must record the
+workflow's final decisions.
 
 Writes take a cross-process workarea lock, re-read the latest revision under
 that lock, and replace the JSON atomically. Invalid JSON, unknown schema
@@ -200,12 +245,80 @@ remain governed by `MISSION.md`. Code Audit remains offline: its Attack
 and Verify phases can bootstrap dependencies in a source-blind disposable
 container, then execute and attack the project on loopback inside cyberful-os.
 
+Large MCP catalogs are kept by the phase worker and loaded through the immediate
+host-owned `tool_search` tool. The first provider request carries only essential
+controls such as `skill_read`, `handoff`, eligible delegation/fallback controls,
+explicitly eager dynamic tools, and `tool_search`. Searching by name, title, or
+description adds the selected definitions cumulatively to that `AgentRun`;
+`query: "*"` enumerates the complete authorized catalog with `limit` and the
+returned cursor. Providers with native tool-search support receive these as
+deferred definitions, while other providers receive only the selected schemas
+on the next turn.
+
+Search gives exact names and name prefixes absolute priority, then ranks
+weighted coverage across name, label, and description. Infrastructure words
+such as `tool`, `MCP`, `cyberful`, and `os` do not make every remaining query
+word mandatory; descriptive requests such as `shell command execution
+cyberful-os` therefore still resolve `shell`.
+
+This changes payload size, not authority. Every authorized browser,
+cyberful-os, Ghidra, and ZAP operation remains searchable, including the full
+ZAP catalog, and the gateway rechecks policy when the tool executes. Loaded
+definitions are private to one root, child, or fallback run and are not
+implicitly inherited by another.
+
+Long phases also bound the message side of the provider payload independently
+for every root, child, and fallback `AgentRun`. Before each Pi turn,
+`transformContext` estimates the complete system, tool-schema, and message
+projection. Its trigger reserves both the active maximum output and a safety
+margin, and otherwise defaults to 68% of the resolved model context window.
+
+The authoritative in-process transcript is never compacted in place. Cyberful
+instead preserves selected historical tool results as owner-only, SHA-256-bound
+JSON artifacts under `raw/context-tool-results/` and replaces only their
+provider-facing content with an excerpt and exact artifact reference. Tool
+availability and execution policy are unchanged; ZAP, browser, cyberful-os, and
+host results remain complete and can be reread in targeted ranges.
+The resulting projection ledger is private to that `AgentRun`. Subsequent turns
+reuse existing compact messages and artifact references, estimate pressure
+against the effective projected context, and virtualize only newly selected
+results. The complete internal transcript remains untouched without causing the
+same compaction to repeat on every provider turn.
+
+User messages and the immutable system contract are never replaced. Assistant
+text, decisions, hypotheses, finding and handoff calls, child-run structure,
+tool-call IDs, and call/result pairs remain in the projection. Older,
+non-semantic results are virtualized first; recent and finding-related results
+are kept preferentially, but a single oversized recent result can also become
+an artifact reference rather than exhausting the whole run.
+
+A structured provider `context_length_exceeded` starts one emergency recovery
+for that unchanged context. The failed assistant message alone is discarded,
+the same transcript receives a more aggressive provider projection, and
+`Agent.continue()` resumes the same run without repeating completed tools. A
+second failure for the same context is terminal. This path is not provider
+retry, has no jitter or backoff, and never invokes the security fallback.
+
+Each attempt emits redacted `context_compaction` lifecycle events. They report
+proactive or emergency mode, estimated tokens before and after, messages
+removed, tool results virtualized, and complete artifacts preserved. The live
+timeline renders only the terminal outcome as one concise informational row;
+`scheduled` and `started` remain available for transcript-level diagnostics.
+
 The gateway stops before the next phase starts, so phase-local tool registrations
 and traffic grants do not leak across phases. The explicitly engagement-owned
 ZAP, Ghidra, and EVM runtimes are the exceptions: their host owners carry only
 the declared runtime state across eligible phases and guarantee terminal
 container cleanup. Ghidra's protected project remains on disk by design so a
 later instance for the same workarea can reopen analysis and annotations.
+
+Before closing upstream MCP clients, the gateway captures the exact PID, PPID,
+start timestamp, and command identities of only the processes it spawned.
+Normal SDK close runs first. Surviving identities are recorded before a bounded
+`SIGTERM`/`SIGKILL` fallback, and a PID is signalled only if its start timestamp
+and command still match. This proves ownership across reparenting, avoids PID
+reuse and concurrent-run collisions, and makes an unreaped process a lifecycle
+failure rather than silently advancing.
 
 ## Runtime observability
 
@@ -215,11 +328,21 @@ resolved novelty contract, provider/model route, system and component hashes,
 skills used, delegation/fallback activity, and structured verdict counts. It
 does not store credentials, full system messages, or reasoning text.
 
-The derived values use `max(input - cacheRead, 0)` for uncached input,
-`cacheRead / input` for reuse, `input / output` for amplification, uncached input
-over input for churn, and reasoning output over total output for reasoning share.
-Ratios are bounded and missing subsystem snapshots remain absent rather than
-being fabricated as zeros for a phase.
+The owner creates the phase transcript with mode `0600` before execution and
+serially appends every redacted event as it arrives. The final host-owned status
+is appended through the same queue. An interruption therefore leaves a valid
+partial audit record without retaining or rewriting the whole transcript in
+memory.
+
+Provider-neutral derived values treat provider `input`, cache reads, and cache
+writes as disjoint prompt components. `totalPromptInput` is
+`input + cache.read + cache.write`; `uncachedInput` is
+`input + cache.write` because creating a cache entry processes new context.
+Cache reuse is `cache.read / totalPromptInput`, input amplification is
+`totalPromptInput / output`, churn is
+`uncachedInput / totalPromptInput`, and reasoning share remains reasoning output
+over total output. Ratios are bounded and missing subsystem snapshots remain
+absent rather than being fabricated as zeros for a phase.
 
 For repository workflows, imported source and durable source snapshots live in
 an owner-only host store outside the Pi workarea. The model receives no
@@ -244,8 +367,12 @@ reasoning or the parent's full transcript. It remains inside the owning phase's
 workarea, gateway, browser/ZAP state, Ghidra project, skill catalog, traffic
 policy, depth, concurrency, and budget limits. Children are attributed in the
 activity feed but do not become host phases or separate Cyberful sessions.
+Each `delegate_task` call carries a host-owned `sourceCallID` into its child.
+The TUI folds that child's lifecycle into the originating card and shows the
+run ID, provider/model, elapsed time, last activity, tool count, terminal state,
+and structured failure. Unassociated actors remain independent rows.
 
-A primary root or child can ask the host for a specific fallback task when it
+A main-route root or child can ask the host for a specific fallback task when it
 predicts an imminent provider security-policy block. The host, not the model,
 decides admission and routing. Proactive admissions share a session quota of 2%
 by default. A normalized, provider-structured `security_policy_block` starts the
@@ -256,7 +383,7 @@ policy words do not.
 A fallback root is also a complete Pi `AgentRun`. It receives the same
 authorization, persona, tools, skill catalog, evidence rules, and ability to
 create bounded descendants. Its entire tree keeps fallback provider affinity,
-so no automatic route can ping-pong back to primary. A terminal fallback
+so no automatic route can ping-pong back to main. A terminal fallback
 provider error ends that branch and returns any partial result. Only the
 original phase root owns `handoff`; all other actors return structured results
 to their parent.
@@ -285,10 +412,12 @@ answer arrives, Cyberful retracts the question so it cannot authorize later
 work.
 
 All managed Docker resources carry `managed`, `owner-pid`, `run-owner`,
-`session`, and `runtime` labels. Shutdown first asks the in-process Pi owner to
-close its AgentRun tree and gateway bridge. The outer control-plane worker
-process has a bounded teardown window, and Docker then gets an independent
-cleanup window. The terminal performs a run-owner sweep after normal exit,
-control-plane worker timeout, or crash; startup also reaps managed containers
-whose owner PID is dead. Cleanup emits started, completed, or failed diagnostics
-followed by `shutdown complete`.
+`session`, and `runtime` labels, including the shared dependency
+`cyberful-os` container. Shutdown first asks the in-process Pi owner to close its
+AgentRun tree and gateway bridge. The outer control-plane worker gets two
+minutes to unwind the phase and its Docker runtimes. If that deadline expires,
+the terminal kills the remaining process trees and reaps the exact last-known
+container snapshot before awaiting run-label discovery. A final run-owner sweep
+catches late creations; startup also reaps managed containers whose owner PID
+is dead. Cleanup emits started, completed, or failed diagnostics followed by
+`shutdown complete`.

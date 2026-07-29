@@ -41,7 +41,7 @@ const WORKAREA_PLACEHOLDER = "Type your workarea"
 const WORKAREA_Z_INDEX = 1000
 export const HOME_STATUS_PANEL_BACKGROUND = RGBA.fromValues(0.025, 0.025, 0.04, 0.72)
 
-type RuntimeStatusValue = RuntimeStatus["primary"]["status"] | "checking"
+type RuntimeStatusValue = RuntimeStatus["main"]["status"] | "checking"
 type RuntimeStatusTone = "success" | "warning" | "error"
 
 export function homeRuntimeStatusTone(status: RuntimeStatusValue): RuntimeStatusTone {
@@ -95,17 +95,17 @@ function RuntimeIndicator(props: RuntimeIndicatorCopy) {
 }
 
 export function HomeRuntimeRecap(props: { readiness: RuntimeStatus | "failed" | undefined }) {
-  const primary = () => (props.readiness === "failed" ? undefined : props.readiness?.primary)
-  const primaryStatus = (): RuntimeStatusValue =>
-    props.readiness === "failed" ? "unavailable" : (primary()?.status ?? "checking")
-  const primaryIdentity = () => {
-    const value = primary()
+  const main = () => (props.readiness === "failed" ? undefined : props.readiness?.main)
+  const mainStatus = (): RuntimeStatusValue =>
+    props.readiness === "failed" ? "unavailable" : (main()?.status ?? "checking")
+  const mainIdentity = () => {
+    const value = main()
     return value ? `${value.name} · ${value.model}` : undefined
   }
   const row = (): RuntimeIndicatorCopy => ({
     title: "Subsystem",
-    identity: primaryIdentity(),
-    status: primaryStatus(),
+    identity: mainIdentity(),
+    status: mainStatus(),
   })
 
   return (

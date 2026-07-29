@@ -31,7 +31,7 @@ import {
   expertPhaseLabel,
   isExpertSemanticProgress,
 } from "@tui/context/expert-feed"
-import type { PhaseActivityActorState } from "@/session/event"
+import type { PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
 import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
 import { SHELL_TOOL_ICON, ToolDisplayLabel, toolDisplayDetails, toolDisplayText } from "@tui/component/tool-label"
@@ -529,7 +529,6 @@ export function Session() {
               if (child) scroll.scrollBy(child.y - scroll.y - 1)
             }}
             sessionID={route.sessionID}
-            setPrompt={(promptInfo) => prompt?.set(promptInfo)}
           />
         ))
       },
@@ -1224,11 +1223,7 @@ export function Session() {
                                     onMouseUp={() => {
                                       if (renderer.getSelection()?.getSelectedText()) return
                                       dialog.replace(() => (
-                                        <DialogMessage
-                                          messageID={current().id}
-                                          sessionID={route.sessionID}
-                                          setPrompt={(promptInfo) => prompt?.set(promptInfo)}
-                                        />
+                                        <DialogMessage messageID={current().id} sessionID={route.sessionID} />
                                       ))
                                     }}
                                     message={current()}
@@ -1353,9 +1348,13 @@ function ExpertPhaseRow(props: {
   // A standalone "output" (a call whose tool frame was dropped) collapses to the first few lines and
   // expands on click. The paired-tool case never reaches this — its output is merged into the card below.
   const renderer = useRenderer()
-  const [outputOpen, setOutputOpen] = createSignal(false)
   const outputPreview = createMemo(() => expertPreview(props.entry.text, EXPERT_OUTPUT_PREVIEW_LINES))
+  const outputArtifact = useArtifactOutput(
+    () => ({ sessionID: props.entry.sessionID, artifact: props.entry.artifact }),
+    () => props.entry.text,
+  )
   const semanticProgress = createMemo(() => isExpertSemanticProgress(props.entry.text))
+  const contextCompaction = createMemo(() => props.entry.contextCompaction)
   // Synthetic ToolPart props let a phase-feed tool render through the same GenericTool as session tools.
   const toolPart = createMemo<ToolPart>(() => {
     const e = props.entry
@@ -1395,6 +1394,12 @@ function ExpertPhaseRow(props: {
     },
     get part() {
       return toolPart()
+    },
+    get artifact() {
+      return props.entry.artifact
+    },
+    get delegation() {
+      return props.entry.delegation
     },
     get blockMarginTop() {
       return actorLabel() ? 0 : undefined
@@ -1452,7 +1457,7 @@ function ExpertPhaseRow(props: {
             flexDirection="column"
             onMouseUp={() => {
               if (renderer.getSelection()?.getSelectedText()) return
-              setOutputOpen((v) => !v)
+              outputArtifact.activate()
             }}
           >
             <Show when={actorLabel()}>
@@ -1463,7 +1468,7 @@ function ExpertPhaseRow(props: {
               )}
             </Show>
             <Show
-              when={outputOpen()}
+              when={outputArtifact.expanded()}
               fallback={
                 <For each={outputPreview().body.split("\n")}>
                   {(line) => (
@@ -1475,13 +1480,21 @@ function ExpertPhaseRow(props: {
               }
             >
               <text wrapMode="word">
-                <span style={{ fg: theme.textMuted }}>{props.entry.text}</span>
+                <span style={{ fg: theme.textMuted }}>{outputArtifact.content()}</span>
               </text>
             </Show>
-            <Show when={outputOpen() || outputPreview().hidden > 0}>
+            <Show when={props.entry.artifact || outputArtifact.expanded() || outputPreview().hidden > 0}>
               <text>
                 <span style={{ fg: theme.textMuted }}>
-                  {outputOpen() ? "click to collapse" : `…  ＋${outputPreview().hidden} more lines · click to expand`}
+                  {outputArtifact.loading()
+                    ? "loading artifact…"
+                    : !outputArtifact.expanded()
+                      ? props.entry.artifact
+                        ? `… full output preserved (${Math.ceil(props.entry.artifact.bytes / 1024)} KiB) · click to expand`
+                        : `…  ＋${outputPreview().hidden} more lines · click to expand`
+                      : outputArtifact.nextOffset() !== undefined
+                        ? "click to load more"
+                        : "click to collapse"}
                 </span>
               </text>
             </Show>
@@ -1494,13 +1507,27 @@ function ExpertPhaseRow(props: {
             when={props.entry.phaseStatus?.ok ? props.entry.phaseStatus : undefined}
             fallback={
               <box
-                marginTop={semanticProgress() ? 1 : 2}
-                marginBottom={semanticProgress() ? 1 : 2}
+                marginTop={semanticProgress() || contextCompaction() ? 1 : 2}
+                marginBottom={semanticProgress() || contextCompaction() ? 1 : 2}
                 paddingLeft={3}
                 flexShrink={0}
               >
                 <text wrapMode="word">
-                  <span style={{ fg: semanticProgress() ? theme.textMuted : theme.warning }}>{props.entry.text}</span>
+                  <span
+                    style={{
+                      fg: contextCompaction()
+                        ? contextCompaction()?.state === "failed"
+                          ? theme.warning
+                          : theme.info
+                        : semanticProgress()
+                          ? theme.textMuted
+                          : props.entry.phaseStatus
+                            ? theme.error
+                            : theme.warning,
+                    }}
+                  >
+                    {props.entry.text}
+                  </span>
                 </text>
               </box>
             }
@@ -2143,8 +2170,80 @@ type ToolProps<T> = {
   tool: string
   output?: string
   part: ToolPart
+  artifact?: PhaseActivityArtifact
+  delegation?: ExpertPhaseEntry["delegation"]
   blockMarginTop?: number
 }
+
+function useArtifactOutput(
+  source: () => { readonly sessionID: string; readonly artifact?: PhaseActivityArtifact },
+  preview: () => string,
+) {
+  const sdk = useSDK()
+  const toast = useToast()
+  const [expanded, setExpanded] = createSignal(false)
+  const [content, setContent] = createSignal("")
+  const [nextOffset, setNextOffset] = createSignal<number>()
+  const [loaded, setLoaded] = createSignal(false)
+  const [loading, setLoading] = createSignal(false)
+
+  const load = async (offset: number) => {
+    const { artifact, sessionID } = source()
+    if (!artifact || loading()) return
+    setLoading(true)
+    try {
+      const response = await sdk.client.session.toolArtifact(
+        {
+          sessionID,
+          path: artifact.path,
+          offset: String(offset),
+          limit: String(64 * 1024),
+        },
+        { throwOnError: true },
+      )
+      const chunk = response.data
+      if (!chunk) throw new Error("Tool-result artifact returned no data.")
+      setContent((current) => (offset === 0 ? chunk.content : current + chunk.content))
+      setNextOffset(typeof chunk.nextOffset === "number" ? chunk.nextOffset : undefined)
+      setLoaded(true)
+    } catch (error) {
+      toast.show({ message: errorMessage(error), variant: "error", duration: 6000 })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const activate = () => {
+    if (!source().artifact) {
+      setExpanded((value) => !value)
+      return
+    }
+    if (!expanded()) {
+      setExpanded(true)
+      if (!loaded()) void load(0)
+      return
+    }
+    const next = nextOffset()
+    if (next !== undefined) {
+      void load(next)
+      return
+    }
+    setExpanded(false)
+  }
+
+  return {
+    expanded,
+    loading,
+    activate,
+    content: () => (source().artifact && loaded() ? content() : preview()),
+    nextOffset,
+  }
+}
+
+function useToolArtifact<T>(props: ToolProps<T>, preview: () => string) {
+  return useArtifactOutput(() => ({ sessionID: props.part.sessionID, artifact: props.artifact }), preview)
+}
+
 function GenericTool(props: ToolProps<Tool.Info>) {
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
@@ -2160,10 +2259,12 @@ function GenericTool(props: ToolProps<Tool.Info>) {
   // OUTPUT_MAX_LINES lines and expands to the rest on click, so a single HTTP dump or scan cannot flood
   // the transcript while the card remains visually consistent for short and long results.
   const OUTPUT_MAX_LINES = 10
-  const [expanded, setExpanded] = createSignal(false)
+  const artifact = useToolArtifact(props, visibleOutput)
   const maxChars = createMemo(() => OUTPUT_MAX_LINES * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(visibleOutput(), OUTPUT_MAX_LINES, maxChars()))
-  const limited = createMemo(() => (expanded() || !collapsed().overflow ? visibleOutput() : collapsed().output))
+  const limited = createMemo(() =>
+    artifact.expanded() || !collapsed().overflow ? artifact.content() : collapsed().output,
+  )
 
   return (
     <BlockTool
@@ -2172,9 +2273,32 @@ function GenericTool(props: ToolProps<Tool.Info>) {
       part={props.part}
       spinner={isRunning()}
       marginTop={props.blockMarginTop}
-      onClick={collapsed().overflow ? () => setExpanded((value) => !value) : undefined}
+      onClick={props.artifact || collapsed().overflow ? artifact.activate : undefined}
     >
       <box gap={1}>
+        <Show when={props.delegation}>
+          {(delegation) => {
+            const actor = () => delegation().actor
+            const elapsed = () =>
+              actor().startedAt === undefined
+                ? undefined
+                : Math.max(0, (actor().lastActivityAt ?? Date.now()) - actor().startedAt!)
+            return (
+              <text fg={theme.textMuted} wrapMode="none" truncate>
+                {[
+                  actor().id,
+                  [actor().provider, actor().model].filter(Boolean).join("/"),
+                  expertActorStateText(delegation().state),
+                  elapsed() === undefined ? "" : expertPhaseDuration(elapsed()!),
+                  `${actor().toolCalls ?? 0} tools`,
+                  actor().failure ? `failure ${actor().failure}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </text>
+            )
+          }}
+        </Show>
         <Show when={visibleOutput()}>
           <DetectedToolOutput
             content={limited()}
@@ -2183,8 +2307,18 @@ function GenericTool(props: ToolProps<Tool.Info>) {
             tool={props.tool}
           />
         </Show>
-        <Show when={collapsed().overflow}>
-          <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+        <Show when={props.artifact || collapsed().overflow}>
+          <text fg={theme.textMuted}>
+            {artifact.loading()
+              ? "Loading artifact…"
+              : !artifact.expanded()
+                ? props.artifact
+                  ? `Click to expand · ${Math.ceil(props.artifact.bytes / 1024)} KiB preserved`
+                  : "Click to expand"
+                : artifact.nextOffset() !== undefined
+                  ? "Click to load more"
+                  : "Click to collapse"}
+          </text>
         </Show>
       </box>
     </BlockTool>
@@ -2319,12 +2453,12 @@ function Shell(props: ToolProps<ShellTool>) {
   const isRunning = createMemo(() => props.part.state.status === "running")
   const rawOutput = createMemo(() => props.metadata.output ?? props.output)
   const output = createMemo(() => cleanToolOutputText(rawOutput()?.trim() ?? ""))
-  const [expanded, setExpanded] = createSignal(false)
+  const artifact = useToolArtifact(props, output)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
   const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
+    if (artifact.expanded() || !collapsed().overflow) return artifact.content()
     return collapsed().output
   })
 
@@ -2350,7 +2484,7 @@ function Shell(props: ToolProps<ShellTool>) {
           part={props.part}
           spinner={isRunning()}
           marginTop={props.blockMarginTop}
-          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+          onClick={props.artifact || collapsed().overflow ? artifact.activate : undefined}
         >
           <box gap={1}>
             <DetectedToolOutput
@@ -2367,8 +2501,18 @@ function Shell(props: ToolProps<ShellTool>) {
                 tool="bash"
               />
             </Show>
-            <Show when={collapsed().overflow}>
-              <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+            <Show when={props.artifact || collapsed().overflow}>
+              <text fg={theme.textMuted}>
+                {artifact.loading()
+                  ? "Loading artifact…"
+                  : !artifact.expanded()
+                    ? props.artifact
+                      ? `Click to expand · ${Math.ceil(props.artifact.bytes / 1024)} KiB preserved`
+                      : "Click to expand"
+                    : artifact.nextOffset() !== undefined
+                      ? "Click to load more"
+                      : "Click to collapse"}
+              </text>
             </Show>
           </box>
         </BlockTool>

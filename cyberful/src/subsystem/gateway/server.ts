@@ -9,7 +9,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import path from "node:path"
 import os from "node:os"
-import { readFile, writeFile } from "node:fs/promises"
+import { lstat, readFile, writeFile } from "node:fs/promises"
 import { SubsystemPhase } from "../phase"
 import { SubsystemBrowserCdp } from "../browser-cdp"
 import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
@@ -34,7 +34,8 @@ import { SubsystemCompletion } from "../completion"
 import { SubsystemVerdict } from "../verdict"
 import { SubsystemUpstream } from "../upstream"
 import { SessionID } from "../../session/schema"
-import { ToolUsageRecorder } from "./tool-usage"
+import { ToolUsageRecorder, type ToolUsageEvent } from "./tool-usage"
+import { ownedProcessTree, processSnapshot, reapCapturedProcessTree } from "./mcp-process-owner"
 import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
 import {
@@ -64,7 +65,9 @@ import {
   activateCircuitBreaker,
   circuitBreakerError,
   clearCircuitBreaker,
+  dismissCircuitBreaker,
   readCircuitBreaker,
+  type CircuitBreakerState,
 } from "./circuit-breaker"
 import {
   approvalElicitationMetadata,
@@ -74,11 +77,7 @@ import {
   parseHumanQuestions,
   type HumanQuestion,
 } from "../human-question"
-import {
-  gatewayPhasePolicy,
-  runtimeNetworkAllowed,
-  type GatewayPhasePolicy,
-} from "./phase-policy"
+import { gatewayPhasePolicy, runtimeNetworkAllowed, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
@@ -206,8 +205,7 @@ function localToolDefinitions(
   const sourceImport = policy.sourceImport ? [SOURCE_IMPORT_TOOL_DEF] : []
   const git = gitToolsAvailable() && policy.auditDiff ? [...GIT_TOOL_DEFS] : []
   const codeGraph = codeGraphToolsAvailable() && policy.allows("code-graph") ? [...CODE_GRAPH_TOOL_DEFS] : []
-  const lab =
-    policy.auditLab && auditLabAvailable() ? [AUDIT_LAB_TOOL_DEF] : []
+  const lab = policy.auditLab && auditLabAvailable() ? [AUDIT_LAB_TOOL_DEF] : []
   const evmLab = policy.evmLab && evmLabAvailable() ? [EVM_LAB_TOOL_DEF] : []
   const evmEvidence = policy.evmEvidence && evmEvidenceAvailable() ? [EVM_EVIDENCE_TOOL_DEF] : []
   return [
@@ -376,9 +374,10 @@ async function handleQuestion(
   const questions = parseHumanQuestions(args.questions)
   if (!questions) return text({ error: "question requires one to three valid questions" })
   const captcha = args.kind === "captcha"
+  let captchaState: CircuitBreakerState | undefined
   if (captcha) {
-    const state = circuit ? await readCircuitBreaker(circuit.filePath) : undefined
-    if (!state || state.status === "cleared" || !state.surfacedAt)
+    captchaState = circuit ? await readCircuitBreaker(circuit.filePath) : undefined
+    if (!captchaState || captchaState.status === "cleared" || !captchaState.surfacedAt)
       return text(
         {
           error:
@@ -394,6 +393,10 @@ async function handleQuestion(
           question: "Resolve the visible CAPTCHA in the browser Cyberful brought to the front, then confirm here.",
           options: [
             { label: "Resolved", description: "I completed the visible challenge in that browser." },
+            {
+              label: "No challenge visible",
+              description: "I checked the surfaced browser and no CAPTCHA or human challenge is visible.",
+            },
             { label: "Cannot resolve", description: "Keep this browser profile and origin paused." },
           ],
           custom: false,
@@ -422,7 +425,12 @@ async function handleQuestion(
     })
   const answers = parseApprovalElicitationContent(presentedQuestions, response.content)
   if (!answers) return text({ error: "native elicitation returned invalid answers" }, true)
-  if (captcha && circuit) await acknowledgeCircuitBreaker(circuit.filePath)
+  const captchaAnswer = captcha ? answers[0]?.[0] : undefined
+  let captchaDecisionApplied: boolean | undefined
+  if (captcha && circuit && captchaState && captchaAnswer === "Resolved")
+    captchaDecisionApplied = await acknowledgeCircuitBreaker(circuit.filePath, captchaState)
+  if (captcha && circuit && captchaState && captchaAnswer === "No challenge visible")
+    captchaDecisionApplied = await dismissCircuitBreaker(circuit.filePath, captchaState)
   return text({
     ok: true,
     answers: presentedQuestions.map((question, index) => ({
@@ -430,7 +438,13 @@ async function handleQuestion(
       answers: answers[index] ?? [],
     })),
     output: captcha
-      ? "The human answered. Call browser_captcha_status on the original page; only that profile and origin remain paused until clearance."
+      ? captchaDecisionApplied === false
+        ? "The CAPTCHA state changed before this answer arrived, so the decision was not applied. Inspect and answer the current request."
+        : captchaAnswer === "Resolved"
+          ? "The human resolved the challenge. Call browser_captcha_status on the original page; only that profile and origin remain paused until clearance."
+          : captchaAnswer === "No challenge visible"
+            ? "The human confirmed that no challenge is visible. The false-positive pause is cleared; continue without treating passive provider signals as a CAPTCHA."
+            : "The human could not resolve the challenge. Keep this browser profile and origin paused."
       : "The human answered. Continue the current phase using these answers.",
   })
 }
@@ -473,6 +487,8 @@ interface HandoffConfig {
   workflow?: string
   successor?: string
   signalPath: string
+  workareaRoot?: string
+  artifact?: string
 }
 
 function handoffConfig(): HandoffConfig | undefined {
@@ -484,7 +500,15 @@ function handoffConfig(): HandoffConfig | undefined {
   const terminal = process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL === "1"
   if (Boolean(successor) === terminal)
     throw new Error("expert-gateway handoff requires exactly one successor or terminal marker")
-  return { phase, workflow: gatewayPhasePolicy().workflow, successor, signalPath }
+  const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
+  if (workareaRoot && !path.isAbsolute(workareaRoot))
+    throw new Error("expert-gateway workarea root must be absolute")
+  const artifact = process.env.CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT?.trim()
+  if (artifact && (path.isAbsolute(artifact) || artifact.split(/[\\/]+/).includes("..")))
+    throw new Error("expert-gateway handoff artifact must be a relative workarea path")
+  if (artifact && !workareaRoot)
+    throw new Error("expert-gateway handoff artifact validation requires the workarea root")
+  return { phase, workflow: gatewayPhasePolicy().workflow, successor, signalPath, workareaRoot, artifact }
 }
 
 function handoffToolDef(config: HandoffConfig) {
@@ -504,7 +528,9 @@ function handoffToolDef(config: HandoffConfig) {
         },
         artifact: {
           type: "string",
-          description: "Relative path to the phase deliverable or workarea artifact.",
+          description: config.artifact
+            ? `Exact required phase deliverable: ${config.artifact}.`
+            : "Relative path to the phase deliverable or workarea artifact.",
         },
         target: {
           type: "string",
@@ -533,10 +559,10 @@ function handoffToolDef(config: HandoffConfig) {
         verdicts: {
           ...SubsystemVerdict.INPUT_SCHEMA,
           description:
-            "Complete mutually-exclusive hypothesis inventory. SUSPECTED requires positive target evidence; UNTESTABLE requires a typed blocker and exact next step.",
+            "Complete mutually-exclusive hypothesis inventory. CONFIRMED and SUSPECTED IDs must resolve to current-run findings; negative-only outcomes may retain stable backlog IDs. SUSPECTED requires positive target evidence; UNTESTABLE requires a typed blocker and exact next step.",
         },
       },
-      required: ["summary", ...(verdictsRequired ? ["verdicts"] : [])],
+      required: ["summary", ...(config.artifact ? ["artifact"] : []), ...(verdictsRequired ? ["verdicts"] : [])],
     },
   }
 }
@@ -556,6 +582,10 @@ async function handleHandoff(
   const artifact = typeof args.artifact === "string" ? args.artifact.trim() : undefined
   if (artifact && (path.isAbsolute(artifact) || artifact.split(/[\\/]+/).includes("..")))
     return text({ error: "handoff artifact must be a relative path inside the workarea" })
+  if (config.artifact && artifact !== config.artifact)
+    return text({
+      error: `handoff requires artifact '${config.artifact}' at the workarea root; inside cyberful-os use '/workspace/${config.artifact}'`,
+    })
   const completion = args.completion === undefined ? undefined : SubsystemCompletion.parseCandidate(args.completion)
   if (args.completion !== undefined && !completion)
     return text({ error: "handoff completion requires a non-empty title and summaryMarkdown" })
@@ -571,6 +601,37 @@ async function handleHandoff(
   if (lifecycleError) return text({ error: lifecycleError }, true)
   const noveltyError = await guards.novelty?.handoffError()
   if (noveltyError) return text({ error: noveltyError }, true)
+  // ── Handoff Acceptance Proves The Required Artifact Exists ──────
+  // A model may successfully create a deliverable beneath the wrong nested
+  // directory while believing it wrote to the workarea root. Recording the
+  // signal first would end the AgentRun before the host discovers the missing
+  // file, making an otherwise repairable path mistake terminal. The gateway
+  // therefore validates the host-owned exact path before accepting handoff;
+  // the phase runner still rechecks it after shutdown to close the race.
+  //
+  // @docs/concepts/execution-model.md
+  // ────────────────────────────────────────────────────────────────
+  if (config.artifact && config.workareaRoot) {
+    const artifactPath = path.join(config.workareaRoot, config.artifact)
+    try {
+      const info = await lstat(artifactPath)
+      if (!info.isFile() || info.size === 0)
+        return text({
+          error: `required deliverable '${config.artifact}' must be a non-empty regular file at the workarea root; inside cyberful-os use '/workspace/${config.artifact}'`,
+        })
+    } catch (error) {
+      if (nodeErrorCode(error) === "ENOENT")
+        return text({
+          error: `required deliverable '${config.artifact}' is missing from the workarea root; inside cyberful-os write '/workspace/${config.artifact}' and retry handoff`,
+        })
+      return text(
+        {
+          error: `could not validate required deliverable '${config.artifact}': ${error instanceof Error ? error.message : String(error)}`,
+        },
+        true,
+      )
+    }
+  }
   try {
     await writeFile(
       config.signalPath,
@@ -623,10 +684,7 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
       if (rejection) return text({ error: `refusing to save '${name}': ${rejection}` }, true)
       if (args.description !== undefined && typeof args.description !== "string")
         return text({ error: "description must be a string" }, true)
-      if (
-        typeof args.description === "string" &&
-        args.description.length > SessionVariable.MAX_DESCRIPTION_LENGTH
-      )
+      if (typeof args.description === "string" && args.description.length > SessionVariable.MAX_DESCRIPTION_LENGTH)
         return text(
           { error: `description must contain at most ${SessionVariable.MAX_DESCRIPTION_LENGTH} characters` },
           true,
@@ -769,6 +827,22 @@ function annotateAdjustments(result: CallToolResult, adjustments: readonly ToolA
   }
 }
 
+function annotateBrowserProfile(result: CallToolResult, profile: BrowserProfileId | undefined): CallToolResult {
+  if (profile === undefined) return result
+  const existingMeta = isRecord(result._meta) ? result._meta : {}
+  const existingCyberful = isRecord(existingMeta.cyberful) ? existingMeta.cyberful : {}
+  return {
+    ...result,
+    _meta: {
+      ...existingMeta,
+      cyberful: {
+        ...existingCyberful,
+        browserProfile: profile,
+      },
+    },
+  }
+}
+
 export type GatewayServer = Server & { closeGateway: () => Promise<void> }
 
 // ── Variable Expansion Never Returns Secrets To The Model ──────────
@@ -801,6 +875,62 @@ function resultMetric(result: CallToolResult, name: "lead_count" | "suspected_co
   return Number.parseInt(value, 10)
 }
 
+function boundedErrorCode(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return
+  const code = String(value).trim()
+  return code && code.length <= 64 && /^[a-zA-Z0-9_.:-]+$/.test(code) ? code : undefined
+}
+
+function toolFailureMetadata(result: CallToolResult): Pick<
+  ToolUsageEvent,
+  "error_class" | "error_code" | "tool_exit_code"
+> {
+  const text = result.content?.flatMap((content) => (content.type === "text" ? [content.text] : [])).join("\n") ?? ""
+  const records = result.content?.flatMap((content) => {
+    if (content.type !== "text") return []
+    const parsed = jsonRecord(content.text)
+    return parsed ? [parsed] : []
+  })
+  const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined
+  const candidates = [...(records ?? []), ...(structured ? [structured] : [])]
+  const exitValue =
+    candidates.map((item) => item.exit_code ?? item.exitCode).find((value) => Number.isInteger(value)) ??
+    Number(text.match(/^exit_code:\s*(-?[0-9]+)$/m)?.[1])
+  const toolExitCode = Number.isInteger(exitValue) ? Number(exitValue) : undefined
+  const timedOut =
+    candidates.some((item) => item.timed_out === true || item.timedOut === true) ||
+    /^timed_out:\s*true$/m.test(text)
+  const errorCode = candidates
+    .map((item) => item.error_code ?? item.errorCode ?? item.code)
+    .map(boundedErrorCode)
+    .find((value) => value !== undefined)
+  const invalidArguments = candidates.some((item) => {
+    const value = String(item.error_class ?? item.errorClass ?? item.type ?? "").toLowerCase()
+    return value.includes("validation") || value.includes("argument")
+  })
+  return {
+    error_class: timedOut
+      ? "timeout"
+      : toolExitCode !== undefined && toolExitCode !== 0
+        ? "nonzero_exit"
+        : invalidArguments
+          ? "invalid_arguments"
+          : "tool_reported_error",
+    ...(errorCode ? { error_code: errorCode } : {}),
+    ...(toolExitCode !== undefined ? { tool_exit_code: toolExitCode } : {}),
+  }
+}
+
+function transportFailureMetadata(error: unknown): Pick<ToolUsageEvent, "error_class" | "error_code"> {
+  const message = error instanceof Error ? error.message.toLowerCase() : ""
+  const code =
+    typeof error === "object" && error !== null && "code" in error ? boundedErrorCode(error.code) : undefined
+  return {
+    error_class: message.includes("timeout") || code === "ETIMEDOUT" ? "timeout" : "transport",
+    ...(code ? { error_code: code } : {}),
+  }
+}
+
 async function observeCaptchaCircuit(config: CircuitBreakerConfig, tool: string, result: CallToolResult) {
   if (tool !== "browser_captcha_status" && tool !== "browser_captcha_handoff") return
   const action = browserAction(result)
@@ -815,7 +945,12 @@ async function observeCaptchaCircuit(config: CircuitBreakerConfig, tool: string,
     .find((item) => typeof item.detected === "boolean")
   if (!value) return
   if (value.detected === true) {
-    await activateCircuitBreaker(config.filePath, config.phase, scope, tool === "browser_captcha_handoff" && !result.isError)
+    await activateCircuitBreaker(
+      config.filePath,
+      config.phase,
+      scope,
+      tool === "browser_captcha_handoff" && !result.isError,
+    )
     return
   }
   if (tool === "browser_captcha_status") await clearCircuitBreaker(config.filePath, scope)
@@ -905,9 +1040,9 @@ export function resolveBrowserUpstreamEnv(input: {
 // ── Upstreams Receive Least-Privilege Environments ───────────────
 // All built-in processes share the gateway as a parent but do not share the same
 // trust boundary. ZAP and Ghidra bridges each receive only their engagement
-// credentials; cyberful-os exposes a shell and the browser needs neither. Ledger
-// proof keys remain host-only for every upstream. Filtering a complete environment
-// here keeps each child launch explicit and independently reviewable.
+// credentials; cyberful-os exposes a shell and the browser needs neither.
+// Deprecated ZAP scope variables are stripped from every upstream because the
+// bridge does not enforce an origin policy. Ledger proof keys remain host-only.
 // ─────────────────────────────────────────────────────────────────
 export function upstreamProcessEnv(
   key: string,
@@ -920,6 +1055,8 @@ export function upstreamProcessEnv(
     ),
   )
   delete env.CYBERFUL_CODE_GRAPH_LEDGER_KEY
+  delete env.CYBER_ZAP_SCOPE_PROMPT
+  delete env.CYBER_ZAP_ALLOWED_ORIGINS
   if (key !== "zap") {
     delete env.CYBER_ZAP_API_KEY
     delete env.CYBER_ZAP_MCP_KEY
@@ -943,6 +1080,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const builtins = SubsystemUpstream.builtin()
   const out: UpstreamTool[] = []
   const clients: Client[] = []
+  const ownedProcessRoots = new Set<number>()
   const bridgeContainers = new Set<string>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
@@ -963,6 +1101,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     if (!policy.allows(capability)) continue
     const def = builtins[key]
     if (!def || def.enabled === false || !Array.isArray(def.command) || def.command.length === 0) continue
+    let pendingClient: Client | undefined
+    let pendingTransport: StdioClientTransport | undefined
     try {
       if ((key === "zap" || key === "ghidra") && "container" in def && def.container)
         bridgeContainers.add(def.container)
@@ -1026,14 +1166,14 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         process.env.CYBERFUL_OS_CONTAINER = container
         if (appsecProfile) bridgeContainers.add(container)
       }
-      const transport = new StdioClientTransport({
+      pendingTransport = new StdioClientTransport({
         command: cmd,
         args,
         env,
         stderr: upstreamDiagnosticSink ? "pipe" : "inherit",
       })
       if (upstreamDiagnosticSink) {
-        transport.stderr?.on("data", (chunk: Buffer) => {
+        pendingTransport.stderr?.on("data", (chunk: Buffer) => {
           try {
             upstreamDiagnosticSink(chunk.toString("utf8"))
           } catch (error) {
@@ -1044,8 +1184,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           }
         })
       }
-      const client = new Client({ name: "expert-gateway", version: "0.1.0" })
-      await client.connect(transport)
+      pendingClient = new Client({ name: "expert-gateway", version: "0.1.0" })
+      const client = pendingClient
+      await client.connect(pendingTransport)
+      if (pendingTransport.pid !== null) ownedProcessRoots.add(pendingTransport.pid)
       clients.push(client)
       const { tools } = await client.listTools()
       for (const t of tools) {
@@ -1071,10 +1213,54 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         })
       }
     } catch (error) {
-      if (key === "cyberful-os") throw error
+      const pendingPID =
+        pendingTransport?.pid !== null && pendingTransport?.pid !== undefined ? pendingTransport.pid : undefined
+      if (pendingPID !== undefined) ownedProcessRoots.add(pendingPID)
+      const captured = pendingPID
+        ? await processSnapshot()
+            .then((snapshot) => ownedProcessTree(snapshot, [pendingPID]))
+            .catch((inventoryError) => {
+              log.warn("could not capture partially initialized MCP process tree", {
+                upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+                error: inventoryError,
+              })
+              return []
+            })
+        : []
+      const cleanupFailures: unknown[] = []
+      await pendingClient?.close().catch((cleanupError) => {
+        cleanupFailures.push(cleanupError)
+        log.warn("failed to close partially initialized MCP upstream", {
+          upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+          error: cleanupError,
+        })
+      })
+      const cleanup = await reapCapturedProcessTree(captured, {
+        onSurvivors: (processes) =>
+          log.warn("partially initialized MCP processes survived SDK close; applying owned-process fallback", {
+            upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+            processes,
+          }),
+      }).catch((cleanupError) => {
+        cleanupFailures.push(cleanupError)
+        return undefined
+      })
+      if (cleanup?.remaining.length)
+        cleanupFailures.push(
+          new Error(
+            `Partially initialized MCP processes remained: ${cleanup.remaining
+              .map((process) => process.pid)
+              .join(", ")}`,
+          ),
+        )
+      if (key === "cyberful-os") {
+        if (cleanupFailures.length === 0) throw error
+        throw new AggregateError([error, ...cleanupFailures], "required MCP upstream failed startup and cleanup")
+      }
       log.warn("optional phase gateway upstream is unavailable", {
         upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
         error,
+        ...(cleanupFailures.length > 0 ? { cleanupFailures } : {}),
       })
     }
   }
@@ -1082,7 +1268,13 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     tools: out,
     clients,
     close: async () => {
-      await settleOperations("one or more phase gateway upstreams failed to close", [
+      const captured = await processSnapshot()
+        .then((snapshot) => ownedProcessTree(snapshot, [...ownedProcessRoots]))
+        .catch((error) => {
+          log.warn("could not capture owned MCP process baseline before shutdown", { error })
+          return []
+        })
+      const operations = [
         ...clients.map((client) => () => client.close()),
         ...Array.from(bridgeContainers).map((container) => async () => {
           const proc = Bun.spawn(["docker", "rm", "--force", container], {
@@ -1098,7 +1290,28 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
               `could not remove managed gateway container ${container} (exit ${exitCode}): ${stderr.trim()}`,
             )
         }),
-      ])
+      ]
+      const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
+      const failures = outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" ? [outcome.reason as unknown] : [],
+      )
+      const cleanup = await reapCapturedProcessTree(captured, {
+        onSurvivors: (processes) =>
+          log.warn("MCP processes survived SDK close; applying owned-process fallback", {
+            processes,
+          }),
+      }).catch((error) => {
+        failures.push(error)
+        return undefined
+      })
+      if (cleanup?.remaining.length)
+        failures.push(
+          new Error(
+            `Phase gateway could not reap owned MCP processes: ${cleanup.remaining.map((process) => process.pid).join(", ")}`,
+          ),
+        )
+      if (failures.length > 0)
+        throw new AggregateError(failures, "one or more phase gateway upstreams failed to close")
     },
   }
 }
@@ -1144,9 +1357,7 @@ export async function createGatewayServer(opts?: {
     egress: liveTargetResearch,
   }
   const localTools = localToolDefinitions(policy, liveTargetTools)
-  const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name))
-    ? createCodeGraphToolHandler()
-    : undefined
+  const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
   const handoff = handoffConfig()
   const question = questionEnabled()
   const circuit = circuitBreakerConfig()
@@ -1399,7 +1610,10 @@ export async function createGatewayServer(opts?: {
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
     const startedAt = performance.now()
     try {
-      const result = annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments)
+      const result = annotateBrowserProfile(
+        annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments),
+        upstream.browserProfile,
+      )
       await coverage?.observe(result)
       if (circuit) await observeCaptchaCircuit(circuit, name, result)
       let redacted = redactResult(sessionID, result)
@@ -1435,6 +1649,8 @@ export async function createGatewayServer(opts?: {
           lead_count: resultMetric(redacted, "lead_count"),
           suspected_count: resultMetric(redacted, "suspected_count"),
           confirmed_count: resultMetric(redacted, "confirmed_count"),
+          ...(redacted.isError ? toolFailureMetadata(redacted) : {}),
+          ...(upstream.browserProfile !== undefined ? { browser_profile: upstream.browserProfile } : {}),
           ...(egress ? { egress_blocked: false, ...egress } : {}),
         })
         .catch((error) => log.warn("could not record completed phase tool call", { tool: name, error }))
@@ -1446,7 +1662,8 @@ export async function createGatewayServer(opts?: {
           tool: name,
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: "error",
-          error_class: error instanceof Error ? error.name : "UnknownError",
+          ...transportFailureMetadata(error),
+          ...(upstream.browserProfile !== undefined ? { browser_profile: upstream.browserProfile } : {}),
           ...(egress ? { egress_blocked: false, ...egress } : {}),
         })
         .catch((auditError) => log.warn("could not record failed phase tool call", { tool: name, error: auditError }))

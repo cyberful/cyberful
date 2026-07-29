@@ -39,7 +39,7 @@ function phasePrompt(phase: string) {
     phase,
     personaID: `${sharedPentestPersona ? "pentest" : "bug-bounty"}/${phase}`,
     role: "root",
-    providerRoute: "primary",
+    providerRoute: "main",
     handoffOwner: true,
     delegationEnabled: true,
     userTask: `Complete the Bug Bounty ${phase} phase.`,
@@ -161,9 +161,9 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
               },
               agentRun: {
                 id: `run-${spec.phase}`,
-                provider: "primary-test",
+                provider: "main-test",
                 model: "gpt-5.4",
-                providerAffinity: "primary",
+                providerAffinity: "main",
                 promptManifest: prompt.manifest,
                 childRunIDs: spec.phase === "recon" ? ["run-recon-child"] : [],
                 skillsUsed: [],
@@ -194,7 +194,7 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
     ])
     expect(systems.every((system) => system.startsWith("# Cyberful Instruction Authority"))).toBe(true)
     expect(systems.every((system) => system.includes("This is an authorized Bug Bounty Program session."))).toBe(true)
-    expect(workflow).toMatchObject({ terminal: true, status: "completed" })
+    expect(workflow).toMatchObject({ terminal: true, outcome: "success" })
   } finally {
     await rm(workarea, { recursive: true, force: true })
   }

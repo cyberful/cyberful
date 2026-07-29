@@ -29,7 +29,12 @@ import { SubsystemStatus } from "@/subsystem/status"
 import { CYBERFUL_PROCESS_ROLE, CYBERFUL_RUN_ID, ensureRunID, sanitizedProcessEnv } from "@/util/cyberful-process"
 import { validateSession } from "./validate-session"
 import { TuiRpcContract, type DockerResource } from "./rpc-contract"
-import { cleanupAfterWorker, reapDockerResourcesSync, reapRunOwnedDockerResourcesSync } from "./thread-cleanup"
+import {
+  cleanupAfterWorker,
+  reapDockerResourcesSync,
+  reapRunOwnedDockerResourcesSync,
+  WORKER_SHUTDOWN_TIMEOUT_MS,
+} from "./thread-cleanup"
 
 declare global {
   const CYBERFUL_WORKER_PATH: string
@@ -37,7 +42,6 @@ declare global {
 
 type RpcClient = ReturnType<typeof Rpc.client<typeof TuiRpcContract>>
 const shutdownSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const
-const WORKER_SHUTDOWN_TIMEOUT_MS = 15_000
 
 function signalExitCode(signal: (typeof shutdownSignals)[number]) {
   if (signal === "SIGHUP") return 129
@@ -154,10 +158,10 @@ export const TuiThreadCommand = cmd({
         return
       }
       // ── Preflight Completes Before The Worker Owns The Terminal ──────
-      // The primary Pi provider is mandatory, so its model and authentication
+      // The main Pi provider is mandatory, so its model and authentication
       // must pass before the slower Docker preparation begins. A configured
       // fallback is optional capacity: an unavailable credential is rendered as
-      // degraded and disables that route without preventing a primary-backed
+      // degraded and disables that route without preventing a main-backed
       // session. Settings remain launch-directory owned, while the worker
       // inherits only ordinary host environment and run identity.
       // ────────────────────────────────────────────────────────────────
@@ -179,7 +183,7 @@ export const TuiThreadCommand = cmd({
       }
       if (agentStatus.degraded) {
         UI.println(
-          `  ${UI.Style.TEXT_WARNING}! fallback unavailable; continuing with the primary provider${UI.Style.TEXT_NORMAL}`,
+          `  ${UI.Style.TEXT_WARNING}! fallback unavailable; continuing with the main provider${UI.Style.TEXT_NORMAL}`,
         )
       }
       UI.empty()

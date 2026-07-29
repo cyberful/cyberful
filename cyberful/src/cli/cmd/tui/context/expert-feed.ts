@@ -4,7 +4,12 @@
 // → cyberful/src/cli/cmd/tui/context/sync.tsx — stores the folded live feed.
 // ─────────────────────────────────────────────────────────────────
 
-import type { PhaseActivityActor, PhaseActivityActorState, SubsystemDescriptor } from "@/session/event"
+import type {
+  PhaseActivityActor,
+  PhaseActivityActorState,
+  PhaseActivityArtifact,
+  SubsystemDescriptor,
+} from "@/session/event"
 import { Locale } from "@/util/locale"
 import { isRecord } from "@/util/record"
 
@@ -29,11 +34,19 @@ export type ExpertPhaseEntry = {
   callID?: string
   input?: unknown
   output?: string
+  artifact?: PhaseActivityArtifact
   status?: "running" | "completed"
   phaseStatus?: ExpertPhaseStatus
+  contextCompaction?: ExpertContextCompaction
   actor?: PhaseActivityActor
   actorState?: PhaseActivityActorState
   actorTransitionID?: string
+  delegation?: ExpertDelegation
+}
+
+export type ExpertDelegation = {
+  actor: PhaseActivityActor
+  state: PhaseActivityActorState
 }
 
 export type ExpertPhaseStatus = {
@@ -46,10 +59,27 @@ export type ExpertPhaseStatus = {
   deadlineAt: number
   approvalWaitMs?: number
   exitCode: number
+  failure?: {
+    phase: string
+    source: string
+    class: string
+    code?: string
+    detail: string
+  }
   warnings: string[]
   handoff?: {
     successor: string
   }
+}
+
+export type ExpertContextCompaction = {
+  state: "completed" | "recovered" | "failed"
+  mode: "proactive" | "emergency"
+  estimatedTokensBefore: number
+  estimatedTokensAfter: number
+  messagesRemoved: number
+  toolResultsVirtualized: number
+  artifactsPreserved: number
 }
 
 // ── Public Updates Delimit Readable Phase Turns ──────────────────
@@ -98,6 +128,42 @@ export function isExpertSemanticProgress(text: string): boolean {
   }
 }
 
+export function decodeExpertContextCompaction(text: string): ExpertContextCompaction | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.contextCompaction)) return
+    const compaction = value.contextCompaction
+    if (
+      !["completed", "recovered", "failed"].includes(String(compaction.state)) ||
+      !["proactive", "emergency"].includes(String(compaction.mode)) ||
+      typeof compaction.estimatedTokensBefore !== "number" ||
+      typeof compaction.estimatedTokensAfter !== "number" ||
+      typeof compaction.messagesRemoved !== "number" ||
+      typeof compaction.toolResultsVirtualized !== "number" ||
+      typeof compaction.artifactsPreserved !== "number"
+    )
+      return
+    return compaction as ExpertContextCompaction
+  } catch {
+    return
+  }
+}
+
+export function expertContextCompactionText(compaction: ExpertContextCompaction): string {
+  const action =
+    compaction.state === "completed"
+      ? "Context compacted"
+      : compaction.state === "recovered"
+        ? "Context recovered"
+        : "Context compaction failed"
+  return [
+    `↻ ${action}`,
+    `${Locale.number(compaction.estimatedTokensBefore)} → ${Locale.number(compaction.estimatedTokensAfter)} tokens`,
+    `${compaction.toolResultsVirtualized} tool results virtualized`,
+    `${compaction.artifactsPreserved} complete artifacts preserved`,
+  ].join(" · ")
+}
+
 export function decodeExpertPhaseStatus(text: string): ExpertPhaseStatus | undefined {
   try {
     const value: unknown = JSON.parse(text)
@@ -124,6 +190,7 @@ export function decodeExpertPhaseStatus(text: string): ExpertPhaseStatus | undef
       approvalWaitMs:
         typeof value.approvalWaitMs === "number" && value.approvalWaitMs >= 0 ? value.approvalWaitMs : undefined,
       exitCode: value.exitCode,
+      failure: decodeExpertPhaseFailure(value.failure),
       warnings: Array.isArray(value.warnings)
         ? value.warnings.filter((warning): warning is string => typeof warning === "string")
         : [],
@@ -131,6 +198,25 @@ export function decodeExpertPhaseStatus(text: string): ExpertPhaseStatus | undef
     }
   } catch {
     return undefined
+  }
+}
+
+function decodeExpertPhaseFailure(value: unknown): ExpertPhaseStatus["failure"] {
+  if (
+    !isRecord(value) ||
+    typeof value.phase !== "string" ||
+    typeof value.source !== "string" ||
+    typeof value.class !== "string" ||
+    typeof value.detail !== "string" ||
+    (value.code !== undefined && typeof value.code !== "string")
+  )
+    return undefined
+  return {
+    phase: value.phase,
+    source: value.source,
+    class: value.class,
+    ...(typeof value.code === "string" ? { code: value.code } : {}),
+    detail: value.detail,
   }
 }
 
@@ -158,13 +244,15 @@ function phaseStatusText(status: ExpertPhaseStatus): string {
   const limit = (status.limitMs / 60_000).toFixed(1)
   const effective = (status.effectiveLimitMs / 60_000).toFixed(1)
   const approvalWait = status.approvalWaitMs ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}` : ""
-  const warning = status.warnings[0]
-    ? ` · ${status.warnings[0]}${status.warnings.length > 1 ? ` (+${status.warnings.length - 1})` : ""}`
+  const warning = status.failure?.detail ?? status.warnings[0]
+  const additionalWarnings = status.failure ? status.warnings.length : Math.max(0, status.warnings.length - 1)
+  const detail = warning
+    ? ` · ${warning}${additionalWarnings > 0 ? ` (+${additionalWarnings})` : ""}`
     : ""
   return (
-    `completed with warnings · ${status.backend} · ${status.termination} · exit ${status.exitCode} · ${elapsed}s · ` +
+    `Phase failed · ${status.backend} · ${status.termination} · worker exit ${status.exitCode} · ${elapsed}s · ` +
     `limit ${limit}m (effective ${effective}m) · deadline ${new Date(status.deadlineAt).toISOString()}` +
-    `${approvalWait}${warning}`
+    `${approvalWait}${detail}`
   )
 }
 
@@ -206,6 +294,7 @@ export function foldExpertActivity(
     actor?: PhaseActivityActor
     actorState?: PhaseActivityActorState
     actorTransitionID?: string
+    artifact?: PhaseActivityArtifact
   },
 ): ExpertPhaseEntry[] {
   const base = {
@@ -218,6 +307,27 @@ export function foldExpertActivity(
   }
   if (a.kind === "agent") {
     if (!a.actor?.label || !a.actorState) return entries
+    if (a.actor.sourceCallID) {
+      const index = entries.findIndex(
+        (entry) =>
+          entry.kind === "tool" &&
+          entry.callID === a.actor?.sourceCallID &&
+          entry.sessionID === a.sessionID &&
+          entry.phase === a.phase &&
+          sameSubsystem(entry.subsystem, a.subsystem),
+      )
+      if (index >= 0) {
+        const next = entries.slice()
+        next[index] = {
+          ...next[index],
+          delegation: {
+            actor: a.actor,
+            state: a.actorState,
+          },
+        }
+        return next
+      }
+    }
     if (
       entries.some(
         (entry) =>
@@ -242,9 +352,21 @@ export function foldExpertActivity(
   if (a.kind === "status") {
     if (entries.some((entry) => entry.id === a.id)) return entries
     const status = decodeExpertPhaseStatus(a.text)
+    const contextCompaction = decodeExpertContextCompaction(a.text)
     return [
       ...entries,
-      { ...base, kind: "status", text: status ? phaseStatusText(status) : a.text, tool: "", phaseStatus: status },
+      {
+        ...base,
+        kind: "status",
+        text: status
+          ? phaseStatusText(status)
+          : contextCompaction
+            ? expertContextCompactionText(contextCompaction)
+            : a.text,
+        tool: "",
+        phaseStatus: status,
+        contextCompaction,
+      },
     ]
   }
   if (a.kind === "output") {
@@ -254,11 +376,25 @@ export function foldExpertActivity(
       : -1
     if (idx >= 0) {
       const next = entries.slice()
-      next[idx] = { ...next[idx], output: a.text, status: "completed" }
+      next[idx] = {
+        ...next[idx],
+        output: a.text,
+        status: "completed",
+        ...(a.artifact ? { artifact: a.artifact } : {}),
+      }
       return next
     }
     if (entries.some((e) => e.id === a.id)) return entries
-    return [...entries, { ...base, kind: "output", text: a.text, tool: "" }]
+    return [
+      ...entries,
+      {
+        ...base,
+        kind: "output",
+        text: a.text,
+        tool: "",
+        ...(a.artifact ? { artifact: a.artifact } : {}),
+      },
+    ]
   }
   if (entries.some((e) => e.id === a.id)) return entries
   if (a.kind === "tool") {

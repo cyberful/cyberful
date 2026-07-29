@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { stream as streamCodexResponses } from "@earendil-works/pi-ai/api/openai-codex-responses"
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai"
 import { PiSecurity } from "./pi-security"
+import { Subsystem } from "./subsystem"
 
 const route = {
   adapter: "openai-completions",
@@ -76,6 +77,124 @@ describe("Pi provider security failures", () => {
       })
     } finally {
       globalThis.fetch = previousFetch
+    }
+  })
+
+  test("classifies both structured Codex WebSocket cyber-policy failure events", async () => {
+    const previousFetch = globalThis.fetch
+    const previousWebSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
+    const terminalEvents = [
+      {
+        type: "error",
+        error: {
+          message: "Request blocked.",
+          code: "invalid_request",
+          codexErrorInfo: { cyberPolicy: { internalDecision: "must-not-propagate" } },
+        },
+      },
+      {
+        type: "response.failed",
+        response: {
+          error: {
+            message: "Request blocked.",
+            code: "invalid_request",
+            codexErrorInfo: { cyberPolicy: { internalDecision: "must-not-propagate" } },
+          },
+        },
+      },
+    ]
+    let fetchCalls = 0
+
+    class LocalCodexWebSocket extends EventTarget {
+      readyState = 0
+
+      constructor() {
+        super()
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.dispatchEvent(new Event("open"))
+        })
+      }
+
+      send(): void {
+        const terminalEvent = terminalEvents.shift()
+        if (!terminalEvent) throw new Error("No local Codex terminal event remains")
+        setTimeout(() => {
+          this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(terminalEvent) }))
+        }, 0)
+      }
+
+      close(): void {
+        this.readyState = 3
+      }
+    }
+
+    const authPayload = Buffer.from(
+      JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } }),
+    ).toString("base64url")
+    const apiKey = `e30.${authPayload}.signature`
+    const model = {
+      id: "gpt-5.4",
+      name: "Codex local WebSocket model",
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      baseUrl: "https://chatgpt.com/backend-api",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 272_000,
+      maxTokens: 128_000,
+    } satisfies Model<"openai-codex-responses">
+
+    globalThis.fetch = Object.assign(
+      async () => {
+        fetchCalls += 1
+        throw new Error("The local WebSocket regression must not use HTTP")
+      },
+      { preconnect: previousFetch.preconnect },
+    )
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: LocalCodexWebSocket,
+    })
+
+    try {
+      for (const expectedEvent of ["error", "response.failed"]) {
+        const events = streamCodexResponses(
+          model,
+          {
+            systemPrompt: "Immutable Cyberful system.",
+            messages: [{ role: "user", content: "Authorized task.", timestamp: Date.now() }],
+          },
+          { apiKey, transport: "websocket", maxRetries: 0, env: {} },
+        )
+        let message: AssistantMessage | undefined
+        for await (const event of events) if (event.type === "error") message = event.error
+
+        expect(message?.diagnostics?.at(-1)?.details).toEqual({ codexErrorInfo: { cyberPolicy: {} } })
+        expect(
+          PiSecurity.classify({
+            adapter: "openai-codex",
+            provider: "openai-codex",
+            model: model.id,
+            message,
+          }),
+          expectedEvent,
+        ).toEqual({
+          kind: "security_policy_block",
+          providerCode: "cyberPolicy",
+          evidence: "codex_error_code",
+          retryable: false,
+        })
+      }
+      expect(fetchCalls).toBe(0)
+      expect(terminalEvents).toHaveLength(0)
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousWebSocket) Object.defineProperty(globalThis, "WebSocket", previousWebSocket)
+      else Reflect.deleteProperty(globalThis, "WebSocket")
     }
   })
 
@@ -188,8 +307,11 @@ describe("Pi ordinary provider failures", () => {
       [{ upstream: { error: { code: "invalid_api_key" }, status: 401 } }, "authentication", false],
       [{ upstream: { error: { code: "ECONNRESET" } } }, "network", true],
       [{ upstream: { error: { code: "service_unavailable" }, status: 503 } }, "unavailable", true],
+      [{ upstream: { error: { code: "server_is_overloaded" } } }, "unavailable", true],
+      [{ message: { stopReason: "error", diagnostics: [{ error: { code: 1006 } }] } }, "unavailable", true],
       [{ upstream: { error: { code: "invalid_response" } } }, "malformed_output", false],
       [{ upstream: { error: { code: "usage_limit_reached" } } }, "capacity", false],
+      [{ message: { stopReason: "error", diagnostics: [{ error: { code: "oauth" } }] } }, "authentication", false],
     ] as const
 
     for (const [input, kind, retryable] of cases) {
@@ -203,5 +325,26 @@ describe("Pi ordinary provider failures", () => {
   test("returns no failure for successful terminal observations", () => {
     expect(PiSecurity.classify({ ...route, message: { stopReason: "stop" } })).toBeUndefined()
     expect(PiSecurity.classify({ ...route, upstream: { status: "completed", finish_reason: "stop" } })).toBeUndefined()
+  })
+
+  test("preserves redacted operator detail and HTTP status through the subsystem projection", () => {
+    expect(
+      Subsystem.pi.classifyFailure({
+        type: "run_finished",
+        failure: {
+          kind: "unavailable",
+          providerCode: "service_unavailable",
+          httpStatus: 503,
+          detail: "The provider is temporarily unavailable.",
+          retryable: true,
+        },
+      }),
+    ).toEqual({
+      kind: "unavailable",
+      providerCode: "service_unavailable",
+      httpStatus: 503,
+      detail: "The provider is temporarily unavailable.",
+      retryable: true,
+    })
   })
 })

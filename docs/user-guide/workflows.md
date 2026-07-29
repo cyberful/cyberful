@@ -20,10 +20,12 @@ recorded scope.
 
 Each phase runs under a fresh in-process Pi worker owner behind a private host
 gateway. Its original root `AgentRun` must write the required artifact and call
-`handoff` with the exact successor. The host validates and seals the artifact,
-shuts down the owner and gateway, and only then starts the next phase. Delegated
-and fallback runs can perform complete operational tasks but cannot advance the
-phase.
+`handoff` with the exact successor. The gateway rejects handoff while the exact
+required artifact is absent, empty, a symlink, or outside the workarea root, so
+the same AgentRun can repair the deliverable before stopping. The host rechecks
+and seals the artifact, shuts down the owner and gateway, and only then starts
+the next phase. Delegated and fallback runs can perform complete operational
+tasks but cannot advance the phase.
 
 An active-execution budget applies to active work. If it expires, Cyberful advances in
 degraded mode only when the required partial artifact exists, can be sealed,
@@ -52,6 +54,10 @@ test ran but its oracle remained ambiguous. `UNTESTABLE` means the discriminatin
 test never ran and therefore records a typed blocker plus an exact next step.
 This prevents missing access, tools, applicability, authority, or budget from
 inflating the suspected-finding count.
+
+`CONFIRMED` and `SUSPECTED` IDs must resolve to current-run findings. Negative-only
+outcomes can retain stable backlog IDs when they never met the positive-evidence
+threshold for entering the finding registry.
 
 Before using `UNTESTABLE` for a credible, high-value path, Exploit and Hacker
 actively seek safe prerequisites in existing evidence, ordinary product flows,

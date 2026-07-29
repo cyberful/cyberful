@@ -12,8 +12,8 @@ export interface GatewayOptions {
   phase?: string
   // Host-owned gateway PID registration path.
   pidSignalPath?: string
-  // Host-owned handoff request and expected successor.
-  handoff?: { phase: string; successor?: string; signalPath: string }
+  // Host-owned handoff request, required artifact, and expected successor.
+  handoff?: { phase: string; successor?: string; signalPath: string; artifact?: string }
   // Exposes native MCP elicitation for blocking human questions.
   questionEnabled?: boolean
   // Engagement-stable CAPTCHA circuit-breaker state.
@@ -98,6 +98,9 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
       ...(opts?.handoff
         ? {
             CYBERFUL_SUBSYSTEM_HANDOFF_PATH: opts.handoff.signalPath,
+            ...(opts.handoff.artifact
+              ? { CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT: opts.handoff.artifact }
+              : {}),
             ...(opts.handoff.successor
               ? { CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: opts.handoff.successor }
               : { CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL: "1" }),

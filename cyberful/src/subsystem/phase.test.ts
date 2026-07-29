@@ -259,7 +259,7 @@ describe("phase runner contract", () => {
         expect(baseInstructions.indexOf(layer)).toBeGreaterThan(baseInstructions.indexOf(layers[index - 1] ?? ""))
     }
     expect(input.compiledPrompt.manifest.delegationEnabled).toBe(false)
-    expect(input.compiledPrompt.manifest.providerRoute).toBe("primary")
+    expect(input.compiledPrompt.manifest.providerRoute).toBe("main")
     expect(input.compiledPrompt.messages).toEqual([{ role: "user", content: "# Assigned objective\nmap the surface" }])
     expect(spec.mcpServer?.name).toBe("expert-gateway")
     expect(spec.mcpServer?.privateEnv?.CYBERFUL_SUBSYSTEM_GATEWAY_PROXY).toBe("1")
@@ -302,7 +302,12 @@ describe("phase runner contract", () => {
     )
     expect(result.ok).toBe(false)
     expect(result.termination).toBe("spawn_failed")
-    expect(result.warnings.join(" ")).toContain("base instructions template missing")
+    expect(result.phaseFailure).toMatchObject({
+      source: "lifecycle",
+      class: "phase_setup_failed",
+    })
+    expect(result.phaseFailure?.detail).toContain("base instructions template missing")
+    expect(result.warnings.join("\n")).not.toContain("base instructions template missing")
     expect(capture.input).toBeUndefined()
   })
 
@@ -456,7 +461,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(phases).toEqual(["brief", "recon", "exploit", "hacker", "verify", "report"])
     expect(out.ranPhases).toEqual(phases)
     expect(out.terminal).toBe(true)
-    expect(out.status).toBe("completed")
+    expect(out.outcome).toBe("success")
     expect(specs.map((spec) => [spec.phase, spec.handoff?.successor])).toEqual([
       ["brief", "recon"],
       ["recon", "exploit"],
@@ -508,6 +513,69 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(rejected.summary).toContain("adapter rejected")
   })
 
+  test("terminal contract failures are failed while a plain interruption is blocked", async () => {
+    const contractFailure = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
+        runPhase: async (spec) => ({
+          ...completedPhase(spec.phase),
+          ok: false,
+          handoff: undefined,
+          exitCode: 1,
+          termination: "budget_exhausted",
+          phaseFailure: {
+            phase: spec.phase,
+            source: "contract",
+            class: "required_deliverable_missing",
+            code: "RECON.md",
+            detail: "Required deliverable 'RECON.md' is missing.",
+          },
+        }),
+      }),
+    )
+    expect(contractFailure.outcome).toBe("failed")
+    expect(contractFailure.failure?.source).toBe("contract")
+
+    const interrupted = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
+        runPhase: async (spec) => ({
+          ...completedPhase(spec.phase),
+          ok: false,
+          handoff: undefined,
+          exitCode: 1,
+          termination: "shutdown",
+        }),
+      }),
+    )
+    expect(interrupted.outcome).toBe("blocked")
+    expect(interrupted.failure).toBeUndefined()
+  })
+
+  test("reports a redacted provider diagnostic when a failed phase returned no summary", async () => {
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(baseInput("brief"), {
+        runPhase: async (spec) => ({
+          ...completedPhase(spec.phase),
+          ok: false,
+          summary: "",
+          exitCode: 1,
+          termination: "subsystem_failed",
+          warnings: ["security_policy_block"],
+          subsystemFailure: {
+            kind: "security_policy_block",
+            providerCode: "cyberPolicy",
+            detail: "The provider blocked the request.",
+            retryable: false,
+          },
+        }),
+      }),
+    )
+
+    expect(out.haltedAt).toBe("brief")
+    expect(out.summary).toContain("security_policy_block")
+    expect(out.summary).toContain("The provider blocked the request.")
+    expect(out.summary).not.toContain("produced no textual summary")
+  })
+
   test("interrupting Recon aborts the exact signal passed to its one phase execution", async () => {
     const started = Promise.withResolvers<AbortSignal>()
     const fiber = Effect.runFork(
@@ -536,7 +604,7 @@ describe("phase orchestration (runAndAdvance)", () => {
       }),
     )
     expect(out.terminal).toBe(true)
-    expect(out.status).toBe("completed_with_warnings")
+    expect(out.outcome).toBe("warning")
   })
 
   test("a validated budget cutoff advances to the successor and keeps the workflow degraded", async () => {
@@ -560,7 +628,7 @@ describe("phase orchestration (runAndAdvance)", () => {
 
     expect(phases).toEqual(["recon", "exploit", "hacker", "verify", "report"])
     expect(out.terminal).toBe(true)
-    expect(out.status).toBe("completed_with_warnings")
+    expect(out.outcome).toBe("warning")
   })
 
   test("propagates the terminal completion proposal to the host boundary", async () => {

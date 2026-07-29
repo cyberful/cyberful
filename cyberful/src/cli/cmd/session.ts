@@ -6,7 +6,7 @@
 import type { Argv } from "yargs"
 import { Effect } from "effect"
 import { cmd } from "./cmd"
-import { effectCmd, fail } from "../effect-cmd"
+import { CliError, effectCmd, fail } from "../effect-cmd"
 import { Session } from "@/session/session"
 import { SessionID } from "../../session/schema"
 import { UI } from "../ui"
@@ -18,6 +18,9 @@ import { NotFoundError } from "@/storage/storage"
 import { EOL } from "node:os"
 import path from "node:path"
 import { which } from "../../util/which"
+import { createControlPlaneClient } from "@/server/client"
+import { ServerAuth } from "@/server/auth"
+import { errorMessage } from "@/util/error"
 
 function pagerCmd(): string[] {
   const lessOptions = ["-R", "-S"]
@@ -49,8 +52,76 @@ function pagerCmd(): string[] {
 export const SessionCommand = cmd({
   command: "session",
   describe: "manage sessions",
-  builder: (yargs: Argv) => yargs.command(SessionListCommand).command(SessionDeleteCommand).demandCommand(),
+  builder: (yargs: Argv) =>
+    yargs.command(SessionListCommand).command(SessionDeleteCommand).command(SessionSteerCommand).demandCommand(),
   async handler() {},
+})
+
+function controlPlaneEffect<T>(operation: () => Promise<T>): Effect.Effect<T, CliError> {
+  return Effect.tryPromise({
+    try: operation,
+    catch: (error) => new Error(errorMessage(error)),
+  }).pipe(Effect.catch((error) => fail(error.message)))
+}
+
+export const SessionSteerCommand = effectCmd({
+  command: "steer <sessionID>",
+  describe: "send routine guidance to an actively running root session",
+  instance: false,
+  builder: (yargs) =>
+    yargs
+      .positional("sessionID", {
+        describe: "active session ID",
+        type: "string",
+        demandOption: true,
+      })
+      .option("attach", {
+        describe: "control-plane URL exposed by starting the TUI with --port, e.g. http://localhost:4096",
+        type: "string",
+        demandOption: true,
+      })
+      .option("message", {
+        alias: "m",
+        describe: "routine guidance to deliver to the active AgentRun",
+        type: "string",
+        demandOption: true,
+      })
+      .option("dir", {
+        describe: "remote instance directory used for routing",
+        type: "string",
+      })
+      .option("password", {
+        alias: "p",
+        type: "string",
+        describe: "basic auth password (defaults to CYBERFUL_SERVER_PASSWORD)",
+      })
+      .option("username", {
+        alias: "u",
+        type: "string",
+        describe: "basic auth username (defaults to CYBERFUL_SERVER_USERNAME or 'cyberful')",
+      })
+      .check((args) => {
+        if (!args.message.trim()) throw new Error("--message must contain non-whitespace text")
+        return true
+      }),
+  handler: Effect.fn("Cli.session.steer")(function* (args) {
+    const client = createControlPlaneClient({
+      baseUrl: args.attach,
+      directory: args.dir,
+      headers: ServerAuth.headers({ password: args.password, username: args.username }),
+    })
+    const response = yield* controlPlaneEffect(() =>
+      client.session.steer(
+        {
+          sessionID: args.sessionID,
+          text: args.message,
+        },
+        { throwOnError: true, signal: AbortSignal.timeout(15_000) },
+      ),
+    )
+    if (response.data !== true) return yield* fail(`Session ${args.sessionID} is not actively steerable.`)
+    process.stdout.write(`Steering accepted for ${args.sessionID}.${EOL}`)
+  }),
 })
 
 export const SessionDeleteCommand = effectCmd({

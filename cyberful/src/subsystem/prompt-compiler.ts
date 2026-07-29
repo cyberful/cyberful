@@ -9,7 +9,7 @@ import { createHash } from "node:crypto"
 import matter from "gray-matter"
 
 export type AgentRunRole = "root" | "subagent" | "fallback"
-export type ProviderRoute = "primary" | "fallback"
+export type ProviderRoute = "main" | "fallback"
 
 export interface AgentMessage {
   readonly role: "user"
@@ -221,8 +221,8 @@ function renderBaseInstructions(input: {
 function runOverlay(input: CompileInput): string {
   if (input.handoffOwner && input.role !== "root")
     throw new Error("only the original root AgentRun may own the phase handoff")
-  if (input.role === "root" && input.providerRoute !== "primary")
-    throw new Error("the original root AgentRun must use the primary provider route")
+  if (input.role === "root" && input.providerRoute !== "main")
+    throw new Error("the original root AgentRun must use the main provider route")
   if (input.role === "fallback" && input.providerRoute !== "fallback")
     throw new Error("a fallback AgentRun must use the fallback provider route")
 
@@ -234,8 +234,8 @@ function runOverlay(input: CompileInput): string {
         : "This is the original root AgentRun for the phase and remains responsible for the complete phase result."
   const providerAffinity =
     input.providerRoute === "fallback"
-      ? "This run and every descendant must retain fallback provider affinity. Do not request or perform a route back to the primary provider."
-      : "This run uses the host-selected primary provider route. Provider routing remains host-owned."
+      ? "This run and every descendant must retain fallback provider affinity. Do not request or perform a route back to the main provider."
+      : "This run uses the host-selected main provider route. Provider routing remains host-owned."
   const handoff = input.handoffOwner
     ? "This run owns the phase handoff and must follow the host runtime contract before advancing."
     : input.role === "root"
@@ -272,11 +272,11 @@ function fallbackInstructions(input: CompileInput): string {
     return [
       "This AgentRun already belongs to an admitted fallback delegation.",
       "It is operationally complete and may use phase tools, skills, artifacts, and delegated children within the normal limits.",
-      "Every descendant remains on the fallback provider. Do not request another fallback or route back to primary.",
+      "Every descendant remains on the fallback provider. Do not request another fallback or route back to main.",
       "If this provider returns a policy block or terminal error, preserve partial evidence and fail the branch back to its parent without provider ping-pong.",
     ].join("\n")
   if (!policy.providerConfigured)
-    return "No fallback provider is configured. Complete the run and its delegated work on the primary provider."
+    return "No fallback provider is configured. Complete the run and its delegated work on the main provider."
 
   return [
     "Fallback routing is exclusively host-owned; never select or name a provider yourself.",
@@ -284,9 +284,9 @@ function fallbackInstructions(input: CompileInput): string {
       ? `Use request_fallback_delegation only for one specific, bounded subtask that is likely to encounter a cyber-policy block. Proactive admission is scarce session capacity governed by a ${policy.proactivePercentage}% host quota; never use it as a general preference or for the whole phase.`
       : "Proactive fallback delegation is disabled for this run.",
     policy.automaticSecurityBlockEnabled
-      ? "When the primary provider returns an exact structured security-policy block, the host may run the blocked subtask through one complete fallback AgentRun and return its result as trusted host tool output."
+      ? "When the main provider returns an exact structured security-policy block, the host may run the blocked subtask through one complete fallback AgentRun and return its result as trusted host tool output."
       : "Automatic security-block fallback is disabled for this run.",
-    "An admitted fallback delegation and every descendant retain fallback affinity and cannot return to primary.",
+    "An admitted fallback delegation and every descendant retain fallback affinity and cannot return to main.",
   ].join("\n")
 }
 

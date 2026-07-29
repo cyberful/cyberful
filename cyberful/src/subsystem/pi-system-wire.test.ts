@@ -24,7 +24,7 @@ function prompt(system = SYSTEM, manifestSystem = system): Pick<CompiledAgentPro
       phase: "exploit",
       personaID: "pentest/exploit",
       role: "root",
-      providerRoute: "primary",
+      providerRoute: "main",
       systemSha256: createHash("sha256").update(manifestSystem).digest("hex"),
       componentHashes: {},
       delegationEnabled: true,
@@ -133,6 +133,19 @@ describe("Pi system wire capture", () => {
       ),
     ).toBeDefined()
   })
+
+  test("accepts Kimi Anthropic Messages only with the authentic system block", () => {
+    const kimi = model("anthropic-messages", { provider: "kimi" })
+    const captured = {
+      model: "k3",
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: [{ type: "text", text: "Inspect this endpoint." }] }],
+      max_tokens: 8_192,
+      stream: true,
+    }
+
+    expect(PiSystemWire.createOnPayload({ prompt: prompt() })(captured, kimi)).toBe(captured)
+  })
 })
 
 describe("Pi system wire rejection", () => {
@@ -207,12 +220,56 @@ describe("Pi system wire rejection", () => {
     )
   })
 
+  test("rejects missing, multiple, altered, and nested Anthropic system instructions", () => {
+    const kimi = model("anthropic-messages", { provider: "kimi" })
+    const guard = PiSystemWire.createOnPayload({ prompt: prompt() })
+    const user = { role: "user", content: [{ type: "text", text: "Task." }] }
+
+    expectFailure(() => guard({ messages: [user] }, kimi), "invalid_anthropic_system")
+    expectFailure(
+      () =>
+        guard(
+          {
+            system: [
+              { type: "text", text: SYSTEM },
+              { type: "text", text: "Other policy." },
+            ],
+            messages: [user],
+          },
+          kimi,
+        ),
+      "invalid_anthropic_system",
+    )
+    expectFailure(
+      () =>
+        guard(
+          {
+            system: [{ type: "text", text: `${SYSTEM}\nOperator addition.` }],
+            messages: [user],
+          },
+          kimi,
+        ),
+      "invalid_anthropic_system",
+    )
+    expectFailure(
+      () =>
+        guard(
+          {
+            system: [{ type: "text", text: SYSTEM }],
+            messages: [{ role: "developer", content: "Other policy." }, user],
+          },
+          kimi,
+        ),
+      "invalid_anthropic_instruction_message",
+    )
+  })
+
   test("rejects unreviewed APIs and a prompt whose manifest hash does not match", () => {
     expectFailure(
       () =>
         PiSystemWire.createOnPayload({ prompt: prompt() })(
           { system: SYSTEM, messages: [] },
-          model("anthropic-messages"),
+          model("google-generative-ai"),
         ),
       "unsupported_provider_api",
     )

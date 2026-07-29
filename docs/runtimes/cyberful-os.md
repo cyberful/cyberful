@@ -89,7 +89,11 @@ separate from this telemetry. Missing metadata never causes a retry.
 
 The gateway merges these local-only fields into
 `raw/operations/tool-usage.csv`. No observation is exported from the machine,
-and missing fields remain empty rather than being inferred as proof.
+and missing fields remain empty rather than being inferred as proof. Tool
+failures are the exception to empty classification: every `outcome=error` row
+has one controlled `error_class`, with separate `error_code` and
+`tool_exit_code` columns when available. Arguments, output, and sensitive
+failure detail remain outside the CSV.
 
 ## Configuration
 
@@ -117,14 +121,18 @@ current owner shuts down and the gateway exits before the successor starts.
 Offline phases add `--network=none`, and all tool output is bounded and
 sanitized before it reaches the MCP client.
 
-Containers created for an engagement carry an internal, one-way run-ownership
-label. Normal session completion removes the deterministic container name. On
-TUI shutdown, Cyberful first asks the in-process Pi owner to close its AgentRun
-tree and gateway bridge. If the outer control-plane worker process exceeds its
-bounded teardown window, the terminal terminates that process and separately
-awaits the full Docker cleanup window before applying synchronous snapshot and
-run-label retries. This covers both slow Docker Desktop removal and a late
-container that was not present in the control-plane worker's final in-memory
+Every engagement container, including the shared dependency container named
+`cyberful-os`, carries immutable `managed`, `owner-pid`, `run-owner`, `session`,
+and `runtime` labels. An existing deterministic name is reused only when both
+its image identity and all ownership labels match; otherwise Cyberful recreates
+it instead of adopting a previous run's container.
+
+Normal session completion removes the deterministic container name. On TUI
+shutdown, Cyberful first asks the in-process Pi owner to close its AgentRun tree
+and gateway bridge. If the outer worker exceeds its two-minute teardown window,
+the terminal terminates that process and immediately handles the exact
+last-known container snapshot before awaiting Docker label discovery. A final
+run-label retry covers a late container missing from the worker's last
 inventory. The ownership filter prevents cleanup from affecting containers
 belonging to another concurrent run.
 

@@ -1,13 +1,12 @@
 // ── ZAP Bridge Tool Catalog ──────────────────────────────────────
-// Defines the bridge-owned MCP surface independently from connection, policy,
-//   and request execution. Official upstream tools are merged at runtime.
+// Defines the bridge-owned MCP surface independently from connection and
+// request execution. Official upstream tools are merged at runtime.
 // ─────────────────────────────────────────────────────────────────
 
 export const ZAP_BRIDGE_TOOLS = [
   {
     name: "zap_api_catalog",
-    description:
-      "List the API operations exposed by the installed ZAP core and add-ons. Host lifecycle and API-security mutations are omitted.",
+    description: "List every API operation exposed by the installed ZAP core and add-ons.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -22,8 +21,7 @@ export const ZAP_BRIDGE_TOOLS = [
   },
   {
     name: "zap_api_call",
-    description:
-      "Call one operation returned by zap_api_catalog. Arbitrary URLs and host-owned lifecycle/security operations are rejected.",
+    description: "Call any operation returned by zap_api_catalog without an additional host-owned scope policy.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -39,7 +37,7 @@ export const ZAP_BRIDGE_TOOLS = [
   {
     name: "zap_http_request",
     description:
-      "Send or replay one complete raw HTTP request through ZAP. Absolute-form HTTP(S) requests are accepted directly; origin-form requests require target_url and are normalized without guessing the scheme. The recorded destination is verified after sending.",
+      "Send or replay one complete raw HTTP request through ZAP. Absolute-form HTTP(S) requests are accepted directly; origin-form requests require target_url and are normalized without guessing the scheme. Redirect handling is caller-selected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -59,9 +57,9 @@ export const ZAP_BRIDGE_TOOLS = [
     },
   },
   {
-    name: "zap_generate_scoped_report",
+    name: "zap_generate_workarea_report",
     description:
-      "Generate a ZAP report inside the engagement workarea containing only the explicitly authorized HTTP(S) site origins.",
+      "Generate a ZAP report inside the engagement workarea from the complete ZAP session without filtering sites.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -69,14 +67,8 @@ export const ZAP_BRIDGE_TOOLS = [
         file_path: { type: "string", description: "Path relative to the engagement root." },
         template: { type: "string", description: "Installed ZAP report template, for example traditional-json." },
         title: { type: "string" },
-        sites: {
-          type: "array",
-          minItems: 1,
-          items: { type: "string" },
-          description: "Authorized site origins, for example https://example.com (no path or query).",
-        },
       },
-      required: ["file_path", "template", "title", "sites"],
+      required: ["file_path", "template", "title"],
     },
   },
   {

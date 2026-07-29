@@ -30,7 +30,7 @@ const PathInfo = Schema.Struct({
 }).annotate({ identifier: "Path" })
 
 export const RuntimeStatus = Schema.Struct({
-  primary: Schema.Struct({
+  main: Schema.Struct({
     name: Schema.String,
     model: Schema.String,
     version: Schema.optional(Schema.String),

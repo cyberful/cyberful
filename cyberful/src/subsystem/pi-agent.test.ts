@@ -7,6 +7,9 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
 import {
@@ -29,7 +32,7 @@ import { clearFallbackLedger, fallbackLedgerForSession, PiAgentSubsystem } from 
 import type { PiModels } from "./pi-models"
 import type { CompiledAgentPrompt, PromptSkill, ProviderRoute } from "./prompt-compiler"
 
-const PRIMARY_PROVIDER = "primary"
+const MAIN_PROVIDER = "main"
 const FALLBACK_PROVIDER = "fallback"
 const SYSTEM_INVARIANT = [
   "# Cyberful immutable system contract",
@@ -66,6 +69,8 @@ const TEST_USAGE = {
 type RunStartedEvent = Extract<AgentEvent, { type: "run_started" }>
 type FallbackEvent = Extract<AgentEvent, { type: "fallback" }>
 type ActivityEvent = Extract<AgentEvent, { type: "activity" }>
+type ProviderRetryEvent = Extract<AgentEvent, { type: "provider_retry" }>
+type ContextCompactionEvent = Extract<AgentEvent, { type: "context_compaction" }>
 
 interface CapturedCall {
   readonly ordinal: number
@@ -84,16 +89,24 @@ interface InMemoryProviderOptions {
 }
 
 const subsystems: PiAgentSubsystem[] = []
+const temporaryDirectories: string[] = []
 
 afterEach(async () => {
   await Promise.all(subsystems.splice(0).map((subsystem) => subsystem.shutdown()))
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
+
+async function temporaryWorkarea() {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-pi-agent-")))
+  temporaryDirectories.push(directory)
+  return directory
+}
 
 function settings(): Settings.Info {
   return Settings.parse(`version: 1
 agent:
   subsystem: pi
-  primary_provider: ${PRIMARY_PROVIDER}
+  main_provider: ${MAIN_PROVIDER}
   fallback_provider: ${FALLBACK_PROVIDER}
   subagents:
     enabled: true
@@ -107,12 +120,11 @@ agent:
     automatic_security_block:
       enabled: true
   providers:
-    ${PRIMARY_PROVIDER}:
+    ${MAIN_PROVIDER}:
       adapter: openai-codex
-      model: primary-model
+      model: main-model
       auth:
-        type: oauth
-        profile: test
+        type: subscription
     ${FALLBACK_PROVIDER}:
       adapter: openai-completions
       base_url: https://api.z.ai/api/paas/v4
@@ -130,37 +142,51 @@ instructions:
 }
 
 function model(provider: string): Model<Api> {
-  const primary = provider === PRIMARY_PROVIDER
+  const main = provider === MAIN_PROVIDER
   return {
-    id: primary ? "primary-model" : "glm-5.2",
-    name: primary ? "Primary Test Model" : "GLM 5.2 Test Model",
-    api: primary ? "openai-codex-responses" : "openai-completions",
+    id: main ? "main-model" : "glm-5.2",
+    name: main ? "Main Test Model" : "GLM 5.2 Test Model",
+    api: main ? "openai-codex-responses" : "openai-completions",
     provider,
-    baseUrl: primary ? "https://primary.invalid/v1" : "https://api.z.ai/api/paas/v4",
+    baseUrl: main ? "https://main.invalid/v1" : "https://api.z.ai/api/paas/v4",
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 131_072,
     maxTokens: 8_192,
-    compat: primary ? undefined : { supportsDeveloperRole: false, thinkingFormat: "zai" },
+    compat: main ? undefined : { supportsDeveloperRole: false, thinkingFormat: "zai" },
   }
 }
 
 function registry(): PiModels {
-  const primary = model(PRIMARY_PROVIDER)
+  const main = model(MAIN_PROVIDER)
   const fallback = model(FALLBACK_PROVIDER)
   const models = createModels()
   return {
     models,
     model(providerID) {
-      if (providerID === PRIMARY_PROVIDER) return primary
+      if (providerID === MAIN_PROVIDER) return main
       if (providerID === FALLBACK_PROVIDER) return fallback
       throw new Error(`Unknown in-memory provider '${providerID}'`)
     },
     adapter(providerID) {
-      if (providerID === PRIMARY_PROVIDER) return "openai-codex"
+      if (providerID === MAIN_PROVIDER) return "openai-codex"
       if (providerID === FALLBACK_PROVIDER) return "openai-completions"
       throw new Error(`Unknown in-memory provider '${providerID}'`)
+    },
+    loginType() {
+      return "oauth"
+    },
+  }
+}
+
+function registryWithLimits(contextWindow: number, maxTokens: number): PiModels {
+  const base = registry()
+  const main = { ...base.model(MAIN_PROVIDER), contextWindow, maxTokens }
+  return {
+    ...base,
+    model(providerID) {
+      return providerID === MAIN_PROVIDER ? main : base.model(providerID)
     },
   }
 }
@@ -198,8 +224,8 @@ function runRole(call: CapturedCall): AgentRunRole {
 }
 
 function runRoute(call: CapturedCall): ProviderAffinity {
-  const match = /^Provider affinity: (primary|fallback)$/m.exec(call.system)
-  if (match?.[1] === "primary" || match?.[1] === "fallback") return match[1]
+  const match = /^Provider affinity: (main|fallback)$/m.exec(call.system)
+  if (match?.[1] === "main" || match?.[1] === "fallback") return match[1]
   throw new Error(`Captured system did not declare provider affinity for ${call.provider}`)
 }
 
@@ -250,6 +276,38 @@ function glmSecurityBlock(call: CapturedCall): AssistantMessage {
   return assistant(call, [], {
     stopReason: "error",
     errorMessage: "Provider finish_reason: sensitive",
+  })
+}
+
+function unavailableError(
+  call: CapturedCall,
+  content: string | [] = [],
+  providerCode = "server_error",
+): AssistantMessage {
+  return assistant(call, content, {
+    stopReason: "error",
+    errorMessage: "The provider is temporarily unavailable.",
+    diagnostics: [
+      {
+        type: "provider_failure",
+        timestamp: call.ordinal,
+        error: { code: providerCode, message: "Temporary server failure." },
+      },
+    ],
+  })
+}
+
+function contextLengthError(call: CapturedCall, content: string | [] = []): AssistantMessage {
+  return assistant(call, content, {
+    stopReason: "error",
+    errorMessage: "Your input exceeds the context window of this model.",
+    diagnostics: [
+      {
+        type: "provider_failure",
+        timestamp: call.ordinal,
+        error: { code: "context_length_exceeded", message: "Context window exceeded." },
+      },
+    ],
   })
 }
 
@@ -372,11 +430,13 @@ interface RootSpecOptions {
   readonly sessionID?: string
   readonly objective: string
   readonly tools?: readonly AgentTool[]
+  readonly gatewayTools?: readonly AgentTool[]
   readonly maxPerRun?: number
   readonly maxConcurrent?: number
   readonly maxDepth?: number
   readonly deadlineAt?: number
   readonly maxOutputTokens?: number
+  readonly workarea?: string
   readonly budgetPause?: AgentRunSpec["budget"]["pause"]
   readonly abort?: AbortSignal
 }
@@ -387,14 +447,15 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     sessionID: options.sessionID ?? `session-${options.id}`,
     role: "root",
     depth: 0,
-    provider: PRIMARY_PROVIDER,
-    model: models.model(PRIMARY_PROVIDER),
-    providerAffinity: "primary",
-    prompt: prompt("root", "primary", options.objective, true),
+    provider: MAIN_PROVIDER,
+    model: models.model(MAIN_PROVIDER),
+    providerAffinity: "main",
+    prompt: prompt("root", "main", options.objective, true),
     compileChildPrompt: (input) => prompt(input.role, input.providerRoute, input.task.objective, false),
     task: { objective: options.objective, expectedResult: "Return verified evidence." },
-    workarea: "/tmp/cyberful-pi-agent-test",
+    workarea: options.workarea ?? "/tmp/cyberful-pi-agent-test",
     tools: options.tools ?? [],
+    ...(options.gatewayTools ? { gatewayTools: () => options.gatewayTools! } : {}),
     skills: SKILLS,
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
@@ -423,13 +484,20 @@ function subsystem(
   provider: InMemoryProvider,
   models = registry(),
   now?: () => number,
+  options: {
+    readonly settings?: Settings.Info
+    readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>
+    readonly random?: () => number
+  } = {},
 ): { subsystem: PiAgentSubsystem; models: PiModels } {
   let childSequence = 0
   const instance = new PiAgentSubsystem({
-    settings: settings(),
+    settings: options.settings ?? settings(),
     registry: models,
     streamFn: provider.stream,
     ...(now ? { now } : {}),
+    sleep: options.sleep ?? (() => Promise.resolve()),
+    random: options.random ?? (() => 0),
     createRunID: () => `child-${++childSequence}`,
   })
   subsystems.push(instance)
@@ -454,7 +522,15 @@ function activityEvents(events: readonly AgentEvent[]): readonly ActivityEvent[]
   return events.filter((event): event is ActivityEvent => event.type === "activity")
 }
 
-describe("Pi complete root and primary subagent runs", () => {
+function retryEvents(events: readonly AgentEvent[]): readonly ProviderRetryEvent[] {
+  return events.filter((event): event is ProviderRetryEvent => event.type === "provider_retry")
+}
+
+function compactionEvents(events: readonly AgentEvent[]): readonly ContextCompactionEvent[] {
+  return events.filter((event): event is ContextCompactionEvent => event.type === "context_compaction")
+}
+
+describe("Pi complete root and main-route subagent runs", () => {
   test("redacts secret-shaped assistant text across provider deltas and in the final result", async () => {
     const apiKey = "sk-crossdeltasecret123456"
     const provider = new InMemoryProvider(
@@ -492,10 +568,11 @@ describe("Pi complete root and primary subagent runs", () => {
 
   test("redacts secret-shaped structured provider codes from events and the final result", async () => {
     const providerCode = "sk-providererrorsecret123456"
+    const providerDetailSecret = "sk-providerdetailsecret123456"
     const provider = new InMemoryProvider((call) =>
       assistant(call, [], {
         stopReason: "error",
-        errorMessage: "Provider request failed.",
+        errorMessage: `Provider request failed with api_key=${providerDetailSecret}.`,
         diagnostics: [
           {
             type: "provider_failure",
@@ -518,9 +595,656 @@ describe("Pi complete root and primary subagent runs", () => {
 
     expect(result).toMatchObject({
       termination: "provider_failed",
-      failure: { kind: "unknown", providerCode: "[REDACTED]", retryable: false },
+      failure: {
+        kind: "unknown",
+        providerCode: "[REDACTED]",
+        detail: "Provider request failed with api_key=[REDACTED]",
+        retryable: false,
+      },
     })
-    expect(JSON.stringify(events)).not.toContain(providerCode)
+    const serialized = JSON.stringify(events)
+    expect(serialized).not.toContain(providerCode)
+    expect(serialized).not.toContain(providerDetailSecret)
+    expect(serialized).toContain("Provider request failed with api_key=[REDACTED]")
+  })
+
+  test("retries a Codex WebSocket 1006 turn without executing completed tools twice", async () => {
+    let executions = 0
+    const probe: AgentTool<typeof PROBE_PARAMETERS, { readonly observed: true }> = {
+      name: "evidence_probe",
+      label: "Evidence probe",
+      description: "Record one test observation.",
+      parameters: PROBE_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: "probe complete" }],
+          details: { observed: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      const results = toolResultCount(call)
+      if (results === 0) return toolCall(call, "evidence_probe", { observation: "one completed request" })
+      if (call.ordinal === 2)
+        return unavailableError(call, "partial response that must not be published", "1006")
+      return assistant(call, "recovered on the same turn")
+    })
+    const runtime = subsystem(provider, registry(), undefined, { random: () => 0.5 })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "same-turn-provider-retry",
+        objective: "preserve a completed tool result across one transient provider failure",
+        tools: [probe],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({
+      id: "same-turn-provider-retry",
+      termination: "completed",
+      output: "recovered on the same turn",
+      toolCalls: 1,
+      usage: { input: 15, output: 9, reasoning: 3, cacheRead: 6, cacheWrite: 3 },
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls).toHaveLength(3)
+    expect(toolResultCount(provider.calls[2]!)).toBe(1)
+    expect(retryEvents(events).map(({ state, attempt, delayMs }) => ({ state, attempt, delayMs }))).toEqual([
+      { state: "scheduled", attempt: 1, delayMs: 500 },
+      { state: "attempting", attempt: 1, delayMs: undefined },
+      { state: "succeeded", attempt: 1, delayMs: undefined },
+    ])
+    expect(
+      activityEvents(events).flatMap((event) =>
+        event.activity.kind === "text" ? [event.activity.text] : [],
+      ),
+    ).toEqual(["recovered on the same turn"])
+  })
+
+  test("exhausts three unavailable retries and preserves the final provider failure", async () => {
+    const provider = new InMemoryProvider((call) => unavailableError(call))
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-exhausted",
+        objective: "exhaust the bounded transient provider retry policy",
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(provider.calls).toHaveLength(4)
+    expect(result).toMatchObject({
+      termination: "provider_failed",
+      failure: { kind: "unavailable", providerCode: "server_error", retryable: true },
+      usage: { input: 20, output: 12, reasoning: 4, cacheRead: 8, cacheWrite: 4 },
+    })
+    expect(retryEvents(events).map((event) => event.state)).toEqual([
+      "scheduled",
+      "attempting",
+      "scheduled",
+      "attempting",
+      "scheduled",
+      "attempting",
+      "exhausted",
+    ])
+  })
+
+  test("retries the exact Codex server_is_overloaded provider failure", async () => {
+    const provider = new InMemoryProvider((call) =>
+      call.ordinal === 1 ? unavailableError(call, [], "server_is_overloaded") : assistant(call, "recovered"),
+    )
+    const runtime = subsystem(provider, registry(), undefined, { random: () => 0 })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-overload-retry",
+        objective: "recover from transient Codex service saturation",
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "recovered",
+    })
+    expect(provider.calls).toHaveLength(2)
+    expect(retryEvents(events).map((event) => event.state)).toEqual([
+      "scheduled",
+      "attempting",
+      "succeeded",
+    ])
+  })
+
+  test("does not retry when the global provider retry policy is disabled", async () => {
+    const configured = settings()
+    const provider = new InMemoryProvider((call) => unavailableError(call))
+    const runtime = subsystem(provider, registry(), undefined, {
+      settings: {
+        ...configured,
+        agent: {
+          ...configured.agent,
+          retry: {
+            enabled: false,
+            max_retries: 3,
+            base_delay_ms: 1_000,
+            max_delay_ms: 15_000,
+          },
+        },
+      },
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-disabled",
+        objective: "leave transient provider retries disabled",
+      }),
+    )
+
+    expect((await run.result).termination).toBe("provider_failed")
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(await collectEvents(run))).toEqual([])
+  })
+
+  test("does not retry retryable failures outside the unavailable class", async () => {
+    const provider = new InMemoryProvider((call) =>
+      assistant(call, [], {
+        stopReason: "error",
+        errorMessage: "The provider rate limit was reached.",
+        diagnostics: [
+          {
+            type: "provider_failure",
+            timestamp: call.ordinal,
+            error: { code: "rate_limit_exceeded", message: "Retry later." },
+          },
+        ],
+      }),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-rate-limit",
+        objective: "leave a retryable rate-limit failure terminal for same-turn retry",
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "provider_failed",
+      failure: { kind: "rate_limit", retryable: true },
+    })
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(await collectEvents(run))).toEqual([])
+  })
+
+  test("cancels an interruptible provider backoff without starting the retry request", async () => {
+    const waitStarted = Promise.withResolvers<void>()
+    const provider = new InMemoryProvider((call) => unavailableError(call, "discarded provider partial"))
+    const runtime = subsystem(provider, registry(), undefined, {
+      sleep: (_delayMs, signal) =>
+        new Promise((_resolve, reject) => {
+          waitStarted.resolve()
+          if (signal.aborted) return reject(signal.reason)
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+        }),
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-cancelled",
+        objective: "cancel while waiting to retry a transient provider failure",
+      }),
+    )
+
+    await waitStarted.promise
+    await run.cancel("operator cancelled during retry backoff")
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result.termination).toBe("cancelled")
+    expect(result.output).not.toContain("discarded provider partial")
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(events).map((event) => event.state)).toEqual(["scheduled", "cancelled"])
+    expect(JSON.stringify(events)).not.toContain("discarded provider partial")
+  })
+
+  test("stops an interruptible provider backoff when the active-execution budget expires", async () => {
+    const waitStarted = Promise.withResolvers<void>()
+    const provider = new InMemoryProvider((call) => unavailableError(call, "discarded budget partial"))
+    const runtime = subsystem(provider, registry(), undefined, {
+      sleep: (_delayMs, signal) =>
+        new Promise((_resolve, reject) => {
+          waitStarted.resolve()
+          if (signal.aborted) return reject(signal.reason)
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+        }),
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-budget",
+        objective: "stop a transient provider retry when its active budget expires",
+        deadlineAt: Date.now() + 50,
+      }),
+    )
+
+    await waitStarted.promise
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result.termination).toBe("budget_exhausted")
+    expect(result.output).not.toContain("discarded budget partial")
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(events).map((event) => event.state)).toEqual(["scheduled", "cancelled"])
+    expect(JSON.stringify(events)).not.toContain("discarded budget partial")
+  })
+
+  test("reuses one compacted provider projection across later turns without repeating compaction", async () => {
+    const workarea = await temporaryWorkarea()
+    const fullOutput = `first evidence\n${"large-target-response-".repeat(6_000)}\nlast evidence`
+    let executions = 0
+    let checkpoints = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly bytes: number }> = {
+      name: "evidence_dump",
+      label: "Collect complete evidence",
+      description: "Return one intentionally large authorized evidence result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: fullOutput }],
+          details: { bytes: Buffer.byteLength(fullOutput) },
+        }
+      },
+    }
+    const smallCheckpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "small_checkpoint",
+      label: "Record compact checkpoint",
+      description: "Return one small result after the large evidence was virtualized.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        checkpoints++
+        return {
+          content: [{ type: "text", text: "small checkpoint complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      if (call.ordinal === 2) return toolCall(call, "small_checkpoint", {})
+      return assistant(call, "continued after proactive context compaction")
+    })
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "proactive-context-compaction",
+        objective: "preserve a large tool result and continue the same run",
+        tools: [evidenceDump, smallCheckpoint],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const projectedResult = provider.calls[1]?.messages.find((message) => message.role === "toolResult")
+    const projectedText = projectedResult ? textContent(projectedResult.content) : ""
+    const relativePath = /^Complete result: (.+)$/m.exec(projectedText)?.[1]
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "continued after proactive context compaction",
+      toolCalls: 2,
+    })
+    expect(executions).toBe(1)
+    expect(checkpoints).toBe(1)
+    expect(provider.calls).toHaveLength(3)
+    expect(projectedText).toContain("Historical tool result virtualized")
+    expect(
+      textContent(
+        provider.calls[2]?.messages.find((message) => message.role === "toolResult" && message.toolName === "evidence_dump")
+          ?.content ?? [],
+      ),
+    ).toContain("Historical tool result virtualized")
+    expect(relativePath).toStartWith("raw/context-tool-results/")
+    expect(compactionEvents(events).map((event) => event.state)).toEqual([
+      "scheduled",
+      "started",
+      "completed",
+    ])
+    expect(
+      activityEvents(events).filter(
+        (event) =>
+          event.activity.kind === "status" && event.activity.text.includes('"contextCompaction"'),
+      ),
+    ).toHaveLength(1)
+    expect(compactionEvents(events).at(-1)).toMatchObject({
+      mode: "proactive",
+      messagesRemoved: 0,
+      toolResultsVirtualized: 1,
+      artifactsPreserved: 1,
+    })
+    if (!relativePath) throw new Error("Proactive compaction did not expose its complete artifact")
+    const artifact = JSON.parse(await readFile(path.join(workarea, relativePath), "utf8")) as {
+      readonly content: readonly [{ readonly type: string; readonly text: string }]
+    }
+    expect(artifact.content[0]?.text).toBe(fullOutput)
+  })
+
+  test("recovers the same AgentRun from context_length_exceeded without reexecuting completed tools", async () => {
+    const workarea = await temporaryWorkarea()
+    const fullOutput = `emergency evidence\n${"context-pressure-".repeat(600)}`
+    let executions = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect emergency evidence",
+      description: "Return evidence that must survive emergency context recovery.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: fullOutput }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (call.ordinal === 1) return toolCall(call, "evidence_dump", {})
+      if (call.ordinal === 2) return contextLengthError(call, "discarded context-error partial")
+      const projected = call.messages.find((message) => message.role === "toolResult")
+      if (!projected || !textContent(projected.content).includes("Historical tool result virtualized"))
+        throw new Error("Emergency continuation did not receive the virtualized tool result")
+      return assistant(call, "same run recovered after emergency compaction")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "emergency-context-recovery",
+        objective: "continue the same turn after a provider context error",
+        tools: [evidenceDump],
+        workarea,
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({
+      id: "emergency-context-recovery",
+      termination: "completed",
+      output: "same run recovered after emergency compaction",
+      toolCalls: 1,
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls).toHaveLength(3)
+    expect(retryEvents(events)).toEqual([])
+    expect(compactionEvents(events).map((event) => event.state)).toEqual([
+      "scheduled",
+      "started",
+      "completed",
+      "recovered",
+    ])
+    expect(compactionEvents(events).at(-1)).toMatchObject({
+      mode: "emergency",
+      messagesRemoved: 1,
+      toolResultsVirtualized: 1,
+      artifactsPreserved: 1,
+    })
+    expect(
+      activityEvents(events)
+        .flatMap((event) => (event.activity.kind === "text" ? [event.activity.text] : []))
+        .join("\n"),
+    ).not.toContain("discarded context-error partial")
+  })
+
+  test("reports failed compaction and keeps the original result when artifact persistence is unavailable", async () => {
+    const parent = await temporaryWorkarea()
+    const unavailableWorkarea = path.join(parent, "missing-workarea")
+    const fullOutput = "unvirtualized-evidence-".repeat(6_000)
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect evidence without storage",
+      description: "Return evidence while the test workarea is unavailable.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: fullOutput }],
+        details: { complete: true },
+      }),
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      const result = call.messages.find((message) => message.role === "toolResult")
+      if (!result || textContent(result.content) !== fullOutput)
+        throw new Error("A result without a durable artifact must remain complete in provider context")
+      return assistant(call, "continued with the unmodified result")
+    })
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "failed-context-compaction",
+        objective: "fail context artifact persistence without losing the result",
+        tools: [evidenceDump],
+        workarea: unavailableWorkarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued with the unmodified result",
+    })
+    expect(compactionEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
+      "scheduled",
+      "started",
+      "failed",
+    ])
+  })
+
+  test("keeps MCP schemas out of the first payload and loads only searched tools", async () => {
+    let snapshots = 0
+    const gatewayTools: AgentTool[] = [
+      {
+        name: "browser_snapshot",
+        label: "Browser snapshot",
+        description: "Return visible page text and actionable DOM references.",
+        parameters: EMPTY_PARAMETERS,
+        execute: async () => {
+          snapshots++
+          return {
+            content: [{ type: "text", text: "scoped browser snapshot" }],
+            details: { kind: "browser" },
+          }
+        },
+      },
+      {
+        name: "zap_active_scan",
+        label: "ZAP active scan",
+        description: "Run an authorized OWASP ZAP active scan.",
+        parameters: EMPTY_PARAMETERS,
+        execute: async () => ({
+          content: [{ type: "text", text: "scan complete" }],
+          details: { kind: "zap" },
+        }),
+      },
+      {
+        name: "handoff",
+        label: "Phase handoff",
+        description: "Advance the completed phase.",
+        parameters: EMPTY_PARAMETERS,
+        execute: async () => ({
+          content: [{ type: "text", text: "handoff complete" }],
+          details: { kind: "handoff" },
+        }),
+      },
+    ]
+    const provider = new InMemoryProvider((call) => {
+      const results = toolResultCount(call)
+      if (results === 0) return toolCall(call, "tool_search", { query: "visible browser snapshot", limit: 1 })
+      if (results === 1) return toolCall(call, "browser_snapshot", {})
+      return assistant(call, "deferred browser tool completed")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "deferred-mcp-tool-root",
+        objective: "load one browser tool without exposing the full MCP catalog",
+        gatewayTools,
+      }),
+    )
+
+    const result = await run.result
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "deferred browser tool completed",
+      toolCalls: 2,
+    })
+    expect(snapshots).toBe(1)
+    expect(provider.calls[0]!.toolNames).toContain("tool_search")
+    expect(provider.calls[0]!.toolNames).toContain("handoff")
+    expect(provider.calls[0]!.toolNames).not.toContain("browser_snapshot")
+    expect(provider.calls[0]!.toolNames).not.toContain("zap_active_scan")
+    expect(provider.calls[1]!.toolNames).toContain("browser_snapshot")
+    expect(provider.calls[1]!.toolNames).not.toContain("zap_active_scan")
+    const searchResult = provider.calls[1]!.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "tool_search",
+    )
+    expect(searchResult?.role === "toolResult" ? searchResult.addedToolNames : undefined).toEqual(["browser_snapshot"])
+  })
+
+  test("ranks the shell tool for the observed descriptive cyberful-os query", async () => {
+    const shell: AgentTool = {
+      name: "shell",
+      label: "Execute shell command",
+      description: "Execute an authorized command inside the isolated cyberful-os environment.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "command complete" }],
+        details: { kind: "shell" },
+      }),
+    }
+    const unrelated: AgentTool = {
+      name: "browser_snapshot",
+      label: "Browser snapshot",
+      description: "Read the current page.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "snapshot" }],
+        details: { kind: "browser" },
+      }),
+    }
+    const provider = new InMemoryProvider((call) =>
+      toolResultCount(call) === 0
+        ? toolCall(call, "tool_search", { query: "shell command execution cyberful-os", limit: 1 })
+        : assistant(call, "shell discovered"),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "descriptive-shell-search",
+        objective: "find shell execution from a descriptive query",
+        gatewayTools: [unrelated, shell],
+      }),
+    )
+
+    expect(await run.result).toMatchObject({ termination: "completed", output: "shell discovered" })
+    const result = provider.calls[1]!.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "tool_search",
+    )
+    expect(result?.role === "toolResult" ? result.addedToolNames : undefined).toEqual(["shell"])
+  })
+
+  test("paginates the complete authorized tool inventory without a functional catalog limit", async () => {
+    const gatewayTools: AgentTool[] = ["zap_alpha", "zap_beta", "zap_gamma"].map((name) => ({
+      name,
+      label: name,
+      description: `Authorized ${name} operation.`,
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: `${name} complete` }],
+        details: { name },
+      }),
+    }))
+    const provider = new InMemoryProvider((call) => {
+      const results = call.messages.filter(
+        (message) => message.role === "toolResult" && message.toolName === "tool_search",
+      )
+      if (results.length === 0) return toolCall(call, "tool_search", { query: "*", limit: 2 })
+      if (results.length === 1) {
+        const payload = JSON.parse(textContent(results[0]!.content)) as { next_cursor?: string }
+        return toolCall(call, "tool_search", { query: "*", limit: 2, cursor: payload.next_cursor })
+      }
+      return assistant(call, "complete inventory loaded")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "complete-tool-inventory-root",
+        objective: "enumerate every authorized ZAP tool page",
+        gatewayTools,
+      }),
+    )
+
+    expect((await run.result).termination).toBe("completed")
+    expect(provider.calls[0]!.toolNames).not.toContain("zap_alpha")
+    expect(provider.calls[1]!.toolNames).toEqual(expect.arrayContaining(["zap_alpha", "zap_beta"]))
+    expect(provider.calls[1]!.toolNames).not.toContain("zap_gamma")
+    expect(provider.calls[2]!.toolNames).toEqual(expect.arrayContaining(["zap_alpha", "zap_beta", "zap_gamma"]))
+  })
+
+  test("keeps loaded MCP definitions isolated between root, child, and fallback runs", async () => {
+    const gatewayTools: AgentTool[] = [
+      {
+        name: "browser_snapshot",
+        label: "Browser snapshot",
+        description: "Return a bounded visible DOM snapshot.",
+        parameters: EMPTY_PARAMETERS,
+        execute: async () => ({
+          content: [{ type: "text", text: "snapshot complete" }],
+          details: { kind: "browser" },
+        }),
+      },
+    ]
+    const provider = new InMemoryProvider((call) => {
+      const role = runRole(call)
+      const results = toolResultCount(call)
+      if (role === "subagent") return assistant(call, "child catalog remained isolated")
+      if (role === "fallback") return assistant(call, "fallback catalog remained isolated")
+      if (results === 0) return toolCall(call, "tool_search", { query: "browser snapshot" })
+      if (results === 1)
+        return toolCall(call, "delegate_task", {
+          task: "inspect the child tool catalog without loading anything",
+          expected_result: "report whether browser_snapshot was inherited",
+        })
+      if (results === 2)
+        return toolCall(call, "request_fallback_delegation", {
+          task: "Inspect the fallback tool catalog without loading anything.",
+          expected_result: "Report whether browser_snapshot was inherited.",
+        })
+      return assistant(call, "root completed isolated catalog checks")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "deferred-tool-isolation-root",
+        objective: "prove that loaded tool schemas remain local to one AgentRun",
+        gatewayTools,
+      }),
+    )
+
+    expect((await run.result).termination).toBe("completed")
+    const rootCalls = provider.calls.filter((call) => runRole(call) === "root")
+    const childCall = provider.calls.find((call) => runRole(call) === "subagent")
+    const fallbackCall = provider.calls.find((call) => runRole(call) === "fallback")
+
+    expect(rootCalls[0]!.toolNames).not.toContain("browser_snapshot")
+    expect(rootCalls.slice(1).every((call) => call.toolNames.includes("browser_snapshot"))).toBeTrue()
+    expect(childCall?.toolNames).toContain("tool_search")
+    expect(childCall?.toolNames).not.toContain("browser_snapshot")
+    expect(fallbackCall?.toolNames).toContain("tool_search")
+    expect(fallbackCall?.toolNames).not.toContain("browser_snapshot")
   })
 
   test("preserves the system contract, nested delegation, root-only handoff, audit events, and cumulative usage", async () => {
@@ -563,7 +1287,7 @@ describe("Pi complete root and primary subagent runs", () => {
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "root-nested",
-        objective: "exercise nested primary delegation",
+        objective: "exercise nested main-route delegation",
         tools: [handoff],
         maxDepth: 2,
       }),
@@ -576,8 +1300,8 @@ describe("Pi complete root and primary subagent runs", () => {
       id: "root-nested",
       phaseRootID: "root-nested",
       role: "root",
-      provider: PRIMARY_PROVIDER,
-      providerAffinity: "primary",
+      provider: MAIN_PROVIDER,
+      providerAffinity: "main",
       output: "root complete",
       termination: "completed",
       childRunIDs: ["child-1"],
@@ -603,24 +1327,48 @@ describe("Pi complete root and primary subagent runs", () => {
         parentID: undefined,
         phaseRootID: "root-nested",
         role: "root",
-        providerAffinity: "primary",
+        providerAffinity: "main",
       },
       {
         runID: "child-1",
         parentID: "root-nested",
         phaseRootID: "root-nested",
         role: "subagent",
-        providerAffinity: "primary",
+        providerAffinity: "main",
       },
       {
         runID: "child-2",
         parentID: "child-1",
         phaseRootID: "root-nested",
         role: "subagent",
-        providerAffinity: "primary",
+        providerAffinity: "main",
       },
     ])
     expect(started.every((event) => event.promptSystemSha256.length === 64)).toBeTrue()
+    const delegatedLifecycle = activityEvents(events).filter(
+      (event) =>
+        event.activity.kind === "agent" &&
+        (event.activity.actor.id === "child-1" || event.activity.actor.id === "child-2"),
+    )
+    expect(delegatedLifecycle.length).toBeGreaterThan(0)
+    expect(
+      delegatedLifecycle
+        .filter((event) => event.activity.kind === "agent" && event.activity.actor.id === "child-1")
+        .every(
+          (event) =>
+            event.activity.kind === "agent" &&
+            event.activity.actor.sourceCallID === `${MAIN_PROVIDER}-tool-1`,
+        ),
+    ).toBeTrue()
+    expect(
+      delegatedLifecycle
+        .filter((event) => event.activity.kind === "agent" && event.activity.actor.id === "child-2")
+        .every(
+          (event) =>
+            event.activity.kind === "agent" &&
+            typeof event.activity.actor.sourceCallID === "string",
+        ),
+    ).toBeTrue()
 
     const nestedCalls = provider.calls.filter((call) => firstObjective(call).includes("verify nested evidence"))
     expect(nestedCalls).toHaveLength(2)
@@ -734,7 +1482,7 @@ describe("Pi proactive and automatic fallback admission", () => {
           task: "perform one bounded provider-block-prone verification",
           expected_result: "return the verified discriminator",
         })
-      return assistant(call, "primary continued after the host denial")
+      return assistant(call, "main route continued after the host denial")
     })
     const runtime = subsystem(provider)
     const run = await runtime.subsystem.start(
@@ -750,7 +1498,7 @@ describe("Pi proactive and automatic fallback admission", () => {
 
     expect(result).toMatchObject({
       termination: "completed",
-      output: "primary continued after the host denial",
+      output: "main route continued after the host denial",
       fallbackAdmissions: 0,
       fallbackDescendants: 0,
     })
@@ -766,7 +1514,7 @@ describe("Pi proactive and automatic fallback admission", () => {
           task: "perform one bounded provider-block-prone verification",
           expected_result: "return the verified discriminator",
         })
-      return assistant(call, "primary completed")
+      return assistant(call, "main route completed")
     })
     const sessionID = "cross-worker-quota-session"
     clearFallbackLedger(sessionID)
@@ -791,7 +1539,7 @@ describe("Pi proactive and automatic fallback admission", () => {
 
     const firstRun = await first.start(
       rootSpec(models, {
-        id: "cross-worker-primary-1",
+        id: "cross-worker-main-1",
         sessionID,
         objective: "first phase owner",
       }),
@@ -800,7 +1548,7 @@ describe("Pi proactive and automatic fallback admission", () => {
 
     const secondRun = await second.start(
       rootSpec(models, {
-        id: "cross-worker-primary-2",
+        id: "cross-worker-main-2",
         sessionID,
         objective: "second phase owner",
       }),
@@ -810,7 +1558,7 @@ describe("Pi proactive and automatic fallback admission", () => {
     expect(secondResult).toMatchObject({ fallbackAdmissions: 0, fallbackDescendants: 0 })
     expect(secondEvents.map((event) => event.state)).toEqual(["requested", "denied"])
     expect(secondEvents.at(-1)?.quota).toEqual({
-      primaryActorRuns: 2,
+      mainActorRuns: 2,
       admitted: 1,
       limit: 1,
     })
@@ -827,7 +1575,7 @@ describe("Pi proactive and automatic fallback admission", () => {
             (message) => message.role === "toolResult" && message.toolName === "host_fallback_delegation",
           )
         )
-          return assistant(call, "primary resumed after automatic fallback")
+          return assistant(call, "main route resumed after automatic fallback")
         return codexSecurityBlock(call)
       }
       if (objective.includes("exercise proactive quota")) {
@@ -855,7 +1603,7 @@ describe("Pi proactive and automatic fallback admission", () => {
         rootSpec(runtime.models, {
           id: `quota-warmup-${index}`,
           sessionID: "quota-session",
-          objective: `warmup primary actor ${index}`,
+          objective: `warmup main-route actor ${index}`,
         }),
       )
       expect((await warmup.result).termination).toBe("completed")
@@ -894,7 +1642,7 @@ describe("Pi proactive and automatic fallback admission", () => {
 
     expect(automaticResult).toMatchObject({
       termination: "completed",
-      output: "primary resumed after automatic fallback",
+      output: "main route resumed after automatic fallback",
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
@@ -918,7 +1666,7 @@ describe("Pi proactive and automatic fallback admission", () => {
 })
 
 describe("Pi complete fallback AgentRuns", () => {
-  test("allows a primary subagent to request one complete fallback and propagates its audit to the root", async () => {
+  test("allows a main-route subagent to request one complete fallback and propagates its audit to the root", async () => {
     const provider = new InMemoryProvider((call) => {
       const objective = firstObjective(call)
       const results = toolResultCount(call)
@@ -936,7 +1684,7 @@ describe("Pi complete fallback AgentRuns", () => {
           task: "perform one bounded aggressive discriminator check",
           expected_result: "return concrete fallback evidence",
         })
-      return assistant(call, "primary subagent synthesized fallback evidence")
+      return assistant(call, "main-route subagent synthesized fallback evidence")
     })
     const runtime = subsystem(provider)
     const run = await runtime.subsystem.start(
@@ -996,14 +1744,14 @@ describe("Pi complete fallback AgentRuns", () => {
       const role = runRole(call)
       const objective = firstObjective(call)
       const results = toolResultCount(call)
-      if (call.provider === PRIMARY_PROVIDER) {
+      if (call.provider === MAIN_PROVIDER) {
         if (results === 0)
           return toolCall(call, "request_fallback_delegation", {
             task: "perform one bounded aggressive verification",
             expected_result: "return preserved evidence and a verdict",
             artifacts: ["evidence/request.txt"],
           })
-        return assistant(call, "primary synthesized the fallback result")
+        return assistant(call, "main route synthesized the fallback result")
       }
       if (role === "fallback") {
         if (results === 0) return toolCall(call, "skill_read", {})
@@ -1037,7 +1785,7 @@ describe("Pi complete fallback AgentRuns", () => {
 
     expect(result).toMatchObject({
       termination: "completed",
-      output: "primary synthesized the fallback result",
+      output: "main route synthesized the fallback result",
       fallbackAdmissions: 1,
       fallbackDescendants: 2,
     })
@@ -1058,9 +1806,9 @@ describe("Pi complete fallback AgentRuns", () => {
     expect(fallbackCalls.every((call) => !call.toolNames.includes("request_fallback_delegation"))).toBeTrue()
   })
 
-  test("treats a fallback provider block as terminal without ping-ponging to primary", async () => {
+  test("treats a fallback provider block as terminal without ping-ponging to main", async () => {
     const provider = new InMemoryProvider((call) => {
-      if (call.provider === PRIMARY_PROVIDER) return codexSecurityBlock(call)
+      if (call.provider === MAIN_PROVIDER) return codexSecurityBlock(call)
       return glmSecurityBlock(call)
     })
     const runtime = subsystem(provider)
@@ -1085,9 +1833,9 @@ describe("Pi complete fallback AgentRuns", () => {
       fallbackDescendants: 1,
     })
     expect(provider.calls.map((call) => call.provider)).toEqual([
-      PRIMARY_PROVIDER,
+      MAIN_PROVIDER,
       FALLBACK_PROVIDER,
-      PRIMARY_PROVIDER,
+      MAIN_PROVIDER,
     ])
     expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(1)
     expect(fallbackEvents(events).map(({ state, quotaExempt, reason }) => ({ state, quotaExempt, reason }))).toEqual([
@@ -1108,7 +1856,7 @@ describe("Pi complete fallback AgentRuns", () => {
     ).toBeTrue()
   })
 
-  test("returns partial automatic-fallback evidence to the primary parent after a terminal branch error", async () => {
+  test("returns partial automatic-fallback evidence to the main parent after a terminal branch error", async () => {
     const provider = new InMemoryProvider((call) => {
       if (call.provider === FALLBACK_PROVIDER)
         return assistant(call, "partial fallback evidence was preserved", {
@@ -1123,7 +1871,7 @@ describe("Pi complete fallback AgentRuns", () => {
           ],
         })
       if (toolResultCount(call) === 0) return codexSecurityBlock(call)
-      return assistant(call, "primary synthesized the partial fallback evidence")
+      return assistant(call, "main route synthesized the partial fallback evidence")
     })
     const runtime = subsystem(provider)
     const run = await runtime.subsystem.start(
@@ -1135,32 +1883,32 @@ describe("Pi complete fallback AgentRuns", () => {
 
     const result = await run.result
     const events = await collectEvents(run)
-    const resumedPrimary = provider.calls.find(
-      (call) => call.provider === PRIMARY_PROVIDER && toolResultCount(call) > 0,
+    const resumedMain = provider.calls.find(
+      (call) => call.provider === MAIN_PROVIDER && toolResultCount(call) > 0,
     )
-    const hostResult = resumedPrimary?.messages.find(
+    const hostResult = resumedMain?.messages.find(
       (message) => message.role === "toolResult" && message.toolName === "host_fallback_delegation",
     )
 
     expect(result).toMatchObject({
       termination: "completed",
-      output: "primary synthesized the partial fallback evidence",
+      output: "main route synthesized the partial fallback evidence",
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
     expect(hostResult && textContent(hostResult.content)).toContain("partial fallback evidence was preserved")
     expect(hostResult && textContent(hostResult.content)).toContain("Fallback termination: provider_failed")
     expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "failed"])
-    expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(1)
+    expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(4)
   })
 
-  test("does not resume an idle primary parent cancelled while its automatic fallback is running", async () => {
+  test("does not resume an idle main parent cancelled while its automatic fallback is running", async () => {
     const controller = new AbortController()
     const provider = new InMemoryProvider(async (call) => {
-      if (call.provider === PRIMARY_PROVIDER)
+      if (call.provider === MAIN_PROVIDER)
         return call.ordinal === 1
           ? codexSecurityBlock(call)
-          : assistant(call, "forbidden primary continuation after cancellation")
+          : assistant(call, "forbidden main-route continuation after cancellation")
       await new Promise<void>((resolve) => {
         if (call.signal?.aborted) {
           resolve()
@@ -1192,18 +1940,18 @@ describe("Pi complete fallback AgentRuns", () => {
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([PRIMARY_PROVIDER, FALLBACK_PROVIDER])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER])
     expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "failed"])
   })
 
-  test("does not resume an idle primary parent whose budget expires while its automatic fallback is running", async () => {
+  test("does not resume an idle main parent whose budget expires while its automatic fallback is running", async () => {
     let now = 1_000
     const fallbackGate = Promise.withResolvers<void>()
     const provider = new InMemoryProvider(async (call) => {
-      if (call.provider === PRIMARY_PROVIDER)
+      if (call.provider === MAIN_PROVIDER)
         return call.ordinal === 1
           ? codexSecurityBlock(call)
-          : assistant(call, "forbidden primary continuation after budget exhaustion")
+          : assistant(call, "forbidden main-route continuation after budget exhaustion")
       await fallbackGate.promise
       return assistant(call, "fallback completed after the parent deadline")
     })
@@ -1227,7 +1975,7 @@ describe("Pi complete fallback AgentRuns", () => {
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([PRIMARY_PROVIDER, FALLBACK_PROVIDER])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER])
     expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "completed"])
   })
 })

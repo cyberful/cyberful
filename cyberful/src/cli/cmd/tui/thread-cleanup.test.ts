@@ -5,10 +5,14 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { cleanupAfterWorker, type CleanupAfterWorkerDeps } from "./thread-cleanup"
+import {
+  cleanupAfterWorker,
+  type CleanupAfterWorkerDeps,
+  WORKER_SHUTDOWN_TIMEOUT_MS,
+} from "./thread-cleanup"
 
 describe("TUI terminal cleanup", () => {
-  test("awaits run-owned container removal before process-exit retries", async () => {
+  test("interrupting Recon reaps its exact resources before awaiting Docker discovery", async () => {
     const release = Promise.withResolvers<void>()
     const started = Promise.withResolvers<void>()
     const events: string[] = []
@@ -35,14 +39,24 @@ describe("TUI terminal cleanup", () => {
     const cleanup = cleanupAfterWorker(
       {
         runID: "run-alpha",
-        pids: [101],
-        resources: [{ name: "cyberful-os-expert-alpha", action: "remove", kind: "expert" }],
+        pids: [101, 202],
+        resources: [
+          { name: "cyberful-os-expert-recon", action: "remove", kind: "expert" },
+          { name: "cyberful-zap-recon", action: "remove", kind: "zap" },
+          { name: "cyberful-os", action: "stop", kind: "dependency" },
+        ],
       },
       deps,
     )
     await started.promise
 
-    expect(events).toEqual(["terminal container cleanup started", "kill:101", "awaited:run-alpha:start"])
+    expect(events).toEqual([
+      "terminal container cleanup started",
+      "kill:101",
+      "kill:202",
+      "snapshot:cyberful-os-expert-recon,cyberful-zap-recon,cyberful-os",
+      "awaited:run-alpha:start",
+    ])
 
     release.resolve()
     await cleanup
@@ -50,12 +64,17 @@ describe("TUI terminal cleanup", () => {
     expect(events).toEqual([
       "terminal container cleanup started",
       "kill:101",
+      "kill:202",
+      "snapshot:cyberful-os-expert-recon,cyberful-zap-recon,cyberful-os",
       "awaited:run-alpha:start",
       "awaited:run-alpha:complete",
-      "snapshot:cyberful-os-expert-alpha",
       "sync:run-alpha",
       "terminal container cleanup completed",
     ])
+  })
+
+  test("worker shutdown allows phase unwind and a full Docker cleanup window", () => {
+    expect(WORKER_SHUTDOWN_TIMEOUT_MS).toBe(120_000)
   })
 
   test("runs both synchronous retries when awaited cleanup fails", async () => {
@@ -84,12 +103,7 @@ describe("TUI terminal cleanup", () => {
 
     await cleanupAfterWorker({ runID: "run-alpha", pids: [], resources: [] }, deps)
 
-    expect(events).toEqual([
-      "terminal container cleanup started",
-      "snapshot",
-      "label-sweep",
-      "warn",
-    ])
+    expect(events).toEqual(["terminal container cleanup started", "snapshot", "label-sweep", "warn"])
   })
 
   test("reports synchronous fallback failures instead of claiming cleanup completed", async () => {

@@ -16,14 +16,9 @@ import {
 } from "@/session/assistant-timestamp"
 import { DialogMessage } from "./dialog-message"
 import { useDialog } from "../../ui/dialog"
-import type { PromptInfo } from "../../component/prompt/history"
 import { isRecord } from "@/util/record"
 
-export function DialogTimeline(props: {
-  sessionID: string
-  onMove: (messageID: string) => void
-  setPrompt?: (prompt: PromptInfo) => void
-}) {
+export function DialogTimeline(props: { sessionID: string; onMove: (messageID: string) => void }) {
   const sync = useSync()
   const dialog = useDialog()
   const { theme } = useTheme()
@@ -46,9 +41,7 @@ export function DialogTimeline(props: {
               value: message.id,
               footer: Locale.time(message.time.created),
               onSelect: (dialog) => {
-                dialog.replace(() => (
-                  <DialogMessage messageID={message.id} sessionID={props.sessionID} setPrompt={props.setPrompt} />
-                ))
+                dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
               },
             },
           ]
@@ -73,9 +66,7 @@ export function DialogTimeline(props: {
             footer: timestamp ? assistantDisplayTimeLine(timestamp) : undefined,
             footerFg: theme.textMuted,
             onSelect: (dialog) => {
-              dialog.replace(() => (
-                <DialogMessage messageID={message.id} sessionID={props.sessionID} setPrompt={props.setPrompt} />
-              ))
+              dialog.replace(() => <DialogMessage messageID={message.id} sessionID={props.sessionID} />)
             },
           },
         ]

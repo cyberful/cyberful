@@ -20,18 +20,18 @@ python3 --version
 node --version
 ```
 
-The first launch creates `settings.yaml` with an `openai-codex` primary provider
-using the `default` OAuth profile. Authenticate and inspect it through
-Cyberful:
+The first launch creates `settings.yaml` with `openai-codex` as the main
+subscription provider. Authenticate and inspect that configured key through Cyberful:
 
 ```sh
 cyberful auth login
 cyberful auth status
 ```
 
-You can instead configure another provider supported by Pi. Environment-backed
-providers require only the variable name in `settings.yaml`; place the actual
-secret in the process environment or `.env`. See
+You can instead select the reviewed Z.AI or Kimi subscription adapters and run
+`cyberful auth login <name>`, where `<name>` is the key under
+`agent.providers`. Environment-backed providers require only the variable name
+in `settings.yaml`; place the actual secret in the process environment or `.env`. See
 [Agent providers and fallback](../user-guide/settings.md).
 
 Continue with [Install Cyberful](install.md) when these prerequisites are ready.

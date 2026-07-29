@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import type { AgentTool } from "@earendil-works/pi-agent-core"
+import { createHash } from "node:crypto"
 import { Unsafe } from "typebox"
 import type { Settings } from "@/config/settings"
 import type {
@@ -26,6 +27,7 @@ import { durableFallbackLedgerForSession } from "./pi-fallback-ledger"
 import { connectPiMcp } from "./pi-mcp"
 import { createPiModels } from "./pi-models"
 import { PiAudit } from "./pi-audit"
+import { replaceWorkareaFile } from "@/workarea"
 
 export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "subsystem_failed"
 
@@ -57,7 +59,9 @@ export interface RunInput {
   readonly askQuestion?: AskHuman
   readonly approvalState?: ApprovalController
   readonly handoffOwner: boolean
-  readonly transcriptEnabled: boolean
+  readonly transcript?: {
+    readonly append: (line: string) => Promise<void>
+  }
   readonly spec: {
     readonly cwd: string
     readonly permission: { readonly kind: "autonomous" }
@@ -70,17 +74,19 @@ export interface RunInput {
 }
 
 const activeWorkers = new Set<PiAgentSubsystem>()
+export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function dynamicAgentTool(tool: DynamicTool): AgentTool {
+function dynamicAgentTool(tool: DynamicTool): AgentTool & { readonly deferLoading: boolean } {
   return {
     name: tool.definition.name,
     label: tool.definition.name,
     description: tool.definition.description,
     parameters: Unsafe(tool.definition.inputSchema),
+    deferLoading: tool.definition.deferLoading ?? true,
     execute: async (_callID, input, signal) => {
       const result = await tool.execute(input, { signal: signal ?? new AbortController().signal })
       if (!result.success) throw new Error(result.text)
@@ -97,8 +103,20 @@ function failureOf(result: AgentRunResult): SubsystemFailure | undefined {
   return {
     kind: result.failure.kind,
     ...(result.failure.providerCode ? { providerCode: result.failure.providerCode } : {}),
+    ...("httpStatus" in result.failure && result.failure.httpStatus !== undefined
+      ? { httpStatus: result.failure.httpStatus }
+      : {}),
+    ...(result.failure.detail ? { detail: result.failure.detail } : {}),
     retryable: result.failure.retryable,
   }
+}
+
+function failureReason(failure: NonNullable<AgentRunResult["failure"]>): string {
+  const providerCode = failure.providerCode ? ` · provider code ${failure.providerCode}` : ""
+  const httpStatus =
+    "httpStatus" in failure && failure.httpStatus !== undefined ? ` · HTTP ${failure.httpStatus}` : ""
+  const detail = failure.detail ? `: ${failure.detail}` : ""
+  return `${failure.kind}${providerCode}${httpStatus}${detail}`
 }
 
 function terminationOf(result: AgentRunResult): RunTermination {
@@ -137,10 +155,66 @@ function finalLine(result: AgentRunResult): string {
   })
 }
 
+function boundedUtf8Prefix(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8")
+  if (bytes.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (bytes[end] ?? 0) >= 0x80 && (bytes[end] ?? 0) < 0xc0) end--
+  return bytes.subarray(0, end).toString("utf8")
+}
+
+// ── Live Tool Output Is A Projection, Not The Evidence Store ────
+// AgentEvents and the authoritative AgentRun retain the complete redacted tool
+// result. The live TUI receives at most twelve KiB so rendering cannot scale with
+// scanner output size. Before projecting a larger result, the runtime persists
+// its full text through the symlink-safe workarea boundary and publishes only a
+// content-addressed reference. A failed persistence attempt still bounds the UI;
+// the untouched transcript remains the diagnostic fallback.
+// ─────────────────────────────────────────────────────────────────
+export async function projectLiveEvent(
+  event: AgentEvent,
+  workarea: string,
+  persistedArtifacts: Set<string> = new Set(),
+): Promise<AgentEvent> {
+  if (event.type !== "activity" || event.activity.kind !== "output") return event
+  const bytes = Buffer.byteLength(event.activity.text, "utf8")
+  if (bytes <= TUI_TOOL_OUTPUT_BYTES) return event
+  const sha256 = createHash("sha256").update(event.activity.text).digest("hex")
+  const run = createHash("sha256").update(event.runID).digest("hex").slice(0, 16)
+  const call = createHash("sha256").update(event.activity.callID).digest("hex").slice(0, 16)
+  const artifact = {
+    path: `raw/tool-results/${run}/${call}-${sha256.slice(0, 20)}.txt`,
+    sha256,
+    bytes,
+  }
+  let persisted = true
+  if (!persistedArtifacts.has(artifact.path))
+    await replaceWorkareaFile(workarea, artifact.path, event.activity.text, { mode: 0o600 })
+      .then(() => persistedArtifacts.add(artifact.path))
+      .catch(() => {
+        persisted = false
+      })
+  const suffix = persisted
+    ? "\n…[output projected; expand the card to read the complete artifact]"
+    : "\n…[output projected; complete TUI artifact persistence failed]"
+  const preview = boundedUtf8Prefix(
+    event.activity.text,
+    Math.max(1, TUI_TOOL_OUTPUT_BYTES - Buffer.byteLength(suffix, "utf8")),
+  )
+  return {
+    ...event,
+    activity: {
+      ...event.activity,
+      text: `${preview}${suffix}`,
+      ...(persisted ? { artifact } : {}),
+    },
+  }
+}
+
 export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void): Promise<RunResult> {
   let bridge: Awaited<ReturnType<typeof connectPiMcp>> | undefined
   let subsystem: PiAgentSubsystem | undefined
-  const transcript: string[] = []
+  const persistedLiveArtifacts = new Set<string>()
   try {
     const credentials = new PiCredentialStore()
     const registry = createPiModels(input.settings.agent, credentials)
@@ -156,14 +230,14 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       onShutdown: () => bridge!.close(),
     })
     activeWorkers.add(subsystem)
-    const provider = input.settings.agent.primary_provider
+    const provider = input.settings.agent.main_provider
     const rootSpec: AgentRunSpec = {
       sessionID: input.sessionID,
       role: "root",
       depth: 0,
       provider,
       model: registry.model(provider),
-      providerAffinity: "primary",
+      providerAffinity: "main",
       prompt: input.compiledPrompt,
       compileChildPrompt: input.compileChildPrompt,
       task: input.task,
@@ -190,7 +264,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       },
       handoffOwner: input.handoffOwner,
       transcript: {
-        enabled: input.transcriptEnabled,
+        enabled: input.transcript !== undefined,
         includeSystemMessage: false,
         redactCredentials: true,
       },
@@ -204,27 +278,27 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     const root = await subsystem.start(rootSpec)
     const consumeEvents = (async () => {
       for await (const event of root.events) {
-        if (input.transcriptEnabled) transcript.push(transcriptLine(event))
-        onEvent?.(event)
+        await input.transcript?.append(`${transcriptLine(event)}\n`)
+        onEvent?.(await projectLiveEvent(event, input.workarea, persistedLiveArtifacts))
       }
     })()
     const result = await root.result
     await consumeEvents
-    if (input.transcriptEnabled) transcript.push(finalLine(result))
+    await input.transcript?.append(`${finalLine(result)}\n`)
     const termination = terminationOf(result)
     return {
-      stdout: input.transcriptEnabled ? `${transcript.join("\n")}\n` : result.output,
+      stdout: result.output,
       stderr: "",
       exitCode: termination === "completed" ? 0 : termination === "budget_exhausted" ? 124 : 1,
       timedOut: termination === "budget_exhausted",
       termination,
-      ...(result.failure ? { failureReason: result.failure.kind } : {}),
+      ...(result.failure ? { failureReason: failureReason(result.failure) } : {}),
       ...(failureOf(result) ? { failure: failureOf(result) } : {}),
       agentResult: result,
     }
   } catch (error) {
     return {
-      stdout: transcript.length > 0 ? `${transcript.join("\n")}\n` : "",
+      stdout: "",
       stderr: errorDetail(error),
       exitCode: 127,
       timedOut: false,

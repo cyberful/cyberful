@@ -1,6 +1,6 @@
 # ── cyberful-os Protocol Boundary Contract ──────────────────────────────
-# Verifies terminal output sanitization, Docker endpoint precedence, and MCP
-# argument validation keep ordinary tool calls readable and correctly scoped.
+# Verifies terminal output sanitization, Docker endpoint and ownership handling,
+# and MCP argument validation keep ordinary tool calls readable and recoverable.
 # → mcps/cyberful-os/cyberful_os_mcp.py — owns the protocol and execution boundaries.
 # → mcps/cyberful-os/scripts/container_ctl.py — mirrors Docker endpoint selection.
 # ─────────────────────────────────────────────────────────────────────
@@ -256,6 +256,72 @@ class ContainerControlProcessTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 125)
         self.assertIn("cleanup also exited with status 1", diagnostics.getvalue())
+
+    def test_new_container_receives_complete_run_ownership(self) -> None:
+        missing = container_ctl.subprocess.CompletedProcess(["docker", "container", "inspect"], 1, stdout="")
+        started = container_ctl.subprocess.CompletedProcess(["docker", "run"], 0)
+        owner = "a" * 64
+        environment = {
+            "CYBERFUL_MANAGED": "dependency",
+            "CYBERFUL_OWNER_PID": "4242",
+            "CYBERFUL_RUN_OWNER": owner,
+            "CYBERFUL_RUNTIME": "dependency",
+            "CYBERFUL_SESSION": "shared",
+            "CYBERFUL_OS_CONTAINER": "cyberful-os-test",
+            "CYBERFUL_OS_IMAGE": "cyberful-os:test",
+            "CYBERFUL_OS_WORKSPACE": "/tmp/cyberful-workarea",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+            container_ctl, "docker_environment", return_value={}
+        ), mock.patch.object(
+            container_ctl.subprocess, "run", side_effect=[missing, started]
+        ) as subprocess_run, redirect_stderr(io.StringIO()):
+            exit_code = container_ctl.main(["cyberful-os-container", "up"])
+
+        self.assertEqual(exit_code, 0)
+        command = subprocess_run.call_args_list[1].args[0]
+        self.assertEqual(
+            [command[index + 1] for index, argument in enumerate(command[:-1]) if argument == "--label"],
+            [
+                "org.cyberful.managed=dependency",
+                "org.cyberful.owner-pid=4242",
+                "org.cyberful.session=shared",
+                "org.cyberful.runtime=dependency",
+                f"org.cyberful.run-owner={owner}",
+            ],
+        )
+
+    def test_unowned_existing_container_is_recreated_instead_of_adopted(self) -> None:
+        existing = container_ctl.subprocess.CompletedProcess(
+            ["docker", "container", "inspect"],
+            0,
+            stdout="sha256:image\t\t\t\t\t\n",
+        )
+        image = container_ctl.subprocess.CompletedProcess(
+            ["docker", "image", "inspect"],
+            0,
+            stdout="sha256:image\n",
+        )
+        removed = container_ctl.subprocess.CompletedProcess(["docker", "rm"], 0)
+        started = container_ctl.subprocess.CompletedProcess(["docker", "run"], 0)
+        environment = {
+            "CYBERFUL_OWNER_PID": "4242",
+            "CYBERFUL_RUN_OWNER": "b" * 64,
+            "CYBERFUL_OS_CONTAINER": "cyberful-os-test",
+            "CYBERFUL_OS_WORKSPACE": "/tmp/cyberful-workarea",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+            container_ctl, "docker_environment", return_value={}
+        ), mock.patch.object(
+            container_ctl.subprocess,
+            "run",
+            side_effect=[existing, image, removed, started],
+        ) as subprocess_run, redirect_stderr(io.StringIO()):
+            exit_code = container_ctl.main(["cyberful-os-container", "up"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(subprocess_run.call_args_list[2].args[0], ["docker", "rm", "-f", "cyberful-os-test"])
+        self.assertEqual(subprocess_run.call_args_list[3].args[0][:3], ["docker", "run", "-d"])
 
 
 class ToolCallValidationTest(unittest.TestCase):

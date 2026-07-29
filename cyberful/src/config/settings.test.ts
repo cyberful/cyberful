@@ -22,7 +22,7 @@ function validSettings(extra = "") {
   return `version: 1
 agent:
   subsystem: pi
-  primary_provider: primary
+  main_provider: main
   subagents:
     enabled: true
     max_per_run: 4
@@ -35,12 +35,11 @@ agent:
     automatic_security_block:
       enabled: false
   providers:
-    primary:
+    main:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default
+        type: subscription
 instructions:
   persona_roots: []
   skill_roots: []
@@ -53,7 +52,7 @@ afterEach(async () => {
 })
 
 describe("Settings", () => {
-  test("creates and loads a secret-free OpenAI Codex OAuth default", async () => {
+  test("creates and loads a secret-free OpenAI Codex subscription default", async () => {
     const directory = await temporaryDirectory()
 
     const settings = await Settings.load(directory)
@@ -61,14 +60,18 @@ describe("Settings", () => {
     const text = await readFile(filePath, "utf8")
 
     expect(settings.agent.subsystem).toBe("pi")
-    expect(settings.agent.primary_provider).toBe("openai-codex")
+    expect(settings.agent.main_provider).toBe("openai-codex")
     expect(settings.agent.fallback_provider).toBeUndefined()
+    expect(settings.agent.compaction).toEqual(Settings.DEFAULT_COMPACTION)
+    expect(Settings.compactionPolicy(settings)).toEqual(Settings.DEFAULT_COMPACTION)
+    expect(settings.agent.retry).toEqual(Settings.DEFAULT_RETRY)
+    expect(Settings.retryPolicy(settings)).toEqual(Settings.DEFAULT_RETRY)
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
     expect(settings.agent.fallback.automatic_security_block.enabled).toBe(false)
     expect(settings.agent.providers["openai-codex"]).toMatchObject({
       adapter: "openai-codex",
-      model: "gpt-5.4",
-      auth: { type: "oauth", profile: "default" },
+      model: "gpt-5.6-sol",
+      auth: { type: "subscription" },
     })
     expect(text).toBe(Settings.DEFAULT_YAML)
     expect(text).not.toMatch(/api[_-]?key|access[_-]?token|refresh[_-]?token/i)
@@ -85,8 +88,87 @@ describe("Settings", () => {
     const second = await Settings.load(directory)
 
     expect(first).toEqual(second)
-    expect(first.agent.primary_provider).toBe("primary")
+    expect(first.agent.main_provider).toBe("main")
+    expect(first.agent.compaction).toBeUndefined()
+    expect(Settings.compactionPolicy(first)).toEqual(Settings.DEFAULT_COMPACTION)
+    expect(first.agent.retry).toBeUndefined()
+    expect(Settings.retryPolicy(first)).toEqual(Settings.DEFAULT_RETRY)
     expect(await readFile(filePath, "utf8")).toBe(text)
+  })
+
+  test("accepts a bounded global retry policy and rejects invalid delays", () => {
+    const configured = Settings.parse(
+      validSettings().replace(
+        "  fallback:",
+        `  retry:
+    enabled: false
+    max_retries: 5
+    base_delay_ms: 500
+    max_delay_ms: 2000
+  fallback:`,
+      ),
+    )
+    expect(Settings.retryPolicy(configured)).toEqual({
+      enabled: false,
+      max_retries: 5,
+      base_delay_ms: 500,
+      max_delay_ms: 2_000,
+    })
+
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  retry:
+    enabled: true
+    max_retries: 3
+    base_delay_ms: 2000
+    max_delay_ms: 1000
+  fallback:`,
+        ),
+      ),
+    ).toThrow("agent.retry.max_delay_ms must be greater than or equal to base_delay_ms")
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  retry:
+    enabled: true
+    max_retries: 11
+    base_delay_ms: 1000
+    max_delay_ms: 15000
+  fallback:`,
+        ),
+      ),
+    ).toThrow(/agent\.retry\.max_retries/)
+  })
+
+  test("accepts a conservative context compaction threshold and rejects unsafe percentages", () => {
+    const configured = Settings.parse(
+      validSettings().replace(
+        "  fallback:",
+        `  compaction:
+    enabled: false
+    trigger_percentage: 70
+  fallback:`,
+      ),
+    )
+    expect(Settings.compactionPolicy(configured)).toEqual({
+      enabled: false,
+      trigger_percentage: 70,
+    })
+
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  compaction:
+    enabled: true
+    trigger_percentage: 90
+  fallback:`,
+        ),
+      ),
+    ).toThrow(/agent\.compaction\.trigger_percentage/)
   })
 
   test("concurrent first loads share one complete default", async () => {
@@ -94,7 +176,7 @@ describe("Settings", () => {
 
     const settings = await Promise.all(Array.from({ length: 8 }, () => Settings.load(directory)))
 
-    expect(settings.every((item) => item.agent.primary_provider === "openai-codex")).toBe(true)
+    expect(settings.every((item) => item.agent.main_provider === "openai-codex")).toBe(true)
     expect(await readFile(path.join(directory, "settings.yaml"), "utf8")).toBe(Settings.DEFAULT_YAML)
   })
 
@@ -102,7 +184,7 @@ describe("Settings", () => {
     const settings = Settings.parse(`version: 1
 agent:
   subsystem: pi
-  primary_provider: openai-codex
+  main_provider: openai-codex
   fallback_provider: glm-5-2
   subagents:
     enabled: true
@@ -118,10 +200,9 @@ agent:
   providers:
     openai-codex:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default
+        type: subscription
     glm-5-2:
       adapter: openai-completions
       base_url: https://api.z.ai/api/paas/v4
@@ -149,30 +230,29 @@ instructions:
       Settings.parse(
         validSettings().replace(
           `  providers:
-    primary:
+    main:
       adapter: openai-codex
-      model: gpt-5.4
+      model: gpt-5.6-sol
       auth:
-        type: oauth
-        profile: default`,
+        type: subscription`,
           "  providers: {}",
         ),
       ),
     ).toThrow("agent.providers must contain at least one provider")
 
     expect(() =>
-      Settings.parse(validSettings().replace("primary_provider: primary", "primary_provider: missing")),
-    ).toThrow('agent.primary_provider references unconfigured provider "missing"')
+      Settings.parse(validSettings().replace("main_provider: main", "main_provider: missing")),
+    ).toThrow('agent.main_provider references unconfigured provider "missing"')
   })
 
   test("requires a distinct configured provider before enabling fallback", () => {
     expect(() =>
       Settings.parse(
         validSettings()
-          .replace("primary_provider: primary", "primary_provider: primary\n  fallback_provider: primary")
+          .replace("main_provider: main", "main_provider: main\n  fallback_provider: main")
           .replace("enabled: false\n      percentage", "enabled: true\n      percentage"),
       ),
-    ).toThrow("agent.fallback_provider must be different from agent.primary_provider")
+    ).toThrow("agent.fallback_provider must be different from agent.main_provider")
 
     expect(() =>
       Settings.parse(validSettings().replace("enabled: false\n      percentage", "enabled: true\n      percentage")),
@@ -184,8 +264,8 @@ instructions:
       /instructions\.untrusted_instruction/,
     )
     expect(() =>
-      Settings.parse(validSettings().replace("profile: default", "profile: default\n        api_version: hidden")),
-    ).toThrow(/agent\.providers\.primary\.auth\.api_version/)
+      Settings.parse(validSettings().replace("type: subscription", "type: subscription\n        api_version: hidden")),
+    ).toThrow(/agent\.providers\.main\.auth\.api_version/)
   })
 
   test("keeps ambient project instruction discovery permanently disabled", () => {
@@ -201,7 +281,7 @@ instructions:
     const secret = "do-not-print-this-value"
     let error: unknown
     try {
-      Settings.parse(validSettings().replace("profile: default", `profile: default\n        api_key: ${secret}`))
+      Settings.parse(validSettings().replace("type: subscription", `type: subscription\n        api_key: ${secret}`))
     } catch (caught) {
       error = caught
     }

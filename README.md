@@ -102,6 +102,9 @@ client-facing PDF.
 
 The workflow can use cyberful-os, the isolated browser, headless OWASP ZAP, and
 a persistent headless Ghidra project during Recon through Verify.
+ZAP exposes its complete discovered API and official MCP surface without a
+second host-owned origin or operation policy; `MISSION.md` remains the
+authoritative scope boundary.
 Bounded tests using tester-owned or uniquely marked synthetic state inside the
 recorded mission run autonomously. Cleanup is attempted when the target exposes
 a supported mechanism; the absence of cleanup for one residual synthetic record
@@ -239,7 +242,7 @@ Durable context lives in the workarea, transcripts, and Code Graph—not hidden
 conversation state. Repository instructions, documentation, comments, web
 content, and tool output are treated as untrusted evidence.
 
-The root uses the primary provider configured in `settings.yaml`. Root and
+The root uses the main provider configured in `settings.yaml`. Root and
 subagent runs may request a bounded fallback task, and a provider-structured
 security-policy block can trigger it automatically. Fallback runs are complete:
 they keep the phase's persona, tools, skills, authorization, and ability to
@@ -272,8 +275,8 @@ and structured evidence from the validated Code Graph ledger.
 - `mcps/ghidra/` — persistent headless PyGhidra runtime and disposable phase bridge.
 
 Pi Agent is the only runtime. Provider and model routing are host-owned and
-configured in `settings.yaml`; an OpenAI Codex OAuth account is one supported
-provider, not a separate runtime. Each phase runs under one ephemeral in-process
+configured in `settings.yaml`; OpenAI Codex, Z.AI Coding Plan, and Kimi For
+Coding subscriptions are supported providers, not separate runtimes. Each phase runs under one ephemeral in-process
 Pi worker owner with a private gateway, and only a validated handoff from the
 original root can advance the chain.
 
@@ -319,6 +322,22 @@ precedence over build defaults.
 Agent providers, models, delegation, fallback, and trusted instruction roots
 are configured in `settings.yaml`. Cyberful creates a secret-free default file
 on first launch. See [Agent providers and fallback](docs/user-guide/settings.md).
+Transient `unavailable` provider failures, including abnormal Codex WebSocket
+closure `1006`, retry the same turn with bounded jitter while preserving
+completed tool results. Large MCP catalogs remain fully available through
+per-run `tool_search` loading, and long browser pages can be read with
+selector-scoped, offset-paginated snapshots instead of sending one oversized
+payload. Long AgentRuns compact only their provider projection:
+complete historical tool results remain owner-only workarea artifacts, while
+emergency `context_length_exceeded` recovery resumes the same run without
+executing a completed tool twice.
+
+Phase transcripts are appended owner-only while a phase runs. Terminal outcomes
+distinguish success, warning, blocked, and failed, with structured primary
+failures for provider, contract, and lifecycle errors. The TUI receives at most
+12 KiB of a large tool result until its SHA-256-bound workarea artifact is
+expanded, and batches live activity once per frame without reducing the result
+available to the model or any tool's authority.
 
 Workareas live under `work/<name>/`; session transcripts live under
 `logs/session-logs/`. Imported repositories, authoritative snapshots, and
@@ -333,6 +352,19 @@ Resume from the same launch directory:
 cyberful run --continue
 cyberful run --session <id>
 ```
+
+While a root session is actively running, send routine guidance from another
+terminal with:
+
+```sh
+cyberful --port 4096
+# From another terminal:
+cyberful session steer <id> --attach http://localhost:4096 --message "Recheck the active page and continue."
+```
+
+This command never starts a new turn and never answers an approval. See the
+[sessions guide](docs/user-guide/sessions-and-reports.md#steer-an-active-session-from-another-terminal)
+for remote routing, authentication, and CAPTCHA handoffs.
 
 ## Documentation
 

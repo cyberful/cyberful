@@ -1,11 +1,11 @@
 // ── Pi Provider Authentication Commands ─────────────────────────
-// Runs provider-owned login, status, and logout flows from settings.yaml while
-//   keeping OAuth tokens and API keys inside Cyberful credential storage.
+// Resolves configured provider keys into provider-owned subscription login,
+//   status, and logout flows without exposing stored credential material.
 // → cyberful/src/config/settings.ts — validates the configured provider routes.
 // → cyberful/src/subsystem/pi-credentials.ts — owns owner-only credential persistence.
 // ─────────────────────────────────────────────────────────────────
 
-import type { AuthCheck, AuthEvent, AuthInteraction, AuthPrompt, AuthType, Credential } from "@earendil-works/pi-ai"
+import type { AuthCheck, AuthEvent, AuthInteraction, AuthPrompt, Credential } from "@earendil-works/pi-ai"
 import { Settings } from "@/config/settings"
 import { PiCredentialStore } from "@/subsystem/pi-credentials"
 import { createPiModels } from "@/subsystem/pi-models"
@@ -17,7 +17,7 @@ import { cmd } from "./cmd"
 
 export interface AuthModels {
   checkAuth(providerID: string): Promise<AuthCheck | undefined>
-  login(providerID: string, type: AuthType, interaction: AuthInteraction): Promise<Credential>
+  login(providerID: string, interaction: AuthInteraction): Promise<Credential>
   logout(providerID: string): Promise<void>
 }
 
@@ -48,9 +48,9 @@ export interface AuthTerminal {
 
 interface AuthStatus {
   readonly provider: string
-  readonly route: "primary" | "fallback" | "configured"
+  readonly route: "main" | "fallback" | "configured"
   readonly model: string
-  readonly configuredAuth: "oauth" | "environment"
+  readonly configuredAuth: "subscription" | "environment"
   readonly configuredSource: string
   readonly available: boolean
   readonly activeSource: string | null
@@ -76,8 +76,8 @@ async function visibleQuestion(label: string, signal?: AbortSignal): Promise<str
 }
 
 // ── Secret Prompts Never Echo Credential Material ───────────────
-// OAuth providers may request an API key, authorization code, or redirect URL
-// through the same interaction contract. On a TTY, Cyberful temporarily owns
+// Subscription providers may request an API key, authorization code, or
+// redirect URL through the same interaction contract. On a TTY, Cyberful owns
 // raw input and writes no entered characters; redirected stdin is already
 // non-echoing and can use readline. Cleanup restores raw and paused state after
 // success, cancellation, Ctrl-C, or an input-stream failure.
@@ -245,14 +245,31 @@ export function createTerminalAuthInteraction(
 const defaultServices: AuthCommandServices = {
   loadSettings: Settings.load,
   createModels(settings) {
-    return createPiModels(settings.agent, new PiCredentialStore()).models
+    const registry = createPiModels(settings.agent, new PiCredentialStore())
+    return {
+      async checkAuth(providerID) {
+        const resolved = await registry.models.getAuth(registry.model(providerID))
+        if (!resolved) return
+        const configured = settings.agent.providers[providerID]
+        return {
+          type:
+            configured?.auth.type === "subscription"
+              ? registry.loginType(providerID)
+              : "api_key",
+          source: resolved.source,
+        }
+      },
+      login: (providerID, interaction) =>
+        registry.models.login(providerID, registry.loginType(providerID), interaction),
+      logout: (providerID) => registry.models.logout(providerID),
+    }
   },
   createInteraction: () => createTerminalAuthInteraction(),
   write: (text) => process.stdout.write(text),
 }
 
 function configuredProvider(settings: Settings.Info, requested?: string) {
-  const providerID = requested?.trim() || settings.agent.primary_provider
+  const providerID = requested?.trim() || settings.agent.main_provider
   const provider = settings.agent.providers[providerID]
   if (!provider) throw new Error(`Provider '${providerID}' is not configured in settings.yaml`)
   return { providerID, provider }
@@ -265,8 +282,8 @@ function statusRecord(
   auth: AuthCheck | undefined,
 ): AuthStatus {
   const route =
-    providerID === settings.agent.primary_provider
-      ? "primary"
+    providerID === settings.agent.main_provider
+      ? "main"
       : providerID === settings.agent.fallback_provider
         ? "fallback"
         : "configured"
@@ -276,8 +293,8 @@ function statusRecord(
     model: provider.model,
     configuredAuth: provider.auth.type,
     configuredSource:
-      provider.auth.type === "oauth"
-        ? `OAuth profile ${provider.auth.profile}`
+      provider.auth.type === "subscription"
+        ? "provider subscription login"
         : `environment variable ${provider.auth.variable}`,
     available: auth !== undefined,
     activeSource: auth?.source ?? null,
@@ -317,18 +334,18 @@ export async function runAuthCommand(
     return
   }
 
-  if (provider.auth.type !== "oauth")
+  if (provider.auth.type !== "subscription")
     throw new Error(`Provider '${providerID}' uses environment authentication; set ${provider.auth.variable} instead`)
 
   const interaction = services.createInteraction()
   try {
-    await models.login(providerID, "oauth", interaction.interaction).catch(() => {
-      throw new Error(`OAuth login failed for provider '${providerID}'; retry with cyberful auth login ${providerID}`)
+    await models.login(providerID, interaction.interaction).catch(() => {
+      throw new Error(`Subscription login failed for provider '${providerID}'; retry with cyberful auth login ${providerID}`)
     })
   } finally {
     await interaction.close()
   }
-  services.write(`Authenticated provider ${providerID} using OAuth profile ${provider.auth.profile}.${EOL}`)
+  services.write(`Authenticated provider ${providerID} using its configured subscription login.${EOL}`)
 }
 
 interface ProviderArgs {
@@ -341,13 +358,13 @@ interface StatusArgs extends ProviderArgs {
 
 const providerBuilder = (yargs: Argv) =>
   yargs.positional("provider", {
-    describe: "configured provider ID (defaults to the primary provider)",
+    describe: "configured provider key (defaults to the main provider)",
     type: "string",
   })
 
 export const AuthLoginCommand = cmd<{}, ProviderArgs>({
   command: "login [provider]",
-  describe: "authenticate a configured OAuth provider",
+  describe: "authenticate a configured subscription provider",
   builder: providerBuilder,
   handler: (args) =>
     runAuthCommand({

@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { Type } from "typebox"
-import { mkdir, mkdtemp, readFile as readFileFromDisk, realpath, rm, symlink } from "fs/promises"
+import { mkdir, mkdtemp, readFile as readFileFromDisk, realpath, rm, stat, symlink } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 import { createHash } from "node:crypto"
@@ -113,8 +113,11 @@ function deps(over: Partial<PhaseDeps> = {}): PhaseDeps {
       exitCode: 0,
       timedOut: false,
     }),
-    runStreaming: async (_input, onEvent) => {
-      for (const line of NDJSON.trim().split("\n")) onEvent(JSON.parse(line))
+    runStreaming: async (input, onEvent) => {
+      for (const line of NDJSON.trim().split("\n")) {
+        await input.transcript?.append(`${line}\n`)
+        onEvent(JSON.parse(line))
+      }
       return { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
     },
     subsystem,
@@ -133,8 +136,16 @@ describe("runPhase transcript persistence", () => {
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ transcriptPath: TRANSCRIPT }),
       deps({
-        writeTranscript: async (filePath, ndjson) => {
-          writes.push({ filePath, ndjson })
+        createTranscript: async (filePath) => {
+          let ndjson = ""
+          return {
+            append: async (line) => {
+              ndjson += line
+            },
+            close: async () => {
+              writes.push({ filePath, ndjson })
+            },
+          }
         },
       }),
     )
@@ -162,11 +173,45 @@ describe("runPhase transcript persistence", () => {
       deps({
         run: async () => ((ranBuffered = true), { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }),
         runStreaming: async () => ((ranStreaming = true), { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }),
-        writeTranscript: async () => {},
+        createTranscript: async () => ({ append: async () => {}, close: async () => {} }),
       }),
     )
     expect(ranStreaming).toBe(true)
     expect(ranBuffered).toBe(false)
+  })
+
+  test("the 0600 transcript grows on disk while its phase is still active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cyberful-live-transcript-"))
+    const transcriptPath = join(root, "logs", "active.jsonl")
+    const appended = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      const task = SubsystemPhaseRunner.runPhase(
+        spec({ transcriptPath }),
+        deps({
+          createTranscript: requireValue(
+            SubsystemPhaseRunner.defaultDeps().createTranscript,
+            "default phase dependencies did not expose a transcript writer",
+          ),
+          runStreaming: async (input) => {
+            await input.transcript?.append('{"type":"activity","state":"active"}\n')
+            appended.resolve()
+            await release.promise
+            await input.transcript?.append('{"type":"result","result":"phase summary"}\n')
+            return { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
+          },
+        }),
+      )
+      await appended.promise
+      expect(await readFileFromDisk(transcriptPath, "utf8")).toContain('"state":"active"')
+      expect((await stat(transcriptPath)).mode & 0o777).toBe(0o600)
+      release.resolve()
+      expect((await task).ok).toBe(true)
+      expect(await readFileFromDisk(transcriptPath, "utf8")).toContain('"cyberful.phase.status"')
+    } finally {
+      release.resolve()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("persists subsystem usage and derived context churn without inferring prompt text", async () => {
@@ -206,10 +251,10 @@ describe("runPhase transcript persistence", () => {
       cache: { read: 250, write: 20 },
     })
     expect(result.contextChurn).toEqual({
-      uncachedInput: 150,
-      cacheReadRatio: 0.625,
-      inputAmplification: 4,
-      churnRatio: 0.375,
+      uncachedInput: 420,
+      cacheReadRatio: 0.3731,
+      inputAmplification: 6.7,
+      churnRatio: 0.6269,
       reasoningShare: 0.3,
     })
   })
@@ -223,8 +268,9 @@ describe("runPhase transcript persistence", () => {
       deps({
         run: async () => ((ranBuffered = true), { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }),
         runStreaming: async () => ((ranStreaming = true), { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }),
-        writeTranscript: async () => {
+        createTranscript: async () => {
           wrote = true
+          return { append: async () => {}, close: async () => {} }
         },
       }),
     )
@@ -427,16 +473,16 @@ describe("runPhase transcript persistence", () => {
               runID: "root",
               phaseRootID: "root",
               role: "root",
-              provider: "primary-test",
+              provider: "main-test",
               model: "gpt-5.4",
-              providerAffinity: "primary",
+              providerAffinity: "main",
               promptSystemSha256: "sha256",
               promptManifest: {
                 workflow: "pentest",
                 phase: "exploit",
                 personaID: "pentest/exploit",
                 role: "root",
-                providerRoute: "primary",
+                providerRoute: "main",
                 systemSha256: "sha256",
                 componentHashes: {},
                 delegationEnabled: true,
@@ -481,10 +527,12 @@ describe("runPhase transcript persistence", () => {
     let processExited = false
     let handoffReadBeforeExit = false
     let gatewayWaitBeforeExit = false
+    let privateEnv: Readonly<Record<string, string>> | undefined
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ phase: "exploit", handoff: { successor: "hacker" } }),
       deps({
-        run: async () => {
+        run: async (input) => {
+          privateEnv = input.spec.mcpServer?.privateEnv
           processExited = true
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false, termination: "completed" }
         },
@@ -509,6 +557,7 @@ describe("runPhase transcript persistence", () => {
     )
     expect(handoffReadBeforeExit).toBe(false)
     expect(gatewayWaitBeforeExit).toBe(false)
+    expect(privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT).toBe("EXPLOIT.md")
     expect(result.ok).toBe(true)
     expect(result.summary).toBe("exploit complete")
     expect(result.handoff).toEqual({
@@ -542,7 +591,11 @@ describe("runPhase transcript persistence", () => {
       }),
     )
     expect(result.ok).toBe(false)
-    expect(result.warnings).toContain("Phase gateway did not exit cleanly; no successor may start.")
+    expect(result.phaseFailure).toMatchObject({
+      source: "lifecycle",
+      class: "gateway_exit_unverified",
+    })
+    expect(result.warnings.join("\n")).not.toContain("gateway")
   })
 
   test("blocks Code Audit index to trace when host graph readiness is invalid", async () => {
@@ -574,9 +627,11 @@ describe("runPhase transcript persistence", () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.warnings).toContain(
-      "Code Audit index readiness failed; trace is blocked: coverage attestation is missing",
-    )
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "successor_readiness_failed",
+      detail: "Code Audit index readiness failed; trace is blocked: coverage attestation is missing",
+    })
   })
 
   test("accepts Code Audit index to trace after host graph readiness succeeds", async () => {
@@ -621,7 +676,11 @@ describe("runPhase transcript persistence", () => {
       }),
     )
     expect(result.ok).toBe(false)
-    expect(result.warnings).toContain("Required handoff was not completed: handoff missing")
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "handoff_invalid",
+      detail: "Required handoff was not completed: handoff missing",
+    })
   })
 
   test("a missing handoff does not expose its ephemeral host signal path", async () => {
@@ -639,7 +698,11 @@ describe("runPhase transcript persistence", () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.warnings).toContain("Required handoff was not completed: no handoff was recorded.")
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "handoff_invalid",
+      detail: "Required handoff was not completed: no handoff was recorded.",
+    })
     expect(result.warnings.join("\n")).not.toContain("expert-phase-handoff-")
   })
 
@@ -710,7 +773,11 @@ describe("runPhase transcript persistence", () => {
 
     expect(result.ok).toBe(false)
     expect(result.handoff).toBeUndefined()
-    expect(result.warnings).toContain("Required deliverable 'EXPLOIT.md' is missing.")
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "required_deliverable_missing",
+      detail: "Required deliverable 'EXPLOIT.md' is missing.",
+    })
   })
 
   test("a phase budget cutoff does not repair an invalid handoff", async () => {
@@ -737,7 +804,11 @@ describe("runPhase transcript persistence", () => {
 
     expect(result.ok).toBe(false)
     expect(result.handoff).toBeUndefined()
-    expect(result.warnings).toContain("Handoff successor does not match the configured chain.")
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "handoff_invalid",
+      detail: "Handoff successor does not match the configured chain.",
+    })
   })
 
   test("ignores the removed transcript environment toggle and keeps host-owned audit persistence", async () => {
@@ -753,8 +824,9 @@ describe("runPhase transcript persistence", () => {
           (ranStreaming = true),
           { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
         ),
-        writeTranscript: async () => {
+        createTranscript: async () => {
           wrote = true
+          return { append: async () => {}, close: async () => {} }
         },
       }),
     )
@@ -768,20 +840,25 @@ describe("runPhase transcript persistence", () => {
     const result = await SubsystemPhaseRunner.runPhase(
       spec({ transcriptPath: TRANSCRIPT }),
       deps({
-        writeTranscript: async () => {
+        createTranscript: async () => {
           throw new Error("disk full")
         },
       }),
     )
     expect(result.ok).toBe(true)
-    expect(result.warnings).toContain("Could not persist the phase transcript: disk full")
+    expect(result.warnings).toContain("Could not create the phase transcript: disk full")
   })
 
   test("a missing deliverable is subsystem_failed but remains a normal PhaseResult", async () => {
     const result = await SubsystemPhaseRunner.runPhase(spec(), deps({ fileExists: async () => false }))
     expect(result.ok).toBe(false)
     expect(result.termination).toBe("subsystem_failed")
-    expect(result.warnings.join("\n")).toContain("Required deliverable 'RECON.md' is missing")
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "required_deliverable_missing",
+      detail: "Required deliverable 'RECON.md' is missing.",
+    })
+    expect(result.warnings.join("\n")).not.toContain("Required deliverable")
   })
 
   test("writes the authoritative deliverable manifest only after owner shutdown and gateway exit", async () => {
@@ -829,7 +906,11 @@ describe("runPhase transcript persistence", () => {
     expect(result.ok).toBe(false)
     expect(result.termination).toBe("subsystem_failed")
     expect(result.artifactManifest).toBeUndefined()
-    expect(result.warnings).toContain("Could not write the final artifact manifest: disk full")
+    expect(result.phaseFailure).toMatchObject({
+      source: "lifecycle",
+      class: "artifact_manifest_failed",
+      detail: "Could not write the final artifact manifest: disk full",
+    })
   })
 
   test("leaves REPORT.md sealing to the terminal host render", async () => {
@@ -847,18 +928,20 @@ describe("runPhase transcript persistence", () => {
     expect(result.artifactManifest).toBeUndefined()
   })
 
-  // The other tests stub writeTranscript; this one exercises the REAL default writer, so the mkdir -p of
-  // the parent directory and the exact byte content are verified on disk (not just that a stub was called).
+  // The other tests stub createTranscript; this one exercises the REAL default writer, so the mkdir -p of
+  // the parent directory and the exact appended byte content are verified on disk.
   test("transcript persistence creates its parent and preserves the supplied bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "gym-logs-"))
     try {
       // A path two levels deep, so the write only succeeds if the parent chain is created.
       const file = join(root, "session-logs", "session-ses_x.expert-recon.jsonl")
-      const writeTranscript = requireValue(
-        SubsystemPhaseRunner.defaultDeps().writeTranscript,
+      const createTranscript = requireValue(
+        SubsystemPhaseRunner.defaultDeps().createTranscript,
         "default phase dependencies did not expose a transcript writer",
       )
-      await writeTranscript(file, NDJSON)
+      const transcript = await createTranscript(file)
+      await transcript.append(NDJSON)
+      await transcript.close()
       expect(await readFileFromDisk(file, "utf8")).toBe(NDJSON)
     } finally {
       await rm(root, { recursive: true, force: true })

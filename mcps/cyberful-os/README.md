@@ -25,3 +25,10 @@ The host-owned `evm_lab` lifecycle starts its Anvil node in a separate container
 from this same image and publishes port 8545 only through a random loopback host
 port. This is lifecycle convenience, not an RPC policy layer: Cyberful does not
 proxy, filter, or rewrite JSON-RPC calls.
+
+The generic dependency container receives the same immutable managed,
+owner-process, run-owner, session, and runtime labels as engagement-scoped
+containers. `cyberful-os-container up` reuses a deterministic name only when
+both its image and complete ownership identity match; an unlabeled or
+previous-run container is removed and recreated so interruption cleanup can
+discover it reliably.

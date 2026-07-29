@@ -1,7 +1,7 @@
 // ── Durable Pi Fallback Admission Ledger ─────────────────────────
 // Persists session-wide proactive fallback quota across sequential phase
 // workers and process restarts without placing host policy inside a workarea.
-// → cyberful/src/subsystem/pi-agent.ts — accounts primary actors and admissions.
+// → cyberful/src/subsystem/pi-agent.ts — accounts main-route actors and admissions.
 // → cyberful/src/session/session.ts — removes the ledger with its session.
 // ─────────────────────────────────────────────────────────────────
 
@@ -12,19 +12,19 @@ import { Global } from "@/global"
 import { Flock } from "@/util/flock"
 import { isRecord } from "@/util/record"
 
-const VERSION = 1
+const VERSION = 2
 
 export interface PiFallbackLedger {
   readonly sessionID: string
-  readonly primaryActorRuns: number
+  readonly mainActorRuns: number
   readonly proactiveAdmissions: number
-  recordPrimaryActor(): Promise<PiFallbackLedgerSnapshot>
+  recordMainActor(): Promise<PiFallbackLedgerSnapshot>
   tryAdmitProactive(percentage: number): Promise<PiFallbackAdmission>
   rollbackProactiveAdmission(): Promise<PiFallbackLedgerSnapshot>
 }
 
 export interface PiFallbackLedgerSnapshot {
-  readonly primaryActorRuns: number
+  readonly mainActorRuns: number
   readonly proactiveAdmissions: number
 }
 
@@ -34,9 +34,9 @@ export interface PiFallbackAdmission extends PiFallbackLedgerSnapshot {
 }
 
 interface PersistedLedger {
-  readonly version: 1
+  readonly version: 2
   readonly sessionID: string
-  readonly primaryActorRuns: number
+  readonly mainActorRuns: number
   readonly proactiveAdmissions: number
 }
 
@@ -59,12 +59,18 @@ function ledgerPath(sessionID: string, root: string): string {
 }
 
 function decodeLedger(value: unknown, sessionID: string): PersistedLedger {
+  const actorRuns =
+    isRecord(value) && value.version === 1
+      ? value.primaryActorRuns
+      : isRecord(value) && value.version === VERSION
+        ? value.mainActorRuns
+        : undefined
   if (
     !isRecord(value) ||
-    value.version !== VERSION ||
+    (value.version !== 1 && value.version !== VERSION) ||
     value.sessionID !== sessionID ||
-    !Number.isSafeInteger(value.primaryActorRuns) ||
-    Number(value.primaryActorRuns) < 0 ||
+    !Number.isSafeInteger(actorRuns) ||
+    Number(actorRuns) < 0 ||
     !Number.isSafeInteger(value.proactiveAdmissions) ||
     Number(value.proactiveAdmissions) < 0
   )
@@ -72,7 +78,7 @@ function decodeLedger(value: unknown, sessionID: string): PersistedLedger {
   return {
     version: VERSION,
     sessionID,
-    primaryActorRuns: Number(value.primaryActorRuns),
+    mainActorRuns: Number(actorRuns),
     proactiveAdmissions: Number(value.proactiveAdmissions),
   }
 }
@@ -106,7 +112,7 @@ async function writePersisted(file: string, ledger: PiFallbackLedger): Promise<v
   const value: PersistedLedger = {
     version: VERSION,
     sessionID: ledger.sessionID,
-    primaryActorRuns: ledger.primaryActorRuns,
+    mainActorRuns: ledger.mainActorRuns,
     proactiveAdmissions: ledger.proactiveAdmissions,
   }
   try {
@@ -120,32 +126,32 @@ async function writePersisted(file: string, ledger: PiFallbackLedger): Promise<v
 
 function snapshot(ledger: PiFallbackLedger): PiFallbackLedgerSnapshot {
   return {
-    primaryActorRuns: ledger.primaryActorRuns,
+    mainActorRuns: ledger.mainActorRuns,
     proactiveAdmissions: ledger.proactiveAdmissions,
   }
 }
 
-function proactiveLimit(primaryActorRuns: number, percentage: number): number {
-  return Math.floor((primaryActorRuns * percentage) / 100) + 1
+function proactiveLimit(mainActorRuns: number, percentage: number): number {
+  return Math.floor((mainActorRuns * percentage) / 100) + 1
 }
 
 function memoryLedger(sessionID: string): PiFallbackLedger {
-  let primaryActorRuns = 0
+  let mainActorRuns = 0
   let proactiveAdmissions = 0
   const ledger: PiFallbackLedger = {
     sessionID,
-    get primaryActorRuns() {
-      return primaryActorRuns
+    get mainActorRuns() {
+      return mainActorRuns
     },
     get proactiveAdmissions() {
       return proactiveAdmissions
     },
-    async recordPrimaryActor() {
-      primaryActorRuns++
+    async recordMainActor() {
+      mainActorRuns++
       return snapshot(ledger)
     },
     async tryAdmitProactive(percentage) {
-      const limit = proactiveLimit(primaryActorRuns, percentage)
+      const limit = proactiveLimit(mainActorRuns, percentage)
       const admitted = proactiveAdmissions < limit
       if (admitted) proactiveAdmissions++
       return { ...snapshot(ledger), admitted, limit }
@@ -191,7 +197,7 @@ export function durableFallbackLedgerForSession(
       () => readPersisted(file, normalized),
       { dir: path.join(root, ".locks") },
     )
-    let primaryActorRuns = stored?.primaryActorRuns ?? existing?.primaryActorRuns ?? 0
+    let mainActorRuns = stored?.mainActorRuns ?? existing?.mainActorRuns ?? 0
     let proactiveAdmissions = stored?.proactiveAdmissions ?? existing?.proactiveAdmissions ?? 0
     let ledger: PiFallbackLedger
     const mutate = async <T>(operation: () => T): Promise<T> => {
@@ -201,7 +207,7 @@ export function durableFallbackLedgerForSession(
         async () => {
           const current = await readPersisted(file, normalized)
           if (current) {
-            primaryActorRuns = current.primaryActorRuns
+            mainActorRuns = current.mainActorRuns
             proactiveAdmissions = current.proactiveAdmissions
           }
           const result = operation()
@@ -213,20 +219,20 @@ export function durableFallbackLedgerForSession(
     }
     ledger = {
       sessionID: normalized,
-      get primaryActorRuns() {
-        return primaryActorRuns
+      get mainActorRuns() {
+        return mainActorRuns
       },
       get proactiveAdmissions() {
         return proactiveAdmissions
       },
-      recordPrimaryActor: () =>
+      recordMainActor: () =>
         mutate(() => {
-          primaryActorRuns++
+          mainActorRuns++
           return snapshot(ledger)
         }),
       tryAdmitProactive: (percentage: number) =>
         mutate(() => {
-          const limit = proactiveLimit(primaryActorRuns, percentage)
+          const limit = proactiveLimit(mainActorRuns, percentage)
           const admitted = proactiveAdmissions < limit
           if (admitted) proactiveAdmissions++
           return { ...snapshot(ledger), admitted, limit }

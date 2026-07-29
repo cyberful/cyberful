@@ -41,7 +41,7 @@ function input(overrides: Partial<CompileInput> = {}): CompileInput {
     phase: "recon",
     personaID: "pentest/recon",
     role: "root",
-    providerRoute: "primary",
+    providerRoute: "main",
     handoffOwner: true,
     delegationEnabled: true,
     fallback: {
@@ -176,7 +176,7 @@ describe("AgentPromptCompiler", () => {
         role: "fallback",
         providerRoute: "fallback",
         handoffOwner: false,
-        userTask: "Execute the bounded discriminator that the primary provider blocked.",
+        userTask: "Execute the bounded discriminator that the main provider blocked.",
       }),
     )
 
@@ -212,13 +212,13 @@ describe("AgentPromptCompiler", () => {
     expect(fallbackChild.manifest.delegationEnabled).toBe(true)
 
     expect(() =>
-      AgentPromptCompiler.compile(input({ role: "fallback", providerRoute: "primary", handoffOwner: false })),
+      AgentPromptCompiler.compile(input({ role: "fallback", providerRoute: "main", handoffOwner: false })),
     ).toThrow("fallback AgentRun must use the fallback provider route")
     expect(() =>
-      AgentPromptCompiler.compile(input({ role: "subagent", providerRoute: "primary", handoffOwner: true })),
+      AgentPromptCompiler.compile(input({ role: "subagent", providerRoute: "main", handoffOwner: true })),
     ).toThrow("only the original root AgentRun")
     expect(() => AgentPromptCompiler.compile(input({ role: "root", providerRoute: "fallback" }))).toThrow(
-      "original root AgentRun must use the primary provider route",
+      "original root AgentRun must use the main provider route",
     )
   })
 

@@ -27,6 +27,8 @@ export type SecurityPolicyBlock = {
   readonly kind: "security_policy_block"
   readonly providerCode: "cyberPolicy" | "content_filter" | "sensitive"
   readonly evidence: "codex_error_code" | "openai_finish_reason" | "glm_finish_reason"
+  /** Bounded, credential-redacted provider text for operators; never classification evidence. */
+  readonly detail?: string
   readonly retryable: false
 }
 
@@ -34,6 +36,8 @@ export type OrdinaryFailure = {
   readonly kind: Exclude<FailureKind, "security_policy_block">
   readonly providerCode?: string
   readonly httpStatus?: number
+  /** Bounded, credential-redacted provider text for operators; never classification evidence. */
+  readonly detail?: string
   readonly retryable: boolean
 }
 
@@ -47,7 +51,14 @@ interface StructuredEvidence {
   readonly failed: boolean
 }
 
-const AUTHENTICATION_CODES = new Set(["authentication_error", "invalid_api_key", "invalid_token", "unauthorized"])
+const AUTHENTICATION_CODES = new Set([
+  "auth",
+  "authentication_error",
+  "invalid_api_key",
+  "invalid_token",
+  "oauth",
+  "unauthorized",
+])
 const CAPACITY_CODES = new Set([
   "context_length_exceeded",
   "insufficient_quota",
@@ -82,7 +93,9 @@ const TIMEOUT_CODES = new Set([
   "timeout",
 ])
 const UNAVAILABLE_CODES = new Set([
+  "1006",
   "server_error",
+  "server_is_overloaded",
   "serverOverloaded",
   "service_unavailable",
   "temporarily_unavailable",
