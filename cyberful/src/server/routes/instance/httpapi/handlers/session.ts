@@ -15,7 +15,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { FindingRegistry } from "@/finding/registry"
 import { InstanceState } from "@/effect/instance-state"
-import { workareaAbsolutePath } from "@/workarea"
+import { readWorkareaFileChunk, workareaAbsolutePath } from "@/workarea"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -32,9 +32,12 @@ import {
   PromptPayload,
   RevertPayload,
   ShellPayload,
+  SteerPayload,
+  ToolArtifactQuery,
   UpdatePayload,
 } from "../groups/session"
 import * as SessionError from "./session-errors"
+import * as ApiError from "../errors"
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -74,6 +77,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* SessionError.mapStorageNotFound(session.get(sessionID))
     })
 
+    const sessionWorkarea = Effect.fn("SessionHttpApi.sessionWorkarea")(function* (sessionID: SessionID) {
+      yield* requireSession(sessionID)
+      const history = yield* SessionError.mapStorageNotFound(session.messages({ sessionID }))
+      const workarea = history.findLast(
+        (item): item is MessageV2.WithParts & { info: MessageV2.User } =>
+          item.info.role === "user" && typeof item.info.metadata?.workarea === "string",
+      )?.info.metadata?.workarea
+      if (typeof workarea !== "string") return yield* new HttpApiError.BadRequest({})
+      const instance = yield* InstanceState.context
+      return { root: workareaAbsolutePath(instance.directory, workarea), name: workarea }
+    })
+
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* requireSession(ctx.params.sessionID)
     })
@@ -89,16 +104,35 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const findings = Effect.fn("SessionHttpApi.findings")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
-      const history = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
-      const workarea = history.findLast(
-        (item): item is MessageV2.WithParts & { info: MessageV2.User } =>
-          item.info.role === "user" && typeof item.info.metadata?.workarea === "string",
-      )?.info.metadata?.workarea
-      if (typeof workarea !== "string") return yield* new HttpApiError.BadRequest({})
-      const instance = yield* InstanceState.context
-      const store = new FindingRegistry.Store(workareaAbsolutePath(instance.directory, workarea), { workarea })
+      const workarea = yield* sessionWorkarea(ctx.params.sessionID)
+      const store = new FindingRegistry.Store(workarea.root, { workarea: workarea.name })
       return yield* Effect.promise(() => store.view(ctx.params.sessionID))
+    })
+
+    const toolArtifact = Effect.fn("SessionHttpApi.toolArtifact")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof ToolArtifactQuery.Type
+    }) {
+      const artifactPath = ctx.query.path.replaceAll("\\", "/")
+      if (
+        artifactPath.includes("\0") ||
+        !artifactPath.startsWith("raw/tool-results/") ||
+        artifactPath.split("/").some((segment) => !segment || segment === "." || segment === "..")
+      )
+        return yield* new HttpApiError.BadRequest({})
+      const workarea = yield* sessionWorkarea(ctx.params.sessionID)
+      const chunk = yield* Effect.tryPromise({
+        try: () =>
+          readWorkareaFileChunk(workarea.root, artifactPath, {
+            offset: ctx.query.offset,
+            limit: ctx.query.limit,
+          }),
+        catch: (error) =>
+          typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+            ? ApiError.notFound("Tool-result artifact was not found.")
+            : new HttpApiError.BadRequest({}),
+      })
+      return { path: artifactPath, ...chunk }
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -260,6 +294,17 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return HttpApiSchema.NoContent.make()
     })
 
+    const steer = Effect.fn("SessionHttpApi.steer")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof SteerPayload.Type
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* promptSvc.steer({
+        sessionID: ctx.params.sessionID,
+        parts: [{ type: "text", text: ctx.payload.text }],
+      })
+    })
+
     const command = Effect.fn("SessionHttpApi.command")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof CommandPayload.Type
@@ -331,6 +376,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("children", children)
       .handle("todo", todo)
       .handle("findings", findings)
+      .handle("toolArtifact", toolArtifact)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)
@@ -341,6 +387,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("abort", abort)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
+      .handle("steer", steer)
       .handle("command", command)
       .handle("shell", shell)
       .handle("revert", revert)

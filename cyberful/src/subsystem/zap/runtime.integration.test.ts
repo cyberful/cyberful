@@ -14,7 +14,6 @@ import { cyberZapBridgeImage } from "@/dependency/config"
 import { run } from "@/util/process"
 import { startEngagement, type EngagementRuntime } from "./runtime"
 import { SubsystemGateway } from "../gateway/config"
-import { SubsystemCli } from "../cli"
 
 const runtimes: EngagementRuntime[] = []
 const clients: Client[] = []
@@ -212,6 +211,10 @@ function stringValue(value: unknown, label: string) {
   return value
 }
 
+function historyUrl(value: unknown, label: string) {
+  return stringValue(recordValue(value, label).url, `${label}.url`)
+}
+
 async function waitForTool(input: {
   client: Client
   name: string
@@ -233,15 +236,16 @@ async function verifyBrowserHttps(channel: "chrome" | "chromium") {
   expect(runtime.degraded).toBe(false)
   expect(runtime.env.CYBER_BROWSER_PROXY_CA_SPKI).toMatch(/^[A-Za-z0-9+/]+={0,2}$/)
   const zapClient = await connect(runtime)
-  expect(
-    optionalArray(
-      resultRecord(
-        await zapClient.callTool({ name: "zap_history_search", arguments: { start: 0, count: 100 } }),
-        "zap_history_search",
-      ).messages,
-      "zap_history_search.messages",
-    ),
-  ).toHaveLength(0)
+  const initialMessages = optionalArray(
+    resultRecord(
+      await zapClient.callTool({ name: "zap_history_search", arguments: { start: 0, count: 100 } }),
+      "zap_history_search",
+    ).messages,
+    "zap_history_search.messages",
+  )
+  expect(initialMessages.map((message, index) => historyUrl(message, `initialMessages[${index}]`))).toEqual(
+    initialMessages.map(() => "http://127.0.0.1:8282/"),
+  )
   const browserClient = await connectBrowser({
     channel,
     profile: `browser-profile-${channel}`,
@@ -269,22 +273,9 @@ async function verifyBrowserHttps(channel: "chrome" | "chromium") {
     ).messages,
     "zap_history_search.messages",
   )
-  expect(
-    startupMessages.map((message) => {
-      if (typeof message !== "object" || message === null || !("requestHeader" in message)) return "unknown"
-      const header = String(message.requestHeader)
-      const host = header.match(/(?:^|\r?\n)Host:\s*([^\r\n]+)/i)?.[1] ?? "unknown"
-      const [method = "unknown", target = "/"] = header.split(/\r?\n/, 1)[0]?.split(" ") ?? []
-      const pathname = (() => {
-        try {
-          return new URL(target).pathname
-        } catch {
-          return target.split("?", 1)[0]
-        }
-      })()
-      return `${method} ${host}${pathname}`
-    }),
-  ).toEqual([])
+  expect(startupMessages.map((message, index) => historyUrl(message, `startupMessages[${index}]`))).toEqual(
+    startupMessages.map(() => "http://127.0.0.1:8282/"),
+  )
   const marker = `${channel}-https-${Date.now()}`
   const navigation = await browserClient.callTool({
     name: "browser_navigate",
@@ -437,7 +428,7 @@ describe("real headless ZAP containers", () => {
       "zap_api_catalog",
       "zap_api_call",
       "zap_http_request",
-      "zap_generate_scoped_report",
+      "zap_generate_workarea_report",
       "zap_history_search",
       "zap_history_get",
       "zap_websocket_history",
@@ -496,13 +487,14 @@ describe("real headless ZAP containers", () => {
     )
     const catalog = resultArray(await client.callTool({ name: "zap_api_catalog", arguments: {} }), "zap_api_catalog")
     expect(catalog.length).toBeGreaterThan(0)
-    expect(catalog).not.toContainEqual({ component: "core", type: "action", operation: "shutdown" })
-    expect(catalog).not.toContainEqual({ component: "core", type: "action", operation: "sendRequest" })
-    const blocked = await client.callTool({
+    expect(catalog).toContainEqual({ component: "core", type: "action", operation: "shutdown" })
+    expect(catalog).toContainEqual({ component: "core", type: "action", operation: "sendRequest" })
+    expect(catalog).toContainEqual({ component: "core", type: "view", operation: "messages" })
+    const unrestricted = await client.callTool({
       name: "zap_api_call",
-      arguments: { component: "core", type: "action", operation: "shutdown" },
+      arguments: { component: "core", type: "view", operation: "messages", parameters: { start: 0, count: 1 } },
     })
-    expect("isError" in blocked && blocked.isError).toBe(true)
+    expect("isError" in unrestricted && unrestricted.isError).toBe(false)
     await releaseRuntimes(runtime)
   }, 180_000)
 
@@ -651,12 +643,11 @@ describe("real headless ZAP containers", () => {
 
     const reportName = `zap-integration-${Date.now()}.json`
     const report = await client.callTool({
-      name: "zap_generate_scoped_report",
+      name: "zap_generate_workarea_report",
       arguments: {
         file_path: reportName,
         template: "traditional-json",
         title: "Cyberful ZAP integration",
-        sites: [`http://host.docker.internal:${target.port}`],
       },
     })
     expect("isError" in report && report.isError).not.toBe(true)
@@ -672,16 +663,15 @@ describe("real headless ZAP containers", () => {
     const reportJson = await reportFile.json()
     const serialized = JSON.stringify(reportJson)
     expect(serialized).toContain(`host.docker.internal:${target.port}`)
-    expect(serialized).not.toContain(excludedMarker)
-    expect(resultText(report)).toContain(`http://host.docker.internal:${target.port}`)
+    expect(serialized).toContain(excludedMarker)
     await releaseRuntimes(runtime)
   }, 240_000)
 
-  test("captures Chrome HTTPS through the engagement CA SPKI without startup traffic", async () => {
+  test("captures Chrome HTTPS through the engagement CA SPKI without external startup traffic", async () => {
     await verifyBrowserHttps("chrome")
   }, 180_000)
 
-  test("captures Chromium HTTPS through the engagement CA SPKI without startup traffic", async () => {
+  test("captures Chromium HTTPS through the engagement CA SPKI without external startup traffic", async () => {
     await verifyBrowserHttps("chromium")
   }, 180_000)
 
@@ -690,27 +680,17 @@ describe("real headless ZAP containers", () => {
     const runtime = await startEngagement({ sessionID: "integration-gateway-lifecycle", workarea })
     runtimes.push(runtime)
     expect(runtime.degraded).toBe(false)
-    const directory = await mkdtemp(path.join(workarea, "gateway-private-"))
-    const materialized = SubsystemCli.materializePrivateMcpEnvironment(
-      {
-        cwd: workarea,
-        permission: { kind: "readonly" },
-        mcpServer: SubsystemGateway.gatewayMcpServer("ses_integration_gateway", {
-          proxy: true,
-          phase: "recon",
-          env: {
-            ...runtime.env,
-            CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
-            CYBERFUL_OS_MCP_ENABLED: "0",
-            CYBER_BROWSER_MCP_ENABLED: "0",
-            CYBER_ZAP_ENABLED: "1",
-          },
-        }),
+    const configured = SubsystemGateway.gatewayMcpServer("ses_integration_gateway", {
+      proxy: true,
+      phase: "recon",
+      env: {
+        ...runtime.env,
+        CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
+        CYBERFUL_OS_MCP_ENABLED: "0",
+        CYBER_BROWSER_MCP_ENABLED: "0",
+        CYBER_ZAP_ENABLED: "1",
       },
-      directory,
-    )
-    const configured = materialized.mcpServer
-    if (!configured) throw new Error("gateway lifecycle fixture did not materialize an MCP server")
+    })
     const client = new Client({ name: "cyberful-gateway-lifecycle", version: "0" })
     const filters = ["label=org.cyberful.managed=zap-bridge", "label=org.cyberful.session=ses_integration_gateway"]
     let gatewayFailure: unknown
@@ -720,7 +700,12 @@ describe("real headless ZAP containers", () => {
           command: configured.command,
           args: [...configured.args],
           stderr: "pipe",
-          env: { PATH: process.env.PATH ?? "", HOME: os.homedir(), ...configured.env },
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: os.homedir(),
+            ...configured.env,
+            ...configured.privateEnv,
+          },
         }),
       )
       await client.connect(transport)
@@ -741,7 +726,6 @@ describe("real headless ZAP containers", () => {
       throw new Error(`phase gateway lifecycle failed:\n${diagnostics}`, { cause: gatewayFailure })
     }
     expect(await waitForDockerFilter(filters, false)).toBe("")
-    await rm(directory, { recursive: true, force: true })
     await releaseRuntimes(runtime)
   }, 180_000)
 

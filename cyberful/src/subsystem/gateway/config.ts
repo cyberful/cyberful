@@ -12,8 +12,8 @@ export interface GatewayOptions {
   phase?: string
   // Host-owned gateway PID registration path.
   pidSignalPath?: string
-  // Host-owned handoff request and expected successor.
-  handoff?: { phase: string; successor?: string; signalPath: string }
+  // Host-owned handoff request, required artifact, and expected successor.
+  handoff?: { phase: string; successor?: string; signalPath: string; artifact?: string }
   // Exposes native MCP elicitation for blocking human questions.
   questionEnabled?: boolean
   // Engagement-stable CAPTCHA circuit-breaker state.
@@ -22,12 +22,12 @@ export interface GatewayOptions {
   env?: Readonly<Record<string, string>>
 }
 
-// ── Gateway Secrets Never Enter Codex Arguments ──────────────────
+// ── Gateway Secrets Never Enter Agent Context ────────────────────
 // The standalone gateway cannot depend on inheriting the TUI environment, but
 // forwarding the whole environment would expose unrelated host credentials.
 // Only the browser namespace and explicit engagement values enter privateEnv.
-// The CLI materializes that map in an owner-only file; Codex receives only its
-// path, and per-run values deliberately override the browser defaults.
+// The host materializes that map in an owner-only file; AgentRuns receive
+// capabilities rather than secret values, and per-run values override defaults.
 // ──────────────────────────────────────────────────────────────
 function browserRuntimeEnv(): Record<string, string> {
   return Object.fromEntries(
@@ -98,6 +98,9 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
       ...(opts?.handoff
         ? {
             CYBERFUL_SUBSYSTEM_HANDOFF_PATH: opts.handoff.signalPath,
+            ...(opts.handoff.artifact
+              ? { CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT: opts.handoff.artifact }
+              : {}),
             ...(opts.handoff.successor
               ? { CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: opts.handoff.successor }
               : { CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL: "1" }),

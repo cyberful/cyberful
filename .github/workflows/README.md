@@ -5,6 +5,6 @@ release definitions are preserved beside this file with a `.disabled` suffix,
 so GitHub does not load or run them.
 
 To activate the pipelines, remove the `.disabled` suffix from all four workflow
-files and change the verification workflow path in
-`cyberful/script/subsystems.ts` back to `.github/workflows/_verify.yml`. Then run
-`make typecheck test-bun test-python docs-build` locally before pushing.
+files. Their reusable-workflow references already target the resulting active
+filenames. Then run `make typecheck test-bun test-python docs-build` locally
+before pushing.

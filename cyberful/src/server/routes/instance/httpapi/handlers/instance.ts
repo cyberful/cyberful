@@ -2,7 +2,7 @@
 // Exposes the active instance's agents, commands, formatters, skills, repository
 // state, runtime readiness, and capability metadata, reloading after VCS mutations.
 // → cyberful/src/server/routes/instance/httpapi/groups/instance.ts — defines the public operations.
-// → cyberful/src/subsystem/status.ts — probes Codex runtime readiness.
+// → cyberful/src/subsystem/status.ts — probes Pi and provider readiness.
 // ─────────────────────────────────────────────────────────────────
 
 import { Agent } from "@/agent/agent"

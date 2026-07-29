@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm } from "fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import { SessionID } from "../../session/schema"
@@ -45,6 +45,7 @@ const {
   writeGatewayPidSignal,
 } = await import("./server")
 const { humanDecisionMetadata } = await import("../human-question")
+const { activateCircuitBreaker, readCircuitBreaker } = await import("./circuit-breaker")
 const { Database } = await import("../../storage/db")
 const { SessionTable } = await import("../../session/session.sql")
 const { ProjectTable } = await import("../../project/project.sql")
@@ -453,7 +454,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("lets a native child gateway join the validated root PID claim without replacing it", async () => {
+  test("lets a delegated child gateway join the validated root PID claim without replacing it", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-child-pid-test-"))
     const signal = path.join(dir, "gateway-pid.json")
     try {
@@ -465,7 +466,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("detects a gateway whose original CLI parent disappeared or changed", () => {
+  test("detects a gateway whose original worker parent disappeared or changed", () => {
     // The test runner's parent may exit independently; this process is the stable live PID we own.
     expect(parentUnavailable(process.pid, process.pid)).toBe(false)
     expect(parentUnavailable(process.pid, 1)).toBe(true)
@@ -570,11 +571,11 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         properties: { profile: { type: "integer", enum: [1, 2], default: 1 } },
       })
 
-      await browserClient.callTool({
+      const explicit = await browserClient.callTool({
         name: "browser_navigate",
         arguments: { profile: 2, url: "https://example.test/account" },
       })
-      await browserClient.callTool({
+      const defaulted = await browserClient.callTool({
         name: "browser_navigate",
         arguments: { url: "https://example.test/default" },
       })
@@ -582,6 +583,8 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         { profile: 2, args: { url: "https://example.test/account" } },
         { profile: 1, args: { url: "https://example.test/default" } },
       ])
+      expect(explicit._meta).toMatchObject({ cyberful: { browserProfile: 2 } })
+      expect(defaulted._meta).toMatchObject({ cyberful: { browserProfile: 1 } })
     } finally {
       await browserClient.close()
       await server.closeGateway()
@@ -662,7 +665,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       const previous = process.env.CYBERFUL_SUBSYSTEM_PHASE
       process.env.CYBERFUL_SUBSYSTEM_PHASE = phase
       const server = await createGatewayServer({
-        upstreams: ["zap_generate_report", "zap_generate_scoped_report"].map((name) => ({
+        upstreams: ["zap_generate_report", "zap_generate_workarea_report"].map((name) => ({
           def: { name, description: name, inputSchema: { type: "object" } },
           call: async () => {
             calls.push(name)
@@ -675,11 +678,11 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       const phaseClient = new Client({ name: `zap-${phase}-autonomy-test`, version: "0" })
       await phaseClient.connect(clientTransport)
       try {
-        for (const name of ["zap_generate_report", "zap_generate_scoped_report"]) {
+        for (const name of ["zap_generate_report", "zap_generate_workarea_report"]) {
           const result = await phaseClient.callTool({ name, arguments: {} })
           expect("isError" in result && result.isError).not.toBe(true)
         }
-        expect(calls).toEqual(["zap_generate_report", "zap_generate_scoped_report"])
+        expect(calls).toEqual(["zap_generate_report", "zap_generate_workarea_report"])
       } finally {
         await phaseClient.close()
         await server.closeGateway()
@@ -753,10 +756,14 @@ describe("expert-gateway handoff tool", () => {
       path: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_PATH,
       successor: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR,
       terminal: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+      artifact: process.env.CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT,
     }
     process.env.CYBERFUL_SUBSYSTEM_PHASE = "exploit"
     process.env.CYBERFUL_SUBSYSTEM_HANDOFF_PATH = signal
     process.env.CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR = "hacker"
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = dir
+    process.env.CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT = "EXPLOIT.md"
     delete process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL
     let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
     let c: McpClient | undefined
@@ -775,6 +782,23 @@ describe("expert-gateway handoff tool", () => {
       })
       expect(jsonContent(refused).error).toContain("not allowed")
 
+      await mkdir(path.join(dir, "work", "anthropic"), { recursive: true })
+      await writeFile(path.join(dir, "work", "anthropic", "EXPLOIT.md"), "wrong nested copy")
+      const wrongPath = await c.callTool({
+        name: "handoff",
+        arguments: {
+          summary: "confirmed one issue",
+          artifact: "EXPLOIT.md",
+          completion: {
+            title: "Pentest completed",
+            summaryMarkdown: "One confirmed issue.",
+            artifacts: [{ label: "Evidence", path: "evidence/issue.txt" }],
+          },
+        },
+      })
+      expect(jsonContent(wrongPath).error).toContain("missing from the workarea root")
+      expect(jsonContent(wrongPath).error).toContain("/workspace/EXPLOIT.md")
+      await writeFile(path.join(dir, "EXPLOIT.md"), "root deliverable")
       const accepted = await c.callTool({
         name: "handoff",
         arguments: {
@@ -817,6 +841,8 @@ describe("expert-gateway handoff tool", () => {
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_PATH", previous.path)
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR", previous.successor)
       restore("CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL", previous.terminal)
+      restore("CYBERFUL_SUBSYSTEM_WORKAREA_ROOT", previous.workarea)
+      restore("CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT", previous.artifact)
       await rm(dir, { recursive: true, force: true })
     }
   })
@@ -1281,30 +1307,45 @@ describe("expert-gateway question tool", () => {
         }),
         browserProfile: 1,
       },
-      ...([1, 2] as const).map((profile): UpstreamTool => ({
-        def: { name: "browser_navigate", inputSchema: { type: "object" } },
-        call: async (args) => {
-          navigations += 1
-          const url = new URL(String(args.url))
-          return {
-            content: [{ type: "text", text: "navigated" }],
-            _meta: browserMeta(profile, `page-${profile}`, url.origin, "browser_navigate"),
-          }
-        },
-        browserProfile: profile,
-      })),
+      ...([1, 2] as const).map(
+        (profile): UpstreamTool => ({
+          def: { name: "browser_navigate", inputSchema: { type: "object" } },
+          call: async (args) => {
+            navigations += 1
+            const url = new URL(String(args.url))
+            return {
+              content: [{ type: "text", text: "navigated" }],
+              _meta: browserMeta(profile, `page-${profile}`, url.origin, "browser_navigate"),
+            }
+          },
+          browserProfile: profile,
+        }),
+      ),
     ]
     let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
     let c: McpClient | undefined
+    let captchaAnswer = "No challenge visible"
+    let replaceCaptchaBeforeAnswer = false
     try {
       server = await createGatewayServer({ upstreams })
       const [ct, st] = InMemoryTransport.createLinkedPair()
       await server.connect(st)
       c = new Client({ name: "captcha-test", version: "0" }, { capabilities: { elicitation: { form: {} } } })
-      c.setRequestHandler(ElicitRequestSchema, async () => ({
-        action: "accept",
-        content: { q0: JSON.stringify(["Resolved"]) },
-      }))
+      c.setRequestHandler(ElicitRequestSchema, async () => {
+        if (replaceCaptchaBeforeAnswer) {
+          replaceCaptchaBeforeAnswer = false
+          await activateCircuitBreaker(
+            circuit,
+            "recon",
+            { profile: 2, origin: "https://replacement.test", pageID: "page-replacement" },
+            true,
+          )
+        }
+        return {
+          action: "accept",
+          content: { q0: JSON.stringify([captchaAnswer]) },
+        }
+      })
       await c.connect(ct)
       const question = {
         kind: "captcha",
@@ -1320,33 +1361,77 @@ describe("expert-gateway question tool", () => {
         "already visible",
       )
       await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
-      expect(jsonContent(await c.callTool({
-        name: "browser_navigate",
-        arguments: { profile: 1, url: "https://example.test/account" },
-      })).error).toContain(
-        "human resolution",
-      )
+      expect(
+        jsonContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 1, url: "https://example.test/account" },
+          }),
+        ).error,
+      ).toContain("human resolution")
       expect(navigations).toBe(0)
-      expect(textContent(await c.callTool({
-        name: "browser_navigate",
-        arguments: { profile: 2, url: "https://example.test/account" },
-      }))).toBe("navigated")
-      expect(textContent(await c.callTool({
-        name: "browser_navigate",
-        arguments: { profile: 1, url: "https://other.test/account" },
-      }))).toBe("navigated")
+      expect(
+        textContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 2, url: "https://example.test/account" },
+          }),
+        ),
+      ).toBe("navigated")
+      expect(
+        textContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 1, url: "https://other.test/account" },
+          }),
+        ),
+      ).toBe("navigated")
       expect(navigations).toBe(2)
-      await c.callTool({ name: "question", arguments: question })
-      expect(jsonContent(await c.callTool({
-        name: "browser_navigate",
-        arguments: { profile: 1, url: "https://example.test/account" },
-      })).error).toContain("human resolution")
-      await c.callTool({ name: "browser_captcha_status", arguments: { profile: 1 } })
-      expect(textContent(await c.callTool({
-        name: "browser_navigate",
-        arguments: { profile: 1, url: "https://example.test/account" },
-      }))).toBe("navigated")
+      expect(jsonContent(await c.callTool({ name: "question", arguments: question })).output).toContain(
+        "false-positive pause is cleared",
+      )
+      expect(
+        textContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 1, url: "https://example.test/account" },
+          }),
+        ),
+      ).toBe("navigated")
       expect(navigations).toBe(3)
+      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
+      captchaAnswer = "Resolved"
+      await c.callTool({ name: "question", arguments: question })
+      expect(
+        jsonContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 1, url: "https://example.test/account" },
+          }),
+        ).error,
+      ).toContain("human resolution")
+      await c.callTool({ name: "browser_captcha_status", arguments: { profile: 1 } })
+      expect(
+        textContent(
+          await c.callTool({
+            name: "browser_navigate",
+            arguments: { profile: 1, url: "https://example.test/account" },
+          }),
+        ),
+      ).toBe("navigated")
+      expect(navigations).toBe(4)
+      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
+      captchaAnswer = "No challenge visible"
+      replaceCaptchaBeforeAnswer = true
+      expect(jsonContent(await c.callTool({ name: "question", arguments: question })).output).toContain(
+        "state changed before this answer arrived",
+      )
+      expect(await readCircuitBreaker(circuit)).toMatchObject({
+        profile: 2,
+        origin: "https://replacement.test",
+        pageID: "page-replacement",
+        status: "awaiting_human",
+      })
     } finally {
       await c?.close()
       await server?.closeGateway()

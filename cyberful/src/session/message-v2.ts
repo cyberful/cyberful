@@ -82,6 +82,15 @@ export const CompletionArtifact = Schema.Struct({
 }).annotate({ identifier: "CompletionArtifact" })
 export type CompletionArtifact = DeepMutable<Schema.Schema.Type<typeof CompletionArtifact>>
 
+export const CompletionFailure = Schema.Struct({
+  phase: Schema.String,
+  source: Schema.Literals(["provider", "contract", "lifecycle"]),
+  class: Schema.String,
+  code: Schema.optional(Schema.String),
+  detail: Schema.String,
+}).annotate({ identifier: "CompletionFailure" })
+export type CompletionFailure = DeepMutable<Schema.Schema.Type<typeof CompletionFailure>>
+
 export const CompletionPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("completion"),
@@ -92,6 +101,10 @@ export const CompletionPart = Schema.Struct({
   workarea: Schema.optional(Schema.String),
   artifacts: Schema.Array(CompletionArtifact),
   nextWorkflow: Schema.optional(Schema.String),
+  startedPhase: Schema.optional(Schema.String),
+  lastPhase: Schema.optional(Schema.String),
+  ranPhases: Schema.optional(Schema.Array(Schema.String)),
+  failure: Schema.optional(CompletionFailure),
 }).annotate({ identifier: "CompletionPart" })
 export type CompletionPart = DeepMutable<Schema.Schema.Type<typeof CompletionPart>>
 

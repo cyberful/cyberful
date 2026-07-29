@@ -222,7 +222,7 @@ export function Prompt(props: PromptProps) {
     if (current.type !== "busy") return
     return current.message
   })
-  // The running Codex phase (if any) for this session. Its own feed drives live generation/tool status.
+  // The running Pi phase (if any) for this session. Its own feed drives live generation/tool status.
   const expertPhaseRunning = createMemo(() => sync.data.expert_phase_running?.[props.sessionID ?? ""])
   const latestExpertPhase = createMemo(() => sync.data.expert_phase[props.sessionID ?? ""]?.at(-1)?.phase)
   const history = usePromptHistory()
@@ -293,10 +293,10 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m): m is UserMessage => m.role === "user")
   })
 
-  const sessionUsesCodexRuntime = createMemo(() => {
+  const sessionUsesAgentRuntime = createMemo(() => {
     if (!props.sessionID) return false
     const workflow = persistedWorkflow()
-    return workflow ? SubsystemPhase.sessionUsesCodexRuntime(workflow, sync.data.message[props.sessionID] ?? []) : false
+    return workflow ? SubsystemPhase.sessionUsesAgentRuntime(workflow, sync.data.message[props.sessionID] ?? []) : false
   })
 
   const usage = createMemo(() => {
@@ -394,7 +394,7 @@ export function Prompt(props: PromptProps) {
   )
 
   // Follow the latest host-written phase identity so resumed sessions display
-  // the Codex process that currently owns the engagement.
+  // the Pi phase owner that currently owns the engagement.
   let syncedSessionID: string | undefined
   let syncedAgent: string | undefined
   createEffect(() => {
@@ -418,7 +418,7 @@ export function Prompt(props: PromptProps) {
     // The per-session seed keeps a command-line `--agent`; a handoff overrides it, because the
     // successor is a deliberate phase progression that ignores `--agent`.
     if (!(sessionChanged && args.agent)) local.agent.set(phase, workflow)
-    // Codex's journal marker is not an AI SDK model. Keeping it out of local model state avoids a
+    // The AgentRun journal marker is not an AI SDK model. Keeping it out of local model state avoids a
     // spurious "model is not valid" warning in providerless sessions.
   })
 
@@ -948,7 +948,7 @@ export function Prompt(props: PromptProps) {
       log.error("prompt submission failed", { error })
       toast.show({
         message: steer
-          ? "The active Codex turn did not accept the message. It is still available in prompt history."
+          ? "The active AgentRun did not accept the message. It is still available in prompt history."
           : "The message was not sent. It is still available in prompt history.",
         variant: "error",
       })
@@ -1010,13 +1010,13 @@ export function Prompt(props: PromptProps) {
       await exit()
       return true
     }
-    // This build accepts only Codex engagement sessions; model selection is
-    // owned by the Codex phase runtime and is not part of TUI submission.
-    const usesCodexRuntime = Boolean(kickoffAgent) || sessionUsesCodexRuntime()
-    if (!usesCodexRuntime) {
+    // This build accepts only Pi engagement sessions; provider selection is
+    // owned by settings.yaml and is not part of TUI submission.
+    const usesAgentRuntime = Boolean(kickoffAgent) || sessionUsesAgentRuntime()
+    if (!usesAgentRuntime) {
       toast.show({
         variant: "warning",
-        message: "This build only runs Codex engagement sessions.",
+        message: "This build only runs Pi engagement sessions.",
         duration: 3000,
       })
       return false
@@ -1619,7 +1619,7 @@ export function Prompt(props: PromptProps) {
             without it the two groups render touching ("esc canceltab workflow"). */}
         <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
           <Switch>
-            {/* A Codex phase still marks the host runLoop busy. This generic-busy Match would otherwise
+            {/* A Pi phase still marks the host runLoop busy. This generic-busy Match would otherwise
                 shadow the phase Match below and
                 render a text-less spinner. Yield to it while a phase excursion owns the turn. */}
             <Match when={status().type !== "idle" && !expertPhaseRunning()}>
@@ -1649,7 +1649,7 @@ export function Prompt(props: PromptProps) {
                         <spinner color={spinnerColor()} frames={BOUNCING_BAR_FRAMES} interval={BOUNCING_BAR_INTERVAL} />
                       </Show>
                     </box>
-                    {/* Show the Codex subsystem's session-wide live progress:
+                    {/* Show the Pi subsystem's session-wide live progress:
                         "executing job" while a tool runs, else the classic "generating… N" — the token
                         count with NO rate when the subsystem has reported one. */}
                     <Show

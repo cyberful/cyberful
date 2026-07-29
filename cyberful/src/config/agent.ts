@@ -26,7 +26,7 @@ const Color = Schema.Union([
 // retained as catalog metadata, while the owning runtime decides whether current
 // effort and policy can activate delegation. Parsing therefore never treats the
 // value as a shared capability grant or a model-provider configuration switch.
-// → cyberful/src/subsystem/codex.ts — enforces Codex-specific delegation policy.
+// → cyberful/src/subsystem/pi-agent.ts — enforces host-owned delegation policy.
 // ─────────────────────────────────────────────────────────────────
 export const Info = Schema.Struct({
   name: Schema.String,

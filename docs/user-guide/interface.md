@@ -50,11 +50,11 @@ selected workflow, and updates the hint immediately when the workflow changes.
 While the composer has focus, its white **×** clears all text and attachments.
 
 Near the bottom edge, the welcome screen shows a compact dark translucent panel
-centered on the screen. Its left-aligned row identifies the active Codex
-subsystem. The state text is green when available, yellow while checking or
-degraded, and red when the probe could not reach a usable runtime. The snapshot
-is refreshed whenever the welcome route mounts; it does not start a phase or
-keep an additional background service alive.
+centered on the screen. Its left-aligned row identifies the active Pi subsystem
+and main provider. The state text is green when available,
+yellow while checking or degraded, and red when the probe could not reach a
+usable runtime. The snapshot is refreshed whenever the welcome route mounts; it
+does not start a phase or keep an additional background service alive.
 
 `Tab` cycles the available workflows before the first submission. The selected
 workflow is fixed when the session starts.
@@ -107,3 +107,34 @@ Tool results update their matching call card rather than adding a duplicate
 row. The feed also attributes delegated actors and distinguishes model
 generation from tool execution. Display state is not completion authority:
 durable artifacts and validated handoffs control phase advancement.
+
+A collapsed tool card receives at most a 12 KiB display prefix. Format
+detection and cyberful-os rendering use only that prefix. If the redacted
+result is larger, the card shows its preserved size and loads the first bounded
+artifact block only after expansion; repeated activation loads later blocks.
+The session feed folds activity locally and commits one store update per
+16-millisecond frame while preserving lifecycle and call/result order. Repeated
+progress updates coalesce to the latest value, and finding refreshes allow one
+request per session plus one newest-revision follow-up.
+
+A delegation appears as one live `delegate_task` card rather than separate,
+apparently idle started/completed rows. The card reports its linked child run,
+provider/model, elapsed time, latest activity, tool count, final state, and
+failure when present.
+
+Selecting a user or assistant message opens **Message Actions**. The dialog only
+offers **Copy**, which places the message's visible, non-synthetic text on the
+clipboard; it does not fork the session, revert history, or repopulate the
+composer for editing.
+
+If a provider stops a run, the phase status shows the normalized failure kind
+and the provider's bounded, credential-redacted diagnostic. A failed phase with
+no model summary uses the same host-owned diagnostic instead of reporting only
+that no text was produced. Security fallback remains stricter than this display:
+only a provider-structured `security_policy_block` can start it automatically;
+the diagnostic text itself is never classification evidence.
+
+Completion uses `success`, `warning`, `blocked`, or `failed`. Missing required
+deliverables, invalid handoffs, provider exhaustion, and unverified cleanup are
+failures—not “completed with warnings”. A warning indicates only a completed
+run with non-terminal degradation.

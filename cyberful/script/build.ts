@@ -21,15 +21,6 @@ const dir = path.resolve(__dirname, "..")
 
 process.chdir(dir)
 
-function booleanEnvironment(name: string) {
-  const raw = process.env[name]
-  if (raw === undefined || raw.trim() === "") return false
-  const value = raw.trim().toLowerCase()
-  if (value === "1" || value === "true") return true
-  if (value === "0" || value === "false") return false
-  throw new Error(`${name} must be one of: 1, true, 0, false`)
-}
-
 function releaseBuildID() {
   const configured = process.env.CYBERFUL_BUILD_ID?.trim()
   if (!configured) return `${Script.version}-${crypto.randomUUID()}`
@@ -37,15 +28,6 @@ function releaseBuildID() {
     throw new Error("CYBERFUL_BUILD_ID must be at most 256 printable characters")
   }
   return configured
-}
-
-async function optionalTextFile(file: string) {
-  try {
-    return await Bun.file(file).text()
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return ""
-    throw new Error(`Cannot read optional build input ${file}`, { cause: error })
-  }
 }
 
 async function runBuildCommand(argv: string[]) {
@@ -126,29 +108,6 @@ const plugin = createSolidTransformPlugin()
 // runtime state created by an older binary with different source.
 // ────────────────────────────────────────────────────────────────
 const buildID = releaseBuildID()
-
-// ── Standalone Builds Require The Codex Runtime Contract ─────────────
-// A distributable binary is valid only when the host Codex satisfies the pinned
-// version, strict configuration, app-server JSON-RPC, and MCP round-trip contract.
-// The suite stops before a model turn, so no login is required. Cross-build hosts
-// may explicitly bypass it, but ordinary builds fail before producing artifacts.
-// ─────────────────────────────────────────────────────────────────────
-if (!booleanEnvironment("CYBERFUL_SKIP_CODEX_COMPAT")) {
-  console.log("Verifying the pinned Codex version and compatibility contract…")
-  const compat = Bun.spawnSync(["bun", "run", "test-codex"], {
-    cwd: dir,
-    stdout: "inherit",
-    stderr: "inherit",
-    env: process.env,
-    timeout: 120_000,
-  })
-  if (compat.exitCode !== 0) {
-    throw new Error(
-      "Codex compatibility check failed; run `make subsystems`, install the pinned version, or explicitly set " +
-        "CYBERFUL_SKIP_CODEX_COMPAT=1 to bypass the release gate",
-    )
-  }
-}
 
 const allTargets: {
   os: string
@@ -287,21 +246,14 @@ if (!skipInstall) {
   ])
 }
 
-// ── Embedded Environment Is A Lowest-Precedence Default ──────────────
-// Standalone binaries carry the ignored repository `.env`, or an empty value in
-// CI, but never the placeholder `.env-example`. Variables resolved by runtime
-// bootstrap are removed so development values cannot override embedded paths.
-// Source launches still read the live file; this layer exists only in binaries.
-// → cyberful/src/bootstrap-env.ts — applies the embedded defaults at startup.
+// ── Standalone Binaries Never Capture The Build Environment ─────────
+// The launch directory's `.env` is a runtime-only input and may contain provider
+// API keys or engagement configuration. Keep the compiled default empty so a
+// release artifact cannot retain secrets from the machine that built it.
+// Runtime bootstrap alone applies process and launch-directory environment layers.
+// → cyberful/src/bootstrap-env.ts — reads the operator's runtime `.env`.
 // ─────────────────────────────────────────────────────────────────────
-const BAKE_ENV_SKIP = new Set(["CYBERFUL_OS_DIR", "CYBER_GHIDRA_DIR"])
-const embeddedEnv = (await optionalTextFile(path.resolve(dir, "../.env")))
-  .split("\n")
-  .filter((entry) => {
-    const key = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(entry)?.[1]
-    return !key || !BAKE_ENV_SKIP.has(key)
-  })
-  .join("\n")
+const embeddedEnv = ""
 
 // ── Built-In Configuration Excludes Runtime State ────────────────────
 // Personas, skills, instructions, and first-party configuration must ship with

@@ -1,7 +1,8 @@
 // ── Architecture Tombstones ─────────────────────────────────────
-// Prevents retired compatibility layers from silently returning after the
-// Subsystem, Event, and direct TUI capability refactors.
+// Prevents retired compatibility layers from silently returning after the Pi,
+// Event, and direct TUI capability refactors.
 // → cyberful/src/event.ts — exposes the single application event facade.
+// → cyberful/src/subsystem/pi-agent.ts — owns the sole agent runtime.
 // → cyberful/src/cli/cmd/tui/feature/builtins.ts — installs host capabilities directly.
 // ─────────────────────────────────────────────────────────────────
 
@@ -11,6 +12,13 @@ import path from "node:path"
 const sourceRoot = import.meta.dir
 
 describe("retired architecture boundaries", () => {
+  test("standalone builds cannot capture the repository .env", async () => {
+    const buildSource = await Bun.file(path.resolve(sourceRoot, "../script/build.ts")).text()
+
+    expect(buildSource).toContain('const embeddedEnv = ""')
+    expect(buildSource).not.toContain('path.resolve(dir, "../.env")')
+  })
+
   test("removed compatibility modules stay removed", async () => {
     const retiredModules = [
       "bus/bus-event.ts",
@@ -21,6 +29,11 @@ describe("retired architecture boundaries", () => {
       "sync/index.ts",
       "sync/projected-event.test.ts",
       "sync/schema.ts",
+      "dependency/codex.ts",
+      "session/codex-only-runtime.test.ts",
+      "subsystem/codex.ts",
+      "subsystem/codex-control.ts",
+      "subsystem/fixtures/codex-app-server.ts",
       "cli/cmd/tui/feature/command-shim.ts",
       "cli/cmd/tui/feature/internal.ts",
       "cli/cmd/tui/feature/runtime.ts",
@@ -42,11 +55,10 @@ describe("retired architecture boundaries", () => {
       ["TuiFeature", "Runtime"].join(""),
       ["feature", "_enabled"].join(""),
       ["createCommand", "Shim"].join(""),
-      ["Provider", "ID"].join(""),
-      ["provider", "ID"].join(""),
-      ["Provider", "Failure"].join(""),
-      ["provider", "_failed"].join(""),
-      ["Subsystem", "Provider"].join(""),
+      ["Subsystem", "Codex"].join(""),
+      ["codex", "-cli"].join(""),
+      ["codex", " app-server"].join(""),
+      ["fallback", "_server"].join(""),
     ]
     const matches: string[] = []
     const sourceFiles = new Bun.Glob("**/*.{ts,tsx}")

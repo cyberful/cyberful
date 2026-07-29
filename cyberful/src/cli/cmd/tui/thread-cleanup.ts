@@ -13,6 +13,7 @@ import type { DockerResource } from "./rpc-contract"
 
 const DOCKER_EXIT_CLEANUP_TIMEOUT_MS = 5_000
 const DOCKER_EXIT_CLEANUP_OUTPUT_BYTES = 64 * 1024
+export const WORKER_SHUTDOWN_TIMEOUT_MS = 120_000
 
 type CleanupAfterWorkerInput = {
   runID: string
@@ -159,12 +160,14 @@ const defaultCleanupAfterWorkerDeps: CleanupAfterWorkerDeps = {
   warn: (message, error) => Log.Default.warn(message, { error: errorMessage(error) }),
 }
 
-// ── Worker Timeout Does Not Shorten Docker Cleanup ───────────────
-// A worker can spend its entire shutdown allowance unwinding an active phase.
-// Once the terminal terminates that worker, Docker still needs its independent
-// bounded removal window; the five-second synchronous process-exit hook is only
-// a final retry. Awaiting the label sweep here prevents a slow Docker Desktop
-// daemon from turning a handled TUI close into a silent engagement-container leak.
+// ── Exact Resources Are Reaped Before Docker Discovery ───────────
+// An interrupted phase may spend most of the worker allowance unwinding its
+// AgentRun tree before Docker cleanup begins. The two-minute outer deadline
+// accommodates that unwind plus a normal runtime removal window. If it still
+// expires, the terminal immediately reaps the last exact RPC snapshot before
+// awaiting the broader run-label sweep, so a slow Docker listing cannot leave
+// known Recon containers running. A final synchronous sweep catches resources
+// created after the snapshot and keeps the fallback idempotent.
 // ─────────────────────────────────────────────────────────────────
 export async function cleanupAfterWorker(
   input: CleanupAfterWorkerInput,
@@ -173,11 +176,11 @@ export async function cleanupAfterWorker(
   deps.info("terminal container cleanup started")
   const resources = [...input.resources]
   for (const pid of input.pids) deps.killTree(pid)
+  const snapshotSucceeded = deps.reapSnapshotSync(resources)
   let awaitedFailure: unknown
   await deps.removeRunOwned(input.runID).catch((error) => {
     awaitedFailure = error
   })
-  const snapshotSucceeded = deps.reapSnapshotSync(resources)
   const sweepSucceeded = deps.reapRunOwnedSync(input.runID)
   if (awaitedFailure || !snapshotSucceeded || !sweepSucceeded) {
     deps.warn(

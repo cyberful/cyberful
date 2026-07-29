@@ -14,6 +14,18 @@ import subprocess
 import sys
 
 DEFAULT_IMAGE = "cyberful-os:latest"
+MANAGED_LABEL = "org.cyberful.managed"
+OWNER_PID_LABEL = "org.cyberful.owner-pid"
+RUN_OWNER_LABEL = "org.cyberful.run-owner"
+RUNTIME_LABEL = "org.cyberful.runtime"
+SESSION_LABEL = "org.cyberful.session"
+OWNERSHIP_LABELS = (
+    MANAGED_LABEL,
+    OWNER_PID_LABEL,
+    SESSION_LABEL,
+    RUNTIME_LABEL,
+    RUN_OWNER_LABEL,
+)
 
 
 # ── CLI Defaults Mirror The MCP Runtime ───────────────────────────────
@@ -26,6 +38,27 @@ DEFAULT_IMAGE = "cyberful-os:latest"
 def env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value if value else default
+
+
+def ownership_labels() -> dict[str, str]:
+    labels = {
+        MANAGED_LABEL: env("CYBERFUL_MANAGED", "dependency"),
+        OWNER_PID_LABEL: env("CYBERFUL_OWNER_PID", str(os.getpid())),
+        SESSION_LABEL: env("CYBERFUL_SESSION", "shared"),
+        RUNTIME_LABEL: env("CYBERFUL_RUNTIME", "dependency"),
+        RUN_OWNER_LABEL: env("CYBERFUL_RUN_OWNER", "unowned"),
+    }
+    for key, value in labels.items():
+        if len(value) > 256 or any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError(f"invalid Docker ownership label value for {key}")
+    if not labels[OWNER_PID_LABEL].isdigit() or int(labels[OWNER_PID_LABEL]) <= 0:
+        raise ValueError(f"{OWNER_PID_LABEL} must contain a positive process ID")
+    run_owner = labels[RUN_OWNER_LABEL]
+    if run_owner != "unowned" and (
+        len(run_owner) != 64 or any(character not in "0123456789abcdef" for character in run_owner)
+    ):
+        raise ValueError(f"{RUN_OWNER_LABEL} must contain a SHA-256 digest or 'unowned'")
+    return labels
 
 
 def run(argv: list[str], *, timeout_seconds: int | None = 120) -> int:
@@ -155,6 +188,7 @@ def main(argv: list[str]) -> int:
     if action == "pull":
         return run(["docker", "pull", image])
     if action == "up":
+        labels = ownership_labels()
         run_new = [
             "docker", "run", "-d",
             "--name", name,
@@ -163,19 +197,24 @@ def main(argv: list[str]) -> int:
             "-v", f"{workspace}:{mount}",
             "--cap-add=NET_ADMIN",
             "--cap-add=SYS_PTRACE",
+            *(argument for item in labels.items() for argument in ("--label", f"{item[0]}={item[1]}")),
             image,
             "sleep", "infinity",
         ]
-        # ── Existing Names Must Match The Requested Image ────────────────
+        # ── Existing Names Must Match Image And Ownership ────────────────
         # A deterministic container name can survive an earlier image build.
-        # Starting it blindly would omit newly installed tools even though the
-        # requested tag changed. Matching image identities permit reuse; a proven
-        # mismatch removes the stale container before normal creation continues.
-        # Each probe captures only one fixed-format identity field for one named
-        # object; diagnostics are discarded rather than retained without a bound.
+        # Starting it blindly may omit newly installed tools or transfer a
+        # previous run's container to the current worker. Reuse therefore
+        # requires both the requested image identity and every immutable
+        # ownership label to match. The fixed-format probe captures only those
+        # bounded fields; a missing or mismatched label recreates the container,
+        # making startup recovery and terminal run-owner cleanup authoritative.
         # ──────────────────────────────────────────────────────────────────────
+        inspect_format = "{{.Image}}\t" + "\t".join(
+            f'{{{{ index .Config.Labels "{label}" }}}}' for label in OWNERSHIP_LABELS
+        )
         existing = subprocess.run(
-            ["docker", "container", "inspect", "--format", "{{.Image}}", name],
+            ["docker", "container", "inspect", "--format", inspect_format, name],
             env=docker_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -201,7 +240,12 @@ def main(argv: list[str]) -> int:
                 encoding="utf-8",
                 errors="replace",
             )
-            if current.returncode == 0 and existing.stdout.strip() == current.stdout.strip():
+            identity = existing.stdout.strip().split("\t")
+            image_matches = current.returncode == 0 and identity[0] == current.stdout.strip()
+            labels_match = len(identity) == len(OWNERSHIP_LABELS) + 1 and all(
+                identity[index + 1] == labels[label] for index, label in enumerate(OWNERSHIP_LABELS)
+            )
+            if image_matches and labels_match:
                 return run_container_start(["docker", "start", name], name)
             run(["docker", "rm", "-f", name])
         return run_container_start(run_new, name)

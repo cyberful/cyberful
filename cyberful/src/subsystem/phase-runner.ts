@@ -1,4 +1,4 @@
-// ── Codex Phase Runner ────────────────────────────────────────────
+// ── Pi Phase Runner ───────────────────────────────────────────────
 // Runs one phase with its persona and gateway, then validates process
 // exit, required artifact, handoff or budget cutoff, cleanup, and transcript results.
 // → cyberful/src/subsystem/phase.ts — supplies workflow policy, capability scope, and paths.
@@ -9,9 +9,8 @@ import path from "path"
 import os from "os"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { writeFile, readFile, mkdir, access, rm, lstat, open, rename } from "fs/promises"
-import { DependencyConfig } from "@/dependency/config"
-import { SubsystemCodex } from "./codex"
+import { readFile, mkdir, access, rm, lstat, open } from "fs/promises"
+import { Settings } from "@/config/settings"
 import { Subsystem } from "./subsystem"
 import { SubsystemCli } from "./cli"
 import { SubsystemGateway } from "./gateway/config"
@@ -25,33 +24,38 @@ import { SubsystemVerdict, type Ledger as VerdictLedger } from "./verdict"
 import type { DynamicTool, SubsystemFailure } from "./subsystem"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
+import { AgentPromptCompiler, type PromptManifest } from "./prompt-compiler"
+import { PiSkills, type SkillRegistry } from "./pi-skills"
+import { SubsystemPiAgent } from "./pi-agent"
 
 export interface PhaseSpec {
   phase: string
   workflow?: string
   kind?: "workflow" | "interactive"
   sessionID: string
-  // The workarea directory; writes are physically jailed here (it is the CLI's cwd).
+  // The workarea directory; writes are physically jailed here (it is the worker's cwd).
   workareaCwd: string
-  // Read-only project root published only to the private gateway. Codex itself remains jailed to the
-  // workarea and must use source tools rather than native writes against this path.
+  // Read-only project root published only to the private gateway. Every AgentRun remains confined to
+  // the workarea and must use source tools rather than host file writes against this path.
   sourceRoot?: string
-  // The configured agents directory holding this phase's persona and settings policy.
+  // The first-party agents directory holding this phase's persona and embedded policy.
   home: string
+  // Directory containing the operator-owned settings.yaml. Defaults to the
+  // Cyberful launch directory rather than the assessed project.
+  settingsDirectory?: string
   // What this phase must accomplish, seeded from the prior handoff.
   objective: string
-  model?: string
   timeoutMs: number
   abort?: AbortSignal
-  // Absolute file to persist this excursion's raw stream-json transcript to (the caller resolves it,
+  // Absolute file to persist this excursion's raw AgentEvent transcript to (the caller resolves it,
   // normally beside the session journal via SessionReportLog.expertTranscriptFile). Unset ⇒ no
   // transcript is kept and the phase may take the cheaper buffered path.
   transcriptPath?: string
-  // Private environment for the phase gateway and its upstreams. It is deliberately excluded from the
-  // Codex process environment: recon routing and ZAP keys are capabilities, not model-readable secrets.
+  // Private environment for the phase gateway and its upstreams. It is deliberately excluded from
+  // AgentRun context: recon routing and ZAP keys are capabilities, not model-readable secrets.
   env?: Record<string, string>
   // Every chain phase must explicitly call the gateway's handoff tool.
-  // The host records the request out-of-band, waits for this CLI process to exit, then validates the
+  // The host records the request out-of-band, shuts down the in-process phase owner, then validates the
   // requested successor before the orchestrator advances.
   handoff?: { successor?: string }
 }
@@ -63,6 +67,16 @@ export interface PhaseHandoff {
   artifact?: string
   completion?: CompletionCandidate
   verdicts?: VerdictLedger
+}
+
+export type PhaseFailureSource = "provider" | "contract" | "lifecycle"
+
+export interface PhaseFailure {
+  readonly phase: string
+  readonly source: PhaseFailureSource
+  readonly class: string
+  readonly code?: string
+  readonly detail: string
 }
 
 export interface PhaseResult {
@@ -85,7 +99,8 @@ export interface PhaseResult {
   warnings: string[]
   handoff?: PhaseHandoff
   // Relative path to the host-generated SHA-256 manifest for the final named deliverable. The host
-  // writes it only after the Codex process and gateway are gone, so it cannot race a last agent edit.
+  // writes it only after the Pi worker owner has shut down and the gateway is gone, so it cannot
+  // race a last agent edit.
   artifactManifest?: string
   // Host-owned runtime provenance; unlike the deliverable checksum this is JSON status evidence.
   runtimeManifest?: string
@@ -94,8 +109,11 @@ export interface PhaseResult {
   semanticCheckpoints?: number
   lastSemanticProgressAt?: number
   subsystemFailure?: SubsystemFailure
+  // One authoritative terminal cause drives orchestration and presentation.
+  // Additional non-primary degradation remains in warnings.
+  phaseFailure?: PhaseFailure
   // Subsystem-neutral counters and derived context-reuse metrics cover the phase
-  // process and its native children.
+  // root and its descendant AgentRuns.
   usage?: UsageTotals
   contextChurn?: ContextChurn
   reasoningObservability?: {
@@ -105,11 +123,17 @@ export interface PhaseResult {
     readonly deltaItems: number
     readonly textStatus: "published" | "only counters received" | "no reasoning observed"
   }
-  codexSettings?: {
-    readonly requestedEffort: string
-    readonly resolvedEffort: string | null
-    readonly attested: boolean
-    readonly error?: string
+  agentRun?: {
+    readonly id: string
+    readonly provider: string
+    readonly model: string
+    readonly providerAffinity: "main" | "fallback"
+    readonly promptManifest: PromptManifest
+    readonly childRunIDs: readonly string[]
+    readonly skillsUsed: readonly string[]
+    readonly toolCalls: number
+    readonly fallbackAdmissions: number
+    readonly fallbackDescendants: number
   }
   noveltyContract?: NoveltyContract
 }
@@ -123,12 +147,18 @@ export interface SemanticProgress {
   timestamp: number
 }
 
+export interface TranscriptWriter {
+  append(line: string): Promise<void>
+  close(): Promise<void>
+}
+
 // Injected so the spawn contract is testable without a live external CLI or real filesystem.
 export interface PhaseDeps {
   run: typeof SubsystemCli.run
   runStreaming: typeof SubsystemCli.runStreaming
   subsystem: Subsystem.Subsystem
-  command: string
+  loadSettings: (directory: string) => Promise<Settings.Info>
+  discoverSkills: (roots: readonly string[]) => Promise<SkillRegistry>
   // Reads budgets.json. Injected so budget resolution remains testable.
   readFile: (filePath: string) => Promise<string>
   // Shells may materialize heredocs before the command runs. Production creates their private temporary
@@ -143,16 +173,17 @@ export interface PhaseDeps {
   now?: () => number
   removeFile?: (filePath: string) => Promise<void>
   removeDirectory?: (directory: string) => Promise<void>
-  // Production reads the gateway's startup PID, reaps its process group after Codex exits, and proves
-  // the group is gone. A handoff phase requires the registration because it necessarily used the gateway.
+  // Production reads the gateway's startup PID, reaps its process group after the in-process Pi owner
+  // closes its bridge, and proves the group is gone. A handoff phase requires the registration because it
+  // necessarily used the gateway.
   waitForGatewayExit?: (signalPath: string, timeoutMs: number, registrationRequired: boolean) => Promise<boolean>
-  // When set, the phase streams: the CLI runs in stream-json mode and every activity item mapped from
-  // its events (subsystem.streamActivities) is delivered here as it happens, so the TUI shows the phase
+  // When set, the phase streams every activity item mapped from AgentRun events
+  // (subsystem.streamActivities) as it happens, so the TUI shows the phase
   // working live. Unset (the default) runs the CLI buffered.
   onActivity?: (activity: Subsystem.PhaseActivity) => void
   onSemanticProgress?: (progress: SemanticProgress) => void
-  // Optional writer for the phase's complete stream-json transcript.
-  writeTranscript?: (filePath: string, ndjson: string) => Promise<void>
+  // Opens one private append-only transcript owned by the phase.
+  createTranscript?: (filePath: string) => Promise<TranscriptWriter>
   // Production binds this to the session's in-process Question service. When absent (small unit adapters
   // and non-interactive callers), the gateway correctly omits `question` instead of exposing a dead tool.
   askQuestion?: AskHuman
@@ -204,12 +235,12 @@ async function operationWarnings(operations: ReadonlyArray<readonly [string, (()
 }
 
 export function defaultDeps(): PhaseDeps {
-  const runtime = DependencyConfig.expertRuntime()
   return {
     run: SubsystemCli.run,
     runStreaming: SubsystemCli.runStreaming,
-    subsystem: Subsystem.codex,
-    command: runtime.command,
+    subsystem: Subsystem.pi,
+    loadSettings: Settings.load,
+    discoverSkills: (roots) => PiSkills.discover({ roots }),
     readFile: (filePath) => readFile(filePath, "utf8"),
     ensureDirectory: (directory) =>
       ensureWorkareaDirectory(path.dirname(directory), path.basename(directory)).then(() => {}),
@@ -222,12 +253,36 @@ export function defaultDeps(): PhaseDeps {
     removeDirectory: (directory) => rm(directory, { recursive: true, force: true }),
     waitForGatewayExit,
     verifyCodeGraphReadiness,
-    writeTranscript: async (filePath, ndjson) => {
+    createTranscript: async (filePath) => {
       await mkdir(path.dirname(filePath), { recursive: true })
-      const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`
-      await writeFile(temporary, ndjson, { mode: 0o600, flag: "wx" })
-        .then(() => rename(temporary, filePath))
-        .finally(() => rm(temporary, { force: true }))
+      const handle = await open(
+        filePath,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_TRUNC |
+          (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+        0o600,
+      )
+      await handle.chmod(0o600)
+      let queue = Promise.resolve()
+      const failures: unknown[] = []
+      return {
+        append(line) {
+          const task = queue.then(() => handle.write(line).then(() => {}))
+          queue = task.catch((error) => {
+            failures.push(error)
+          })
+          return queue
+        },
+        async close() {
+          await queue
+          await handle.close().catch((error) => {
+            failures.push(error)
+          })
+          if (failures.length > 0)
+            throw new AggregateError(failures, `phase transcript '${filePath}' could not be finalized`)
+        },
+      }
     },
   }
 }
@@ -276,7 +331,7 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
     usage: result.usage,
     contextChurn: result.contextChurn,
     reasoningObservability: result.reasoningObservability,
-    codexSettings: result.codexSettings,
+    agentRun: result.agentRun,
     noveltyContract: result.noveltyContract,
     verdicts: result.handoff?.verdicts ? SubsystemVerdict.counts(result.handoff.verdicts) : undefined,
   }
@@ -402,9 +457,13 @@ async function waitUntilGatewayGone(pid: number, deadline: number, deps: Gateway
   return !deps.processAlive(pid) && !deps.processGroupAlive(pid)
 }
 
-// Codex may kill an MCP server directly, so an exit-time marker is inherently racy. The gateway instead
-// registers its PID at startup. Once the Codex leader has exited, first request a graceful gateway close;
-// if any member of its process group survives, group-kill it before returning to the orchestrator.
+// ── Gateway Registration Survives Transport Close ───────────────
+// The MCP transport may close unexpectedly, so an exit-time marker is
+// inherently racy. The gateway instead registers its PID at startup. Once the
+// in-process Pi worker owner has closed its bridge, first request a graceful
+// gateway close; if any member of its process group survives, group-kill it
+// before returning to the orchestrator.
+// ─────────────────────────────────────────────────────────────────
 export async function waitForGatewayExit(
   signalPath: string,
   timeoutMs: number,
@@ -443,9 +502,9 @@ export async function waitForGatewayExit(
   return waitUntilGatewayGone(gatewayPID, deadline, deps)
 }
 
-// Frame the phase's task: its objective plus the standing contract every Expert phase honors (work in
-// the workarea, persist reusable values as variables, end with a structured summary the next owner
-// reads). The phase's detailed playbook arrives separately in Cyberful's rendered base instructions.
+// Host-owned phase mechanics belong in the immutable system message. Operator
+// objective, attachments, explicit context, and the historical API `system`
+// field remain user-level content compiled separately.
 export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty?: NoveltyContract): string {
   if (spec.kind === "interactive")
     return [
@@ -453,9 +512,6 @@ export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty
       "Use the complete gateway and filesystem capabilities when they improve the answer. Stay inside the",
       "authorized engagement scope, preserve existing evidence, and write reusable results to the workarea.",
       "Do not call handoff. End with the concise Markdown answer that should be shown directly to the user.",
-      "",
-      "## Request and explicit context",
-      spec.objective,
       "",
       "## Time budget",
       `You have up to ${budgetMinutes} minutes for this Ask turn. Finish earlier when the request is complete.`,
@@ -465,10 +521,7 @@ export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty
   const workflow = spec.workflow ?? SubsystemPhase.workflowOf(spec.phase) ?? "security"
   return [
     `You are running the ${spec.phase} phase of the Cyberful ${workflow} workflow to completion, autonomously.`,
-    `Your working directory is the workarea (${spec.workareaCwd}); write all files there.`,
-    "",
-    "## Objective",
-    spec.objective,
+    `Your working directory is the workarea root (${spec.workareaCwd} on the host and \`/workspace\` inside cyberful-os); write all files relative to that root.`,
     "",
     "## Live TUI narration",
     "Briefly announce each meaningful work block and material result without exposing private reasoning.",
@@ -479,6 +532,7 @@ export function buildPhasePrompt(spec: PhaseSpec, budgetMinutes: number, novelty
       ? [
           "## Required deliverable",
           `Write the complete phase deliverable as \`${deliverable}\`; supporting files do not replace it.`,
+          `Inside cyberful-os its exact path is \`/workspace/${deliverable}\`; do not recreate a host \`work/...\` prefix below \`/workspace\`.`,
           "",
         ]
       : []),
@@ -632,6 +686,92 @@ function processTermination(result: SubsystemCli.RunResult): SubsystemCli.RunTer
   return result.exitCode === 0 ? "completed" : "subsystem_failed"
 }
 
+// ── One Primary Failure Owns The Terminal Explanation ────────────
+// A provider error often causes missing output and handoff evidence downstream.
+// Rendering every consequence as an equal warning obscures the initiating fault.
+// This classifier therefore selects one stable, redacted cause in causal order;
+// remaining cleanup and validation diagnostics stay as secondary warnings.
+// Orchestration and the TUI consume this field instead of inferring severity from
+// warning text or an otherwise successful process exit.
+// ─────────────────────────────────────────────────────────────────
+function phaseFailure(input: {
+  readonly spec: PhaseSpec
+  readonly run: SubsystemCli.RunResult
+  readonly termination: SubsystemCli.RunTermination
+  readonly deliverable?: string
+  readonly deliverableExists: boolean
+  readonly manifestWarning?: string
+  readonly gatewayExited: boolean
+  readonly handoffWarning?: string
+  readonly readinessWarning?: string
+  readonly summary: string
+}): PhaseFailure | undefined {
+  const provider = input.run.failure
+  if (provider)
+    return {
+      phase: input.spec.phase,
+      source: "provider",
+      class: provider.kind,
+      ...(provider.providerCode ? { code: provider.providerCode } : {}),
+      detail: provider.detail ?? `The configured provider ended the phase with ${provider.kind}.`,
+    }
+  if (!input.deliverableExists && input.deliverable)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "required_deliverable_missing",
+      code: input.deliverable,
+      detail: `Required deliverable '${input.deliverable}' is missing.`,
+    }
+  if (input.manifestWarning)
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: "artifact_manifest_failed",
+      detail: input.manifestWarning,
+    }
+  if (!input.gatewayExited)
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: "gateway_exit_unverified",
+      detail: "The phase gateway did not exit cleanly, so no successor may start.",
+    }
+  if (input.handoffWarning)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "handoff_invalid",
+      detail: input.handoffWarning,
+    }
+  if (input.readinessWarning)
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "successor_readiness_failed",
+      detail: input.readinessWarning,
+    }
+  if (
+    (input.termination !== "completed" || input.run.exitCode !== 0) &&
+    input.termination !== "budget_exhausted" &&
+    input.termination !== "shutdown"
+  )
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: input.termination,
+      code: String(input.run.exitCode),
+      detail: input.run.failureReason ?? `The phase runtime exited with code ${input.run.exitCode}.`,
+    }
+  if (!input.summary.trim())
+    return {
+      phase: input.spec.phase,
+      source: "contract",
+      class: "summary_missing",
+      detail: "The phase returned no final summary.",
+    }
+}
+
 function statusTranscript(stdout: string, result: PhaseResult): string {
   const status = JSON.stringify({
     type: "cyberful.phase.status",
@@ -646,6 +786,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     approvalWaitMs: result.approvalWaitMs,
     exitCode: result.exitCode,
     subsystemFailure: result.subsystemFailure,
+    phaseFailure: result.phaseFailure,
     warnings: result.warnings,
     handoff: result.handoff
       ? {
@@ -657,7 +798,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     usage: result.usage,
     contextChurn: result.contextChurn,
     reasoningObservability: result.reasoningObservability,
-    codexSettings: result.codexSettings,
+    agentRun: result.agentRun,
     noveltyContract: result.noveltyContract,
     artifactManifest: result.artifactManifest,
     runtimeManifest: result.runtimeManifest,
@@ -680,11 +821,13 @@ export async function persistStatusOnly(
     else result.runtimeManifest = path.relative(spec.workareaCwd, manifestPath)
   }
   const transcriptPath = spec.transcriptPath
-  const writeTranscript = deps.writeTranscript
-  if (!transcriptPath || !writeTranscript || !DependencyConfig.expertTranscriptEnabled()) return
-  const warning = await operationWarning("Could not persist the phase status transcript", () =>
-    writeTranscript(transcriptPath, statusTranscript("", result)),
-  )
+  const createTranscript = deps.createTranscript
+  if (!transcriptPath || !createTranscript) return
+  const warning = await operationWarning("Could not persist the phase status transcript", async () => {
+    const transcript = await createTranscript(transcriptPath)
+    await transcript.append(statusTranscript("", result))
+    await transcript.close()
+  })
   if (warning) result.warnings.push(warning)
 }
 
@@ -696,7 +839,7 @@ function failedBeforeSpawn(input: {
   effectiveLimitMs: number
   deadlineAt: number
   termination: "budget_exhausted" | "spawn_failed"
-  warning: string
+  detail: string
   budgetWarnings: string[]
 }): PhaseResult {
   return {
@@ -711,7 +854,18 @@ function failedBeforeSpawn(input: {
     limitMs: input.limitMs,
     effectiveLimitMs: input.effectiveLimitMs,
     deadlineAt: input.deadlineAt,
-    warnings: [...input.budgetWarnings, input.warning],
+    warnings: [...input.budgetWarnings],
+    ...(input.termination === "spawn_failed"
+      ? {
+          phaseFailure: {
+            phase: input.spec.phase,
+            source: "lifecycle",
+            class: "phase_setup_failed",
+            code: "127",
+            detail: input.detail,
+          } satisfies PhaseFailure,
+        }
+      : {}),
   }
 }
 
@@ -726,46 +880,55 @@ const WORKAREA_INSTRUCTIONS = [
   "If cyberful-os cannot execute imported source, diagnose that environment or record the blocker; do not fall back to executing imported source on the host.",
 ].join("\n")
 
-// ── Dynamic Phase Policy Renders Into One Base Template ─────────
-// Stable execution behavior lives in baseInstructions.md, while the selected
-// workflow authorization, persona, calculated delegation policy, and workarea
-// mechanics fill its reviewed placeholders. The invariant trust boundary is
-// part of the template itself. Loading and rendering happen before any process
-// starts, so a missing file, unknown workflow, or malformed template cannot
-// fall back to Codex defaults or a partial Cyberful contract.
+// ── Prompt Sources Resolve Before The Worker Starts ──────────────
+// First-party policy always supplies the base template. A persona override may
+// come only from an explicit trusted settings root and retains the canonical
+// workflow-scoped identity; missing overrides fall back to the embedded persona.
+// The provider-neutral compiler later renders every source exactly once.
 //
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
-async function loadPhaseBaseInstructions(spec: PhaseSpec, read: PhaseDeps["readFile"]) {
+async function loadPhasePromptSources(
+  spec: PhaseSpec,
+  settings: Settings.Info,
+  read: PhaseDeps["readFile"],
+) {
   const workflow = spec.workflow ?? SubsystemPhase.workflowOf(spec.phase)
   if (!workflow) throw new Error(`cannot resolve workflow for phase '${spec.phase}'`)
-  const paths = [
-    SubsystemPhase.baseInstructionsPath(spec.home),
-    SubsystemPhase.personaPath(spec.home, spec.phase, workflow),
-  ]
-  const instructions = await Promise.all(paths.map((filePath) => read(filePath)))
-  return SubsystemCodex.composeBaseInstructions(
-    instructions[0] ?? "",
-    instructions[1] ?? "",
-    WORKAREA_INSTRUCTIONS,
-    workflow,
-  )
-}
-
-// ── Package-Manager Scratch State Stays In The Workarea ─────────
-// Codex excludes the host temp directory and home from its writable sandbox.
-// TMPDIR covers ordinary shell tools, while Bun otherwise keeps using its
-// global cache under ~/.bun and reports that denial as a tempdir failure.
-// Pin both Bun scratch and cache state beneath the phase-owned temporary root;
-// the existing phase finalizer removes the complete tree after the process.
-// ─────────────────────────────────────────────────────────────────
-function shellRuntimeEnv(temporaryDirectory: string): Record<string, string> {
+  const builtinPersonaPath = SubsystemPhase.personaPath(spec.home, spec.phase, workflow)
+  const personaID = `${path.basename(path.dirname(builtinPersonaPath))}/${path.basename(
+    builtinPersonaPath,
+    path.extname(builtinPersonaPath),
+  )}`
+  const settingsDirectory = spec.settingsDirectory ?? process.cwd()
+  let personaPath = builtinPersonaPath
+  let personaSource: string | undefined
+  for (const configuredRoot of settings.instructions.persona_roots) {
+    const root = path.resolve(settingsDirectory, configuredRoot)
+    for (const candidate of [
+      path.join(root, `${personaID}.md`),
+      path.join(root, "agents", `${personaID}.md`),
+    ]) {
+      try {
+        personaSource = await read(candidate)
+        personaPath = candidate
+        break
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") throw error
+      }
+    }
+    if (personaSource !== undefined) break
+  }
+  const [templateSource, fallbackPersona] = await Promise.all([
+    read(SubsystemPhase.baseInstructionsPath(spec.home)),
+    personaSource === undefined ? read(builtinPersonaPath) : Promise.resolve(undefined),
+  ])
   return {
-    TMPDIR: temporaryDirectory,
-    TMPPREFIX: path.join(temporaryDirectory, "zsh"),
-    BUN_TMPDIR: temporaryDirectory,
-    BUN_INSTALL_CACHE_DIR: path.join(temporaryDirectory, "bun-install-cache"),
-    PYTHONDONTWRITEBYTECODE: "1",
+    workflow,
+    personaID,
+    personaPath,
+    templateSource,
+    personaSource: personaSource ?? fallbackPersona ?? "",
   }
 }
 
@@ -781,11 +944,20 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const initialDeadline = beforeSetup + limitMs
   const initialEffectiveLimitMs = limitMs
 
-  const instructionLoad = await loadPhaseBaseInstructions(spec, deps.readFile).then(
+  const promptSetup = await (async () => {
+    const settingsDirectory = spec.settingsDirectory ?? process.cwd()
+    const settings = await deps.loadSettings(settingsDirectory)
+    const sources = await loadPhasePromptSources(spec, settings, deps.readFile)
+    const configuredSkillRoots = settings.instructions.skill_roots.map((root) =>
+      path.resolve(settingsDirectory, root),
+    )
+    const skills = await deps.discoverSkills([SubsystemPhase.skillRoot(spec.home), ...configuredSkillRoots])
+    return { settings, sources, skills }
+  })().then(
     (value) => ({ ok: true as const, value }),
     (error) => ({ ok: false as const, error }),
   )
-  if (!instructionLoad.ok) {
+  if (!promptSetup.ok) {
     const result = failedBeforeSpawn({
       spec,
       deps,
@@ -794,8 +966,8 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs: initialEffectiveLimitMs,
       deadlineAt: initialDeadline,
       termination: "spawn_failed",
-      warning: `Phase setup failed: could not load base instructions: ${
-        instructionLoad.error instanceof Error ? instructionLoad.error.message : String(instructionLoad.error)
+      detail: `Phase setup failed: could not compile Pi runtime inputs: ${
+        promptSetup.error instanceof Error ? promptSetup.error.message : String(promptSetup.error)
       }`,
       budgetWarnings,
     })
@@ -816,8 +988,8 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     : undefined
   const shellTemporaryDirectory = path.join(spec.workareaCwd, ".cyberful-tmp")
   const engagementCircuitBreakerPath = circuitBreakerPath(spec.sessionID, "engagement")
-  // Codex materializes one explicit MCP server. cli.ts moves its private environment into the phase's
-  // owner-only temporary home before spawn. Phase handoff uses a fresh host-owned signal path so a stale
+  // The host exposes one explicit gateway connection while its private environment remains outside
+  // AgentRun context. Phase handoff uses a fresh host-owned signal path so a stale
   // request from an interrupted run can never advance a later run.
   const gatewayOptions: SubsystemGateway.GatewayOptions = {
     proxy: true,
@@ -835,7 +1007,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     questionEnabled: Boolean(askQuestion),
     circuitBreakerPath: engagementCircuitBreakerPath,
     ...(handoffPath
-      ? { handoff: { phase: spec.phase, successor: spec.handoff?.successor, signalPath: handoffPath } }
+      ? {
+          handoff: {
+            phase: spec.phase,
+            successor: spec.handoff?.successor,
+            signalPath: handoffPath,
+            artifact: phaseDeliverable(spec),
+          },
+        }
       : {}),
   }
   const mcpServer = SubsystemGateway.gatewayMcpServer(spec.sessionID, gatewayOptions)
@@ -856,7 +1035,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs: initialEffectiveLimitMs,
       deadlineAt: initialDeadline,
       termination: "spawn_failed",
-      warning: `Phase setup failed: ${error instanceof Error ? error.message : String(error)}`,
+      detail: `Phase setup failed: ${error instanceof Error ? error.message : String(error)}`,
       budgetWarnings,
     })
     if (setupCleanupWarning) result.warnings.push(setupCleanupWarning)
@@ -864,7 +1043,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     return result
   }
 
-  // Setup time counts against the phase budget, so the process receives only the remaining wall clock.
+  // Setup time counts against the phase budget, so the AgentRun receives only the remaining active-execution allowance.
   const startedAt = now()
   const deadlineAt = initialDeadline
   const effectiveLimitMs = Math.max(0, deadlineAt - startedAt)
@@ -877,7 +1056,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       effectiveLimitMs,
       deadlineAt,
       termination: "budget_exhausted",
-      warning: "The phase budget elapsed during setup.",
+      detail: "The phase budget elapsed during setup.",
       budgetWarnings,
     })
     result.warnings.push(
@@ -899,8 +1078,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const reasoningSummaryItems = new Set<string>()
   const reasoningContentItems = new Set<string>()
   const reasoningDeltaItems = new Set<string>()
-  const requestedEffort = SubsystemCodex.effort()
-  let resolvedEffort: string | null | undefined
   const observeActivity = (run: object, activity: Subsystem.PhaseActivity): void => {
     if (activity.kind === "progress") phaseUsage.observe(run, activity.usage)
     if (activity.kind === "reasoning") {
@@ -908,9 +1085,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       if (activity.hasSummary) reasoningSummaryItems.add(activity.itemID)
       if (activity.hasContent) reasoningContentItems.add(activity.itemID)
       if (activity.hasDelta) reasoningDeltaItems.add(activity.itemID)
-    }
-    if (activity.kind === "tool" && activity.tool === "codex.settings" && isRecord(activity.input)) {
-      resolvedEffort = typeof activity.input.effort === "string" ? activity.input.effort : null
     }
     onActivity?.(activity)
   }
@@ -955,40 +1129,97 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
         semanticCheckpointWarning = `Could not capture the latest artifact checkpoint: ${errorDetail(error)}`
       })
   }
-  // ── Transcript Persistence Selects The Streaming Transport ──────────
-  // Only stream-json contains every turn and tool call; buffered JSON contains
-  // the final result envelope alone. A configured transcript path therefore
-  // selects streaming even when no live TUI observer exists. The same bounded
-  // stdout buffer feeds persistence and final-result extraction, so headless and
-  // interactive runs retain an identical durable execution record.
-  // ──────────────────────────────────────────────────────────────
-  const writeTranscript = deps.writeTranscript
-  const persist = Boolean(spec.transcriptPath) && Boolean(writeTranscript) && DependencyConfig.expertTranscriptEnabled()
-  const stream = Boolean(onActivity) || persist
+  // ── Transcript Persistence Is Incremental And Phase-Owned ──────
+  // A multi-hour phase can produce megabytes of AgentEvents before its terminal
+  // result. Retaining those lines in memory and rewriting them only at shutdown
+  // made live diagnosis impossible and amplified failure paths. The phase opens
+  // one private writer before the AgentRun starts; the runtime serially appends
+  // each already-redacted event, while the host appends its terminal status and
+  // closes the resource after all validation is complete.
+  // ─────────────────────────────────────────────────────────────────
+  const transcriptPath = spec.transcriptPath
+  const transcriptAttempt =
+    transcriptPath && deps.createTranscript
+      ? await deps.createTranscript(transcriptPath).then(
+          (writer) => ({ writer, warning: undefined }),
+          (error) => ({
+            writer: undefined,
+            warning: `Could not create the phase transcript: ${errorDetail(error)}`,
+          }),
+        )
+      : { writer: undefined, warning: undefined }
+  const transcript = transcriptAttempt.writer
+  const stream = Boolean(onActivity) || Boolean(transcript)
+  const runtimeInstructions = buildPhasePrompt(
+    spec,
+    Number((effectiveLimitMs / 60_000).toFixed(2)),
+    budget.novelty,
+  )
+  const compilePrompt = (
+    role: "root" | "subagent" | "fallback",
+    providerRoute: "main" | "fallback",
+    userTask: string,
+    handoffOwner: boolean,
+  ) =>
+    AgentPromptCompiler.compile({
+      templateSource: promptSetup.value.sources.templateSource,
+      personaSource: promptSetup.value.sources.personaSource,
+      workareaSource: WORKAREA_INSTRUCTIONS,
+      runtimeInstructions,
+      workflow: promptSetup.value.sources.workflow,
+      phase: spec.phase,
+      personaID: promptSetup.value.sources.personaID,
+      role,
+      providerRoute,
+      handoffOwner,
+      delegationEnabled: promptSetup.value.settings.agent.subagents.enabled,
+      fallback: {
+        providerConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+        proactiveEnabled: promptSetup.value.settings.agent.fallback.proactive.enabled,
+        proactivePercentage: promptSetup.value.settings.agent.fallback.proactive.percentage,
+        automaticSecurityBlockEnabled:
+          promptSetup.value.settings.agent.fallback.automatic_security_block.enabled,
+      },
+      userTask,
+      skills: promptSetup.value.skills.catalog,
+    })
+  const rootPrompt = compilePrompt("root", "main", spec.objective, Boolean(spec.handoff))
   const runInput: SubsystemCli.RunInput = {
-    subsystem: deps.subsystem,
-    command: deps.command,
-    prompt: buildPhasePrompt(spec, Number((effectiveLimitMs / 60_000).toFixed(2)), budget.novelty),
-    timeoutMs: effectiveLimitMs,
-    abort: spec.abort,
+    settings: promptSetup.value.settings,
     sessionID: spec.sessionID,
+    workarea: spec.workareaCwd,
+    gateway: mcpServer,
+    prompt: spec.objective,
+    compiledPrompt: rootPrompt,
+    compileChildPrompt: (input) =>
+      compilePrompt(
+        input.role,
+        input.providerRoute,
+        SubsystemPiAgent.formatTaskCapsule(input.task),
+        false,
+      ),
+    task: {
+      objective: spec.objective,
+      ...(semanticArtifact ? { artifacts: [semanticArtifact] } : {}),
+    },
+    skills: promptSetup.value.skills,
+    dynamicTools: deps.dynamicTools,
+    deadlineAt,
+    abort: spec.abort,
+    timeoutMs: effectiveLimitMs,
     askQuestion,
     approvalState,
-    dynamicTools: deps.dynamicTools,
+    handoffOwner: Boolean(spec.handoff),
+    transcript,
     spec: {
       cwd: spec.workareaCwd,
       permission: { kind: "autonomous" },
-      model: spec.model,
       networkAccess: spec.workflow !== "code-audit",
-      env: shellRuntimeEnv(shellTemporaryDirectory),
       mcpServer,
-      baseInstructions: instructionLoad.value.baseInstructions,
-      nativeSubagents: instructionLoad.value.delegationEnabled,
-      skillRoots: [SubsystemPhase.skillRoot(spec.home)],
-      markdownArtifacts: semanticArtifact && /\.(?:md|markdown)$/i.test(semanticArtifact) ? [semanticArtifact] : [],
-      // Stream when a live observer is attached OR when persisting the transcript; otherwise keep the
-      // cheaper single-envelope json path. extractResultText unwraps the summary from either format.
-      stream,
+      baseInstructions: rootPrompt.system,
+      skillRoots: [SubsystemPhase.skillRoot(spec.home), ...promptSetup.value.settings.instructions.skill_roots],
+      markdownArtifacts:
+        semanticArtifact && /\.(?:md|markdown)$/i.test(semanticArtifact) ? [semanticArtifact] : [],
     },
   }
 
@@ -996,9 +1227,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   await checkpointQueue
   const projectActivityActor = Subsystem.createActivityActorProjection()
 
-  // When streaming, forward each event's activity items to any live observer; the raw stdout is buffered
-  // either way, so extractResultText unwraps the phase summary identically — and, when persisting, that
-  // same buffered stdout IS the full stream-json transcript written below.
+  // Streaming forwards activity to the live observer while Pi appends every
+  // complete redacted event through the phase-owned transcript writer. The
+  // terminal AgentRun result remains the authoritative summary in either mode.
   const primaryRun = await (
     stream
       ? deps.runStreaming(runInput, (event) => {
@@ -1022,8 +1253,8 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   await checkpointQueue
   const approvalWaitMs = Math.round(approvalState.pausedMs())
   const primaryTermination = processTermination(primaryRun)
-  // The CLI promise resolves only after the Codex process has exited. Its explicit MCP gateway lives in
-  // another process group, so reap that registered group and prove it is gone before validating handoff.
+  // The runtime promise resolves only after the phase-scoped Pi subsystem has closed its bridge. Gateway
+  // upstreams may live in another process group, so reap it and prove it is gone before validating handoff.
   const gatewayExit =
     primaryTermination === "spawn_failed" || !deps.waitForGatewayExit
       ? ({ exited: true, warning: undefined } as const)
@@ -1048,7 +1279,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       ["Could not remove the phase gateway PID signal", removeFile ? () => removeFile(gatewayPidPath) : undefined],
     ])),
   )
-  const primarySummary = deps.subsystem.extractResultText(primaryRun.stdout)
+  const primarySummary = primaryRun.agentResult?.output ?? deps.subsystem.extractResultText(primaryRun.stdout)
   const deliverable = phaseDeliverable(spec)
   const inspectDeliverable = async (): Promise<{ exists: boolean; warning?: string }> =>
     deliverable && deps.fileExists
@@ -1091,7 +1322,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   )
 
   // ── A Budget Cutoff Advances Only A Sealed Partial Artifact ────────
-  // Wall-clock exhaustion is an expected scheduler boundary, not a request to
+  // Active-execution exhaustion is an expected scheduler boundary, not a request to
   // leave the workflow parked forever. If the cutoff arrives before the model's
   // handoff, the host may synthesize that record only after the required artifact
   // exists, its manifest is sealed, and the private gateway is proven gone.
@@ -1114,7 +1345,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
         phase: spec.phase,
         successor: spec.handoff?.successor,
         summary: [
-          `The ${spec.phase} phase exhausted its wall-clock budget. Continue from the sealed partial deliverable '${deliverable}' and treat unfinished coverage as degraded.`,
+          `The ${spec.phase} phase exhausted its active-execution budget. Continue from the sealed partial deliverable '${deliverable}' and treat unfinished coverage as degraded.`,
           subsystemSummary.trim(),
         ]
           .filter(Boolean)
@@ -1162,21 +1393,30 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     gatewayExited &&
     !handoffWarning &&
     !readinessWarning
+  const primaryFailure = ok
+    ? undefined
+    : phaseFailure({
+        spec,
+        run: primaryRun,
+        termination: rawTermination,
+        deliverable,
+        deliverableExists,
+        manifestWarning,
+        gatewayExited,
+        handoffWarning,
+        readinessWarning,
+        summary,
+      })
   const warnings = [
     ...budgetWarnings,
-    ...(primaryRun.failureReason ? [primaryRun.failureReason] : []),
-    ...(primaryRun.exitCode !== 0 ? [`Expert process exited with code ${primaryRun.exitCode}.`] : []),
-    ...(!summary.trim() ? ["Expert returned no final summary."] : []),
-    ...(!deliverableExists && deliverable ? [`Required deliverable '${deliverable}' is missing.`] : []),
-    ...(deliverableCheck.warning ? [deliverableCheck.warning] : []),
-    ...(manifestWarning ? [manifestWarning] : []),
+    ...(transcriptAttempt.warning ? [transcriptAttempt.warning] : []),
+    ...(deliverableCheck.warning && primaryFailure?.class !== "required_deliverable_missing"
+      ? [deliverableCheck.warning]
+      : []),
     ...(runtimeCleanupWarning ? [runtimeCleanupWarning] : []),
     ...(semanticCheckpointWarning ? [semanticCheckpointWarning] : []),
     ...lifecycleWarnings,
-    ...(gatewayExit.warning ? [gatewayExit.warning] : []),
-    ...(!gatewayExited ? ["Phase gateway did not exit cleanly; no successor may start."] : []),
-    ...(handoffWarning ? [handoffWarning] : []),
-    ...(readinessWarning ? [readinessWarning] : []),
+    ...(gatewayExit.warning && primaryFailure?.class !== "gateway_exit_unverified" ? [gatewayExit.warning] : []),
     ...(budgetAdvanceWarning ? [budgetAdvanceWarning] : []),
   ]
   const observedUsage = phaseUsage.usage()
@@ -1205,6 +1445,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     semanticCheckpoints: semanticCheckpoints || undefined,
     lastSemanticProgressAt,
     subsystemFailure: primaryRun.failure,
+    phaseFailure: primaryFailure,
     usage: hasObservedUsage ? observedUsage : undefined,
     contextChurn: hasObservedUsage ? SubsystemUsage.contextChurn(observedUsage) : undefined,
     reasoningObservability: {
@@ -1219,16 +1460,22 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
             ? "only counters received"
             : "no reasoning observed",
     },
-    codexSettings: {
-      requestedEffort,
-      resolvedEffort: resolvedEffort ?? null,
-      attested: resolvedEffort === requestedEffort,
-      ...(resolvedEffort === requestedEffort
-        ? {}
-        : {
-            error: `Codex effort attestation ${resolvedEffort === undefined ? "missing" : `resolved '${resolvedEffort}'`}; expected '${requestedEffort}'.`,
-          }),
-    },
+    ...(primaryRun.agentResult
+      ? {
+          agentRun: {
+            id: primaryRun.agentResult.id,
+            provider: primaryRun.agentResult.provider,
+            model: primaryRun.agentResult.model,
+            providerAffinity: primaryRun.agentResult.providerAffinity,
+            promptManifest: primaryRun.agentResult.promptManifest,
+            childRunIDs: primaryRun.agentResult.childRunIDs,
+            skillsUsed: primaryRun.agentResult.skillsUsed,
+            toolCalls: primaryRun.agentResult.toolCalls,
+            fallbackAdmissions: primaryRun.agentResult.fallbackAdmissions,
+            fallbackDescendants: primaryRun.agentResult.fallbackDescendants,
+          },
+        }
+      : {}),
     noveltyContract: budget.novelty,
   }
 
@@ -1244,11 +1491,11 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
 
   // A killed phase retains every subsystem event received before the group kill, followed by one host
   // status record. This makes a partial excursion auditable without placing stderr or secrets on the bus.
-  const transcriptPath = spec.transcriptPath
-  if (persist && writeTranscript && transcriptPath) {
-    const transcriptWarning = await operationWarning("Could not persist the phase transcript", () =>
-      writeTranscript(transcriptPath, statusTranscript(primaryRun.stdout, result)),
-    )
+  if (transcript) {
+    const transcriptWarning = await operationWarning("Could not persist the phase transcript", async () => {
+      await transcript.append(statusTranscript("", result))
+      await transcript.close()
+    })
     if (transcriptWarning) result.warnings.push(transcriptWarning)
   }
   if (result.ok && spec.handoff && !spec.handoff.successor && removeDirectory) {

@@ -46,6 +46,26 @@ export const MessagesQuery = Schema.Struct({
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   before: Schema.optional(Schema.String),
 })
+export const ToolArtifactQuery = Schema.Struct({
+  ...DirectoryRoutingQueryFields,
+  path: Schema.String,
+  offset: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  limit: Schema.optional(
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(4),
+      Schema.isLessThanOrEqualTo(64 * 1024),
+    ),
+  ),
+})
+export const ToolArtifactChunk = Schema.Struct({
+  path: Schema.String,
+  content: Schema.String,
+  offset: Schema.Number,
+  end: Schema.Number,
+  total: Schema.Number,
+  nextOffset: Schema.optional(Schema.Number),
+})
 export const StatusMap = Schema.Record(Schema.String, SessionStatus.Info)
 export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
@@ -57,6 +77,9 @@ export const UpdatePayload = Schema.Struct({
 })
 export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, ["sessionID"]))
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
+export const SteerPayload = Schema.Struct({
+  text: Schema.String.check(Schema.isLengthBetween(1, 16_384), Schema.isPattern(/\S/)),
+})
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
 export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput.fields, ["sessionID"]))
@@ -67,6 +90,7 @@ export const SessionPaths = {
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   findings: `${root}/:sessionID/findings`,
+  toolArtifact: `${root}/:sessionID/tool-artifact`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -77,6 +101,7 @@ export const SessionPaths = {
   abort: `${root}/:sessionID/abort`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
+  steer: `${root}/:sessionID/steer`,
   command: `${root}/:sessionID/command`,
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
@@ -157,6 +182,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.findings",
             summary: "Get session findings",
             description: "Resolve the session workarea and return its authoritative cross-run finding registry.",
+          }),
+        ),
+        HttpApiEndpoint.get("toolArtifact", SessionPaths.toolArtifact, {
+          params: { sessionID: SessionID },
+          query: ToolArtifactQuery,
+          success: described(ToolArtifactChunk, "Bounded tool-result artifact chunk"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.toolArtifact",
+            summary: "Read a tool-result artifact chunk",
+            description:
+              "Read at most 64 KiB from a session-owned tool-result artifact. Paths are confined to raw/tool-results and symlinks are rejected.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {
@@ -281,6 +319,20 @@ export const SessionApi = HttpApi.make("session")
             summary: "Send async message",
             description:
               "Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.",
+          }),
+        ),
+        HttpApiEndpoint.post("steer", SessionPaths.steer, {
+          params: { sessionID: SessionID },
+          query: DirectoryRoutingQuery,
+          payload: SteerPayload,
+          success: described(Schema.Boolean, "Whether the active AgentRun accepted the steering message"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.steer",
+            summary: "Steer an active session",
+            description:
+              "Deliver routine text to the active root AgentRun. Returns false instead of starting a new turn when the session is not steerable.",
           }),
         ),
         HttpApiEndpoint.post("command", SessionPaths.command, {

@@ -1,7 +1,7 @@
 // ── Sequential Workflow Orchestrator ──────────────────────────────
-// Advances any registered Codex-owned workflow through validated handoffs,
-// preserving one process and one private gateway at a time.
-// → cyberful/src/subsystem/phase-runner.ts — owns each phase process lifecycle.
+// Advances any registered Pi-owned workflow through validated handoffs,
+// preserving one in-process phase owner and one private gateway at a time.
+// → cyberful/src/subsystem/phase-runner.ts — owns each phase execution lifecycle.
 // ─────────────────────────────────────────────────────────────────
 
 import { Effect } from "effect"
@@ -11,6 +11,7 @@ import { SessionReportLog } from "@/session/report-log"
 import type { SessionID } from "@/session/schema"
 import type { Candidate as CompletionCandidate } from "./completion"
 import type { RunTermination } from "./cli"
+import type { PhaseFailure } from "./phase-runner"
 
 export interface AdvanceInput {
   sessionID: SessionID
@@ -23,12 +24,10 @@ export interface AdvanceInput {
   workflow: string
   sourceRoot?: string
   home: string
+  settingsDirectory: string
   path: { cwd: string; root: string }
-  // Codex model identity for phase runs. Effort is private Codex application policy.
-  expertModel?: string
-  expertBackend?: string
   timeoutMs: number
-  // Private gateway environment; never forwarded to the Codex process.
+  // Private gateway environment; never forwarded to the model.
   env?: Record<string, string>
   // A warning from an earlier phase remains visible in the terminal result.
   degraded?: boolean
@@ -45,9 +44,10 @@ export interface AdvanceOutcome {
   haltedAt?: string
   // true when the run ended on its workflow's terminal Expert phase: no successor, the engagement ends.
   terminal: boolean
-  status: "completed" | "completed_with_warnings"
+  outcome: "success" | "warning" | "blocked" | "failed"
   summary: string
   termination?: RunTermination
+  failure?: PhaseFailure
   completion?: CompletionCandidate
 }
 
@@ -65,6 +65,13 @@ function capSummary(text: string): string {
     : text.slice(0, SUMMARY_CAP) + "\n…(summary truncated — read the workarea for the full detail)"
 }
 
+function providerFailureSummary(phase: string, failure: NonNullable<PhaseResult["subsystemFailure"]>): string {
+  const providerCode = failure.providerCode ? `, provider code ${failure.providerCode}` : ""
+  const httpStatus = failure.httpStatus !== undefined ? `, HTTP ${failure.httpStatus}` : ""
+  const detail = failure.detail ? `: ${failure.detail}` : "."
+  return `The ${phase} phase stopped because its Pi provider failed (${failure.kind}${providerCode}${httpStatus})${detail}`
+}
+
 function rejectedPhase(phase: string, input: AdvanceInput, error: unknown): PhaseResult {
   const limitMs = input.timeoutMs > 0 ? input.timeoutMs : SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES * 60_000
   const now = Date.now()
@@ -76,13 +83,27 @@ function rejectedPhase(phase: string, input: AdvanceInput, error: unknown): Phas
     exitCode: 1,
     timedOut: false,
     termination: "subsystem_failed",
-    backend: input.expertBackend ?? "unknown",
+    backend: "pi",
     durationMs: 0,
     limitMs,
     effectiveLimitMs: limitMs,
     deadlineAt: now + limitMs,
-    warnings: [`Expert phase runner rejected before returning a result: ${detail}`],
+    warnings: [],
+    phaseFailure: {
+      phase,
+      source: "lifecycle",
+      class: "phase_runner_rejected",
+      detail,
+    },
   }
+}
+
+function interruptedOutcome(termination: RunTermination | undefined): "blocked" | "failed" {
+  return termination === "budget_exhausted" || termination === "shutdown" ? "blocked" : "failed"
+}
+
+function phaseOutcome(result: PhaseResult): "blocked" | "failed" {
+  return result.phaseFailure ? "failed" : interruptedOutcome(result.termination)
 }
 
 export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input: AdvanceInput, deps: AdvanceDeps) {
@@ -103,8 +124,8 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           workareaCwd: input.workareaCwd,
           sourceRoot: input.sourceRoot,
           home: input.home,
+          settingsDirectory: input.settingsDirectory,
           objective,
-          model: input.expertModel,
           timeoutMs: input.timeoutMs,
           abort,
           env: input.env,
@@ -120,14 +141,21 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
     )
     ranPhases.push(phase)
     degraded ||= !result.ok || result.warnings.length > 0
-    lastSummary = capSummary(result.summary.trim()) || `(the ${phase} phase produced no textual summary)`
+    lastSummary =
+      capSummary(result.summary.trim()) ||
+      (result.subsystemFailure
+        ? capSummary(providerFailureSummary(phase, result.subsystemFailure))
+        : result.phaseFailure
+          ? capSummary(result.phaseFailure.detail)
+          : `(the ${phase} phase produced no textual summary)`)
     acceptedHandoff =
       result.ok &&
       result.handoff !== undefined &&
       result.handoff.successor === SubsystemPhase.nextAfterExpertPhase(input.workflow, phase)
     if (!acceptedHandoff) {
+      const outcome = phaseOutcome(result)
       lastSummary =
-        `[Expert phase completed_with_warnings: ${result.termination}; exit ${result.exitCode}. ` +
+        `[Expert phase ${outcome}: ${result.termination}; exit ${result.exitCode}. ` +
         `No successor was started.]\n${lastSummary}`
     }
 
@@ -137,16 +165,17 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         ranPhases,
         haltedAt: phase,
         terminal: false,
-        status: "completed_with_warnings",
+        outcome: phaseOutcome(result),
         summary: lastSummary,
         termination: result.termination,
+        ...(result.phaseFailure ? { failure: result.phaseFailure } : {}),
       } satisfies AdvanceOutcome
 
     if (!next)
       return {
         ranPhases,
         terminal: true,
-        status: degraded ? "completed_with_warnings" : "completed",
+        outcome: degraded ? "warning" : "success",
         summary: lastSummary,
         completion: result.handoff?.completion,
       } satisfies AdvanceOutcome
@@ -156,15 +185,23 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         ranPhases,
         haltedAt: phase,
         terminal: false,
-        status: "completed_with_warnings",
-        summary: `Invalid Codex-only successor '${next}' after '${phase}'. No successor was started.\n${lastSummary}`,
+        outcome: "failed",
+        summary: `Invalid Pi workflow successor '${next}' after '${phase}'. No successor was started.\n${lastSummary}`,
+        failure: {
+          phase,
+          source: "contract",
+          class: "invalid_successor",
+          code: next,
+          detail: `The configured workflow cannot advance from '${phase}' to '${next}'.`,
+        },
       } satisfies AdvanceOutcome
     }
 
     // ── A Validated Handoff Cannot Overlap Its Successor ────────────
     // The gateway records a requested successor, but the orchestrator advances
     // only after runPhase has validated that request and completed its lifecycle.
-    // At this point the old Codex process and private gateway are both gone.
+    // At this point the old in-process Pi worker owner has shut down and its
+    // private gateway is gone.
     // Assigning the next phase here therefore preserves single-phase ownership,
     // including when the prior phase needed forced shutdown or cleanup warnings.
     // ──────────────────────────────────────────────────────────────
@@ -176,7 +213,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
     ranPhases,
     handedTo: phase,
     terminal: false,
-    status: degraded ? "completed_with_warnings" : "completed",
+    outcome: degraded ? "warning" : "success",
     summary: lastSummary,
   } satisfies AdvanceOutcome
 })

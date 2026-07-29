@@ -10,7 +10,7 @@ import { MessageV2 } from "./message-v2"
 import { ASK_HISTORY_CHARACTERS, SessionAskContext } from "./ask-context"
 
 const sessionID = SessionID.make("ses_ask")
-const subsystemID = SubsystemID.make("codex")
+const subsystemID = SubsystemID.make("pi-agent")
 const modelID = ModelID.make("test")
 
 function user(index: number): MessageV2.WithParts {

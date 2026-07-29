@@ -1,6 +1,6 @@
 // ── TUI Control-Plane Worker ─────────────────────────────────────
 // Boots the worker-owned application runtime and RPC server, forwards global
-//   events, and disposes phase processes, gateways, instances, and dependencies
+//   events, and disposes in-process phase owners, gateways, instances, and dependencies
 //   before the worker exits.
 // → cyberful/src/cli/cmd/tui/thread.ts — launches the worker and owns emergency reaping.
 // ─────────────────────────────────────────────────────────────────
@@ -189,15 +189,27 @@ const handlers = {
       })
     })
 
+    // ── Runtime Cleanup Precedes The Ownership Sweep ───────────────
+    // Runtime-specific owners know about bridges, graceful shutdown, and shared
+    // dependency state that a label-only remover cannot preserve. Their bounded
+    // cleanup therefore runs concurrently first. The run-owner sweep follows as
+    // an idempotent catch-all for failures and late creations. In particular,
+    // this ordering prevents the newly labelled generic cyberful-os container
+    // from being removed while its dependency owner is still issuing `down`.
+    // ────────────────────────────────────────────────────────────────
     Log.Default.info("container cleanup started")
-    const cleanupResults = await Promise.allSettled([
+    const runtimeCleanupResults = await Promise.allSettled([
       SubsystemEvmRuntime.removeAll(),
       SubsystemZapRuntime.removeAll(),
       SubsystemGhidraRuntime.removeAll(),
-      SubsystemContainer.removeForShutdown(),
       DependencyStartup.stopStarted(),
     ])
-    const cleanupNames = ["EVM", "ZAP", "Ghidra", "run-owned", "dependency"] as const
+    const runOwnedCleanupResult = await SubsystemContainer.removeForShutdown().then(
+      () => ({ status: "fulfilled", value: undefined }) as const,
+      (reason: unknown) => ({ status: "rejected", reason }) as const,
+    )
+    const cleanupResults = [...runtimeCleanupResults, runOwnedCleanupResult]
+    const cleanupNames = ["EVM", "ZAP", "Ghidra", "dependency", "run-owned"] as const
     const cleanupFailures = cleanupResults.flatMap((result, index) =>
       result.status === "rejected" ? [{ resource: cleanupNames[index], error: result.reason }] : [],
     )

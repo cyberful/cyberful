@@ -12,6 +12,7 @@ import {
   ensureWorkareaDirectory,
   ensureWorkarea,
   normalizeWorkarea,
+  readWorkareaFileChunk,
   replaceWorkareaFile,
   workareaAbsolutePath,
   workareaDirectoryName,
@@ -147,6 +148,37 @@ describe("workarea", () => {
       expect(await pathExists(path.join(outside, "request.txt"))).toBe(false)
     } finally {
       await Promise.all([rm(dir, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })])
+    }
+  })
+
+  test("reads large tool artifacts in bounded UTF-8 chunks without gaps and rejects symlinks", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "cyberful-workarea-chunk-")))
+    const content = `${"αβγ shell output\n".repeat(12_000)}tail`
+    try {
+      await replaceWorkareaFile(dir, "raw/tool-results/run/result.txt", content)
+      const chunks: string[] = []
+      let offset = 0
+      do {
+        const chunk = await readWorkareaFileChunk(dir, "raw/tool-results/run/result.txt", {
+          offset,
+          limit: 4_096,
+        })
+        expect(Buffer.byteLength(chunk.content)).toBeLessThanOrEqual(4_096)
+        chunks.push(chunk.content)
+        if (chunk.nextOffset === undefined) break
+        expect(chunk.nextOffset).toBeGreaterThan(offset)
+        offset = chunk.nextOffset
+      } while (true)
+      expect(chunks.join("")).toBe(content)
+
+      const outside = path.join(path.dirname(dir), `${path.basename(dir)}-outside.txt`)
+      await writeFile(outside, "outside")
+      await rm(path.join(dir, "raw", "tool-results", "run", "result.txt"))
+      await symlink(outside, path.join(dir, "raw", "tool-results", "run", "result.txt"))
+      await expect(readWorkareaFileChunk(dir, "raw/tool-results/run/result.txt")).rejects.toThrow("regular file")
+      await rm(outside, { force: true })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
     }
   })
 })

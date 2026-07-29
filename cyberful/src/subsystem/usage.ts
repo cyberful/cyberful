@@ -1,7 +1,7 @@
 // ── Subsystem-Neutral Session Token Accounting ───────────────────
 // Aggregates cumulative token snapshots per runtime process and derives bounded
 // context-reuse/churn metrics without interpreting subsystem-specific event shapes.
-// → cyberful/src/subsystem/subsystem.ts — translates Codex events into these snapshots.
+// → cyberful/src/subsystem/subsystem.ts — translates AgentRun events into these snapshots.
 // ─────────────────────────────────────────────────────────────────
 
 export interface Snapshot {
@@ -81,19 +81,19 @@ function ratio(numerator: number, denominator: number): number {
 }
 
 // ── Churn Comes From Subsystem Counters ────────────────────────
-// Input amplification measures how much context was processed per generated
-// token. Churn isolates the non-cached share of that input, while cache reuse and
-// reasoning share stay separate so a long but efficiently reused phase is not
-// mistaken for repeated context reconstruction. Missing counters resolve to zero
-// and remain visibly absent from callers that never received a usage snapshot.
+// Provider adapters expose input, cache reads, and cache writes as disjoint
+// prompt-token components. Cache writes are new context processing, while cache
+// reads are reused context. Amplification uses their complete prompt total;
+// churn isolates the uncached input plus newly written cache entries.
 // ─────────────────────────────────────────────────────────────────
 export function contextChurn(usage: Totals): ContextChurn {
-  const uncachedInput = Math.max(0, usage.input - usage.cache.read)
+  const uncachedInput = usage.input + usage.cache.write
+  const totalPromptInput = uncachedInput + usage.cache.read
   return {
     uncachedInput,
-    cacheReadRatio: ratio(usage.cache.read, usage.input),
-    inputAmplification: Number((usage.input / Math.max(1, usage.output)).toFixed(2)),
-    churnRatio: ratio(uncachedInput, usage.input),
+    cacheReadRatio: ratio(usage.cache.read, totalPromptInput),
+    inputAmplification: Number((totalPromptInput / Math.max(1, usage.output)).toFixed(2)),
+    churnRatio: ratio(uncachedInput, totalPromptInput),
     reasoningShare: ratio(usage.reasoning, usage.output),
   }
 }

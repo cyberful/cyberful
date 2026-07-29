@@ -132,8 +132,12 @@ import type {
   SessionShellResponses,
   SessionStatusErrors,
   SessionStatusResponses,
+  SessionSteerErrors,
+  SessionSteerResponses,
   SessionTodoErrors,
   SessionTodoResponses,
+  SessionToolArtifactErrors,
+  SessionToolArtifactResponses,
   SessionUnrevertErrors,
   SessionUnrevertResponses,
   SessionUpdateErrors,
@@ -832,7 +836,7 @@ export class Runtime extends HeyApiClient {
   /**
    * Get runtime status
    *
-   * Probe the active Codex subsystem.
+   * Probe the active Pi subsystem and configured provider.
    */
   public status<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1579,6 +1583,42 @@ export class Session extends HeyApiClient {
   }
 
   /**
+   * Read a tool-result artifact chunk
+   *
+   * Read at most 64 KiB from a session-owned tool-result artifact. Paths are confined to raw/tool-results and symlinks are rejected.
+   */
+  public toolArtifact<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      path: string
+      offset?: string
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionToolArtifactResponses, SessionToolArtifactErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "path" },
+            { in: "query", key: "offset" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionToolArtifactResponses, SessionToolArtifactErrors, ThrowOnError>({
+      url: "/session/{sessionID}/tool-artifact",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Get message diff
    *
    * Get the file changes (diff) that resulted from a specific user message in the session.
@@ -1867,6 +1907,43 @@ export class Session extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionPromptAsyncResponses, SessionPromptAsyncErrors, ThrowOnError>({
       url: "/session/{sessionID}/prompt_async",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Steer an active session
+   *
+   * Deliver routine text to the active root AgentRun. Returns false instead of starting a new turn when the session is not steerable.
+   */
+  public steer<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      text: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionSteerResponses, SessionSteerErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "text" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionSteerResponses, SessionSteerErrors, ThrowOnError>({
+      url: "/session/{sessionID}/steer",
       ...options,
       ...params,
       headers: {

@@ -2,6 +2,7 @@
 // Boots environment and installed assets, dispatches the gateway or CLI command,
 // renders fatal errors, and reaps every process and container owner before exit.
 // → cyberful/src/bootstrap-env.ts — layers environment before import-time readers.
+// → cyberful/src/bootstrap-pi-oauth.ts — statically registers release-safe Pi OAuth flows.
 // → cyberful/src/bootstrap-config.ts — selects or materializes first-party configuration.
 // → cyberful/src/bootstrap-browser.ts — prepares the embedded browser driver for releases.
 // @docs/concepts/architecture.md
@@ -15,6 +16,7 @@
 // release minifier can discard a bare side-effect import.
 // ─────────────────────────────────────────────────────────────────
 import { bootstrapEnvApplied } from "./bootstrap-env"
+import { piOAuthFlowsRegistered } from "./bootstrap-pi-oauth"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
@@ -31,6 +33,7 @@ import { TuiThreadCommand } from "./cli/cmd/tui/thread"
 import { EOL } from "os"
 import { SessionCommand } from "./cli/cmd/session"
 import { ApprovalCommand } from "./cli/cmd/approval"
+import { AuthCommand } from "./cli/cmd/auth"
 import { bootstrapConfigReady } from "./bootstrap-config"
 import { bootstrapBrowserReady } from "./bootstrap-browser"
 import { GATEWAY_ARGV } from "./subsystem/gateway/config"
@@ -62,7 +65,7 @@ const processMetadata = ensureProcessMetadata("main")
 // ─────────────────────────────────────────────────────────────────
 if (process.env.CYBERFUL_DEBUG_BOOTSTRAP)
   console.error(
-    `[bootstrap] env-applied=${bootstrapEnvApplied} embedded-config=${bootstrapConfigReady} embedded-browser=${bootstrapBrowserReady}`,
+    `[bootstrap] env-applied=${bootstrapEnvApplied} pi-oauth=${piOAuthFlowsRegistered} embedded-config=${bootstrapConfigReady} embedded-browser=${bootstrapBrowserReady}`,
   )
 
 process.once("exit", emptyTruncationDirSync)
@@ -81,10 +84,11 @@ process.on("uncaughtException", (e) => {
 
 // ── Gateway Re-entry Never Falls Through To The CLI ──────────────
 // A release binary provides one stable entrypoint; secondary chunks have hashed paths
-// that Codex cannot address independently. Phase processes therefore re-enter this
+// that an in-process Pi phase owner cannot address independently. Gateway processes therefore re-enter this
 // executable with GATEWAY_ARGV after bootstrap has completed. Dispatch happens before
 // yargs construction so stdout remains an MCP-only channel, and the never-resolving
-// wait leaves process ownership with the gateway until Codex closes its pipe.
+// wait leaves process ownership with the gateway until the in-process Pi owner closes
+// its pipe.
 // ─────────────────────────────────────────────────────────────────
 if (process.argv.includes(GATEWAY_ARGV)) {
   const { runGatewayMain } = await import("./subsystem/gateway/server")
@@ -212,6 +216,7 @@ const cli = yargs(args)
   .command(AgentCommand)
   .command(SessionCommand)
   .command(ApprovalCommand)
+  .command(AuthCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

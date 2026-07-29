@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test"
 import { SubsystemApprovalState } from "./approval-state"
 
-test("nested approvals suspend once and resume after the final settlement", async () => {
+test("nested approvals pause the shared budget clock once and resume after the final settlement", async () => {
   let now = 100
   const state = SubsystemApprovalState.create({ now: () => now })
   const transitions: Array<{ pending: boolean; count: number }> = []

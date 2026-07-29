@@ -9,12 +9,12 @@ a first penetration test in the terminal interface.
 
 ## 1. Confirm the installation
 
-Complete [Install Cyberful](install.md) and confirm that Cyberful, Codex, and
-Docker are ready:
+Complete [Install Cyberful](install.md) and confirm that Cyberful, its main
+provider, and Docker are ready:
 
 ```sh
 cyberful --version
-codex --version
+cyberful auth status
 docker version
 ```
 
@@ -43,13 +43,13 @@ Start Cyberful from the engagement directory:
 cyberful
 ```
 
-Before opening the TUI, Cyberful checks that Codex is installed and
-authenticated, verifies the Docker runtime, and prepares its container images.
-On the first launch it may also download the isolated Chromium browser. The
-first startup can therefore take longer than later ones.
+Before opening the TUI, Cyberful validates `settings.yaml`, checks the selected
+Pi provider and credentials, verifies Docker, and prepares its container
+images. On the first launch it may also download the isolated Chromium browser.
+The first startup can therefore take longer than later ones.
 
-If Codex is not authenticated or Docker is not running, Cyberful stops with an
-actionable message. Fix the reported dependency and launch it again.
+If the provider is not authenticated or Docker is not running, Cyberful stops
+with an actionable message. Fix the reported dependency and launch it again.
 
 ## 4. Name the workarea
 

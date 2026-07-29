@@ -1,8 +1,8 @@
 // ── Runtime Dependency Policy ────────────────────────────────────
 // Resolves validated environment policy, executable locations, container
-// commands, and immutable Codex identity for Cyberful's external runtimes.
+// commands, and immutable runtime identity for Cyberful's external services.
 // → cyberful/src/dependency/startup.ts — starts dependencies from this canonical policy.
-// → cyberful/src/subsystem/codex.ts — consumes the resolved Codex phase policy.
+// → cyberful/src/subsystem/phase-runner.ts — consumes the resolved phase policy.
 // @docs/getting-started/requirements.md
 // ─────────────────────────────────────────────────────────────────
 
@@ -299,8 +299,6 @@ export function cyberZapBridgeCommand(
     "--env",
     "CYBER_ZAP_API_KEY",
     "--env",
-    "CYBER_ZAP_ALLOWED_ORIGINS",
-    "--env",
     "CYBER_ZAP_WORKAREA=/zap/wrk",
     cyberZapBridgeImage(),
   ]
@@ -330,70 +328,31 @@ export function cyberfulOsImage() {
   return envValue("CYBERFUL_OS_IMAGE") ?? "cyberful-os:latest"
 }
 
-// ── Codex Is The Immutable Phase Executor ────────────────────────
-// Every autonomous phase is executed by Codex. The backend and executable are
-// constants rather than configuration, so environment input may tune model
-// policy but cannot select a second inference path. The backend literal remains
-// in events and transcripts as provenance, never as a runtime selector. Session
-// journal markers describe this executor without registering a second subsystem.
+// ── Pi Is The Immutable Agent Subsystem ──────────────────────────
+// Every autonomous phase is executed through Pi. Provider and model selection
+// live exclusively in settings.yaml; this marker is journal provenance rather
+// than an alternate runtime selector. Keeping that identity immutable also
+// prevents environment input from opening a second execution path.
 // ─────────────────────────────────────────────────────────────────
 
-export type ExpertBackend = "codex"
+export type ExpertBackend = "pi"
 
 export interface ExpertRuntime {
   backend: ExpertBackend
-  command: string
-  model?: string
 }
 
-export const EXPERT_SESSION_SUBSYSTEM_ID = "codex-cli"
+export const EXPERT_SESSION_SUBSYSTEM_ID = "pi-agent"
 
 export function expertSessionModel() {
-  return { subsystemID: EXPERT_SESSION_SUBSYSTEM_ID, modelID: expertRuntime().model ?? "codex" }
+  return { subsystemID: EXPERT_SESSION_SUBSYSTEM_ID, modelID: "configured-provider" }
 }
 
 export function isExpertSessionModel(model: { subsystemID: string; modelID?: string } | undefined) {
   return model?.subsystemID === EXPERT_SESSION_SUBSYSTEM_ID
 }
 
-export function expertModel() {
-  return envValue("CYBERFUL_SUBSYSTEM_MODEL") ?? "gpt-5.6-sol"
-}
-
-// ── Web Search Disablement Must Be Explicit ──────────────────────
-// Codex enables cached search when its setting is omitted, so absence means the
-// normal live-search policy rather than an indeterminate state. An explicit false
-// value removes the tool entirely instead of merely disabling fresh results. The
-// strict boolean parser rejects misspellings before they weaken that policy.
-// ─────────────────────────────────────────────────────────────────
-export function webSearchMode() {
-  return disabled("WEB_SEARCH") ? "disabled" : "live"
-}
-
 export function expertRuntime(): ExpertRuntime {
-  return {
-    backend: "codex",
-    command: "codex",
-    model: expertModel(),
-  }
-}
-
-// ── Phase Transcripts Preserve Execution Evidence ────────────────
-// The session journal records phase state, while the raw stream transcript records
-// how Codex reached its result. Persistence is therefore enabled by default and
-// disabled only by an explicit false value. Buffered paths remain available when
-// operators deliberately trade that execution evidence for reduced retention.
-// ─────────────────────────────────────────────────────────────────
-export function expertTranscriptEnabled() {
-  return !disabled("CYBERFUL_SUBSYSTEM_TRANSCRIPT")
-}
-
-const DEFAULT_EXPERT_PHASE_TIMEOUT_SECONDS = 1800
-export function expertPhaseTimeoutSeconds() {
-  return envInt("CYBERFUL_SUBSYSTEM_PHASE_TIMEOUT_SECONDS", DEFAULT_EXPERT_PHASE_TIMEOUT_SECONDS, {
-    minimum: 1,
-    maximum: 86_400,
-  })
+  return { backend: "pi" }
 }
 
 export * as DependencyConfig from "./config"

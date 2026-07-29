@@ -1,5 +1,5 @@
 {
-  "$comment": "Wall-clock ceilings plus a qualitative contrarian pass for Bug Bounty research phases.",
+  "$comment": "Active-execution ceilings plus a qualitative contrarian pass for Bug Bounty research phases.",
   "brief": 30,
   "recon": 240,
   "exploit": 360,

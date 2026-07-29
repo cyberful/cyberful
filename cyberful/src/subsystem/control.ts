@@ -1,7 +1,7 @@
 // ── Runtime-Neutral Live Session Steering ───────────────────────
 // Queues human input for a session, delivers it to every currently registered
 // turn controller, and bounds acknowledgement while hiding native runtime protocol.
-// → cyberful/src/subsystem/codex-control.ts — adapts active Codex turns.
+// → cyberful/src/subsystem/pi-agent.ts — registers active Pi AgentRuns.
 // ─────────────────────────────────────────────────────────────────
 
 export interface SteeringRequest {

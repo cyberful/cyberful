@@ -495,7 +495,7 @@ export const RunCommand = effectCmd({
         if (!args.agent) return undefined
         const name = args.agent
 
-        // A Codex-owned workflow kickoff (for example brief) does not resolve through the persona catalog.
+        // A workflow-owned kickoff (for example brief) does not resolve through the persona catalog.
         // Workflow-driven interception handles it before transport startup; direct mid-chain phase
         // launches remain an explicit headless opt-in.
         if (SubsystemPhase.workflowForKickoffAgent(name) || SubsystemPhase.workflowOf(name)) return name

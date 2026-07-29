@@ -7,11 +7,13 @@ import { describe, expect, test } from "bun:test"
 
 import {
   continuesExpertPhaseTurn,
+  decodeExpertContextCompaction,
   decodeExpertPhaseStatus,
   decodeExpertToolActivity,
   expertActorCardLabel,
   expertActorStateText,
   expertActorTextLabel,
+  expertContextCompactionText,
   expertPhaseDuration,
   expertPhaseLabel,
   foldExpertActivity,
@@ -19,7 +21,7 @@ import {
   type ExpertPhaseEntry,
 } from "./expert-feed"
 
-const subsystem = { name: "codex", version: "0.144.3", label: "codex v0.144.3" }
+const subsystem = { name: "pi", version: "0.81.1", label: "pi v0.81.1" }
 
 describe("continuesExpertPhaseTurn", () => {
   const entry = (
@@ -102,11 +104,41 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("folds one structured compaction completion into concise neutral telemetry", () => {
+    const payload = JSON.stringify({
+      contextCompaction: {
+        state: "completed",
+        mode: "proactive",
+        estimatedTokensBefore: 318_883,
+        estimatedTokensAfter: 99_006,
+        messagesRemoved: 0,
+        toolResultsVirtualized: 18,
+        artifactsPreserved: 18,
+      },
+    })
+    const decoded = decodeExpertContextCompaction(payload)
+    expect(decoded).toMatchObject({
+      state: "completed",
+      mode: "proactive",
+      toolResultsVirtualized: 18,
+    })
+    if (!decoded) throw new Error("Structured compaction status was not decoded")
+    expect(expertContextCompactionText(decoded)).toBe(
+      "↻ Context compacted · 318.9K → 99.0K tokens · 18 tool results virtualized · 18 complete artifacts preserved",
+    )
+
+    const out = foldExpertActivity([], act("status", payload, "", "context-compaction"))
+    expect(out).toHaveLength(1)
+    expect(out[0]?.phaseStatus).toBeUndefined()
+    expect(out[0]?.contextCompaction).toEqual(decoded)
+    expect(out[0]?.text).toBe(expertContextCompactionText(decoded))
+  })
+
   test("successful phase status keeps only the concise completion copy and validated successor", () => {
     const payload = JSON.stringify({
       ok: true,
       termination: "completed",
-      backend: "codex",
+      backend: "pi",
       durationMs: 391_700,
       limitMs: 600_000,
       effectiveLimitMs: 600_000,
@@ -153,7 +185,7 @@ describe("foldExpertActivity", () => {
       kind: "agent",
       actor,
       actorState: "started",
-      actorTransitionID: "native-started",
+      actorTransitionID: "delegated-started",
     })
     entries = foldExpertActivity(entries, {
       ...act("text", "", "", "active"),
@@ -189,16 +221,64 @@ describe("foldExpertActivity", () => {
     expect(expertActorStateText("interacted")).toBe("received follow-up")
   })
 
-  test("equal native call ids from simultaneous subsystems do not merge", () => {
+  test("absorbs linked child lifecycle into its delegate_task card", () => {
+    let entries = foldExpertActivity(
+      [],
+      toolActivity("delegate_task", "delegate-1", { task: "inspect public metadata" }, "delegate"),
+    )
+    const actor = {
+      id: "child-1",
+      label: "subagent · provider/model",
+      parentID: "root",
+      sourceCallID: "delegate-1",
+      provider: "provider",
+      model: "model",
+      startedAt: 100,
+      lastActivityAt: 250,
+      toolCalls: 3,
+    }
+    entries = foldExpertActivity(entries, {
+      ...act("text", "", "", "child-start"),
+      kind: "agent",
+      actor,
+      actorState: "started",
+      actorTransitionID: "child-1:created",
+    })
+    entries = foldExpertActivity(entries, {
+      ...act("text", "", "", "child-end"),
+      kind: "agent",
+      actor: { ...actor, lastActivityAt: 900, toolCalls: 7 },
+      actorState: "completed",
+      actorTransitionID: "child-1:finished",
+    })
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      tool: "delegate_task",
+      callID: "delegate-1",
+      delegation: {
+        state: "completed",
+        actor: {
+          id: "child-1",
+          sourceCallID: "delegate-1",
+          provider: "provider",
+          model: "model",
+          toolCalls: 7,
+        },
+      },
+    })
+  })
+
+  test("equal provider call ids from simultaneous subsystems do not merge", () => {
     const other = { name: "other", version: "1", label: "other v1" }
-    let entries = foldExpertActivity([], toolActivity("httpx", "same", {}, "codex-call"))
+    let entries = foldExpertActivity([], toolActivity("httpx", "same", {}, "pi-call"))
     entries = foldExpertActivity(entries, { ...toolActivity("scanner", "same", {}, "other-call"), subsystem: other })
     entries = foldExpertActivity(entries, {
       ...act("output", "other result", "same", "other-output"),
       subsystem: other,
     })
     expect(entries).toHaveLength(2)
-    expect(entries.find((entry) => entry.subsystem.name === "codex")?.output).toBeUndefined()
+    expect(entries.find((entry) => entry.subsystem.name === "pi")?.output).toBeUndefined()
     expect(entries.find((entry) => entry.subsystem.name === "other")?.output).toBe("other result")
   })
 
@@ -231,7 +311,7 @@ describe("foldExpertActivity", () => {
     const payload = JSON.stringify({
       ok: false,
       termination: "budget_exhausted",
-      backend: "codex",
+      backend: "pi",
       durationMs: 75,
       limitMs: 2_700_000,
       effectiveLimitMs: 30_000,
@@ -242,7 +322,7 @@ describe("foldExpertActivity", () => {
     expect(decodeExpertPhaseStatus(payload)?.termination).toBe("budget_exhausted")
     const out = foldExpertActivity([], act("status", payload, "", "status-1"))
     expect(out[0]?.kind).toBe("status")
-    expect(out[0]?.text).toContain("completed with warnings · codex · budget_exhausted")
+    expect(out[0]?.text).toContain("Phase failed · pi · budget_exhausted · worker exit 128")
     expect(out[0]?.phaseStatus?.effectiveLimitMs).toBe(30_000)
   })
 })

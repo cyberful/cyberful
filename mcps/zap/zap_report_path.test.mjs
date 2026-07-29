@@ -1,11 +1,10 @@
-// ── ZAP Report Scope Contract ───────────────────────────────────────
-// Verifies report names cannot escape the engagement workarea and requested
-// site filters become canonical origins without credentials or path fragments.
-// → mcps/zap/zap_report_path.mjs — owns report path and site normalization.
+// ── ZAP Report Path Contract ────────────────────────────────────────
+// Verifies report names cannot escape the engagement workarea.
+// → mcps/zap/zap_report_path.mjs — owns report path normalization.
 // ────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { engagementReportPath, engagementReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
+import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
 
 describe("ZAP report workarea paths", () => {
   test("maps absolute and relative report names to the engagement root", () => {
@@ -40,20 +39,5 @@ describe("ZAP report workarea paths", () => {
         }),
       },
     ])
-  })
-
-  test("canonicalizes and deduplicates explicitly authorized report origins", () => {
-    expect(
-      engagementReportSites(["https://example.com/", "https://example.com:443", "http://example.com:80/"]),
-    ).toEqual(["https://example.com", "http://example.com"])
-  })
-
-  test("rejects ambiguous or over-broad report sites", () => {
-    expect(() => engagementReportSites([])).toThrow("at least one")
-    expect(() => engagementReportSites(["example.com"])).toThrow("absolute HTTP(S) origins")
-    expect(() => engagementReportSites(["ftp://example.com"])).toThrow("absolute HTTP(S) origins")
-    expect(() => engagementReportSites(["https://u:p@example.com"])).toThrow("credentials")
-    expect(() => engagementReportSites(["https://example.com/app"])).toThrow("origins")
-    expect(() => engagementReportSites(["https://example.com/?q=1"])).toThrow("origins")
   })
 })

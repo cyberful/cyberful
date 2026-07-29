@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-// ── Engagement-Scoped ZAP MCP Bridge ────────────────────────────────
+// ── Unrestricted ZAP MCP Bridge ─────────────────────────────────────
 // Speaks stdio MCP to Cyberful, forwards the official ZAP MCP surface, and
 // adds bounded wrappers over the catalog discovered from this ZAP instance.
-// Only this bridge reaches ZAP's loopback API; generic calls cannot bypass the
-// operation policy, workarea paths, response limits, or metadata-first history.
-// → mcps/zap/zap_policy.mjs — blocks host-owned and unsafe API operations.
+// Target scope and operation choice remain agent-owned; the bridge exposes the
+// complete catalog while retaining transport, response, and workarea safety.
+// → mcps/zap/zap_policy.mjs — normalizes generic API requests.
 // ────────────────────────────────────────────────────────────────────
 
 import { mkdir } from "node:fs/promises"
@@ -22,17 +22,9 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import {
-  apiParameters,
-  assertAllowedOperation,
-  assertScopedZapTool,
-  assertZapUrlAllowed,
-  isAllowedOperation,
-  operationKey,
-  parseZapAllowedOrigins,
-} from "./zap_policy.mjs"
+import { apiParameters, operationKey } from "./zap_policy.mjs"
 import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
-import { engagementReportPath, engagementReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
+import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
 import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
 import { ZAP_BRIDGE_TOOLS } from "./zap_tool_catalog.mjs"
@@ -51,7 +43,6 @@ const MAX_INLINE_BYTES = boundedPositiveInt(
 const MAX_RESPONSE_BYTES = 25_000_000
 const MAX_CATALOG_BYTES = 5_000_000
 const API_TIMEOUT_MS = 15_000
-const ALLOWED_ORIGINS = parseZapAllowedOrigins(process.env.CYBER_ZAP_ALLOWED_ORIGINS)
 
 function required(name) {
   const value = process.env[name]?.trim()
@@ -163,12 +154,11 @@ function parseJson(bytes, label) {
 }
 
 async function apiFetch(component, type, operation, input = {}, enforceCatalog = true) {
-  const key = assertAllowedOperation(component, type, operation)
+  const key = operationKey(component, type, operation)
   return apiFetchOperation(component, type, operation, input, enforceCatalog, key)
 }
 
-// Dedicated wrappers may use a host-owned API operation after applying stricter typed validation. The
-// generic catalog path always goes through apiFetch and therefore cannot reach these operations.
+// Dedicated wrappers may use an operation before or independently from catalog discovery.
 async function hostApiFetch(component, type, operation, input = {}) {
   return apiFetchOperation(component, type, operation, input, false, operationKey(component, type, operation))
 }
@@ -238,7 +228,6 @@ async function discoverApiCatalog() {
       const component = decodeURIComponent(match[1])
       const type = match[2].toLowerCase()
       const operation = decodeURIComponent(match[3])
-      if (!isAllowedOperation(component, type, operation)) continue
       found.set(operationKey(component, type, operation), { component, type, operation })
     }
   }
@@ -267,14 +256,11 @@ async function nativeTool(name, args) {
   if (name === "zap_api_call") return text(await apiFetch(args.component, args.type, args.operation, args.parameters))
   if (name === "zap_http_request") {
     const request = normalizedHttpRequest(args.request, args.target_url)
-    assertZapUrlAllowed(ALLOWED_ORIGINS, request.targetUrl, "ZAP request")
     const result = await hostApiFetch("core", "action", "sendRequest", {
       request: request.request,
       followRedirects: args.follow_redirects === true,
     })
     const recordedUrl = recordedRequestTarget(result)
-    if (recordedUrl !== request.targetUrl)
-      throw new Error(`ZAP recorded ${recordedUrl}, not the validated destination ${request.targetUrl}`)
     return text({
       ...result,
       cyberful_request_target: {
@@ -285,21 +271,18 @@ async function nativeTool(name, args) {
       },
     })
   }
-  if (name === "zap_generate_scoped_report") {
+  if (name === "zap_generate_workarea_report") {
     const reportPath = engagementReportPath(args.file_path, WORKAREA)
-    const sites = engagementReportSites(args.sites)
     await mkdir(path.dirname(reportPath.containerPath), { recursive: true })
     return withEngagementReportPath(
       text({
         response: await apiFetch("reports", "action", "generate", {
           title: args.title,
           template: args.template,
-          sites: sites.join("|"),
           reportFileName: path.basename(reportPath.containerPath),
           reportDir: path.dirname(reportPath.containerPath),
           display: false,
         }),
-        included_sites: sites,
       }),
       reportPath,
     )
@@ -404,7 +387,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     if (officialToolNames.has(request.params.name)) {
-      assertScopedZapTool(request.params.name, request.params.arguments || {}, ALLOWED_ORIGINS, true)
       const reportPath =
         request.params.name === "zap_generate_report"
           ? engagementReportPath(request.params.arguments?.file_path, WORKAREA)
@@ -422,7 +404,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return reportPath ? withEngagementReportPath(result, reportPath) : result
     }
     const args = request.params.arguments || {}
-    assertScopedZapTool(request.params.name, args, ALLOWED_ORIGINS)
     return await nativeTool(request.params.name, args)
   } catch (error) {
     return text({ error: message(error) }, true)

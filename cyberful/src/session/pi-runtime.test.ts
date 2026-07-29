@@ -1,5 +1,5 @@
-// ── Primary Codex Session Runtime Tests ───────────────────────────
-// Verifies that every built-in workflow phase keeps Codex as its primary
+// ── Primary Pi Session Runtime Tests ──────────────────────────────
+// Verifies that every built-in workflow phase keeps Pi as its subsystem
 // runtime and that no user-selectable AI SDK routing surface reappears.
 // ─────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ import { Event } from "@/event"
 import { isRecord } from "@/util/record"
 import "./event"
 
-describe("primary Codex session boundary", () => {
+describe("primary Pi session boundary", () => {
   test("the prompt and phase gateway have no AI SDK routing dependency", async () => {
     const sources = await Promise.all(
       ["./prompt.ts", "../subsystem/gateway/server.ts"].map((path) => Bun.file(new URL(path, import.meta.url)).text()),
@@ -52,8 +52,8 @@ describe("primary Codex session boundary", () => {
     )
     const decode = Schema.decodeUnknownExit(PromptInput)
     const base = {
-      sessionID: SessionID.make("ses_codex_only"),
-      messageID: MessageID.make("msg_codex_only"),
+      sessionID: SessionID.make("ses_pi_only"),
+      messageID: MessageID.make("msg_pi_only"),
       agent: "brief",
     }
     expect(Exit.isSuccess(decode({ ...base, parts: [{ type: "text", text: "run" }] }))).toBe(true)
@@ -68,7 +68,7 @@ describe("primary Codex session boundary", () => {
     ).toBe(true)
   })
 
-  test("the complete production chain is registered as Codex phases", () => {
+  test("the complete production chain is registered as Pi phases", () => {
     const workflow = SubsystemPhase.listWorkflows().find((item) => item.name === "pentest")
     expect(workflow?.kind === "workflow" ? workflow.phases.map((phase) => phase.name) : undefined).toEqual([
       "brief",
@@ -84,10 +84,10 @@ describe("primary Codex session boundary", () => {
     expect(SubsystemPhase.phaseOwner("pentest", "generic-agent")).toBe("unknown")
   })
 
-  test("Codex activity has no retired model-step lifecycle events", () => {
+  test("Pi activity uses only the generic subsystem lifecycle event", () => {
     const types = [...Event.definitions()].map((event) => event.type)
     expect(types).toContain("session.next.subsystem.phase_activity")
-    expect(types).not.toContain("session.next.codex.phase_activity")
+    expect(types).not.toContain("session.next.pi.phase_activity")
     expect(types).not.toContain("session.next.model.switched")
     expect(types.filter((type) => type.startsWith("session.next.step."))).toEqual([])
   })

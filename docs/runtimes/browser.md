@@ -9,6 +9,24 @@ omitting it selects profile 1.
 Browser discovery and dispatch share one registry: duplicate names or a tool
 without an object schema and handler stop startup before Chromium is launched.
 
+## Bounded DOM snapshots
+
+`browser_snapshot` defaults to 12,000 visible-text characters and 80 actionable
+elements. Keep those defaults for the first read. On long pages, pass a CSS
+`selector` to confine both text and actionable refs to the first matching
+subtree, then use the returned `next_text_offset` as `text_offset` for later
+non-overlapping slices. Increase `max_text_chars` or `max_elements` only when
+scoping and pagination are insufficient; the hard limits remain 100,000
+characters and 500 elements.
+
+Every result reports the selected scope, selector match count, text interval
+`start-end/total`, next offset when more text exists, returned and total
+interactive-element counts, and separate text/element truncation flags. Refs
+are generated only for interactive descendants of the selected scope. An
+invalid selector or a selector with no matches returns an explicit tool error.
+When several nodes match, text and refs come from the first and the result
+retains the total match count so the caller can refine the selector.
+
 Each number owns separate cookies, local storage, cache, tabs, downloads, and a
 Chromium profile lock. This makes role-to-role and tenant-to-tenant comparisons
 possible without moving session tokens between accounts. A mission can say, for
@@ -64,8 +82,18 @@ manually supply its API keys.
 A visible CAPTCHA is handed to the human through the TUI while the challenged
 page is preserved and foregrounded. The breaker is limited to that browser
 profile and origin; other profiles, origins, tabs, and non-browser tools keep
-working. It closes only after `browser_captcha_status` confirms the original
-page is clear. Cyberful never injects a bypass token.
+working. Provider SDK traffic, response fields, and a lone generic CAPTCHA
+mention remain diagnostic signals but do not, by themselves, count as a
+visible challenge or open a handoff. After checking the foregrounded browser,
+the human can choose:
+
+- `Resolved` after completing a visible challenge; Cyberful then verifies the
+  original page with `browser_captcha_status`;
+- `No challenge visible` to clear a false-positive pause explicitly;
+- `Cannot resolve` to keep that profile and origin paused.
+
+Cyberful never solves the challenge, injects a bypass token, or interprets
+ordinary session steering as one of these decisions.
 
 Every browser result carries a redacted `_meta["cyberful.dev/browser-action"]`
 envelope with profile, page ID, origin, path family, action family, page
@@ -73,3 +101,8 @@ transition, outcome, and status when available. It excludes selectors, entered
 text, cookies, request bodies, and query values. The gateway stores these events
 locally in `raw/operations/surface-coverage.jsonl` and publishes a per-phase
 summary of exercised and unexercised surface.
+
+The phase gateway also resolves and records the effective browser identity on
+every browser call. Omitting `browser_profile` means profile `1`, and both that
+default and explicit profiles are written to `raw/operations/tool-usage.csv`
+and returned in host-owned call metadata.

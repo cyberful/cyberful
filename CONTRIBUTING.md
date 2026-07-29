@@ -1,6 +1,6 @@
 # Contributing To Cyberful
 
-Cyberful accepts changes to the terminal workbench, Codex phase subsystem,
+Cyberful accepts changes to the terminal workbench, Pi Agent subsystem,
 first-party configuration, MCP tooling, container runtimes, tests, and engineer
 documentation. Contributions must preserve the authorized-security boundary,
 localhost-first service posture, and zero-telemetry policy.
@@ -62,7 +62,7 @@ make docs-build
 The first command is the fast repository-wide `CODE.md` conformance gate;
 `make typecheck` runs it again before compiling TypeScript.
 
-Docker, network, ZAP, and Codex changes require their corresponding integration
+Docker, network, ZAP, Pi, and provider-adapter changes require their corresponding integration
 targets. See [Build Cyberful with us](docs/development/README.md)
 for the full verification matrix and
 [Testing and CI](docs/development/testing.md) for CI behavior.

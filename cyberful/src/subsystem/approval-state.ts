@@ -1,8 +1,8 @@
 // ── Phase Approval Suspension State ──────────────────────────────
 // Counts blocking human decisions for one phase and exposes a single transition
-//   stream that freezes and resumes its process budget without global state.
+//   stream that pauses and resumes every subscribed AgentRun budget timer.
 // → cyberful/src/subsystem/phase-runner.ts — owns one controller per phase.
-// → cyberful/src/subsystem/cli.ts — suspends the active process group and timer.
+// → cyberful/src/subsystem/pi-agent.ts — subscribes each run's active-execution timer.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
@@ -23,11 +23,11 @@ interface Options {
 }
 
 // ── Only Boundary Transitions Move The Phase Clock ───────────────
-// Native Codex input and gateway questions can overlap, so a boolean cannot own
+// Pi Agent input and gateway questions can overlap, so a boolean cannot own
 // suspension safely. The first pending request starts one paused interval and
 // the last settlement closes it; intermediate requests only change the count.
-// Subscribers receive the current state immediately, preventing a process that
-// registers after a fast request from accidentally running against its budget.
+// Subscribers receive the current state immediately, preventing an AgentRun
+// that registers after a fast request from accidentally consuming its budget.
 // ─────────────────────────────────────────────────────────────────
 export function create(options: Options = {}): Controller {
   const now = options.now ?? performance.now.bind(performance)

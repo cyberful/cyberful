@@ -567,7 +567,7 @@ export class RunFooter implements FooterApi {
   }
 
   // Interrupt is intentionally single-press: the control-plane abort owns the
-  // complete Codex/gateway process-tree cancellation, not only the UI state.
+  // complete Pi AgentRun/gateway cancellation, not only the UI state.
   private handleInterrupt = (): boolean => {
     if (this.isClosed || this.state().phase !== "running") {
       return false

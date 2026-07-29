@@ -1,5 +1,5 @@
 // ── Session Prompt Runtime ───────────────────────────────────────
-// Journals user input and runs or steers the Codex engagement selected
+// Journals user input and runs or steers the Pi engagement selected
 //   for a session through completion.
 // → cyberful/src/subsystem/orchestrator.ts — advances workflow phases.
 // → cyberful/src/subsystem/zap/runtime.ts — owns authorized runtime-test resources.
@@ -12,6 +12,7 @@ import path from "path"
 import { copyFile, lstat, mkdir, readFile } from "fs/promises"
 import { fileURLToPath, pathToFileURL } from "url"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import piAgentPackage from "@earendil-works/pi-agent-core/package.json"
 import { CrossSpawnSpawner } from "@/effect/cross-spawn-spawner"
 import * as Log from "@/util/log"
 import * as EffectLogger from "@/effect/logger"
@@ -30,7 +31,6 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Event } from "@/event"
-import { SubsystemCodex } from "@/subsystem/codex"
 import { SubsystemControl } from "@/subsystem/control"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemCompletion } from "@/subsystem/completion"
@@ -38,7 +38,7 @@ import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { SubsystemOrchestrator } from "@/subsystem/orchestrator"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
-import type { PhaseActivityActor, PhaseActivityActorState } from "@/subsystem/subsystem"
+import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/subsystem/subsystem"
 import { SubsystemUsage } from "@/subsystem/usage"
 import { SubsystemVerdict } from "@/subsystem/verdict"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
@@ -74,6 +74,7 @@ import { SessionReportLog } from "./report-log"
 import { SessionVariable } from "./variable"
 import { SessionCompletion } from "./completion"
 import { SessionAskContext } from "./ask-context"
+import { SessionRuntimeCompatibility } from "./runtime-compatibility"
 import { FindingRegistry } from "@/finding/registry"
 import { SessionFinding } from "./finding"
 import { createCodeGraphService } from "@/code-graph/service"
@@ -88,6 +89,11 @@ const elog = EffectLogger.create({ service: "session.prompt" })
 const decodeMessageInfo = Schema.decodeUnknownExit(MessageV2.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(MessageV2.Part)
 const FINDING_WRITE_PHASES = new Set(["recon", "exploit", "hacker", "verify"])
+const PI_RUNTIME_DESCRIPTOR = {
+  name: "pi",
+  version: piAgentPackage.version,
+  label: `Pi Agent v${piAgentPackage.version}`,
+}
 
 async function lstatIfPresent(target: string) {
   try {
@@ -100,7 +106,7 @@ async function lstatIfPresent(target: string) {
 
 // ── A Journal Identity, Not A Subsystem Choice ─────────────────────
 // Session rows require a model-shaped identity. Every writer in this module
-// stamps the immutable Codex marker, so no request field can select a model,
+// stamps the immutable Pi marker, so no request field can select a provider,
 // subsystem, variant, or reasoning policy for inference.
 // The marker identifies journal provenance only; execution policy remains host-owned.
 // ──────────────────────────────────────────────────────────────────
@@ -145,13 +151,27 @@ export const layer = Layer.effect(
     const status = yield* SessionStatus.Service
     const variables = yield* SessionVariable.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const legacyRuntimeError = (sessionID: SessionID) =>
+      Effect.gen(function* () {
+        const error = new NamedError.Unknown({
+          message:
+            "This active session was created by the legacy Codex runtime and cannot be resumed with Pi Agent. Start a new session; completed reports, transcripts, and workarea artifacts remain available.",
+        })
+        yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
+        throw error
+      })
+    const runtimeHistory = (sessionID: SessionID) =>
+      sessions.messages({ sessionID }).pipe(
+        Effect.orDie,
+        Effect.map((messages) => SessionRuntimeCompatibility.classify(messages)),
+      )
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* elog.info("cancel", { sessionID })
       yield* state.cancel(sessionID)
     })
 
     // ── Mentions Resolve To Data, Never To Delegation ────────────────
-    // @reference and @path syntax remains useful for building a Codex
+    // @reference and @path syntax remains useful for building an AgentRun
     // objective. A missing path stays ordinary text; it is never converted
     // into an AgentPart or a task-tool request.
     // This keeps textual context separate from the runtime delegation boundary.
@@ -284,7 +304,7 @@ export const layer = Layer.effect(
         return SubsystemPhase.canonicalPhase(activeWorkflow, match.value.info.agent)
       if (session.agent && SubsystemPhase.isExpertPhase(activeWorkflow, session.agent))
         return SubsystemPhase.canonicalPhase(activeWorkflow, session.agent)
-      const error = new NamedError.Unknown({ message: "This build accepts only Codex engagement phases." })
+      const error = new NamedError.Unknown({ message: "This build accepts only Pi Agent engagement phases." })
       yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
       throw error
     })
@@ -354,7 +374,7 @@ export const layer = Layer.effect(
 
     // ── Attachments Cross The Boundary As Files Or Text ──────────────
     // Text is read directly without a subsystem/model lookup. Binary data is
-    // copied into the workarea and named in the Codex objective, so the phase
+    // copied into the workarea and named in the AgentRun objective, so the phase
     // process can inspect it through its ordinary filesystem tools.
     // No attachment grants a path outside the phase-owned workarea.
     // ──────────────────────────────────────────────────────────────────
@@ -396,7 +416,7 @@ export const layer = Layer.effect(
             sessionID: input.sessionID,
             type: "text",
             synthetic: true,
-            text: `Attachment ${part.filename ?? "file"} is available to Codex at ${target}.`,
+            text: `Attachment ${part.filename ?? "file"} is available to the AgentRun at ${target}.`,
           },
           { ...base, url: pathToFileURL(target).href },
         ] satisfies JournalInputPart[]
@@ -468,13 +488,15 @@ export const layer = Layer.effect(
           sessionID: input.sessionID,
           type: "text",
           synthetic: true,
-          text: `Attachment ${part.filename ?? path.basename(filepath)} is available to Codex at ${target}.`,
+          text: `Attachment ${part.filename ?? path.basename(filepath)} is available to the AgentRun at ${target}.`,
         },
         { ...base, url: pathToFileURL(target).href },
       ] satisfies JournalInputPart[]
     })
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInputInternal) {
+      if (!SessionRuntimeCompatibility.canAppendPiPrompt(yield* runtimeHistory(input.sessionID)))
+        return yield* legacyRuntimeError(input.sessionID)
       const phase = yield* currentPhase(input.sessionID, input.agent)
       const previous = yield* sessions
         .findMessage(input.sessionID, (message) => message.info.role === "user")
@@ -530,7 +552,7 @@ export const layer = Layer.effect(
       validateJournalMessage(info, parts)
       const message = { info, parts }
 
-      // A live steer becomes conversation history only after Codex acknowledges the exact active turn.
+      // A live steer becomes conversation history only after Pi acknowledges the exact active AgentRun.
       // This guard deliberately runs outside the journal write permit: handoff must remain free to advance
       // while input submitted in the transition gap waits for the successor to register.
       if (input.deliveryGuard && !(yield* input.deliveryGuard(message))) return
@@ -538,7 +560,11 @@ export const layer = Layer.effect(
       const appended = yield* sessions.appendMessage({
         info,
         parts,
-        guard: input.appendGuard ?? Effect.succeed(true),
+        guard: Effect.gen(function* () {
+          if (!SessionRuntimeCompatibility.canAppendPiPrompt(yield* runtimeHistory(input.sessionID)))
+            return yield* legacyRuntimeError(input.sessionID)
+          return input.appendGuard ? yield* input.appendGuard : true
+        }),
       })
       if (!appended) return
 
@@ -663,7 +689,7 @@ export const layer = Layer.effect(
     const prompt: Interface["prompt"] = (input) =>
       submitPrompt(input).pipe(
         Effect.map((message) => {
-          if (!message) throw new Error("The active Codex turn did not acknowledge the message")
+          if (!message) throw new Error("The active AgentRun did not acknowledge the message")
           return message
         }),
       )
@@ -900,7 +926,7 @@ export const layer = Layer.effect(
       session: Session.Info,
       userMessage: MessageV2.WithParts,
     ) {
-      if (userMessage.info.role !== "user") throw new Error("Codex engagement requires a user message")
+      if (userMessage.info.role !== "user") throw new Error("Pi engagement requires a user message")
       const ctx = yield* InstanceState.context
       const user = userMessage.info
       const workflow = session.workflow ?? SubsystemPhase.workflowOf(user.agent)
@@ -908,7 +934,7 @@ export const layer = Layer.effect(
       const startPhase = SubsystemPhase.canonicalPhase(workflow, user.agent)
       const selectedWorkflow = SubsystemPhase.workflow(workflow)
       if (!selectedWorkflow || selectedWorkflow.kind !== "workflow")
-        throw new Error(`Codex workflow requires a configured workflow, received '${workflow}'`)
+        throw new Error(`Pi workflow requires a configured workflow, received '${workflow}'`)
       const workarea = typeof user.metadata?.workarea === "string" ? user.metadata.workarea : undefined
       if (!workarea) throw new Error(`${selectedWorkflow.title} requires an isolated workarea`)
       const workareaCwd = yield* Effect.promise(() => ensureWorkarea(ctx.directory, workarea))
@@ -924,15 +950,17 @@ export const layer = Layer.effect(
         workarea,
         onUpdated: (revision) =>
           bridge.promise(
-            events.publish(SessionFinding.Event.Updated, {
-              sessionID: session.id,
-              workarea,
-              revision,
-            }).pipe(Effect.asVoid),
+            events
+              .publish(SessionFinding.Event.Updated, {
+                sessionID: session.id,
+                workarea,
+                revision,
+              })
+              .pipe(Effect.asVoid),
           ),
       })
       yield* Effect.promise((signal) => findingStore.startRun({ id: session.id, workflow: registryWorkflow }, signal))
-      const subsystem = SubsystemCodex.runtimeDescriptor()
+      const subsystem = PI_RUNTIME_DESCRIPTOR
       const generatedTokens = SubsystemUsage.createSessionCounter()
       const persistedOutputTokens = session.tokens?.output ?? 0
       const activePhaseRuns = new Set<object>()
@@ -944,6 +972,7 @@ export const layer = Layer.effect(
         actor?: PhaseActivityActor,
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
+        artifact?: PhaseActivityArtifact,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -956,6 +985,7 @@ export const layer = Layer.effect(
           ...(actor ? { actor } : {}),
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
+          ...(artifact ? { artifact } : {}),
         })
       const runPhaseStreaming = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
         const run = {}
@@ -1014,7 +1044,7 @@ export const layer = Layer.effect(
                 publishPhase(
                   spec.phase,
                   activity.kind,
-                  activity.kind === "text" || activity.kind === "output"
+                  activity.kind === "text" || activity.kind === "output" || activity.kind === "status"
                     ? activity.text
                     : activity.kind === "tool"
                       ? JSON.stringify({ callID: activity.callID, input: activity.input })
@@ -1025,6 +1055,7 @@ export const layer = Layer.effect(
                   activity.actor,
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
+                  activity.kind === "output" ? activity.artifact : undefined,
                 ),
               )
             },
@@ -1056,6 +1087,7 @@ export const layer = Layer.effect(
               deadlineAt: result.deadlineAt,
               approvalWaitMs: result.approvalWaitMs,
               exitCode: result.exitCode,
+              failure: result.phaseFailure,
               subsystemFailure: result.subsystemFailure,
               warnings: result.warnings,
               handoff: result.handoff
@@ -1068,7 +1100,7 @@ export const layer = Layer.effect(
               usage: result.usage,
               contextChurn: result.contextChurn,
               reasoningObservability: result.reasoningObservability,
-              codexSettings: result.codexSettings,
+              agentRun: result.agentRun,
               noveltyContract: result.noveltyContract,
               artifactManifest: result.artifactManifest,
               runtimeManifest: result.runtimeManifest,
@@ -1097,7 +1129,6 @@ export const layer = Layer.effect(
         await recordPhaseResult(spec, result)
         return result
       }
-      const runtime = DependencyConfig.expertRuntime()
       const codeGraphLedgerKey = SubsystemPhase.hasCapability(workflow, "code-graph")
         ? yield* variables.hostSecret({
             sessionID: session.id,
@@ -1191,8 +1222,8 @@ export const layer = Layer.effect(
               SubsystemZapRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd, objective, signal }),
             )
           : { env: {}, degraded: false, stop: () => Promise.resolve() }
-      const runtimeWarnings = [engagementZap.warning, engagementGhidra.warning].filter(
-        (warning): warning is string => Boolean(warning),
+      const runtimeWarnings = [engagementZap.warning, engagementGhidra.warning].filter((warning): warning is string =>
+        Boolean(warning),
       )
       const engagementObjective =
         runtimeWarnings.length > 0
@@ -1208,12 +1239,10 @@ export const layer = Layer.effect(
           workareaCwd,
           sourceRoot: ctx.directory,
           home: SubsystemPhase.workflowHome(workflow),
+          settingsDirectory: ctx.directory,
           path: { cwd: ctx.directory, root: ctx.worktree },
-          expertModel: runtime.model,
-          expertBackend: runtime.backend,
-          timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
-          degraded:
-            EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded || engagementGhidra.degraded,
+          timeoutMs: SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES * 60_000,
+          degraded: EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded || engagementGhidra.degraded,
           env: {
             ...engagementZap.env,
             ...engagementEvm.env,
@@ -1286,13 +1315,13 @@ export const layer = Layer.effect(
           workflow,
           paths: missingTerminalArtifacts.map((artifact) => artifact.path),
         })
-      const completionOutcome: MessageV2.CompletionPart["outcome"] = outcome.terminal
-        ? outcome.status === "completed_with_warnings" || !terminalReportPath || missingTerminalArtifacts.length > 0
+      const completionOutcome: MessageV2.CompletionPart["outcome"] =
+        outcome.terminal && outcome.outcome === "success" && (!terminalReportPath || missingTerminalArtifacts.length > 0)
           ? "warning"
-          : "success"
-        : outcome.termination === "subsystem_failed" || outcome.termination === "spawn_failed"
-          ? "failed"
-          : "blocked"
+          : outcome.outcome
+      const lastPhase = outcome.ranPhases.at(-1) ?? startPhase
+      assistant.agent = lastPhase
+      assistant.mode = lastPhase
       const nextWorkflow = SubsystemPhase.nextWorkflow(workflow)
       const finished = yield* finishCompletion({
         assistant,
@@ -1313,6 +1342,10 @@ export const layer = Layer.effect(
           workarea,
           artifacts,
           nextWorkflow,
+          startedPhase: startPhase,
+          lastPhase,
+          ranPhases: outcome.ranPhases,
+          failure: outcome.failure,
         },
       })
       if (nextWorkflow) {
@@ -1346,7 +1379,7 @@ export const layer = Layer.effect(
         SubsystemAskRuntime.acquire({ sessionID: session.id, workarea: workareaCwd, objective, signal }),
       )
       const bridge = yield* EffectBridge.make()
-      const subsystem = SubsystemCodex.runtimeDescriptor()
+      const subsystem = PI_RUNTIME_DESCRIPTOR
       const generatedTokens = SubsystemUsage.createSessionCounter()
       const persistedOutputTokens = session.tokens?.output ?? 0
       const publish = (
@@ -1356,6 +1389,7 @@ export const layer = Layer.effect(
         actor?: PhaseActivityActor,
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
+        artifact?: PhaseActivityArtifact,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -1368,6 +1402,7 @@ export const layer = Layer.effect(
           ...(actor ? { actor } : {}),
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
+          ...(artifact ? { artifact } : {}),
         })
       const runtimeObjective = [
         history,
@@ -1377,7 +1412,6 @@ export const layer = Layer.effect(
       ]
         .filter((value): value is string => Boolean(value))
         .join("\n\n")
-      const runtimeConfig = DependencyConfig.expertRuntime()
       const askRun = {}
       yield* publish("start")
       const result = yield* Effect.promise((abort) =>
@@ -1389,9 +1423,9 @@ export const layer = Layer.effect(
             sessionID: session.id,
             workareaCwd,
             home: SubsystemPhase.workflowHome("ask"),
+            settingsDirectory: ctx.directory,
             objective: runtimeObjective,
-            model: runtimeConfig.model,
-            timeoutMs: DependencyConfig.expertPhaseTimeoutSeconds() * 1000,
+            timeoutMs: SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES * 60_000,
             abort,
             env: runtime.env,
             transcriptPath: SessionReportLog.expertTranscriptFile(
@@ -1429,7 +1463,7 @@ export const layer = Layer.effect(
               bridge.fork(
                 publish(
                   activity.kind,
-                  activity.kind === "text" || activity.kind === "output"
+                  activity.kind === "text" || activity.kind === "output" || activity.kind === "status"
                     ? activity.text
                     : activity.kind === "tool"
                       ? JSON.stringify({ callID: activity.callID, input: activity.input })
@@ -1440,6 +1474,7 @@ export const layer = Layer.effect(
                   activity.actor,
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
+                  activity.kind === "output" ? activity.artifact : undefined,
                 ),
               )
             },
@@ -1458,6 +1493,7 @@ export const layer = Layer.effect(
           deadlineAt: result.deadlineAt,
           approvalWaitMs: result.approvalWaitMs,
           exitCode: result.exitCode,
+          failure: result.phaseFailure,
           warnings: result.warnings,
         }),
       )
@@ -1478,7 +1514,9 @@ export const layer = Layer.effect(
           const messages = MessageV2.active(yield* MessageV2.filterCompactedEffect(sessionID))
           const user = MessageV2.latest(messages).user
           const userMessage = user && messages.find((message) => message.info.id === user.id)
-          if (!user || !userMessage) throw new Error("No user message found for Codex engagement")
+          if (!user || !userMessage) throw new Error("No user message found for Pi engagement")
+          if (!SessionRuntimeCompatibility.canExecuteWithPi(SessionRuntimeCompatibility.classify(messages)))
+            return yield* legacyRuntimeError(sessionID)
           const workflow = session.workflow ?? SubsystemPhase.workflowOf(user.agent)
           if (workflow === "ask") {
             const result = yield* runAsk(session, userMessage)
@@ -1486,7 +1524,7 @@ export const layer = Layer.effect(
             continue
           }
           if (!workflow || !SubsystemPhase.isExpertPhase(workflow, user.agent)) {
-            const error = new NamedError.Unknown({ message: `Unsupported non-Codex phase: ${user.agent}` })
+            const error = new NamedError.Unknown({ message: `Unsupported non-Pi phase: ${user.agent}` })
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
@@ -1726,11 +1764,11 @@ export const defaultLayer = Layer.suspend(() =>
 
 function validateJournalMessage(info: MessageV2.User, parts: MessageV2.Part[]) {
   const parsed = decodeMessageInfo(info, { errors: "all", propertyOrder: "original" })
-  if (Exit.isFailure(parsed)) log.error("invalid Codex user journal message", { cause: Cause.pretty(parsed.cause) })
+  if (Exit.isFailure(parsed)) log.error("invalid Pi user journal message", { cause: Cause.pretty(parsed.cause) })
   parts.forEach((part, index) => {
     const parsedPart = decodeMessagePart(part, { errors: "all", propertyOrder: "original" })
     if (Exit.isFailure(parsedPart))
-      log.error("invalid Codex journal part", {
+      log.error("invalid Pi journal part", {
         partID: part.id,
         partType: part.type,
         index,

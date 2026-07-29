@@ -1,7 +1,7 @@
 // ── ZAP Autonomy Contract Tests ─────────────────────────────────
 // Verifies the reusable skill exposes the engagement runtime without adding
 //   phase, category, retry, or traffic restrictions beyond the mission.
-// → cyberful/builtin/skills/ZAP.md — defines the shared workflow under test.
+// → cyberful/builtin/skills/zap/SKILL.md — defines the shared workflow under test.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
@@ -10,7 +10,7 @@ import path from "node:path"
 import * as Builtin from "@/builtin"
 
 describe("built-in ZAP MCP skill", () => {
-  const read = () => readFile(path.join(Builtin.DIR, "skills", "ZAP.md"), "utf8")
+  const read = () => readFile(path.join(Builtin.DIR, "skills", "zap", "SKILL.md"), "utf8")
 
   test("exposes the complete engagement-owned capability under mission authority", async () => {
     const skill = await read()

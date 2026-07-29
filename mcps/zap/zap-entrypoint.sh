@@ -20,12 +20,12 @@ exec /zap/zap-x.sh \
   -config "api.key=${CYBER_ZAP_API_KEY}" \
   -config "api.addrs.addr.name=.*" \
   -config "api.addrs.addr.regex=true" \
-  -config "api.filexfer=false" \
+  -config "api.filexfer=true" \
   -config "mcp.enabled=true" \
   -config "mcp.port=8282" \
   -config "mcp.securityKeyEnabled=true" \
   -config "mcp.securityKey=${CYBER_ZAP_MCP_KEY}" \
-  -config "mcp.recordInHistory=false" \
+  -config "mcp.recordInHistory=true" \
   -config "mcp.secureOnly=false" \
   -config "checkForUpdatesOnStart=false" \
   "$@"

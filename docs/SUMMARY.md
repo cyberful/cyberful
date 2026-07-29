@@ -13,6 +13,7 @@
 - [Choose a workflow](user-guide/workflows.md)
 - [Terminal interface](user-guide/interface.md)
 - [Sessions, configuration, and reports](user-guide/sessions-and-reports.md)
+- [Agent providers and fallback](user-guide/settings.md)
 
 ## How Cyberful works
 

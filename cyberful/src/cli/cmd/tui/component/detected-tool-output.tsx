@@ -23,22 +23,30 @@ type DetectedToolOutputProps = {
   wrapMode?: "char" | "none" | "word"
 }
 
+const TOOL_OUTPUT_DETECTION_BYTES = 12 * 1024
+
+function detectionPrefix(input: string) {
+  const encoded = new TextEncoder().encode(input)
+  if (encoded.byteLength <= TOOL_OUTPUT_DETECTION_BYTES) return input
+  return new TextDecoder().decode(encoded.subarray(0, TOOL_OUTPUT_DETECTION_BYTES))
+}
+
 export function DetectedToolOutput(props: DetectedToolOutputProps) {
   const content = createMemo(() => cleanToolOutputText(props.content))
-  const full = createMemo(() => cleanToolOutputText(props.detectContent ?? props.content))
+  const detection = createMemo(() => cleanToolOutputText(detectionPrefix(props.detectContent ?? props.content)))
   const envelope = createMemo(() => {
-    const complete = parseCyberfulOsToolOutput(full())
+    const complete = parseCyberfulOsToolOutput(detection())
     if (!complete) return undefined
     return { complete, visible: parseCyberfulOsToolOutput(content()) }
   })
 
   return (
     <Show when={content()}>
-      <Show when={envelope()} fallback={<ToolOutputBody {...props} content={content()} detectContent={full()} />}>
+      <Show when={envelope()} fallback={<ToolOutputBody {...props} content={content()} detectContent={detection()} />}>
         {(value) => (
           <Show
             when={value().visible}
-            fallback={<ToolOutputBody {...props} content={content()} detectContent={full()} />}
+            fallback={<ToolOutputBody {...props} content={content()} detectContent={detection()} />}
           >
             {(visible) => <CyberfulOsOutput {...props} complete={value().complete} output={visible()} />}
           </Show>

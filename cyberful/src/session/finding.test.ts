@@ -159,3 +159,67 @@ test("reconciles Exploit handoffs and requires final Bug Bounty Verify decisions
     }),
   ).toBeUndefined()
 })
+
+test("keeps negative backlog verdicts without admitting unregistered positive findings", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  const runID = "ses_backlog_verdict"
+  await store.startRun({ id: runID, workflow: "bug-bounty" })
+  await store.execute(
+    {
+      action: "record",
+      key: "BBP-021",
+      title: "Pre-trust process launch",
+      positive_evidence: "A marker process appeared before the trust decision.",
+      severity: "MEDIUM",
+    },
+    { runID, workflow: "bug-bounty", phase: "exploit" },
+  )
+
+  expect(
+    await findingHandoffWarning(store, {
+      runID,
+      workflow: "bug-bounty",
+      phase: "exploit",
+      verdicts: {
+        ...emptyInventory,
+        suspected: [{ id: "BBP-021", positiveEvidence: "The marker appeared before trust." }],
+        disproved: ["CCODE-MCP-TRUST-001"],
+        inconclusive: [{ id: "CCODE-MCP-TRANSPORT-002", ambiguity: "The transport closed before the oracle." }],
+        untestable: [
+          {
+            id: "CCODE-MCP-AUTHORITY-003",
+            blockerReason: "AUTHORITY_REQUIRED",
+            nextStep: "Repeat with an authorized organization administrator.",
+          },
+        ],
+      },
+    }),
+  ).toBeUndefined()
+
+  expect(
+    await findingHandoffWarning(store, {
+      runID,
+      workflow: "bug-bounty",
+      phase: "exploit",
+      verdicts: { ...emptyInventory, disproved: ["BBP-021-TYPO"] },
+    }),
+  ).toBe(
+    "Finding registry and handoff verdict inventory diverge (unregistered-positive 0, duplicate 0, state 0, missing 1).",
+  )
+
+  expect(
+    await findingHandoffWarning(store, {
+      runID,
+      workflow: "bug-bounty",
+      phase: "exploit",
+      verdicts: {
+        ...emptyInventory,
+        confirmed: ["CCODE-MCP-TRUST-001"],
+        suspected: [{ id: "BBP-021", positiveEvidence: "The marker appeared before trust." }],
+      },
+    }),
+  ).toBe(
+    "Finding registry and handoff verdict inventory diverge (unregistered-positive 1, duplicate 0, state 0, missing 0).",
+  )
+})

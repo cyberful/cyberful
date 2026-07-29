@@ -18,19 +18,29 @@ recorded scope.
 
 ## Phase isolation
 
-Each phase runs in a fresh Codex app-server process behind a private host
-gateway. It must write its required artifact and call `handoff` with the exact
-successor. The host validates and seals the artifact, stops the process and
-gateway, and only then starts the next phase.
+Each phase runs under a fresh in-process Pi worker owner behind a private host
+gateway. Its original root `AgentRun` must write the required artifact and call
+`handoff` with the exact successor. The gateway rejects handoff while the exact
+required artifact is absent, empty, a symlink, or outside the workarea root, so
+the same AgentRun can repair the deliverable before stopping. The host rechecks
+and seals the artifact, shuts down the owner and gateway, and only then starts
+the next phase. Delegated and fallback runs can perform complete operational
+tasks but cannot advance the phase.
 
-A wall-clock budget applies to active work. If it expires, Cyberful advances in
+An active-execution budget applies to active work. If it expires, Cyberful advances in
 degraded mode only when the required partial artifact exists, can be sealed,
 and every phase-owned process has stopped. Invalid handoffs, missing artifacts,
 failed integrity gates, and incomplete cleanup halt the chain.
 
-Blocking questions pause both the process group and active-time budget. The
-workarea, sealed artifacts, Code Graph, and evidence are the durable memory;
-model conversation state does not cross phase boundaries.
+Blocking questions pause all subscribed AgentRun budget timers and leave the
+requesting tool call waiting; they do not suspend a Pi process. The workarea,
+sealed artifacts, Code Graph, and evidence are the durable memory; model
+conversation state does not cross phase boundaries.
+
+Root, subagent, and fallback actors are all complete Pi `AgentRun` instances
+with the same phase authority, tools, skills, and evidence contract. Provider
+fallback is host-routed and bounded; see
+[Agent providers and fallback](settings.md).
 
 Live-target phases also keep an append-only lifecycle ledger for synthetic
 target objects. The model records intent before creation and ends each object as
@@ -44,6 +54,10 @@ test ran but its oracle remained ambiguous. `UNTESTABLE` means the discriminatin
 test never ran and therefore records a typed blocker plus an exact next step.
 This prevents missing access, tools, applicability, authority, or budget from
 inflating the suspected-finding count.
+
+`CONFIRMED` and `SUSPECTED` IDs must resolve to current-run findings. Negative-only
+outcomes can retain stable backlog IDs when they never met the positive-evidence
+threshold for entering the finding registry.
 
 Before using `UNTESTABLE` for a credible, high-value path, Exploit and Hacker
 actively seek safe prerequisites in existing evidence, ordinary product flows,
@@ -118,7 +132,7 @@ gating the handoff on session readiness. Recon consumes that access context and
 owns login, authenticated target navigation, profile comparison, and observed
 application-dependency mapping within the recorded policy.
 
-Bug Bounty uses longer wall-clock ceilings suited to sustained research: Brief
+Bug Bounty uses longer active-execution ceilings suited to sustained research: Brief
 30 minutes, Recon 240, Exploit 360, Hacker 360, Verify 180, and Report 90.
 Recon, Exploit, and Hacker receive a qualitative novelty contract. The ledger
 treats endpoint, payload-spelling, or version variations of one mechanism as

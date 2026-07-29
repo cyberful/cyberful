@@ -26,6 +26,8 @@ export interface CircuitBreakerState extends CircuitScope {
   readonly surfacedAt?: number
 }
 
+export type CircuitBreakerIdentity = CircuitScope & Pick<CircuitBreakerState, "activatedAt">
+
 function isMissing(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
 }
@@ -63,7 +65,7 @@ export async function activateCircuitBreaker(filePath: string, phase: string, sc
     await publish(filePath, state)
     return state
   }
-  const now = Date.now()
+  const now = Math.max(Date.now(), (current?.activatedAt ?? -1) + 1)
   const state: CircuitBreakerState = {
     kind: "captcha",
     status: "awaiting_human",
@@ -77,12 +79,19 @@ export async function activateCircuitBreaker(filePath: string, phase: string, sc
   return state
 }
 
-export async function acknowledgeCircuitBreaker(filePath: string) {
+export async function acknowledgeCircuitBreaker(filePath: string, expected: CircuitBreakerIdentity) {
   const current = await readCircuitBreaker(filePath)
-  if (!current || current.status === "cleared") return current
+  if (!current || current.status === "cleared" || !sameActivation(current, expected)) return false
   const state = { ...current, status: "awaiting_verification" as const, updatedAt: Date.now() }
   await publish(filePath, state)
-  return state
+  return true
+}
+
+export async function dismissCircuitBreaker(filePath: string, expected: CircuitBreakerIdentity) {
+  const current = await readCircuitBreaker(filePath)
+  if (!current || current.status === "cleared" || !sameActivation(current, expected)) return false
+  await publish(filePath, { ...current, status: "cleared", updatedAt: Date.now() })
+  return true
 }
 
 export async function clearCircuitBreaker(filePath: string, scope: CircuitScope) {
@@ -105,6 +114,10 @@ function sameProfileOrigin(left: CircuitScope, right: CircuitScope) {
 
 function sameScope(left: CircuitScope, right: CircuitScope) {
   return sameProfileOrigin(left, right) && left.pageID === right.pageID
+}
+
+function sameActivation(left: CircuitBreakerState, right: CircuitBreakerIdentity) {
+  return left.activatedAt === right.activatedAt && sameScope(left, right)
 }
 
 async function publish(filePath: string, value: CircuitBreakerState) {

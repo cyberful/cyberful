@@ -6,11 +6,12 @@
 
 // ── Containers Outlive Subsystem Process Trees ───────────────────
 // Each engagement uses a detached cyberful-os container whose Docker daemon lifetime
-// is independent from the Codex and gateway process group. Clean workflow exit
-// removes it directly, but interruption can stop that owner before teardown runs.
-// This registry therefore remembers the deterministic container name and lets the
-// host shutdown funnel reap every survivor; process exit retains a synchronous
-// last resort. Removing the container never removes its host workarea bind mount.
+// is independent from the in-process Pi owner and the gateway process group.
+// Clean workflow exit removes it directly, but interruption can stop the owning
+// Cyberful process before teardown runs. This registry therefore remembers the
+// deterministic container name and lets the host shutdown funnel reap every
+// survivor; process exit retains a synchronous last resort. Removing the
+// container never removes its host workarea bind mount.
 // ─────────────────────────────────────────────────────────────────
 import { RUN_OWNER_LABEL, runOwnerToken } from "@/util/container-ownership"
 

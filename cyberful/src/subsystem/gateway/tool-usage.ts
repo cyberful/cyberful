@@ -34,6 +34,9 @@ const COLUMNS = [
   "suspected_count",
   "confirmed_count",
   "error_class",
+  "error_code",
+  "tool_exit_code",
+  "browser_profile",
 ] as const
 
 export interface ToolUsageEvent {
@@ -58,7 +61,10 @@ export interface ToolUsageEvent {
   lead_count?: number
   suspected_count?: number
   confirmed_count?: number
-  error_class?: string
+  error_class?: "timeout" | "nonzero_exit" | "tool_reported_error" | "invalid_arguments" | "transport"
+  error_code?: string
+  tool_exit_code?: number
+  browser_profile?: number
 }
 
 function csv(value: unknown) {
@@ -98,11 +104,15 @@ export class ToolUsageRecorder {
           if (error.code !== "EEXIST") throw error
         },
       )
+      const normalized =
+        event.outcome === "error" && event.error_class === undefined
+          ? { ...event, error_class: "tool_reported_error" as const }
+          : event
       const row: Record<string, unknown> = {
         time_iso: new Date().toISOString(),
         phase: this.phase,
         agent: this.agent,
-        ...event,
+        ...normalized,
       }
       await appendFile(shard, COLUMNS.map((column) => csv(row[column])).join(",") + "\n")
       await this.merge()

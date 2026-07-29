@@ -30,7 +30,7 @@ const PathInfo = Schema.Struct({
 }).annotate({ identifier: "Path" })
 
 export const RuntimeStatus = Schema.Struct({
-  primary: Schema.Struct({
+  main: Schema.Struct({
     name: Schema.String,
     model: Schema.String,
     version: Schema.optional(Schema.String),
@@ -198,7 +198,7 @@ export const InstanceApi = HttpApi.make("instance")
           OpenApi.annotations({
             identifier: "runtime.status",
             summary: "Get runtime status",
-            description: "Probe the active Codex subsystem.",
+            description: "Probe the active Pi subsystem and configured provider.",
           }),
         ),
       )

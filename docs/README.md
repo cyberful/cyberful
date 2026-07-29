@@ -16,7 +16,7 @@ You do not need to learn every internal component before using it.
 ## Find your way around
 
 - [**Use Cyberful**](user-guide/workflows.md) explains the terminal, sessions,
-  evidence, and reports.
+  evidence, reports, and [agent providers](user-guide/settings.md).
 - [**How Cyberful works**](concepts/architecture.md) explains phases and safety
   boundaries without assuming you know the codebase.
 - [**Security tools**](runtimes/README.md) covers cyberful-os, the browser,
