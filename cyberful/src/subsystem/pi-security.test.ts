@@ -322,6 +322,23 @@ describe("Pi ordinary provider failures", () => {
     }
   })
 
+  test("maps OpenAI Codex provider code 23 to a retryable timeout only on that adapter", () => {
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-codex",
+        provider: "openai-codex",
+        message: { stopReason: "error", diagnostics: [{ error: { code: 23 } }] },
+      }),
+    ).toMatchObject({ kind: "timeout", providerCode: "23", retryable: true })
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-responses",
+        provider: "compatible",
+        message: { stopReason: "error", diagnostics: [{ error: { code: 23 } }] },
+      }),
+    ).toMatchObject({ kind: "unknown", providerCode: "23", retryable: false })
+  })
+
   test("returns no failure for successful terminal observations", () => {
     expect(PiSecurity.classify({ ...route, message: { stopReason: "stop" } })).toBeUndefined()
     expect(PiSecurity.classify({ ...route, upstream: { status: "completed", finish_reason: "stop" } })).toBeUndefined()

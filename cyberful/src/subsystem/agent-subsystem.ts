@@ -10,7 +10,10 @@ import type { Settings } from "@/config/settings"
 import type { PromptSkill } from "./prompt-compiler"
 import type { CompiledAgentPrompt, ProviderRoute } from "./prompt-compiler"
 import type { Failure } from "./pi-security"
+import type { ModelContextCapacity } from "./pi-models"
+import type { ReasoningPlan } from "./pi-reasoning"
 import type { PhaseActivity, SubsystemMcpServer } from "./subsystem"
+import type { Controller as PhaseBudgetClock } from "./phase-budget-clock"
 
 export type AgentRunID = string
 export type AgentRunRole = "root" | "subagent" | "fallback"
@@ -28,6 +31,9 @@ export interface SubsystemStatus {
     readonly model: string
     readonly route: ProviderRoute
     readonly authenticated: boolean
+    readonly context?: ModelContextCapacity
+    readonly reasoningEffort?: Settings.ReasoningEffort
+    readonly effectiveReasoningEffort?: ReasoningPlan["effective"]
     readonly authSource?: string
   }>
   readonly errors: readonly string[]
@@ -36,9 +42,8 @@ export interface SubsystemStatus {
 export interface AgentRunBudget {
   readonly deadlineAt: number
   readonly maxOutputTokens?: number
-  readonly pause?: {
-    readonly subscribe: (listener: (snapshot: { readonly pending: boolean }) => void) => () => void
-  }
+  readonly clock?: PhaseBudgetClock
+  readonly closeoutReserveMs?: number
 }
 
 export interface DelegationLimits {
@@ -46,6 +51,7 @@ export interface DelegationLimits {
   readonly maxPerRun: number
   readonly maxConcurrent: number
   readonly maxDepth: number
+  readonly maxRuntimeMs: number
 }
 
 export interface FallbackPolicy {
@@ -84,7 +90,9 @@ export interface AgentRunSpec {
   readonly depth: number
   readonly provider: string
   readonly model: Model<Api>
+  readonly context: ModelContextCapacity
   readonly providerAffinity: ProviderAffinity
+  readonly reasoning: ReasoningPlan
   readonly prompt: CompiledAgentPrompt
   readonly compileChildPrompt: (input: ChildPromptInput) => CompiledAgentPrompt
   readonly task: AgentTaskCapsule
@@ -115,6 +123,19 @@ export type AgentEvent =
       readonly provider: string
       readonly model: string
       readonly providerAffinity: ProviderAffinity
+      readonly reasoningEffort: Settings.ReasoningEffort
+      readonly effectiveReasoningEffort: ReasoningPlan["effective"]
+      readonly context: {
+        readonly catalogContextWindow: number
+        readonly configuredContextWindow?: number
+        readonly trustedRouteWindow: number
+        readonly configuredOperationalContextWindow?: number
+        readonly operationalContextWindow: number
+        readonly observedContextUpperBound?: number
+        readonly effectiveOperationalWindow: number
+        readonly source: ModelContextCapacity["source"] | "observed_upper_bound"
+        readonly warnings: readonly string[]
+      }
       readonly promptSystemSha256: string
       readonly promptManifest: CompiledAgentPrompt["manifest"]
     }
@@ -141,23 +162,99 @@ export type AgentEvent =
   | {
       readonly type: "provider_retry"
       readonly runID: AgentRunID
-      readonly state: "scheduled" | "attempting" | "succeeded" | "exhausted" | "cancelled"
+      readonly state: "scheduled" | "attempting" | "succeeded" | "timed_out" | "exhausted" | "cancelled"
       readonly attempt: number
       readonly maxRetries: number
       readonly delayMs?: number
+      readonly attemptTimeoutMs?: number
+      readonly retryWaitMs?: number
+      readonly compensationMs?: number
+      readonly deadlineAt?: number
+      readonly compensationCapReached?: boolean
       readonly failure?: Failure
+    }
+  | {
+      readonly type: "phase_closeout"
+      readonly runID: AgentRunID
+      readonly state: "entered"
+      readonly reserveMs: number
+      readonly remainingMs: number
+      readonly deadlineAt: number
     }
   | {
       readonly type: "context_compaction"
       readonly runID: AgentRunID
-      readonly state: "scheduled" | "started" | "completed" | "recovered" | "failed"
+      readonly state: "scheduled" | "started" | "completed" | "noop" | "recovered" | "failed"
       readonly mode: "proactive" | "emergency"
+      readonly reason?:
+        | "virtualized"
+        | "reused"
+        | "no_candidates"
+        | "persistence_error"
+        | "aborted"
+        | "model_summary"
+        | "model_summary_failed"
       readonly estimatedTokensBefore: number
       readonly estimatedTokensAfter: number
       readonly triggerTokens: number
       readonly messagesRemoved: number
       readonly toolResultsVirtualized: number
       readonly artifactsPreserved: number
+      readonly modelSummary: boolean
+      readonly summaryArtifact?: string
+      readonly detail?: string
+    }
+  | {
+      readonly type: "context_rotation"
+      readonly runID: AgentRunID
+      readonly state: "started" | "completed" | "partial" | "failed"
+      readonly mode: "proactive" | "emergency"
+      readonly generation: number
+      readonly provider: string
+      readonly model: string
+      readonly summarizerProvider: string
+      readonly summarizerModel: string
+      readonly summarizerReasoningEffort: Settings.ReasoningEffort
+      readonly limits: {
+        readonly catalogContextWindow: number
+        readonly configuredContextWindow?: number
+        readonly trustedRouteWindow: number
+        readonly configuredOperationalContextWindow?: number
+        readonly operationalContextWindow: number
+        readonly observedContextUpperBound?: number
+        readonly effectiveOperationalWindow: number
+        readonly triggerTokens: number
+        readonly targetTokens: number
+        readonly source: ModelContextCapacity["source"] | "observed_upper_bound"
+      }
+      readonly estimatedTokensBefore: number
+      readonly estimatedTokensAfter: number
+      readonly sourceMessages: number
+      readonly activeMessages: number
+      readonly toolResultsVirtualized: number
+      readonly artifactsPreserved: number
+      readonly checkpoint?: {
+        readonly path: string
+        readonly sha256: string
+      }
+      readonly attempts: readonly {
+        readonly attempt: number
+        readonly provider: string
+        readonly model: string
+        readonly sourceMessages: number
+        readonly sourceEstimatedTokens: number
+        readonly outcome: "completed" | "context_error" | "failed"
+        readonly usage?: AgentRunUsage
+        readonly detail?: string
+      }[]
+      readonly reason?:
+        | "target_unreachable"
+        | "active_tail_too_large"
+        | "summary_failed"
+        | "persistence_error"
+        | "disabled_model_summary"
+        | "context_rotation_failed"
+      readonly detail?: string
     }
   | {
       readonly type: "run_finished"
@@ -188,6 +285,9 @@ export interface AgentRunResult {
   readonly provider: string
   readonly model: string
   readonly providerAffinity: ProviderAffinity
+  readonly reasoningEffort: Settings.ReasoningEffort
+  readonly effectiveReasoningEffort: ReasoningPlan["effective"]
+  readonly context: Extract<AgentEvent, { type: "run_started" }>["context"]
   readonly output: string
   readonly termination: AgentRunTermination
   readonly failure?: Failure

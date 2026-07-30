@@ -29,6 +29,36 @@ and never starts ZAP.
 Build and exercise the real integration with `make test-zap`. Cyberful cleans
 up phase bridges and owned runtimes on handoff, abort, and shutdown.
 
+## Engagement rate limit
+
+Brief writes the non-secret `raw/policy/engagement.json`. When it contains a
+numeric aggregate HTTP RPS limit, Cyberful installs one Network add-on rule with
+`groupBy=rule` across the authorized host patterns. Browser profiles, ZAP
+replays, and proxy-aware cyberful-os clients therefore share one counter rather
+than receiving separate per-host budgets. Every later phase reapplies the rule
+to its fresh ZAP runtime. ZAP disabled, unavailable, or unable to accept the
+rule is a hard startup failure; direct browser fallback is not allowed.
+
+Host-side API calls use ZAP's explicit local API authority rather than proxy
+routing. During Brief, the candidate policy is committed only after the rule is
+accepted; a failed installation cannot leave a saved-but-unenforced policy or
+permit handoff. Failures return bounded, sanitized ZAP fields together with
+`retryable: false`, `user_action_required: false`, and `policy_stored: false`.
+Brief records that technical blocker once and stops without asking the operator
+to repair an otherwise healthy runtime from inside the run.
+
+## History replay
+
+`zap_history_replay` clones one selected history message inside ZAP and applies
+up to 32 bounded header, query, or JSON Pointer mutations before sending exactly
+one request. Scheme, authority, path, and method remain immutable;
+`Content-Length` is rebuilt and redirects default off. Captured cookies and
+authorization headers never return to the model. The result contains only
+message IDs, response metadata, sizes, and the non-secret mutation summary;
+call `zap_history_get` explicitly when complete bodies are required. This path
+supports freshness, nonce, replay, and KMS-style payload tests without
+standalone ZAP scripts.
+
 ## OAST adapter
 
 Call `zap_oast` without an operation to read the capability contract derived

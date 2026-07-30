@@ -10,7 +10,7 @@ import { PositiveInt } from "@/schema"
 import { isRecord } from "@/util/record"
 import { Cause, Exit, Schema, SchemaIssue } from "effect"
 import { randomUUID } from "node:crypto"
-import { link, open, unlink } from "node:fs/promises"
+import { link, open, rename, unlink } from "node:fs/promises"
 import path from "node:path"
 import matter from "gray-matter"
 
@@ -33,18 +33,45 @@ const ProviderName = Schema.String.check(Schema.isPattern(PROVIDER_NAME_PATTERN)
 const NonEmptyString = Schema.String.check(Schema.isPattern(/\S/))
 const EnvironmentVariable = Schema.String.check(Schema.isPattern(ENVIRONMENT_VARIABLE_PATTERN))
 const Percentage = Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(100))
-const CompactionPercentage = Schema.Int.check(Schema.isGreaterThanOrEqualTo(50), Schema.isLessThanOrEqualTo(85))
+const CompactionTriggerPercentage = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(50),
+  Schema.isLessThanOrEqualTo(85),
+)
+const CompactionTargetPercentage = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(84),
+)
 const RetryCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))
 const RetryDelayMs = Schema.Int.check(Schema.isGreaterThanOrEqualTo(100), Schema.isLessThanOrEqualTo(60_000))
+const RetryAttemptTimeoutMs = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1_000),
+  Schema.isLessThanOrEqualTo(600_000),
+)
+const ReasoningEffort = Schema.Literals(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+export type ReasoningEffort = Schema.Schema.Type<typeof ReasoningEffort>
+
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "ultra"
 
 export const DEFAULT_COMPACTION = {
   enabled: true,
-  trigger_percentage: 68,
+  trigger_percentage: 75,
+  target_percentage: 35,
+  model_summary: true,
+  summarizer: {
+    provider: "inherit",
+    reasoning_effort: "medium",
+  },
 } as const
 
 export interface CompactionPolicy {
   readonly enabled: boolean
   readonly trigger_percentage: number
+  readonly target_percentage: number
+  readonly model_summary: boolean
+  readonly summarizer: {
+    readonly provider: string
+    readonly reasoning_effort: ReasoningEffort
+  }
 }
 
 export const DEFAULT_RETRY = {
@@ -52,6 +79,7 @@ export const DEFAULT_RETRY = {
   max_retries: 3,
   base_delay_ms: 1_000,
   max_delay_ms: 15_000,
+  attempt_timeout_ms: 600_000,
 } as const
 
 export interface RetryPolicy {
@@ -59,6 +87,19 @@ export interface RetryPolicy {
   readonly max_retries: number
   readonly base_delay_ms: number
   readonly max_delay_ms: number
+  readonly attempt_timeout_ms: number
+}
+
+export const DEFAULT_PHASE_RECOVERY = {
+  enabled: true,
+  max_restarts: 1,
+  use_fallback_provider: true,
+} as const
+
+export interface PhaseRecoveryPolicy {
+  readonly enabled: boolean
+  readonly max_restarts: number
+  readonly use_fallback_provider: boolean
 }
 
 const SubscriptionAuth = Schema.Struct({
@@ -76,6 +117,7 @@ export const Provider = Schema.Struct({
   auth: Schema.Union([SubscriptionAuth, EnvironmentAuth]),
   base_url: Schema.optional(NonEmptyString),
   context_window: Schema.optional(PositiveInt),
+  operational_context_window: Schema.optional(PositiveInt),
   max_output_tokens: Schema.optional(PositiveInt),
 }).annotate({ identifier: "PiProviderSettings" })
 export type Provider = Schema.Schema.Type<typeof Provider>
@@ -85,17 +127,27 @@ export const Info = Schema.Struct({
   agent: Schema.Struct({
     subsystem: Schema.Literal("pi"),
     main_provider: ProviderName,
+    reasoning_effort: Schema.optional(ReasoningEffort),
     fallback_provider: Schema.optional(ProviderName),
     subagents: Schema.Struct({
       enabled: Schema.Boolean,
       max_per_run: PositiveInt,
       max_concurrent: PositiveInt,
       max_depth: PositiveInt,
+      timeout_minutes: Schema.optional(PositiveInt),
     }),
     compaction: Schema.optional(
       Schema.Struct({
         enabled: Schema.Boolean,
-        trigger_percentage: CompactionPercentage,
+        trigger_percentage: CompactionTriggerPercentage,
+        target_percentage: Schema.optional(CompactionTargetPercentage),
+        model_summary: Schema.optional(Schema.Boolean),
+        summarizer: Schema.optional(
+          Schema.Struct({
+            provider: Schema.Union([Schema.Literal("inherit"), ProviderName]),
+            reasoning_effort: Schema.optional(ReasoningEffort),
+          }),
+        ),
       }),
     ),
     retry: Schema.optional(
@@ -104,6 +156,14 @@ export const Info = Schema.Struct({
         max_retries: RetryCount,
         base_delay_ms: RetryDelayMs,
         max_delay_ms: RetryDelayMs,
+        attempt_timeout_ms: Schema.optional(RetryAttemptTimeoutMs),
+      }),
+    ),
+    phase_recovery: Schema.optional(
+      Schema.Struct({
+        enabled: Schema.Boolean,
+        max_restarts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(3)),
+        use_fallback_provider: Schema.Boolean,
       }),
     ),
     fallback: Schema.Struct({
@@ -130,22 +190,35 @@ export const DEFAULT_YAML = `version: 1
 agent:
   subsystem: pi
   main_provider: openai-codex
+  reasoning_effort: ultra
 
   subagents:
     enabled: true
-    max_per_run: 4
-    max_concurrent: 2
+    max_per_run: 5
+    max_concurrent: 5
     max_depth: 2
+    timeout_minutes: 30
 
   compaction:
     enabled: true
-    trigger_percentage: 68
+    trigger_percentage: 75
+    target_percentage: 35
+    model_summary: true
+    summarizer:
+      provider: inherit
+      reasoning_effort: medium
 
   retry:
     enabled: true
     max_retries: 3
     base_delay_ms: 1000
     max_delay_ms: 15000
+    attempt_timeout_ms: 600000
+
+  phase_recovery:
+    enabled: true
+    max_restarts: 1
+    use_fallback_provider: true
 
   fallback:
     proactive:
@@ -158,6 +231,7 @@ agent:
     openai-codex:
       adapter: openai-codex
       model: gpt-5.6-sol
+      operational_context_window: 256000
       auth:
         type: subscription
 
@@ -278,6 +352,21 @@ function validateRouting(settings: Info, filePath: string): Info {
   ) {
     throw new InvalidError(filePath, ["agent.retry.max_delay_ms must be greater than or equal to base_delay_ms"])
   }
+  const compaction = settings.agent.compaction
+  if (
+    compaction?.target_percentage !== undefined &&
+    compaction.target_percentage >= compaction.trigger_percentage
+  ) {
+    throw new InvalidError(filePath, [
+      "agent.compaction.target_percentage must be lower than trigger_percentage",
+    ])
+  }
+  const summarizerProvider = compaction?.summarizer?.provider
+  if (summarizerProvider && summarizerProvider !== "inherit" && !settings.agent.providers[summarizerProvider]) {
+    throw new InvalidError(filePath, [
+      `agent.compaction.summarizer.provider references unconfigured provider "${summarizerProvider}"`,
+    ])
+  }
 
   for (const [providerName, provider] of Object.entries(settings.agent.providers)) {
     if (provider.base_url === undefined) continue
@@ -299,11 +388,37 @@ function validateRouting(settings: Info, filePath: string): Info {
 }
 
 export function retryPolicy(settings: Info): RetryPolicy {
-  return settings.agent.retry ?? DEFAULT_RETRY
+  return settings.agent.retry
+    ? {
+        ...settings.agent.retry,
+        attempt_timeout_ms: settings.agent.retry.attempt_timeout_ms ?? DEFAULT_RETRY.attempt_timeout_ms,
+      }
+    : DEFAULT_RETRY
+}
+
+export function phaseRecoveryPolicy(settings: Info): PhaseRecoveryPolicy {
+  return settings.agent.phase_recovery ?? DEFAULT_PHASE_RECOVERY
 }
 
 export function compactionPolicy(settings: Info): CompactionPolicy {
-  return settings.agent.compaction ?? DEFAULT_COMPACTION
+  const configured = settings.agent.compaction
+  if (!configured) return DEFAULT_COMPACTION
+  return {
+    enabled: configured.enabled,
+    trigger_percentage: configured.trigger_percentage,
+    target_percentage: configured.target_percentage ?? DEFAULT_COMPACTION.target_percentage,
+    model_summary: configured.model_summary ?? DEFAULT_COMPACTION.model_summary,
+    summarizer: {
+      provider: configured.summarizer?.provider ?? DEFAULT_COMPACTION.summarizer.provider,
+      reasoning_effort:
+        configured.summarizer?.reasoning_effort ??
+        DEFAULT_COMPACTION.summarizer.reasoning_effort,
+    },
+  }
+}
+
+export function reasoningEffort(settings: Info): ReasoningEffort {
+  return settings.agent.reasoning_effort ?? DEFAULT_REASONING_EFFORT
 }
 
 export function parse(text: string, source = SETTINGS_FILENAME): Info {
@@ -348,8 +463,68 @@ async function createDefaultIfMissing(filePath: string) {
   }
 }
 
+// ── Existing Settings Gain The Explicit Reasoning Default ───────
+// Runtime defaults alone would make two visually identical settings files run
+// with different assumptions across Cyberful versions. Loading an older file
+// therefore inserts the new key inside its existing agent block while retaining
+// comments, ordering, and every operator-owned value. The atomic replacement is
+// attempted only while the source text is unchanged; concurrent edits cause a
+// bounded reread instead of overwriting a newer document.
+//
+// @docs/user-guide/settings.md
+// ─────────────────────────────────────────────────────────────────
+function withDefaultReasoningEffort(text: string): string {
+  const newline = text.includes("\r\n") ? "\r\n" : "\n"
+  const trailingNewline = text.endsWith("\n")
+  const lines = text.replace(/\r\n/g, "\n").split("\n")
+  const agentStart = lines.findIndex((line) => /^agent:\s*(?:#.*)?$/.test(line))
+  if (agentStart < 0) return text
+
+  const agentEnd = lines.findIndex(
+    (line, index) => index > agentStart && /^[^\s#][^:]*:\s*(?:.*)$/.test(line),
+  )
+  const boundary = agentEnd < 0 ? lines.length : agentEnd
+  if (lines.slice(agentStart + 1, boundary).some((line) => /^  reasoning_effort:\s*/.test(line))) return text
+
+  const subsystemIndex = lines.findIndex(
+    (line, index) =>
+      index > agentStart &&
+      index < boundary &&
+      /^  subsystem:\s*pi\s*(?:#.*)?$/.test(line),
+  )
+  if (subsystemIndex < 0) return text
+  lines.splice(subsystemIndex + 1, 0, `  reasoning_effort: ${DEFAULT_REASONING_EFFORT}`)
+  const migrated = lines.join(newline)
+  return trailingNewline || migrated.endsWith(newline) ? migrated : `${migrated}${newline}`
+}
+
+async function persistDefaultReasoningEffort(filePath: string): Promise<string> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const original = await Bun.file(filePath).text()
+    const migrated = withDefaultReasoningEffort(original)
+    if (migrated === original) return original
+
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      const temporaryFile = await open(temporaryPath, "wx", 0o600)
+      try {
+        await temporaryFile.writeFile(migrated, "utf8")
+        await temporaryFile.sync()
+      } finally {
+        await temporaryFile.close()
+      }
+      if ((await Bun.file(filePath).text()) !== original) continue
+      await rename(temporaryPath, filePath)
+      return migrated
+    } finally {
+      await unlink(temporaryPath).catch(() => undefined)
+    }
+  }
+  throw new Error(`Could not add agent.reasoning_effort to ${filePath}: the file changed during migration`)
+}
+
 export async function load(directory = process.cwd()): Promise<Info> {
   const filePath = path.join(directory, SETTINGS_FILENAME)
   await createDefaultIfMissing(filePath)
-  return parse(await Bun.file(filePath).text(), filePath)
+  return parse(await persistDefaultReasoningEffort(filePath), filePath)
 }

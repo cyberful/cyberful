@@ -9,6 +9,7 @@ import {
   continuesExpertPhaseTurn,
   decodeExpertContextCompaction,
   decodeExpertPhaseStatus,
+  decodeExpertProviderRetry,
   decodeExpertToolActivity,
   expertActorCardLabel,
   expertActorStateText,
@@ -104,6 +105,36 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("decodes provider retry telemetry for compact grouped styling", () => {
+    expect(
+      decodeExpertProviderRetry("Provider retry scheduled: attempt 1/3 after 624 ms (server_is_overloaded)."),
+    ).toEqual({
+      state: "scheduled",
+      attempt: 1,
+      maxRetries: 3,
+      delayMs: 624,
+      providerCode: "server_is_overloaded",
+    })
+    expect(decodeExpertProviderRetry("Provider retry succeeded: attempt 1/3.")).toEqual({
+      state: "succeeded",
+      attempt: 1,
+      maxRetries: 3,
+    })
+    expect(decodeExpertProviderRetry("Provider retry succeeded eventually.")).toBeUndefined()
+    expect(decodeExpertProviderRetry("Provider retry timed_out: attempt 1/3 (retry_attempt_timeout).")).toEqual({
+      state: "timed_out",
+      attempt: 1,
+      maxRetries: 3,
+      providerCode: "retry_attempt_timeout",
+    })
+
+    const out = foldExpertActivity(
+      [],
+      act("status", "Provider retry succeeded: attempt 1/3.", "", "provider-retry"),
+    )
+    expect(out[0]?.providerRetry?.state).toBe("succeeded")
+  })
+
   test("folds one structured compaction completion into concise neutral telemetry", () => {
     const payload = JSON.stringify({
       contextCompaction: {
@@ -114,6 +145,7 @@ describe("foldExpertActivity", () => {
         messagesRemoved: 0,
         toolResultsVirtualized: 18,
         artifactsPreserved: 18,
+        modelSummary: false,
       },
     })
     const decoded = decodeExpertContextCompaction(payload)
@@ -132,6 +164,37 @@ describe("foldExpertActivity", () => {
     expect(out[0]?.phaseStatus).toBeUndefined()
     expect(out[0]?.contextCompaction).toEqual(decoded)
     expect(out[0]?.text).toBe(expertContextCompactionText(decoded))
+
+    const legacyPayload = JSON.stringify({
+      contextCompaction: {
+        ...JSON.parse(payload).contextCompaction,
+        modelSummary: undefined,
+      },
+    })
+    expect(decodeExpertContextCompaction(legacyPayload)?.modelSummary).toBe(false)
+  })
+
+  test("renders exhausted deterministic compaction as a muted no-op", () => {
+    const payload = JSON.stringify({
+      contextCompaction: {
+        state: "noop",
+        mode: "proactive",
+        reason: "no_candidates",
+        estimatedTokensBefore: 172_000,
+        estimatedTokensAfter: 172_000,
+        messagesRemoved: 0,
+        toolResultsVirtualized: 0,
+        artifactsPreserved: 0,
+        modelSummary: false,
+      },
+    })
+    const decoded = decodeExpertContextCompaction(payload)
+
+    expect(decoded?.state).toBe("noop")
+    if (!decoded) throw new Error("Structured no-op compaction status was not decoded")
+    expect(expertContextCompactionText(decoded)).toBe(
+      "↻ Context compaction exhausted · 172.0K → 172.0K tokens · 0 tool results virtualized · 0 complete artifacts preserved",
+    )
   })
 
   test("successful phase status keeps only the concise completion copy and validated successor", () => {

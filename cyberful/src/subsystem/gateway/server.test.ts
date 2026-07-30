@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import { SessionID } from "../../session/schema"
@@ -383,10 +383,16 @@ describe("expert-gateway workflow capability policy", () => {
       expect(attack).toContain("source_read")
       expect(attack).toContain("code_finding")
       expect(attack).toContain("audit_lab_prepare")
+      expect(attack).toContain("hypothesis")
       expect(await toolNames("code-audit", "missing")).toEqual(["variable"])
       expect(await toolNames("unknown", "brief")).toEqual(["variable"])
 
-      expect(await toolNames("pentest", "recon")).toEqual(["variable", "test_object", "egress_observation"])
+      expect(await toolNames("pentest", "recon")).toEqual([
+        "variable",
+        "test_object",
+        "egress_observation",
+        "hypothesis",
+      ])
       process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = JSON.stringify({ required: true })
       expect(await toolNames("bug-bounty", "recon")).toEqual([
         "variable",
@@ -399,8 +405,8 @@ describe("expert-gateway workflow capability policy", () => {
         "evm_lab",
         "evm_evidence",
         "test_object",
-        "novelty",
         "egress_observation",
+        "hypothesis",
       ])
       expect(await toolNames("bug-bounty", "brief")).toEqual([
         "variable",
@@ -410,6 +416,8 @@ describe("expert-gateway workflow capability policy", () => {
         "source_read",
         "source_search",
         "source_snapshot",
+        "hypothesis",
+        "engagement_policy",
       ])
       expect(await toolNames("bug-bounty", "report")).toEqual([
         "variable",
@@ -419,6 +427,7 @@ describe("expert-gateway workflow capability policy", () => {
         "source_search",
         "source_snapshot",
         "evm_evidence",
+        "hypothesis",
       ])
     } finally {
       if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
@@ -591,6 +600,55 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
+  test("filters injected Brief upstreams to local shell and ordinary browser preflight", async () => {
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+    }
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
+    process.env.CYBERFUL_SUBSYSTEM_PHASE = "brief"
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = "/tmp"
+    const upstream = (
+      name: string,
+      capability: UpstreamTool["capability"],
+    ): UpstreamTool => ({
+      def: { name, inputSchema: { type: "object", properties: {} } },
+      capability,
+      call: async () => ({ content: [{ type: "text", text: "unused" }] }),
+    })
+    const server = await createGatewayServer({
+      upstreams: [
+        upstream("shell", "isolated-exec"),
+        upstream("nmap", "isolated-exec"),
+        upstream("browser_navigate", "browser"),
+        upstream("browser_evaluate", "browser"),
+        upstream("zap_history", "zap"),
+      ],
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const briefClient = new Client({ name: "brief-tool-policy-test", version: "0" })
+    await briefClient.connect(clientTransport)
+    try {
+      const names = (await briefClient.listTools()).tools.map((tool) => tool.name)
+      expect(names).toContain("shell")
+      expect(names).toContain("browser_navigate")
+      expect(names).not.toContain("nmap")
+      expect(names).not.toContain("browser_evaluate")
+      expect(names).not.toContain("zap_history")
+    } finally {
+      await briefClient.close()
+      await server.closeGateway()
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
+    }
+  })
+
   test("applies the advertised max_output_bytes ceiling once before an upstream executes", async () => {
     let received: Record<string, unknown> | undefined
     const bounded: UpstreamTool = {
@@ -748,6 +806,102 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
 })
 
 describe("expert-gateway handoff tool", () => {
+  test("commits Brief policy only after ZAP enforcement and blocks handoff after a failed install", async () => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-policy-enforcement-test-")))
+    const signal = path.join(dir, "handoff.json")
+    const policyPath = path.join(dir, "raw", "policy", "engagement.json")
+    const environment = [
+      "CYBERFUL_SUBSYSTEM_PHASE",
+      "CYBERFUL_SUBSYSTEM_WORKFLOW",
+      "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_PATH",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL",
+      "CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT",
+      "CYBER_ZAP_PROXY_URL",
+      "CYBER_ZAP_API_KEY",
+    ] as const
+    const previous = Object.fromEntries(environment.map((key) => [key, process.env[key]]))
+    Object.assign(process.env, {
+      CYBERFUL_SUBSYSTEM_PHASE: "brief",
+      CYBERFUL_SUBSYSTEM_WORKFLOW: "bug-bounty",
+      CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: dir,
+      CYBERFUL_SUBSYSTEM_HANDOFF_PATH: signal,
+      CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: "recon",
+      CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT: "MISSION.md",
+      CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
+      CYBER_ZAP_API_KEY: "private-gateway-test-key",
+    })
+    delete process.env.CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL
+    await writeFile(path.join(dir, "MISSION.md"), "# Mission\n")
+    const fetch = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ code: "internal_error", message: "local ZAP action failed" }), {
+        status: 502,
+      }),
+    )
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let c: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [] })
+      const [ct, st] = InMemoryTransport.createLinkedPair()
+      await server.connect(st)
+      c = new Client({ name: "policy-enforcement-test", version: "0" })
+      await c.connect(ct)
+      const arguments_ = {
+        action: "set",
+        profiles: [],
+        authorized_http_hosts: ["app.example.test"],
+        global_http_rps: 4,
+      }
+
+      const failed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
+      expect(failed.isError).toBe(true)
+      expect(jsonContent(failed)).toMatchObject({
+        code: "zap_rate_limit_install_failed",
+        retryable: false,
+        user_action_required: false,
+        policy_stored: false,
+      })
+      await expect(readFile(policyPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+
+      const blocked = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "brief recorded", artifact: "MISSION.md", target: "recon" },
+      })
+      expect(blocked.isError).toBe(true)
+      expect(jsonContent(blocked).error).toContain("engagement_policy set to succeed")
+
+      fetch.mockResolvedValue(new Response('{"Result":"OK"}', { status: 200 }))
+      const installed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
+      expect(installed.isError).not.toBe(true)
+      expect(jsonContent(installed)).toMatchObject({
+        policy: { authorized_http_hosts: ["app.example.test"], global_http_rps: 4 },
+        enforcement: { configured: true, requests_per_second: 4, group_by: "rule" },
+      })
+      expect(JSON.parse(await readFile(policyPath, "utf8"))).toMatchObject({
+        authorized_http_hosts: ["app.example.test"],
+        global_http_rps: 4,
+      })
+
+      const accepted = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "brief recorded", artifact: "MISSION.md", target: "recon" },
+      })
+      expect(accepted.isError).not.toBe(true)
+      expect(jsonContent(accepted).successor).toBe("recon")
+    } finally {
+      fetch.mockRestore()
+      await c?.close()
+      await server?.closeGateway()
+      for (const key of environment) {
+        const value = previous[key]
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   test("records only the configured forward transition for the parent runner", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "expert-handoff-test-"))
     const signal = path.join(dir, "handoff.json")
@@ -847,8 +1001,8 @@ describe("expert-gateway handoff tool", () => {
     }
   })
 
-  test("requires structured UNTESTABLE blockers for Bug Bounty exploit handoff", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "expert-bounty-verdict-test-"))
+  test("derives structured UNTESTABLE blockers from the Bug Bounty hypothesis registry", async () => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-bounty-verdict-test-")))
     const signal = path.join(dir, "handoff.json")
     const previous = {
       phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
@@ -872,36 +1026,37 @@ describe("expert-gateway handoff tool", () => {
       await server.connect(st)
       c = new Client({ name: "bounty-verdict-test", version: "0" })
       await c.connect(ct)
-      const missing = await c.callTool({
-        name: "handoff",
-        arguments: { summary: "done", artifact: "EXPLOIT.md" },
+      await c.callTool({
+        name: "hypothesis",
+        arguments: {
+          action: "record",
+          id: "B3",
+          owner: "exploit-root",
+          description: "First-party configuration may expose adjacent tenant state",
+          root_cause: "missing ownership check",
+          surface: "configuration API",
+          discriminator: "tenant-specific response differential",
+        },
       })
-      expect(jsonContent(missing).error).toContain("structured verdict")
-
+      await c.callTool({
+        name: "hypothesis",
+        arguments: {
+          action: "update",
+          id: "B3",
+          state: "UNTESTABLE",
+          blocker: "The intended first-party configuration was not supplied.",
+          blocker_reason: "MISSING_PREREQUISITE",
+          next_step: "Capture the intended first-party configuration flow.",
+          reason: "The required first-party configuration was unavailable in this phase.",
+        },
+      })
       const accepted = await c.callTool({
         name: "handoff",
-        arguments: {
-          summary: "one hypothesis could not run",
-          artifact: "EXPLOIT.md",
-          verdicts: {
-            confirmed: [],
-            disproved: ["B1"],
-            suspected: [],
-            inconclusive: [],
-            untestable: [
-              {
-                id: "B3",
-                blocker_reason: "MISSING_PREREQUISITE",
-                next_step: "Capture the intended first-party configuration flow.",
-              },
-            ],
-          },
-        },
+        arguments: { summary: "one hypothesis could not run", artifact: "EXPLOIT.md" },
       })
       expect(jsonContent(accepted).successor).toBe("hacker")
       expect(JSON.parse(await readFile(signal, "utf8"))).toMatchObject({
         verdicts: {
-          disproved: ["B1"],
           untestable: [{ id: "B3", blocker_reason: "MISSING_PREREQUISITE" }],
         },
       })
@@ -926,8 +1081,8 @@ describe("expert-gateway handoff tool", () => {
     }
   })
 
-  test("gates Bug Bounty handoff on object disposition and novelty synthesis", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "expert-bounty-novelty-gate-test-"))
+  test("gates Bug Bounty handoff on object disposition and hypothesis synthesis", async () => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-bounty-novelty-gate-test-")))
     const signal = path.join(dir, "handoff.json")
     const environment = [
       "CYBERFUL_SUBSYSTEM_PHASE",
@@ -975,38 +1130,26 @@ describe("expert-gateway handoff tool", () => {
         name: "handoff",
         arguments: { summary: "recon complete", artifact: "RECON.md" },
       })
-      expect(jsonContent(missingNovelty).error).toContain("novelty contract")
+      expect(jsonContent(missingNovelty).error).toContain("phase synthesis")
 
-      await c.callTool({
-        name: "novelty",
-        arguments: {
-          action: "record",
-          id: "N1",
-          title: "Cross-owner state drift",
-          root_cause: "state ownership mismatch",
-          enforcement_owner: "control plane",
-          protocol: "HTTP",
-          state_transition: "create to read",
-          attacker_capability: "read adjacent synthetic state",
-          oracle: "identity-specific response differential",
-          target_facts: ["The target exposes separate create and read services."],
-        },
-      })
-      await c.callTool({
-        name: "novelty",
+      const synthesis = await c.callTool({
+        name: "hypothesis",
         arguments: {
           action: "synthesize",
           outcome: "diversified",
-          contrarian_summary: "Checked an ownership seam outside the dominant endpoint family.",
+          summary: "Checked an ownership seam outside the dominant endpoint family.",
           evidence: ["Compared creation and read enforcement across target-specific services."],
           remaining_unknowns: ["Asynchronous propagation semantics"],
         },
       })
+      expect(jsonContent(synthesis).error).toBeUndefined()
       const accepted = await c.callTool({
         name: "handoff",
         arguments: { summary: "recon complete", artifact: "RECON.md" },
       })
-      expect(jsonContent(accepted).successor).toBe("exploit")
+      const acceptedContent = jsonContent(accepted)
+      expect(acceptedContent.error).toBeUndefined()
+      expect(acceptedContent.successor).toBe("exploit")
     } finally {
       await c?.close()
       await server?.closeGateway()

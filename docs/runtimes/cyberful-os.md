@@ -127,12 +127,20 @@ and `runtime` labels. An existing deterministic name is reused only when both
 its image identity and all ownership labels match; otherwise Cyberful recreates
 it instead of adopting a previous run's container.
 
-Normal session completion removes the deterministic container name. On TUI
-shutdown, Cyberful first asks the in-process Pi owner to close its AgentRun tree
-and gateway bridge. If the outer worker exceeds its two-minute teardown window,
-the terminal terminates that process and immediately handles the exact
-last-known container snapshot before awaiting Docker label discovery. A final
-run-label retry covers a late container missing from the worker's last
+Normal session completion removes its exact deterministic Expert names and
+performs three bounded Docker inventory/removal passes using the immutable
+session and run-owner labels. Only a final empty inventory records the session
+as `closed`; a survivor or inventory failure records
+`closed_with_cleanup_errors` in `raw/operations/run-state.json` and fails the
+lifecycle. A process-scoped shared dependency may remain until its owning worker
+shuts down, but it cannot be adopted by another owner because its complete
+label set must match.
+
+On TUI shutdown, Cyberful first asks the in-process Pi owner to close its
+AgentRun tree and gateway bridge. If the outer worker exceeds its two-minute
+teardown window, the terminal terminates that process and immediately handles
+the exact last-known container snapshot before awaiting Docker label discovery.
+A final run-label retry covers a late container missing from the worker's last
 inventory. The ownership filter prevents cleanup from affecting containers
 belonging to another concurrent run.
 

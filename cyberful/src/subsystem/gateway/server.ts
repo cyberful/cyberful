@@ -38,12 +38,21 @@ import { ToolUsageRecorder, type ToolUsageEvent } from "./tool-usage"
 import { ownedProcessTree, processSnapshot, reapCapturedProcessTree } from "./mcp-process-owner"
 import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
+import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry } from "./hypothesis-registry"
+import {
+  applyEngagementRateLimit,
+  ENGAGEMENT_POLICY_TOOL_DEF,
+  EngagementPolicyStore,
+  readEngagementPolicy,
+  type EngagementPolicy,
+  ZapRateLimitInstallError,
+} from "./engagement-policy"
 import {
   TEST_OBJECT_TOOL_DEF,
   testObjectLifecycleFromEnvironment,
   type TestObjectLifecycleLedger,
 } from "./test-object-lifecycle"
-import { NOVELTY_TOOL_DEF, noveltyLedgerFromEnvironment, type NoveltyLedger } from "./novelty-ledger"
+import { SubsystemNovelty } from "../novelty"
 import * as Log from "@/util/log"
 import { errorMessage } from "@/util/error"
 import { SOURCE_TOOL_DEFS, handleSourceTool, isSourceTool, sourceToolsAvailable } from "./source-tools"
@@ -188,17 +197,28 @@ function text(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: body }], ...(isError ? { isError: true } : {}) }
 }
 
-function liveTargetToolDefinitions(input: { testObjects: boolean; novelty: boolean; egress: boolean }) {
+function liveTargetToolDefinitions(input: {
+  testObjects: boolean
+  egress: boolean
+  hypothesis: boolean
+  engagementPolicy: boolean
+}) {
   return [
     ...(input.testObjects ? [TEST_OBJECT_TOOL_DEF] : []),
-    ...(input.novelty ? [NOVELTY_TOOL_DEF] : []),
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
+    ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
+    ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
   ]
 }
 
 function localToolDefinitions(
   policy: GatewayPhasePolicy,
-  input: { testObjects: boolean; novelty: boolean; egress: boolean },
+  input: {
+    testObjects: boolean
+    egress: boolean
+    hypothesis: boolean
+    engagementPolicy: boolean
+  },
 ) {
   if (!policy.active) return []
   const source = sourceToolsAvailable() && policy.allows("source") ? [...SOURCE_TOOL_DEFS] : []
@@ -513,7 +533,6 @@ function handoffConfig(): HandoffConfig | undefined {
 
 function handoffToolDef(config: HandoffConfig) {
   const destination = config.successor ? `the ${config.successor} phase` : "engagement completion"
-  const verdictsRequired = SubsystemVerdict.requiredFor(config.workflow, config.phase)
   return {
     name: "handoff",
     description:
@@ -559,10 +578,10 @@ function handoffToolDef(config: HandoffConfig) {
         verdicts: {
           ...SubsystemVerdict.INPUT_SCHEMA,
           description:
-            "Complete mutually-exclusive hypothesis inventory. CONFIRMED and SUSPECTED IDs must resolve to current-run findings; negative-only outcomes may retain stable backlog IDs. SUSPECTED requires positive target evidence; UNTESTABLE requires a typed blocker and exact next step.",
+            "Deprecated compatibility input. New phases derive this inventory from the canonical hypothesis registry.",
         },
       },
-      required: ["summary", ...(config.artifact ? ["artifact"] : []), ...(verdictsRequired ? ["verdicts"] : [])],
+      required: ["summary", ...(config.artifact ? ["artifact"] : [])],
     },
   }
 }
@@ -570,7 +589,13 @@ function handoffToolDef(config: HandoffConfig) {
 async function handleHandoff(
   config: HandoffConfig,
   args: Record<string, unknown>,
-  guards: { testObjects?: TestObjectLifecycleLedger; novelty?: NoveltyLedger } = {},
+  guards: {
+    testObjects?: TestObjectLifecycleLedger
+    hypotheses?: HypothesisRegistry
+    coverage?: SurfaceCoverage
+    engagementPolicy?: EngagementPolicy
+    engagementPolicyRequired?: boolean
+  } = {},
 ) {
   const summary = typeof args.summary === "string" ? args.summary.trim() : ""
   if (!summary) return text({ error: "handoff requires a non-empty summary" })
@@ -589,9 +614,14 @@ async function handleHandoff(
   const completion = args.completion === undefined ? undefined : SubsystemCompletion.parseCandidate(args.completion)
   if (args.completion !== undefined && !completion)
     return text({ error: "handoff completion requires a non-empty title and summaryMarkdown" })
+  const rawVerdicts =
+    args.verdicts ??
+    (SubsystemVerdict.requiredFor(config.workflow, config.phase)
+      ? await guards.hypotheses?.verdictInventory()
+      : undefined)
   let verdicts: ReturnType<typeof SubsystemVerdict.parse>
   try {
-    verdicts = SubsystemVerdict.parse(args.verdicts)
+    verdicts = SubsystemVerdict.parse(rawVerdicts)
   } catch (error) {
     return text({ error: error instanceof Error ? error.message : String(error) }, true)
   }
@@ -599,8 +629,18 @@ async function handleHandoff(
     return text({ error: "handoff requires a structured verdict inventory for this phase" }, true)
   const lifecycleError = await guards.testObjects?.handoffError()
   if (lifecycleError) return text({ error: lifecycleError }, true)
-  const noveltyError = await guards.novelty?.handoffError()
-  if (noveltyError) return text({ error: noveltyError }, true)
+  const hypothesisError = await guards.hypotheses?.handoffError(config.successor)
+  if (hypothesisError) return text({ error: hypothesisError }, true)
+  if (guards.engagementPolicyRequired && !guards.engagementPolicy)
+    return text(
+      {
+        error:
+          "handoff requires engagement_policy set to succeed in this Brief; the host must enforce and persist the traffic policy first",
+      },
+      true,
+    )
+  const coverageError = await guards.coverage?.handoffError(guards.engagementPolicy)
+  if (coverageError) return text({ error: coverageError }, true)
   // ── Handoff Acceptance Proves The Required Artifact Exists ──────
   // A model may successfully create a deliverable beneath the wrong nested
   // directory while believing it wrote to the workarea root. Recording the
@@ -641,7 +681,7 @@ async function handleHandoff(
         summary,
         artifact,
         completion,
-        verdicts: args.verdicts,
+        verdicts: rawVerdicts,
         time: Date.now(),
       }),
       { flag: "wx" },
@@ -1072,6 +1112,48 @@ export function upstreamProcessEnv(
 // execution boundary and fails startup when unavailable; optional browser or
 // ZAP and Ghidra failures degrade visibly without inventing a capability that cannot run.
 // ──────────────────────────────────────────────────────────────
+const BRIEF_BROWSER_TOOLS = new Set([
+  "browser_status",
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_captcha_status",
+  "browser_captcha_handoff",
+  "browser_click",
+  "browser_fill",
+  "browser_type",
+  "browser_select",
+  "browser_set_input_files",
+  "browser_scroll",
+  "browser_check",
+  "browser_press",
+  "browser_wait",
+  "browser_screenshot",
+  "browser_artifact_list",
+  "browser_artifact_read",
+  "browser_network_log",
+  "browser_close",
+])
+
+// ── Brief Publishes Preflight Capabilities, Not Research Tools ───
+// Brief still needs ordinary browser interaction for login and a local shell
+// for attachments and atomic MISSION.md replacement. Publishing a complete
+// browser, ZAP, or cyberful-os catalog would also expose replay, scanners, page
+// evaluation, and direct request paths before scope is durable. This filter is
+// applied to both real and injected upstreams so tests cannot bypass policy.
+//
+// @docs/user-guide/workflows.md
+// ─────────────────────────────────────────────────────────────────
+function phaseUpstreamToolAllowed(
+  policy: GatewayPhasePolicy,
+  capability: SubsystemPhase.WorkflowCapability | undefined,
+  name: string,
+) {
+  if (policy.phase !== "brief") return true
+  if (capability === "isolated-exec") return name === "shell"
+  if (capability === "browser") return BRIEF_BROWSER_TOOLS.has(name)
+  return false
+}
+
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
   tools: UpstreamTool[]
   clients: Client[]
@@ -1150,12 +1232,19 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBERFUL_OS_CONTAINER = container
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
+        const zapProxy = process.env.CYBER_ZAP_PROXY_URL?.trim()
+        if (zapProxy) {
+          const containerProxy = new URL(zapProxy)
+          containerProxy.hostname = "host.docker.internal"
+          env.CYBERFUL_OS_HTTP_PROXY = containerProxy.toString()
+        }
         const dockerArgs = !networkAllowed
           ? ["--network=none", "--cpus=2", "--memory=4g", "--pids-limit=512", "--security-opt=no-new-privileges"]
           : []
+        if (zapProxy) dockerArgs.push("--add-host=host.docker.internal:host-gateway")
         if (workflow && SubsystemPhase.hasCapability(workflow, "evm-lab")) {
           dockerArgs.push(
-            "--add-host=host.docker.internal:host-gateway",
+            ...(zapProxy ? [] : ["--add-host=host.docker.internal:host-gateway"]),
             "--env=HOME=/workspace/.cyberful-evm/cache/home",
             "--env=FOUNDRY_DIR=/workspace/.cyberful-evm/cache/home/.foundry",
             "--env=SVM_HOME=/workspace/.cyberful-evm/cache/home/.svm",
@@ -1191,6 +1280,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       clients.push(client)
       const { tools } = await client.listTools()
       for (const t of tools) {
+        if (!phaseUpstreamToolAllowed(policy, capability, t.name)) continue
         if (browserProfile === undefined && out.some((u) => u.def.name === t.name)) continue
         out.push({
           def: t,
@@ -1331,7 +1421,10 @@ export async function createGatewayServer(opts?: {
     : proxyEnabled()
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
       : { tools: [], clients: [], close: () => Promise.resolve() }
-  const upstreams = connected.tools
+  const policy = gatewayPhasePolicy()
+  const upstreams = connected.tools.filter((upstream) =>
+    phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name),
+  )
   const byName = new Map<string, UpstreamTool[]>()
   for (const upstream of upstreams) {
     const candidates = byName.get(upstream.def.name) ?? []
@@ -1346,15 +1439,19 @@ export async function createGatewayServer(opts?: {
     )
     return profiles.length > 0 ? browserProfileToolDefinition(definition, profiles) : definition
   })
-  const policy = gatewayPhasePolicy()
   const phase = policy.phase
   const liveTargetResearch = policy.liveTargetResearch
+  const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   const testObjects = liveTargetResearch ? testObjectLifecycleFromEnvironment() : undefined
-  const novelty = liveTargetResearch ? noveltyLedgerFromEnvironment() : undefined
   const liveTargetTools = {
     testObjects: testObjects !== undefined,
-    novelty: novelty !== undefined,
     egress: liveTargetResearch,
+    hypothesis: Boolean(workareaRoot && phase && (policy.hypothesisResearch || policy.hypothesisReadOnly)),
+    engagementPolicy: Boolean(
+      workareaRoot &&
+        phase === "brief" &&
+        (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
+    ),
   }
   const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
@@ -1362,8 +1459,21 @@ export async function createGatewayServer(opts?: {
   const question = questionEnabled()
   const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
-  const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   const coverage = workareaRoot && phase ? new SurfaceCoverage(workareaRoot, phase) : undefined
+  let enforcedEngagementPolicy = workareaRoot ? await readEngagementPolicy(workareaRoot) : undefined
+  const hypotheses =
+    workareaRoot && phase && policy.workflow && (policy.hypothesisResearch || policy.hypothesisReadOnly)
+      ? new HypothesisRegistry({
+          workarea: workareaRoot,
+          workflow: policy.workflow,
+          phase,
+          readOnly: policy.hypothesisReadOnly,
+          synthesisRequired: SubsystemNovelty.parseEnvironment()?.required === true,
+        })
+      : undefined
+  const engagementPolicy =
+    workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
+  let engagementPolicySetThisPhase = false
   const ghidraEvidence =
     workareaRoot && phase && policy.allows("ghidra") ? new GhidraEvidenceRecorder(workareaRoot, phase) : undefined
   const server = new Server(
@@ -1397,6 +1507,7 @@ export async function createGatewayServer(opts?: {
       },
       () => usage.close(),
       ...(coverage ? [() => coverage.close()] : []),
+      ...(hypotheses ? [() => hypotheses.close()] : []),
       ...(ghidraEvidence ? [() => ghidraEvidence.close()] : []),
       ...(codeGraph ? [() => codeGraph.close()] : []),
     ]))
@@ -1423,7 +1534,14 @@ export async function createGatewayServer(opts?: {
           )
         }
       }
-      return handleHandoff(handoff, args, { testObjects, novelty })
+      return handleHandoff(handoff, args, {
+        testObjects,
+        hypotheses,
+        coverage,
+        engagementPolicy:
+          engagementPolicy && !engagementPolicySetThisPhase ? undefined : enforcedEngagementPolicy,
+        engagementPolicyRequired: engagementPolicy !== undefined,
+      })
     })
 
   for (const definition of localTools) {
@@ -1550,14 +1668,32 @@ export async function createGatewayServer(opts?: {
       })
       continue
     }
-    if (name === NOVELTY_TOOL_DEF.name && novelty) {
+    if (name === HYPOTHESIS_TOOL_DEF.name && hypotheses) {
       tools.register(definition, async (args) => {
         try {
-          if (args.action === "status") return text(await novelty.status())
-          if (args.action === "record") return text(await novelty.record(args))
-          if (args.action === "synthesize") return text(await novelty.synthesize(args))
-          return text({ error: "novelty action must be record, status, or synthesize" }, true)
+          return text(await hypotheses.handle(args))
         } catch (error) {
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === ENGAGEMENT_POLICY_TOOL_DEF.name && engagementPolicy) {
+      tools.register(definition, async (args) => {
+        try {
+          if (args.action === "get") return text((await engagementPolicy.get()) ?? { configured: false })
+          const policyResult = engagementPolicy.prepare(args)
+          const proxyUrl = process.env.CYBER_ZAP_PROXY_URL?.trim()
+          const apiKey = process.env.CYBER_ZAP_API_KEY?.trim()
+          if (!proxyUrl || !apiKey)
+            return text({ error: "engagement HTTP policy requires an active ZAP runtime" }, true)
+          const enforcement = await applyEngagementRateLimit(policyResult as EngagementPolicy, { proxyUrl, apiKey })
+          await engagementPolicy.commit(policyResult)
+          enforcedEngagementPolicy = policyResult
+          engagementPolicySetThisPhase = true
+          return text({ policy: policyResult, enforcement })
+        } catch (error) {
+          if (error instanceof ZapRateLimitInstallError) return text(error.toolResult(), true)
           return text({ error: error instanceof Error ? error.message : String(error) }, true)
         }
       })
@@ -1588,7 +1724,10 @@ export async function createGatewayServer(opts?: {
     const name = req.params.name
     const args = req.params.arguments ?? {}
     const local = tools.call(name, args, { sessionID })
-    if (local) return await local
+    if (local) {
+      const result = await local
+      return result
+    }
     const candidates = byName.get(name)
     if (!candidates) return text({ error: `unknown tool ${name}` })
     const resolvedArgs = resolveArgs(sessionID, name, args)
@@ -1614,7 +1753,6 @@ export async function createGatewayServer(opts?: {
         annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments),
         upstream.browserProfile,
       )
-      await coverage?.observe(result)
       if (circuit) await observeCaptchaCircuit(circuit, name, result)
       let redacted = redactResult(sessionID, result)
       if (upstream.capability === "ghidra" && ghidraEvidence) {
@@ -1639,6 +1777,7 @@ export async function createGatewayServer(opts?: {
         }
       }
       const egress = EgressObservation.observe(name, resolvedArgs, result)
+      await coverage?.observe(result, egress)
       await usage
         .record({
           tool: name,

@@ -415,6 +415,7 @@ export function phaseHasCapability(
   capability: WorkflowCapability,
 ): boolean {
   if (!hasCapability(workflowName, capability)) return false
+  if (phase === "brief" && capability === "zap") return false
   if (capability !== "ghidra") return true
   return phase !== undefined && GHIDRA_PHASES[workflowName]?.has(phase) === true
 }
@@ -462,6 +463,11 @@ export interface BudgetResolution {
   warning?: string
 }
 
+export interface CloseoutResolution {
+  minutes: number
+  warning?: string
+}
+
 // ── Invalid Budgets Degrade To A Visible Finite Limit ────────────
 // A missing or hand-written invalid budget must never create an unlimited phase.
 // Resolution chooses a positive finite configured value or a positive finite
@@ -483,6 +489,54 @@ export function resolveBudgetMinutes(budgets: unknown, phase: string, fallbackMi
 
 export function budgetMinutesFor(budgets: unknown, phase: string, fallbackMinutes: number): number {
   return resolveBudgetMinutes(budgets, phase, fallbackMinutes).minutes
+}
+
+// ── Every Sequential Phase Keeps Time To Leave Durable State ───
+// Closeout is carved from the phase budget rather than appended to it, so a
+// configured ceiling remains honest. New configurations can choose up to five
+// minutes per phase. Legacy files receive a conservative three- or five-minute
+// reserve, reduced with a warning when an unusually short phase cannot support
+// that default. Ask is interactive and intentionally has no handoff reserve.
+//
+// @docs/concepts/execution-model.md
+// @docs/user-guide/workflows.md
+// ─────────────────────────────────────────────────────────────────
+export function resolveCloseoutMinutes(
+  budgets: unknown,
+  phase: string,
+  budgetMinutes: number,
+): CloseoutResolution {
+  if (phase === "ask") return { minutes: 0 }
+
+  const legacyMinutes = budgetMinutes <= 30 ? 3 : 5
+  const reducedLegacyMinutes = Math.min(legacyMinutes, Math.max(0, budgetMinutes / 2))
+  const fallback = (): CloseoutResolution =>
+    reducedLegacyMinutes === legacyMinutes
+      ? { minutes: legacyMinutes }
+      : {
+          minutes: reducedLegacyMinutes,
+          warning: `Closeout '${phase}' reduced to ${reducedLegacyMinutes} minutes because it must be shorter than the ${budgetMinutes}-minute phase budget.`,
+        }
+
+  if (!isRecord(budgets) || !isRecord(budgets.$closeout)) return fallback()
+  const value = budgets.$closeout[phase]
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= 5 &&
+    value < budgetMinutes
+  )
+    return { minutes: value }
+
+  const resolved = fallback()
+  const reason = value === undefined ? "missing" : "invalid"
+  return {
+    ...resolved,
+    warning: `Closeout '${phase}' is ${reason}; using ${resolved.minutes} minutes.${
+      resolved.warning ? ` ${resolved.warning}` : ""
+    }`,
+  }
 }
 
 export * as SubsystemPhase from "./phase"

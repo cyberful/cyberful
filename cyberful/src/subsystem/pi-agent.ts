@@ -3,13 +3,15 @@
 // phase-scoped in-process Pi worker owner with host-owned routing and delegation policy.
 // → cyberful/src/subsystem/agent-subsystem.ts — defines the public contract.
 // → cyberful/src/subsystem/pi-context-compaction.ts — projects long transcripts safely.
+// → cyberful/src/subsystem/pi-semantic-compaction.ts — validates durable semantic checkpoints.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import {
   Agent,
+  estimateTokens,
   type AgentEvent as PiAgentEvent,
   type AgentMessage,
   type AgentTool,
@@ -18,6 +20,7 @@ import {
 import type { AssistantMessage, ToolResultMessage, UserMessage, Usage } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { Settings } from "@/config/settings"
+import { readWorkareaFileChunk } from "@/workarea"
 import { SubsystemControl } from "./control"
 import type {
   AgentEvent,
@@ -35,18 +38,28 @@ import type {
 } from "./agent-subsystem"
 import type { PiModels } from "./pi-models"
 import { PiAudit } from "./pi-audit"
+import { PiReasoning } from "./pi-reasoning"
 import { PiSecurity, type Failure } from "./pi-security"
 import { PiSystemWire } from "./pi-system-wire"
 import {
   compactAgentContext,
   contextCompactionNeed,
+  EAGER_VIRTUALIZATION_BYTES,
   estimateAgentContextTokens,
+  hasLargeHistoricalToolResult,
   projectAgentContext,
   type ContextArtifactReference,
   type ContextCompactionMode,
-  type ContextCompactionResult,
   type ContextProjectionEntry,
 } from "./pi-context-compaction"
+import {
+  buildRotationHistory,
+  MODEL_SUMMARY_MAX_TOKENS,
+  modelCheckpointRequest,
+  parseModelCheckpoint,
+  persistModelCheckpoint,
+  type SemanticProjection,
+} from "./pi-semantic-compaction"
 import {
   clearFallbackLedger,
   fallbackLedgerForSession,
@@ -81,6 +94,12 @@ const DelegateTaskParameters = Type.Object(
         description: "Workarea-relative artifacts the child should inspect or produce.",
       }),
     ),
+    output_artifact: Type.String({
+      minLength: 1,
+      maxLength: 1_024,
+      description:
+        "Workarea-relative durable artifact the child must create or update. Partial output remains available after timeout or failure.",
+    }),
   },
   { additionalProperties: false },
 )
@@ -131,6 +150,8 @@ const ToolSearchParameters = Type.Object(
   { additionalProperties: false },
 )
 
+const DelegationStatusParameters = Type.Object({}, { additionalProperties: false })
+
 type CatalogAgentTool = AgentTool & { readonly deferLoading?: boolean }
 
 interface PiAgentSubsystemOptions {
@@ -176,14 +197,20 @@ interface RunState {
   readonly contextArtifacts: Map<string, ContextArtifactReference>
   readonly contextProjections: Map<string, ContextProjectionEntry>
   readonly contextRecoveryKeys: Set<string>
+  contextRecoveryAttempted: boolean
+  contextRecoveryProviderCallsRemaining?: number
+  contextRotationGeneration: number
   contextCompactionEmergency: boolean
-  contextCompactionMessagesRemoved: number
-  contextProjection?: {
-    readonly signature: string
-    readonly messages: AgentMessage[]
+  contextRotationFailure?: {
+    readonly generationHash: string
+    readonly estimatedTokens: number
+    readonly userMessages: number
   }
-  lastContextCompaction?: ContextCompactionResult
+  lastProviderInputEstimate?: number
   retryWaitAbort?: AbortController
+  finishProviderRetryAttempt?: () => void
+  closeout: boolean
+  closeoutRequested: boolean
   lastHTTPStatus?: number
   lastTool?: {
     readonly name: string
@@ -191,6 +218,21 @@ interface RunState {
   }
   cancellation?: "budget" | "cancel"
   finished: boolean
+}
+
+type ContextRotationEvent = Extract<AgentEvent, { type: "context_rotation" }>
+type ContextRotationAttempt = ContextRotationEvent["attempts"][number]
+
+const observedContextUpperBounds = new Map<string, number>()
+
+class ContextCheckpointError extends Error {
+  readonly attempts: readonly ContextRotationAttempt[]
+
+  constructor(message: string, attempts: readonly ContextRotationAttempt[]) {
+    super(message)
+    this.name = "ContextCheckpointError"
+    this.attempts = attempts
+  }
 }
 
 interface StartChildOptions {
@@ -246,6 +288,10 @@ function addUsage(total: AgentRunUsage, usage: Usage): AgentRunUsage {
   }
 }
 
+function agentRunUsage(usage: Usage): AgentRunUsage {
+  return addUsage(emptyUsage(), usage)
+}
+
 function emptyProviderUsage(): Usage {
   return {
     input: 0,
@@ -256,6 +302,52 @@ function emptyProviderUsage(): Usage {
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   }
+}
+
+function checkpointSourceGroups(messages: readonly AgentMessage[]): AgentMessage[][] {
+  const groups: AgentMessage[][] = []
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!
+    if (message.role !== "assistant") {
+      if (message.role !== "toolResult") groups.push([message])
+      continue
+    }
+    const callIDs = new Set(
+      message.content.flatMap((item) => (item.type === "toolCall" ? [item.id] : [])),
+    )
+    const group: AgentMessage[] = [message]
+    while (callIDs.size > 0 && messages[index + 1]?.role === "toolResult") {
+      const result = messages[index + 1]!
+      if (result.role !== "toolResult" || !callIDs.has(result.toolCallId)) break
+      index++
+      callIDs.delete(result.toolCallId)
+      group.push(result)
+    }
+    groups.push(group)
+  }
+  return groups
+}
+
+function reducedCheckpointSource(messages: readonly AgentMessage[]): AgentMessage[] {
+  const groups = checkpointSourceGroups(messages)
+  const targetTokens = Math.max(
+    1,
+    Math.floor(messages.reduce((total, message) => total + estimateTokens(message), 0) / 2),
+  )
+  const retained: AgentMessage[][] = []
+  let retainedTokens = 0
+  for (const group of groups.toReversed()) {
+    const groupTokens = group.reduce((total, message) => total + estimateTokens(message), 0)
+    if (retained.length > 0 && retainedTokens + groupTokens > targetTokens) continue
+    retained.unshift(group)
+    retainedTokens += groupTokens
+    if (retainedTokens >= targetTokens) break
+  }
+  return retained.flat()
+}
+
+function rotationGenerationHash(messages: readonly AgentMessage[]): string {
+  return createHash("sha256").update(JSON.stringify(messages)).digest("hex")
 }
 
 function compactToolDescription(value: string): string {
@@ -416,6 +508,17 @@ function taskCapsule(input: {
   }
 }
 
+function delegatedArtifact(value: string): string {
+  const normalized = value.trim().replaceAll("\\", "/")
+  if (
+    !normalized ||
+    path.posix.isAbsolute(normalized) ||
+    normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  )
+    throw new Error("delegate_task output_artifact must be a relative path inside the workarea")
+  return normalized
+}
+
 function capsuleText(task: AgentTaskCapsule): string {
   return [
     "# Specific delegated objective",
@@ -457,6 +560,52 @@ function userMessages(spec: AgentRunSpec): UserMessage[] {
     content: message.content,
     timestamp: Date.now(),
   }))
+}
+
+function closeoutMessage(spec: AgentRunSpec, timestamp: number): UserMessage {
+  const deliverable = spec.task.artifacts?.[0]
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: [
+          "HOST-OWNED PHASE CLOSEOUT",
+          "The research portion of this phase is over. Do not start or resume target traffic, scanning,",
+          "lab execution, new analysis branches, or delegation. Use only already captured local evidence.",
+          deliverable
+            ? `Finish and reconcile the required deliverable '${deliverable}' now.`
+            : "Finish and reconcile the phase deliverable now.",
+          "Update the hypothesis, finding, test-object, and coverage records to match the evidence.",
+          spec.handoffOwner
+            ? "Call handoff with a concise, explicit successor summary before the final deadline."
+            : "Return a concise final summary before the final deadline.",
+        ].join("\n"),
+      },
+    ],
+    timestamp,
+  }
+}
+
+function closeoutToolAllowed(name: string): boolean {
+  if (
+    [
+      "handoff",
+      "hypothesis",
+      "finding",
+      "code_finding",
+      "test_object",
+      "engagement_policy",
+      "variable",
+      "shell",
+      "skill_read",
+      "tool_search",
+    ].includes(name)
+  )
+    return true
+  return ["source_", "code_graph_", "artifact_", "workarea_", "coverage_", "report_"].some((prefix) =>
+    name.startsWith(prefix),
+  )
 }
 
 function validateSpec(spec: AgentRunSpec): void {
@@ -509,6 +658,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
   readonly #onPayload?: PiAgentSubsystemOptions["onPayload"]
   readonly #onShutdown?: () => Promise<void>
   readonly #states = new Map<AgentRunID, RunState>()
+  readonly #delegationWaiters = new Set<() => void>()
 
   #activeDelegatedRuns = 0
   #shuttingDown = false
@@ -547,6 +697,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
           model: model.id,
           route: route.route,
           authenticated: Boolean(auth),
+          context: this.#registry.contextCapacity(route.id),
+          reasoningEffort: Settings.reasoningEffort(settings),
+          effectiveReasoningEffort: PiReasoning.resolve(
+            Settings.reasoningEffort(settings),
+            model,
+          ).effective,
           ...(auth?.source ? { authSource: auth.source } : {}),
         })
         if (!auth)
@@ -611,11 +767,14 @@ export class PiAgentSubsystem implements AgentSubsystem {
       cumulativeUsage: emptyUsage(),
       providerRetryAttempt: 0,
       providerRetryActive: false,
+      closeout: false,
+      closeoutRequested: false,
       contextArtifacts: new Map(),
       contextProjections: new Map(),
       contextRecoveryKeys: new Set(),
+      contextRecoveryAttempted: false,
+      contextRotationGeneration: 0,
       contextCompactionEmergency: false,
-      contextCompactionMessagesRemoved: 0,
       finished: false,
     }
     this.#states.set(id, state)
@@ -648,6 +807,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
   shutdown(): Promise<void> {
     if (this.#shutdownPromise) return this.#shutdownPromise
     this.#shuttingDown = true
+    this.#notifyDelegationWaiters({ all: true })
     this.#shutdownPromise = (async () => {
       const roots = [...this.#states.values()].filter((state) => state.spec.role === "root")
       await Promise.allSettled(roots.map((state) => this.#cancelState(state, "Pi phase owner shutdown", "cancel")))
@@ -710,8 +870,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
     const policy = Settings.retryPolicy(this.#settings)
     return (
       policy.enabled &&
-      failure?.kind === "unavailable" &&
-      failure.retryable &&
+      failure?.retryable === true &&
+      !(
+        failure.kind === "capacity" &&
+        (failure.providerCode === "context_length_exceeded" ||
+          failure.providerCode === "context_rotation_failed")
+      ) &&
       state.providerRetryAttempt < policy.max_retries &&
       !state.cancellation &&
       this.#remainingBudget(state) > 0
@@ -724,10 +888,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
       readonly state: Extract<AgentEvent, { type: "provider_retry" }>["state"]
       readonly attempt: number
       readonly delayMs?: number
+      readonly attemptTimeoutMs?: number
       readonly failure?: Failure
     },
   ): void {
     const policy = Settings.retryPolicy(this.#settings)
+    const budget = state.spec.budget.clock?.snapshot()
     this.#emit(state, {
       type: "provider_retry",
       runID: state.id,
@@ -735,6 +901,15 @@ export class PiAgentSubsystem implements AgentSubsystem {
       attempt: retry.attempt,
       maxRetries: policy.max_retries,
       ...(retry.delayMs === undefined ? {} : { delayMs: retry.delayMs }),
+      ...(retry.attemptTimeoutMs === undefined ? {} : { attemptTimeoutMs: retry.attemptTimeoutMs }),
+      ...(budget
+        ? {
+            retryWaitMs: Math.round(budget.retryWaitMs),
+            compensationMs: Math.round(budget.retryCompensationMs),
+            deadlineAt: Math.round(budget.deadlineAt),
+            compensationCapReached: budget.retryCompensationCapReached,
+          }
+        : {}),
       ...(retry.failure ? { failure: retry.failure } : {}),
     })
     const code = retry.failure?.providerCode ? ` (${retry.failure.providerCode})` : ""
@@ -750,12 +925,16 @@ export class PiAgentSubsystem implements AgentSubsystem {
     eventState: Extract<AgentEvent, { type: "context_compaction" }>["state"],
     mode: ContextCompactionMode,
     stats: {
+      readonly reason?: Extract<AgentEvent, { type: "context_compaction" }>["reason"]
       readonly estimatedTokensBefore: number
       readonly estimatedTokensAfter: number
       readonly triggerTokens: number
       readonly messagesRemoved: number
       readonly toolResultsVirtualized: number
       readonly artifactsPreserved: number
+      readonly modelSummary?: boolean
+      readonly summaryArtifact?: string
+      readonly detail?: string
     },
   ): void {
     this.#emit(state, {
@@ -763,17 +942,21 @@ export class PiAgentSubsystem implements AgentSubsystem {
       runID: state.id,
       state: eventState,
       mode,
+      ...(stats.reason ? { reason: stats.reason } : {}),
       estimatedTokensBefore: stats.estimatedTokensBefore,
       estimatedTokensAfter: stats.estimatedTokensAfter,
       triggerTokens: stats.triggerTokens,
       messagesRemoved: stats.messagesRemoved,
       toolResultsVirtualized: stats.toolResultsVirtualized,
       artifactsPreserved: stats.artifactsPreserved,
+      modelSummary: stats.modelSummary ?? false,
+      ...(stats.summaryArtifact ? { summaryArtifact: stats.summaryArtifact } : {}),
+      ...(stats.detail ? { detail: stats.detail } : {}),
     })
     const visible =
       eventState === "recovered" ||
       (mode === "proactive" &&
-        (eventState === "completed" || eventState === "failed"))
+        (eventState === "completed" || eventState === "noop" || eventState === "failed"))
     if (visible)
       this.#emitActivity(state, {
         kind: "status",
@@ -781,14 +964,377 @@ export class PiAgentSubsystem implements AgentSubsystem {
           contextCompaction: {
             state: eventState,
             mode,
+            ...(stats.reason ? { reason: stats.reason } : {}),
             estimatedTokensBefore: stats.estimatedTokensBefore,
             estimatedTokensAfter: stats.estimatedTokensAfter,
             messagesRemoved: stats.messagesRemoved,
             toolResultsVirtualized: stats.toolResultsVirtualized,
             artifactsPreserved: stats.artifactsPreserved,
+            modelSummary: stats.modelSummary ?? false,
+            ...(stats.summaryArtifact ? { summaryArtifact: stats.summaryArtifact } : {}),
+            ...(stats.detail ? { detail: stats.detail } : {}),
           },
         }),
       })
+  }
+
+  #contextRouteKey(state: RunState): string {
+    return this.#contextRouteKeyFor(state.spec.sessionID, state.spec.provider)
+  }
+
+  #contextRouteKeyFor(sessionID: string, provider: string): string {
+    return `${sessionID}:${provider}`
+  }
+
+  #contextLimits(state: RunState) {
+    const policy = Settings.compactionPolicy(this.#settings)
+    const observedContextUpperBound = observedContextUpperBounds.get(this.#contextRouteKey(state))
+    const effectiveOperationalWindow = Math.min(
+      state.spec.context.operationalContextWindow,
+      observedContextUpperBound ?? Number.POSITIVE_INFINITY,
+    )
+    const source =
+      observedContextUpperBound !== undefined &&
+      observedContextUpperBound < state.spec.context.operationalContextWindow
+        ? ("observed_upper_bound" as const)
+        : state.spec.context.source
+    return {
+      catalogContextWindow: state.spec.context.catalogContextWindow,
+      ...(state.spec.context.configuredContextWindow === undefined
+        ? {}
+        : { configuredContextWindow: state.spec.context.configuredContextWindow }),
+      trustedRouteWindow: state.spec.context.trustedRouteWindow,
+      ...(state.spec.context.configuredOperationalContextWindow === undefined
+        ? {}
+        : {
+            configuredOperationalContextWindow:
+              state.spec.context.configuredOperationalContextWindow,
+          }),
+      operationalContextWindow: state.spec.context.operationalContextWindow,
+      ...(observedContextUpperBound === undefined ? {} : { observedContextUpperBound }),
+      effectiveOperationalWindow,
+      triggerTokens: Math.floor(
+        (effectiveOperationalWindow * policy.trigger_percentage) / 100,
+      ),
+      targetTokens: Math.floor(
+        (effectiveOperationalWindow * policy.target_percentage) / 100,
+      ),
+      source,
+    }
+  }
+
+  #recordObservedContextUpperBound(state: RunState, failedInputTokens: number): number {
+    return this.#recordObservedContextUpperBoundForRoute(
+      state.spec.sessionID,
+      state.spec.provider,
+      failedInputTokens,
+    )
+  }
+
+  #recordObservedContextUpperBoundForRoute(
+    sessionID: string,
+    provider: string,
+    failedInputTokens: number,
+  ): number {
+    const key = this.#contextRouteKeyFor(sessionID, provider)
+    const capacity = this.#registry.contextCapacity(provider)
+    const current = Math.min(
+      capacity.operationalContextWindow,
+      observedContextUpperBounds.get(key) ?? Number.POSITIVE_INFINITY,
+    )
+    const learned = Math.max(1, Math.floor(failedInputTokens * 0.8))
+    const next = Math.min(current, learned)
+    observedContextUpperBounds.set(key, next)
+    return next
+  }
+
+  #emitContextRotation(
+    state: RunState,
+    event: Omit<ContextRotationEvent, "type" | "runID">,
+  ): void {
+    this.#emit(state, {
+      type: "context_rotation",
+      runID: state.id,
+      ...event,
+    })
+    if (event.state !== "started")
+      this.#emitActivity(state, {
+        kind: "status",
+        text: JSON.stringify({
+          contextCompaction: {
+            state: event.state === "partial" ? "completed" : event.state,
+            mode: event.mode,
+            reason:
+              event.reason ??
+              (event.state === "completed" ? "context_rotation" : "context_rotation_failed"),
+            estimatedTokensBefore: event.estimatedTokensBefore,
+            estimatedTokensAfter: event.estimatedTokensAfter,
+            messagesRemoved: Math.max(0, event.sourceMessages - event.activeMessages),
+            toolResultsVirtualized: event.toolResultsVirtualized,
+            artifactsPreserved: event.artifactsPreserved,
+            modelSummary: Boolean(event.checkpoint),
+            ...(event.checkpoint ? { summaryArtifact: event.checkpoint.path } : {}),
+            ...(event.detail ? { detail: event.detail } : {}),
+          },
+        }),
+      })
+  }
+
+  // ── The Summarizer Produces Memory, Never Executes Work ─────────
+  // A configured route receives a tool-free projection under the immutable
+  // AgentRun system prompt. Context rejection permits one 50% source reduction;
+  // a distinct active route may then make one final attempt. Every response is
+  // charged to the run and recorded per attempt, but no security fallback or
+  // tool surface is available. Persistence happens only after strict parsing.
+  //
+  // @docs/concepts/execution-model.md
+  // ─────────────────────────────────────────────────────────────────
+  async #modelContextCheckpoint(input: {
+    readonly state: RunState
+    readonly sourceMessages: readonly AgentMessage[]
+    readonly deterministicMessages: readonly AgentMessage[]
+    readonly generation: number
+    readonly sourceEstimatedTokens: number
+    readonly signal?: AbortSignal
+  }): Promise<{
+    readonly projection: SemanticProjection
+    readonly attempts: readonly ContextRotationAttempt[]
+    readonly summarizerProvider: string
+    readonly summarizerModel: string
+    readonly summarizerReasoningEffort: Settings.ReasoningEffort
+  }> {
+    const policy = Settings.compactionPolicy(this.#settings)
+    const configuredProvider =
+      policy.summarizer.provider === "inherit"
+        ? input.state.spec.provider
+        : policy.summarizer.provider
+    const attempts: ContextRotationAttempt[] = []
+    const plans: Array<{
+      readonly provider: string
+      readonly messages: readonly AgentMessage[]
+      readonly reduced: boolean
+    }> = [
+      {
+        provider: configuredProvider,
+        messages: input.deterministicMessages,
+        reduced: false,
+      },
+    ]
+    let activeRouteQueued = configuredProvider === input.state.spec.provider
+    let reducedRouteQueued = false
+    const attestPayload = PiSystemWire.createOnPayload({ prompt: input.state.spec.prompt })
+
+    while (plans.length > 0 && attempts.length < 3) {
+      const plan = plans.shift()!
+      const model = this.#registry.model(plan.provider)
+      const reasoning = PiReasoning.resolve(policy.summarizer.reasoning_effort, model)
+      const adapter = this.#registry.adapter(plan.provider)
+      const source = plan.messages.filter(
+        (message): message is UserMessage | AssistantMessage | ToolResultMessage =>
+          message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+      )
+      const checkpointMessages = [...source, modelCheckpointRequest()]
+      const sourceEstimatedTokens = estimateAgentContextTokens({
+        systemPrompt: input.state.spec.prompt.system,
+        messages: checkpointMessages,
+        tools: [],
+      })
+      const limit = input.state.spec.budget.maxOutputTokens
+      const remainingOutput =
+        limit === undefined ? MODEL_SUMMARY_MAX_TOKENS : limit - input.state.cumulativeUsage.output
+      if (remainingOutput < 512)
+        throw new Error("insufficient AgentRun output budget for a model-assisted context checkpoint")
+
+      let response: AssistantMessage
+      try {
+        const stream = await this.#streamFn(
+          model,
+          {
+            systemPrompt: input.state.spec.prompt.system,
+            messages: checkpointMessages,
+            tools: [],
+          },
+          {
+            signal: input.signal,
+            maxTokens: Math.min(MODEL_SUMMARY_MAX_TOKENS, model.maxTokens, remainingOutput),
+            maxRetries: 0,
+            sessionId: `${input.state.spec.sessionID}:${input.state.id}:context-rotation:${input.generation}:${attempts.length + 1}`,
+            ...(reasoning.effective === "off" ? {} : { reasoning: reasoning.effective }),
+            onPayload: (payload, streamedModel) => {
+              const attested = attestPayload(payload, streamedModel)
+              return (
+                this.#onPayload?.(attested, input.state.spec.prompt.system, adapter) ??
+                attested
+              )
+            },
+            onResponse: (httpResponse) => {
+              input.state.lastHTTPStatus = httpResponse.status
+            },
+          },
+        )
+        response = await stream.result()
+      } catch (error) {
+        const failure = PiSecurity.classify({
+          adapter,
+          provider: plan.provider,
+          model: model.id,
+          upstream: error,
+        })
+        const isContextError =
+          failure?.kind === "capacity" &&
+          failure.providerCode === "context_length_exceeded"
+        if (isContextError)
+          this.#recordObservedContextUpperBoundForRoute(
+            input.state.spec.sessionID,
+            plan.provider,
+            sourceEstimatedTokens,
+          )
+        attempts.push({
+          attempt: attempts.length + 1,
+          provider: plan.provider,
+          model: model.id,
+          sourceMessages: source.length,
+          sourceEstimatedTokens,
+          outcome: isContextError ? "context_error" : "failed",
+          detail: boundedFailureDetail(error instanceof Error ? error.message : String(error)),
+        })
+        if (
+          isContextError &&
+          plan.provider === configuredProvider &&
+          !plan.reduced &&
+          !reducedRouteQueued
+        ) {
+          plans.unshift({
+            provider: plan.provider,
+            messages: reducedCheckpointSource(input.deterministicMessages),
+            reduced: true,
+          })
+          reducedRouteQueued = true
+        } else if (!activeRouteQueued && plan.provider !== input.state.spec.provider) {
+          plans.push({
+            provider: input.state.spec.provider,
+            messages: input.deterministicMessages,
+            reduced: false,
+          })
+          activeRouteQueued = true
+        }
+        continue
+      }
+
+      input.state.cumulativeUsage = addUsage(input.state.cumulativeUsage, response.usage)
+      const failure = PiSecurity.classify(
+        providerObservation(
+          adapter,
+          plan.provider,
+          model.id,
+          response,
+          input.state.lastHTTPStatus,
+        ),
+      )
+      const isContextError =
+        failure?.kind === "capacity" && failure.providerCode === "context_length_exceeded"
+      const usage = agentRunUsage(response.usage)
+      if (response.stopReason === "error" || response.stopReason === "aborted") {
+        if (isContextError)
+          this.#recordObservedContextUpperBoundForRoute(
+            input.state.spec.sessionID,
+            plan.provider,
+            sourceEstimatedTokens,
+          )
+        attempts.push({
+          attempt: attempts.length + 1,
+          provider: plan.provider,
+          model: model.id,
+          sourceMessages: source.length,
+          sourceEstimatedTokens,
+          outcome: isContextError ? "context_error" : "failed",
+          usage,
+          detail:
+            boundedFailureDetail(response.errorMessage) ??
+            `model-assisted context checkpoint stopped with '${response.stopReason}'`,
+        })
+        if (
+          isContextError &&
+          plan.provider === configuredProvider &&
+          !plan.reduced &&
+          !reducedRouteQueued
+        ) {
+          plans.unshift({
+            provider: plan.provider,
+            messages: reducedCheckpointSource(input.deterministicMessages),
+            reduced: true,
+          })
+          reducedRouteQueued = true
+        } else if (!activeRouteQueued && plan.provider !== input.state.spec.provider) {
+          plans.push({
+            provider: input.state.spec.provider,
+            messages: input.deterministicMessages,
+            reduced: false,
+          })
+          activeRouteQueued = true
+        }
+        continue
+      }
+
+      try {
+        const checkpoint = parseModelCheckpoint({
+          text: assistantText(response),
+          sourceMessages: source,
+          sanitize: PiAudit.redactText,
+        })
+        const projection = await persistModelCheckpoint({
+          checkpoint,
+          workarea: input.state.spec.workarea,
+          runID: input.state.id,
+          generation: input.generation,
+          sourceMessageCount: input.sourceMessages.length,
+          sourceEstimatedTokens: input.sourceEstimatedTokens,
+          provider: plan.provider,
+          model: model.id,
+          reasoningEffort: policy.summarizer.reasoning_effort,
+        })
+        attempts.push({
+          attempt: attempts.length + 1,
+          provider: plan.provider,
+          model: model.id,
+          sourceMessages: source.length,
+          sourceEstimatedTokens,
+          outcome: "completed",
+          usage,
+        })
+        return {
+          projection,
+          attempts,
+          summarizerProvider: plan.provider,
+          summarizerModel: model.id,
+          summarizerReasoningEffort: policy.summarizer.reasoning_effort,
+        }
+      } catch (error) {
+        attempts.push({
+          attempt: attempts.length + 1,
+          provider: plan.provider,
+          model: model.id,
+          sourceMessages: source.length,
+          sourceEstimatedTokens,
+          outcome: "failed",
+          usage,
+          detail: boundedFailureDetail(error instanceof Error ? error.message : String(error)),
+        })
+        if (!activeRouteQueued && plan.provider !== input.state.spec.provider) {
+          plans.push({
+            provider: input.state.spec.provider,
+            messages: input.deterministicMessages,
+            reduced: false,
+          })
+          activeRouteQueued = true
+        }
+      }
+    }
+    const last = attempts.at(-1)
+    throw new ContextCheckpointError(
+      last?.detail ?? "all model-assisted context checkpoint attempts failed",
+      attempts,
+    )
   }
 
   async #transformContext(
@@ -799,48 +1345,125 @@ export class PiAgentSubsystem implements AgentSubsystem {
   ): Promise<AgentMessage[]> {
     const tools = state.agent?.state.tools ?? [...initialTools]
     const mode: ContextCompactionMode = state.contextCompactionEmergency ? "emergency" : "proactive"
-    const providerMessages = projectAgentContext(messages, state.contextProjections, mode)
-    const estimatedTokens = estimateAgentContextTokens({
+    const policy = Settings.compactionPolicy(this.#settings)
+    let providerMessages = projectAgentContext(messages, state.contextProjections, mode)
+    let estimatedTokens = estimateAgentContextTokens({
       systemPrompt: state.spec.prompt.system,
       messages: providerMessages,
       tools,
     })
-    const outputLimit = state.spec.budget.maxOutputTokens
-    const maxOutputTokens =
-      outputLimit === undefined
-        ? state.spec.model.maxTokens
-        : Math.max(1, Math.min(state.spec.model.maxTokens, outputLimit - state.cumulativeUsage.output))
+    if (
+      mode === "proactive" &&
+      policy.enabled &&
+      hasLargeHistoricalToolResult(messages, state.contextProjections)
+    ) {
+      const eager = await compactAgentContext({
+        need: {
+          mode: "proactive",
+          estimatedTokensBefore: estimatedTokens,
+          triggerTokens: estimatedTokens,
+          targetTokens: 0,
+        },
+        messages,
+        systemPrompt: state.spec.prompt.system,
+        tools,
+        workarea: state.spec.workarea,
+        runID: state.id,
+        artifacts: state.contextArtifacts,
+        projections: state.contextProjections,
+        signal,
+        minimumBytes: EAGER_VIRTUALIZATION_BYTES,
+        excludeLatestToolResult: true,
+      })
+      providerMessages = eager.messages
+      estimatedTokens = estimateAgentContextTokens({
+        systemPrompt: state.spec.prompt.system,
+        messages: providerMessages,
+        tools,
+      })
+      if (eager.toolResultsVirtualized > 0)
+        this.#emitContextCompaction(state, "completed", "proactive", {
+          ...eager,
+          estimatedTokensAfter: estimatedTokens,
+        })
+    }
+    state.lastProviderInputEstimate = estimatedTokens
+    const limits = this.#contextLimits(state)
     const need = contextCompactionNeed({
       mode,
-      policy: Settings.compactionPolicy(this.#settings),
-      contextWindow: state.spec.model.contextWindow,
-      maxOutputTokens,
+      policy,
+      operationalContextWindow: limits.effectiveOperationalWindow,
       estimatedTokens,
-      hasToolResults:
-        mode === "emergency" || providerMessages.some((message) => message.role === "toolResult"),
     })
     if (!need) return providerMessages
 
-    const last = messages.at(-1)
-    const signature = [
-      mode,
-      messages.length,
-      last?.role ?? "none",
-      "timestamp" in (last ?? {}) ? String(last?.timestamp) : "none",
-      estimatedTokens,
-    ].join(":")
-    if (state.contextProjection?.signature === signature) return state.contextProjection.messages
+    const generationHash = rotationGenerationHash(providerMessages)
+    const userMessageCount = messages.filter(
+      (message) =>
+        message.role === "user" &&
+        !(
+          typeof message.content === "string" &&
+          message.content.startsWith("[Host-owned semantic context checkpoint]")
+        ),
+    ).length
+    const failed = state.contextRotationFailure
+    if (
+      mode === "proactive" &&
+      failed !== undefined &&
+      failed.userMessages === userMessageCount &&
+      estimatedTokens < failed.estimatedTokens + 8_192
+    )
+      return providerMessages
 
-    const pending = {
-      estimatedTokensBefore: need.estimatedTokensBefore,
-      estimatedTokensAfter: need.estimatedTokensBefore,
-      triggerTokens: need.triggerTokens,
-      messagesRemoved: state.contextCompactionMessagesRemoved,
+    const generation = state.contextRotationGeneration + 1
+    const summarizerProvider =
+      policy.summarizer.provider === "inherit"
+        ? state.spec.provider
+        : policy.summarizer.provider
+    const summarizerModel = this.#registry.model(summarizerProvider)
+    const eventBase = {
+      mode,
+      generation,
+      provider: state.spec.provider,
+      model: state.spec.model.id,
+      summarizerProvider,
+      summarizerModel: summarizerModel.id,
+      summarizerReasoningEffort: policy.summarizer.reasoning_effort,
+      limits,
+      estimatedTokensBefore: estimatedTokens,
+      sourceMessages: messages.length,
+    } as const
+
+    if (!policy.model_summary) {
+      state.contextRotationFailure = {
+        generationHash,
+        estimatedTokens,
+        userMessages: userMessageCount,
+      }
+      this.#emitContextRotation(state, {
+        ...eventBase,
+        state: "failed",
+        estimatedTokensAfter: estimatedTokens,
+        activeMessages: messages.length,
+        toolResultsVirtualized: 0,
+        artifactsPreserved: 0,
+        attempts: [],
+        reason: "disabled_model_summary",
+        detail:
+          "model_summary=false preserves deterministic tool-result archival only; active history may exhaust the provider context",
+      })
+      return providerMessages
+    }
+
+    this.#emitContextRotation(state, {
+      ...eventBase,
+      state: "started",
+      estimatedTokensAfter: estimatedTokens,
+      activeMessages: messages.length,
       toolResultsVirtualized: 0,
       artifactsPreserved: 0,
-    }
-    this.#emitContextCompaction(state, "scheduled", mode, pending)
-    this.#emitContextCompaction(state, "started", mode, pending)
+      attempts: [],
+    })
 
     try {
       const result = await compactAgentContext({
@@ -854,33 +1477,121 @@ export class PiAgentSubsystem implements AgentSubsystem {
         projections: state.contextProjections,
         signal,
       })
-      state.lastContextCompaction = result
-      state.contextProjection = { signature, messages: result.messages }
-      const stats = {
-        ...result,
-        messagesRemoved: result.messagesRemoved + state.contextCompactionMessagesRemoved,
+      if (result.outcome === "failed" || result.outcome === "aborted") {
+        throw new ContextCheckpointError(
+          `deterministic context archival ${result.reason}`,
+          [],
+        )
       }
-      this.#emitContextCompaction(
+
+      const semantic = await this.#modelContextCheckpoint({
         state,
-        result.toolResultsVirtualized > 0 && result.persistenceFailures === 0 ? "completed" : "failed",
-        mode,
-        stats,
-      )
-      return result.messages
-    } catch {
-      state.lastContextCompaction = undefined
-      state.contextProjection = undefined
-      this.#emitContextCompaction(state, "failed", mode, pending)
+        sourceMessages: messages,
+        deterministicMessages: result.messages,
+        generation,
+        sourceEstimatedTokens: estimatedTokens,
+        signal,
+      })
+      let history = buildRotationHistory({
+        messages: result.messages,
+        checkpoint: semantic.projection.message,
+      })
+      let estimatedTokensAfter = estimateAgentContextTokens({
+        systemPrompt: state.spec.prompt.system,
+        messages: history.messages,
+        tools,
+      })
+      for (
+        let historicalLimit = 8_000;
+        estimatedTokensAfter > need.targetTokens &&
+        history.historicalUserMessages > 0 &&
+        historicalLimit >= 0;
+        historicalLimit = historicalLimit === 0 ? -1 : Math.floor(historicalLimit / 2)
+      ) {
+        history = buildRotationHistory({
+          messages: result.messages,
+          checkpoint: semantic.projection.message,
+          historicalUserTokenLimit: historicalLimit,
+        })
+        estimatedTokensAfter = estimateAgentContextTokens({
+          systemPrompt: state.spec.prompt.system,
+          messages: history.messages,
+          tools,
+        })
+      }
+
+      if (estimatedTokensAfter >= need.triggerTokens) {
+        state.contextRotationFailure = {
+          generationHash,
+          estimatedTokens,
+          userMessages: userMessageCount,
+        }
+        this.#emitContextRotation(state, {
+          ...eventBase,
+          limits: this.#contextLimits(state),
+          state: "failed",
+          estimatedTokensAfter,
+          activeMessages: history.activeMessages,
+          toolResultsVirtualized: result.toolResultsVirtualized,
+          artifactsPreserved: result.artifactsPreserved + 1,
+          checkpoint: semantic.projection.artifact,
+          attempts: semantic.attempts,
+          reason: "active_tail_too_large",
+        })
+        throw new Error("active_tail_too_large: irreducible active context exceeds the rotation trigger")
+      }
+
+      const rotationState =
+        estimatedTokensAfter > need.targetTokens ? ("partial" as const) : ("completed" as const)
+      const activeAgent = state.agent
+      if (!activeAgent) throw new Error("context rotation lost its active AgentRun")
+      activeAgent.state.messages = history.messages
+      state.contextRotationGeneration = generation
+      state.contextRotationFailure = undefined
+      state.lastProviderInputEstimate = estimatedTokensAfter
+      this.#emitContextRotation(state, {
+        ...eventBase,
+        limits: this.#contextLimits(state),
+        state: rotationState,
+        estimatedTokensAfter,
+        activeMessages: history.activeMessages,
+        toolResultsVirtualized: result.toolResultsVirtualized,
+        artifactsPreserved: result.artifactsPreserved + 1,
+        checkpoint: semantic.projection.artifact,
+        attempts: semantic.attempts,
+        ...(rotationState === "partial" ? { reason: "target_unreachable" as const } : {}),
+      })
+      return history.messages
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("active_tail_too_large")) throw error
+      state.contextRotationFailure = {
+        generationHash,
+        estimatedTokens,
+        userMessages: userMessageCount,
+      }
+      const attempts = error instanceof ContextCheckpointError ? error.attempts : []
+      this.#emitContextRotation(state, {
+        ...eventBase,
+        limits: this.#contextLimits(state),
+        state: "failed",
+        estimatedTokensAfter: estimatedTokens,
+        activeMessages: messages.length,
+        toolResultsVirtualized: 0,
+        artifactsPreserved: 0,
+        attempts,
+        reason: "summary_failed",
+        detail: boundedFailureDetail(error instanceof Error ? error.message : String(error)),
+      })
       return providerMessages
     } finally {
       state.contextCompactionEmergency = false
-      state.contextCompactionMessagesRemoved = 0
     }
   }
 
   #contextRecoveryKey(state: RunState, failure: Failure | undefined): string | undefined {
     if (
       !Settings.compactionPolicy(this.#settings).enabled ||
+      state.contextRecoveryAttempted ||
       failure?.kind !== "capacity" ||
       failure.providerCode !== "context_length_exceeded"
     )
@@ -914,29 +1625,46 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (!agent) return { attempted: false, failure }
 
     state.contextRecoveryKeys.add(key)
+    state.contextRecoveryAttempted = true
+    const failedInputTokens =
+      state.lastProviderInputEstimate ??
+      estimateAgentContextTokens({
+        systemPrompt: state.spec.prompt.system,
+        messages: agent.state.messages.slice(0, -1),
+        tools: agent.state.tools,
+      })
+    this.#recordObservedContextUpperBound(state, failedInputTokens)
     agent.state.messages = agent.state.messages.slice(0, -1)
     state.contextCompactionEmergency = true
-    state.contextCompactionMessagesRemoved = 1
-    state.contextProjection = undefined
-    state.lastContextCompaction = undefined
+    state.contextRecoveryProviderCallsRemaining = 1
     state.lastHTTPStatus = undefined
-    await agent.continue()
+    try {
+      await agent.continue()
+    } catch (error) {
+      return {
+        attempted: true,
+        failure: {
+          kind: "capacity",
+          providerCode: "context_rotation_failed",
+          detail: boundedFailureDetail(error instanceof Error ? error.message : String(error)),
+          retryable: false,
+        },
+      }
+    } finally {
+      state.contextRecoveryProviderCallsRemaining = undefined
+    }
 
     const next = this.#retryFailure(state, latestAssistant(agent.state.messages))
-    // continue() synchronously awaits transformContext, which may repopulate this
-    // field; TypeScript cannot observe that mutation through the Agent callback.
-    const stats = state.lastContextCompaction as ContextCompactionResult | undefined
-    if (stats) {
-      this.#emitContextCompaction(
-        state,
-        next?.kind === "capacity" && next.providerCode === "context_length_exceeded" ? "failed" : "recovered",
-        "emergency",
-        {
-          ...stats,
-          messagesRemoved: stats.messagesRemoved + 1,
+    if (next?.kind === "capacity" && next.providerCode === "context_length_exceeded")
+      return {
+        attempted: true,
+        failure: {
+          kind: "capacity",
+          providerCode: "context_rotation_failed",
+          detail: "The provider rejected the single post-rotation recovery generation.",
+          retryable: false,
         },
-      )
-    }
+      }
     return { attempted: true, failure: next }
   }
 
@@ -965,7 +1693,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         (state.spec.providerAffinity === "main" || tool.name !== "request_fallback_delegation"),
     )
     const allTools = [...hostTools, ...eligibleGatewayTools]
-    const reserved = new Set(["delegate_task", "request_fallback_delegation", "tool_search"])
+    const reserved = new Set(["delegate_task", "delegation_status", "request_fallback_delegation", "tool_search"])
     for (const tool of allTools)
       if (reserved.has(tool.name)) throw new Error(`AgentRun tool name '${tool.name}' is reserved by Cyberful`)
 
@@ -985,7 +1713,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     ].toSorted((left, right) => left.name.localeCompare(right.name))
 
     if (state.spec.delegation.enabled && state.spec.prompt.manifest.delegationEnabled) {
-      immediate.push(this.#delegateTool(state))
+      immediate.push(this.#delegateTool(state), this.#delegationStatusTool(state))
     }
     if (
       state.spec.providerAffinity === "main" &&
@@ -1079,20 +1807,29 @@ export class PiAgentSubsystem implements AgentSubsystem {
       description:
         "Create one complete child AgentRun for a bounded subtask. The child receives the full Cyberful contract, persona, skills, and phase tools but not this transcript.",
       parameters: DelegateTaskParameters,
-      execute: async (callID, input) => {
+      execute: async (callID, input, signal) => {
+        await this.#waitForChildCapacity(state, signal)
+        const outputArtifact = delegatedArtifact(input.output_artifact)
         const child = await this.#startChild(state, {
           role: "subagent",
           route: state.spec.providerAffinity,
-          task: taskCapsule(input),
+          task: taskCapsule({
+            ...input,
+            artifacts: [...new Set([...(input.artifacts ?? []), outputArtifact])],
+          }),
           sourceCallID: callID,
         })
         const result = await child.result
+        const artifact = await readWorkareaFileChunk(state.spec.workarea, outputArtifact, { limit: 1 })
+          .then((file) => ({ path: outputArtifact, available: true, bytes: file.total }))
+          .catch(() => ({ path: outputArtifact, available: false, bytes: 0 }))
         return {
           content: [
             {
               type: "text",
               text: [
                 `Child AgentRun ${result.id} ${result.termination}.`,
+                `Durable output: ${outputArtifact} (${artifact.available ? `${artifact.bytes} bytes` : "not created"}).`,
                 result.output || "The child returned no textual result.",
               ].join("\n\n"),
             },
@@ -1103,7 +1840,42 @@ export class PiAgentSubsystem implements AgentSubsystem {
             provider: result.provider,
             model: result.model,
             failure: result.failure,
+            artifact,
           },
+        }
+      },
+    }
+  }
+
+  #delegationStatusTool(state: RunState): AgentTool<typeof DelegationStatusParameters> {
+    return {
+      name: "delegation_status",
+      label: "Cyberful Delegation Capacity",
+      description:
+        "Inspect current phase-owned subagent capacity, persona limits, remaining starts, and queued admissions before splitting parallel work.",
+      parameters: DelegationStatusParameters,
+      executionMode: "sequential",
+      execute: async () => {
+        const activeDirect = [...state.children]
+          .map((id) => this.#states.get(id))
+          .filter((child): child is RunState => child !== undefined && !child.finished).length
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                active_global: this.#activeDelegatedRuns,
+                available_global: Math.max(0, state.spec.delegation.maxConcurrent - this.#activeDelegatedRuns),
+                active_direct: activeDirect,
+                persona_limit: state.spec.prompt.manifest.delegationLimit,
+                starts_remaining: Math.max(0, state.spec.delegation.maxPerRun - state.childStarts),
+                queued: this.#delegationWaiters.size,
+                depth: state.spec.depth,
+                max_depth: state.spec.delegation.maxDepth,
+              }),
+            },
+          ],
+          details: { activeDirect, queued: this.#delegationWaiters.size },
         }
       },
     }
@@ -1256,20 +2028,20 @@ export class PiAgentSubsystem implements AgentSubsystem {
   }
 
   async #startChild(parent: RunState, options: StartChildOptions): Promise<AgentRun> {
-    if (parent.finished || parent.cancellation) throw new Error("Parent AgentRun is no longer active")
+    await this.#waitForChildCapacity(parent)
+    if (parent.finished || parent.cancellation || parent.closeout)
+      throw new Error("Parent AgentRun is no longer available for delegation")
     if (parent.childStarts >= parent.spec.delegation.maxPerRun)
-      throw new Error(`AgentRun child limit reached (${parent.spec.delegation.maxPerRun})`)
+      throw new Error(`run_limit: AgentRun child limit reached (${parent.spec.delegation.maxPerRun})`)
     if (parent.spec.depth >= parent.spec.delegation.maxDepth)
-      throw new Error(`AgentRun maximum delegation depth reached (${parent.spec.delegation.maxDepth})`)
+      throw new Error(`depth_limit: AgentRun maximum delegation depth reached (${parent.spec.delegation.maxDepth})`)
     const activeDirectChildren = [...parent.children]
       .map((id) => this.#states.get(id))
       .filter((child): child is RunState => child !== undefined && !child.finished).length
     if (options.role === "subagent" && activeDirectChildren >= parent.spec.prompt.manifest.delegationLimit)
-      throw new Error(
-        `AgentRun persona concurrency limit reached (${parent.spec.prompt.manifest.delegationLimit})`,
-      )
+      throw new Error(`persona_capacity: AgentRun persona concurrency limit reached (${parent.spec.prompt.manifest.delegationLimit})`)
     if (this.#activeDelegatedRuns >= parent.spec.delegation.maxConcurrent)
-      throw new Error(`AgentRun concurrent child limit reached (${parent.spec.delegation.maxConcurrent})`)
+      throw new Error(`global_capacity: AgentRun concurrent child limit reached (${parent.spec.delegation.maxConcurrent})`)
     if (options.route === "fallback" && !parent.spec.fallback.providerConfigured)
       throw new Error("No fallback provider is configured")
     if (parent.spec.providerAffinity === "fallback" && options.route !== "fallback")
@@ -1279,6 +2051,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       options.route === "main" ? this.#settings.agent.main_provider : this.#settings.agent.fallback_provider
     if (!provider) throw new Error("No fallback provider is configured")
     const model = this.#registry.model(provider)
+    const reasoning = PiReasoning.resolve(Settings.reasoningEffort(this.#settings), model)
     const promptInput: ChildPromptInput = {
       role: options.role,
       providerRoute: options.route,
@@ -1298,21 +2071,66 @@ export class PiAgentSubsystem implements AgentSubsystem {
       depth: parent.spec.depth + 1,
       provider,
       model,
+      context: this.#registry.contextCapacity(provider),
       providerAffinity: options.route,
+      reasoning,
       prompt,
       task: options.task,
       handoffOwner: false,
       abort: parent.spec.abort,
       budget: {
         ...parent.spec.budget,
-        deadlineAt: this.#now() + this.#remainingBudget(parent),
+        deadlineAt: this.#now() + Math.min(this.#remainingBudget(parent), parent.spec.delegation.maxRuntimeMs),
       },
     })
+  }
+
+  async #waitForChildCapacity(parent: RunState, signal?: AbortSignal): Promise<void> {
+    while (true) {
+      if (parent.finished || parent.cancellation || parent.closeout || signal?.aborted) {
+        this.#notifyDelegationWaiters()
+        throw new Error("cancelled: parent AgentRun is no longer available for delegation")
+      }
+      if (parent.childStarts >= parent.spec.delegation.maxPerRun) {
+        this.#notifyDelegationWaiters()
+        throw new Error(`run_limit: AgentRun child limit reached (${parent.spec.delegation.maxPerRun})`)
+      }
+      if (parent.spec.depth >= parent.spec.delegation.maxDepth) {
+        this.#notifyDelegationWaiters()
+        throw new Error(`depth_limit: AgentRun maximum delegation depth reached (${parent.spec.delegation.maxDepth})`)
+      }
+      const activeDirect = [...parent.children]
+        .map((id) => this.#states.get(id))
+        .filter((child): child is RunState => child !== undefined && !child.finished).length
+      const personaAvailable = activeDirect < parent.spec.prompt.manifest.delegationLimit
+      const globalAvailable = this.#activeDelegatedRuns < parent.spec.delegation.maxConcurrent
+      if (personaAvailable && globalAvailable) return
+      await new Promise<void>((resolve, reject) => {
+        const wake = () => {
+          signal?.removeEventListener("abort", cancelled)
+          this.#delegationWaiters.delete(wake)
+          resolve()
+        }
+        const cancelled = () => {
+          this.#delegationWaiters.delete(wake)
+          this.#notifyDelegationWaiters()
+          reject(new Error("cancelled: delegation admission was cancelled"))
+        }
+        this.#delegationWaiters.add(wake)
+        signal?.addEventListener("abort", cancelled, { once: true })
+      })
+    }
+  }
+
+  #notifyDelegationWaiters(options: { readonly all?: boolean } = {}) {
+    const waiters = [...this.#delegationWaiters]
+    for (const wake of options.all ? waiters : waiters.slice(0, 1)) wake()
   }
 
   async #automaticFallback(state: RunState, failure: Failure): Promise<boolean> {
     if (
       state.spec.providerAffinity !== "main" ||
+      state.closeout ||
       state.automaticFallbackUsed ||
       !state.spec.fallback.providerConfigured ||
       !state.spec.fallback.automaticSecurityBlockEnabled ||
@@ -1452,7 +2270,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
   async #cancelState(state: RunState, _reason: string, mode: "budget" | "cancel"): Promise<void> {
     if (state.finished) return
     state.cancellation ??= mode
+    this.#notifyDelegationWaiters()
     state.retryWaitAbort?.abort(new Error(`AgentRun ${mode === "budget" ? "budget expired" : "was cancelled"}`))
+    state.finishProviderRetryAttempt?.()
     const children = [...state.children]
       .map((id) => this.#states.get(id))
       .filter((child): child is RunState => child !== undefined)
@@ -1484,6 +2304,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       return
     }
     if (event.type === "message_end" && isAssistantMessage(event.message)) {
+      state.finishProviderRetryAttempt?.()
       const failure = this.#retryFailure(state, event.message)
       const contextRecoveryKey = this.#contextRecoveryKey(state, failure)
       const discardedAttempt =
@@ -1536,7 +2357,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       this.#emitActivity(state, {
         kind: "tool",
         tool: event.toolName,
-        input: PiAudit.redactValue(event.args),
+        input: PiAudit.redactToolInput(event.toolName, event.args),
         callID: event.toolCallId,
       })
       return
@@ -1569,6 +2390,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
   async #execute(state: RunState): Promise<void> {
     const rootID = state.spec.role === "root" ? state.id : state.spec.phaseRootID!
+    const contextLimits = this.#contextLimits(state)
     this.#emit(state, {
       type: "run_started",
       runID: state.id,
@@ -1578,6 +2400,28 @@ export class PiAgentSubsystem implements AgentSubsystem {
       provider: state.spec.provider,
       model: state.spec.model.id,
       providerAffinity: state.spec.providerAffinity,
+      reasoningEffort: state.spec.reasoning.requested,
+      effectiveReasoningEffort: state.spec.reasoning.effective,
+      context: {
+        catalogContextWindow: contextLimits.catalogContextWindow,
+        ...(contextLimits.configuredContextWindow === undefined
+          ? {}
+          : { configuredContextWindow: contextLimits.configuredContextWindow }),
+        trustedRouteWindow: contextLimits.trustedRouteWindow,
+        ...(contextLimits.configuredOperationalContextWindow === undefined
+          ? {}
+          : {
+              configuredOperationalContextWindow:
+                contextLimits.configuredOperationalContextWindow,
+            }),
+        operationalContextWindow: contextLimits.operationalContextWindow,
+        ...(contextLimits.observedContextUpperBound === undefined
+          ? {}
+          : { observedContextUpperBound: contextLimits.observedContextUpperBound }),
+        effectiveOperationalWindow: contextLimits.effectiveOperationalWindow,
+        source: contextLimits.source,
+        warnings: state.spec.context.warnings,
+      },
       promptSystemSha256: state.spec.prompt.manifest.systemSha256,
       promptManifest: state.spec.prompt.manifest,
     })
@@ -1587,6 +2431,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
       state: "started",
       transitionID: `${state.id}:created`,
     })
+    for (const warning of state.spec.context.warnings)
+      this.#emitActivity(state, {
+        kind: "status",
+        text: `Context configuration warning: ${warning}.`,
+      })
+    if (!Settings.compactionPolicy(this.#settings).model_summary)
+      this.#emitActivity(state, {
+        kind: "status",
+        text:
+          "Context rotation warning: model_summary=false disables semantic history rotation; only deterministic tool-result archival remains and context exhaustion is possible.",
+      })
 
     state.timerRemainingMs = state.spec.budget.deadlineAt - this.#now()
     const stopBudgetTimer = () => {
@@ -1609,18 +2464,78 @@ export class PiAgentSubsystem implements AgentSubsystem {
         state.agent?.abort()
         return
       }
+      const reserveMs =
+        state.spec.role === "root" && state.spec.handoffOwner
+          ? Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0))
+          : 0
+      const enteringCloseout = !state.closeout && reserveMs > 0
+      const timerDurationMs = enteringCloseout ? Math.max(0, remaining - reserveMs) : remaining
+      if (enteringCloseout && timerDurationMs <= 0) {
+        state.closeout = true
+        state.closeoutRequested = true
+        this.#emit(state, {
+          type: "phase_closeout",
+          runID: state.id,
+          state: "entered",
+          reserveMs,
+          remainingMs: remaining,
+          deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+        })
+        this.#emitActivity(state, {
+          kind: "status",
+          text: `Phase mode: closeout · ${Math.ceil(remaining / 1_000)}s remaining · research tools disabled.`,
+        })
+        this.#notifyDelegationWaiters({ all: true })
+        state.agent?.abort()
+        void Promise.allSettled(
+          [...state.children]
+            .map((id) => this.#states.get(id))
+            .filter((child): child is RunState => child !== undefined)
+            .map((child) => this.#cancelState(child, "Phase entered closeout", "cancel")),
+        )
+        startBudgetTimer()
+        return
+      }
       state.timerStartedAt = this.#now()
       state.timer = setTimeout(() => {
         state.timer = undefined
+        state.timerStartedAt = undefined
+        if (enteringCloseout) {
+          state.timerRemainingMs = reserveMs
+          state.closeout = true
+          state.closeoutRequested = true
+          this.#emit(state, {
+            type: "phase_closeout",
+            runID: state.id,
+            state: "entered",
+            reserveMs,
+            remainingMs: reserveMs,
+            deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+          })
+          this.#emitActivity(state, {
+            kind: "status",
+            text: `Phase mode: closeout · ${Math.ceil(reserveMs / 1_000)}s remaining · research tools disabled.`,
+          })
+          this.#notifyDelegationWaiters({ all: true })
+          state.agent?.abort()
+          void Promise.allSettled(
+            [...state.children]
+              .map((id) => this.#states.get(id))
+              .filter((child): child is RunState => child !== undefined)
+              .map((child) => this.#cancelState(child, "Phase entered closeout", "cancel")),
+          )
+          startBudgetTimer()
+          return
+        }
         state.timerRemainingMs = 0
         state.cancellation ??= "budget"
         state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
-      }, remaining)
+      }, timerDurationMs)
       state.timer.unref?.()
     }
-    if (state.spec.budget.pause)
-      state.removePauseListener = state.spec.budget.pause.subscribe((snapshot) => {
+    if (state.spec.budget.clock)
+      state.removePauseListener = state.spec.budget.clock.subscribe((snapshot) => {
         if (snapshot.pending) stopBudgetTimer()
         else startBudgetTimer()
       })
@@ -1629,6 +2544,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       const abort = () => {
         state.cancellation ??= "cancel"
         state.retryWaitAbort?.abort(new Error("AgentRun was cancelled"))
+        state.finishProviderRetryAttempt?.()
         state.agent?.abort()
       }
       state.spec.abort.addEventListener("abort", abort, { once: true })
@@ -1647,13 +2563,20 @@ export class PiAgentSubsystem implements AgentSubsystem {
           initialState: {
             systemPrompt: state.spec.prompt.system,
             model: state.spec.model,
-            thinkingLevel: state.spec.model.reasoning ? "high" : "off",
+            thinkingLevel: state.spec.reasoning.transport,
             tools: initialTools,
             messages: [],
           },
           transformContext: (messages, signal) =>
             this.#transformContext(state, messages, initialTools, signal),
           streamFn: (model, context, options) => {
+            if (state.contextRecoveryProviderCallsRemaining !== undefined) {
+              if (state.contextRecoveryProviderCallsRemaining <= 0)
+                throw new Error(
+                  "context_rotation_failed: emergency recovery permits one provider generation",
+                )
+              state.contextRecoveryProviderCallsRemaining--
+            }
             const limit = state.spec.budget.maxOutputTokens
             if (limit === undefined) return this.#streamFn(model, context, options)
             const remaining = Math.max(1, limit - state.cumulativeUsage.output)
@@ -1680,6 +2603,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
             },
           }),
           beforeToolCall: async ({ toolCall, args }) => {
+            if (state.closeout && !closeoutToolAllowed(toolCall.name))
+              return {
+                block: true,
+                reason:
+                  "Phase closeout permits only local evidence reads, deliverable and ledger reconciliation, cleanup, and handoff.",
+              }
             if (toolCall.name === "handoff" && !state.spec.handoffOwner)
               return { block: true, reason: "Only the original phase root AgentRun may call handoff." }
             if (toolCall.name === "request_fallback_delegation" && state.spec.providerAffinity === "fallback")
@@ -1700,7 +2629,19 @@ export class PiAgentSubsystem implements AgentSubsystem {
         })
         state.agent = agent
         agent.subscribe((event) => this.#observePiEvent(state, event))
-        await agent.prompt(userMessages(state.spec))
+        if (state.closeout) {
+          state.closeoutRequested = false
+          await agent.prompt([closeoutMessage(state.spec, this.#now())])
+        } else {
+          await agent.prompt(userMessages(state.spec))
+          if (state.closeoutRequested && !state.cancellation) {
+            const terminal = agent.state.messages.at(-1)
+            if (isAssistantMessage(terminal) && terminal.stopReason === "aborted")
+              agent.state.messages = agent.state.messages.slice(0, -1)
+            state.closeoutRequested = false
+            await agent.prompt([closeoutMessage(state.spec, this.#now())])
+          }
+        }
 
         let last = latestAssistant(agent.state.messages)
         failure = this.#retryFailure(state, last)
@@ -1722,31 +2663,94 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
             const attempt = state.providerRetryAttempt + 1
             const delayMs = Math.min(this.#retryDelayMs(attempt), this.#remainingBudget(state))
-            this.#emitProviderRetry(state, { state: "scheduled", attempt, delayMs, failure })
+            const policy = Settings.retryPolicy(this.#settings)
+            const releaseRetrySuspension = state.spec.budget.clock?.suspend("provider_retry")
+            let attemptTimer: ReturnType<typeof setTimeout> | undefined
+            let retrySuspensionActive = true
+            const finishRetryAttempt = () => {
+              if (!retrySuspensionActive) return
+              retrySuspensionActive = false
+              if (attemptTimer !== undefined) clearTimeout(attemptTimer)
+              attemptTimer = undefined
+              releaseRetrySuspension?.()
+              if (state.finishProviderRetryAttempt === finishRetryAttempt)
+                state.finishProviderRetryAttempt = undefined
+            }
+            state.finishProviderRetryAttempt = finishRetryAttempt
+            this.#emitProviderRetry(state, {
+              state: "scheduled",
+              attempt,
+              delayMs,
+              attemptTimeoutMs: policy.attempt_timeout_ms,
+              failure,
+            })
             const retryWaitAbort = new AbortController()
             state.retryWaitAbort = retryWaitAbort
             try {
               await this.#sleep(delayMs, retryWaitAbort.signal)
             } catch (error) {
-              if (!state.cancellation) throw error
+              if (!state.cancellation) {
+                finishRetryAttempt()
+                throw error
+              }
             } finally {
               if (state.retryWaitAbort === retryWaitAbort) state.retryWaitAbort = undefined
             }
             if (state.cancellation) {
               this.#emitProviderRetry(state, { state: "cancelled", attempt, failure })
+              finishRetryAttempt()
               break
             }
 
             state.providerRetryAttempt = attempt
             state.providerRetryActive = true
             state.lastHTTPStatus = undefined
-            this.#emitProviderRetry(state, { state: "attempting", attempt, failure })
-            await agent.continue()
-            last = latestAssistant(agent.state.messages)
-            failure = this.#retryFailure(state, last)
+            this.#emitProviderRetry(state, {
+              state: "attempting",
+              attempt,
+              attemptTimeoutMs: policy.attempt_timeout_ms,
+              failure,
+            })
+            let attemptTimedOut = false
+            attemptTimer = setTimeout(() => {
+              attemptTimedOut = true
+              agent.abort()
+            }, policy.attempt_timeout_ms)
+            attemptTimer.unref?.()
+            try {
+              await agent.continue()
+              last = latestAssistant(agent.state.messages)
+              failure = attemptTimedOut
+                ? {
+                    kind: "timeout",
+                    providerCode: "retry_attempt_timeout",
+                    detail: `Provider retry attempt exceeded ${policy.attempt_timeout_ms} ms.`,
+                    retryable: true,
+                  }
+                : this.#retryFailure(state, last)
+              if (attemptTimedOut)
+                this.#emitProviderRetry(state, {
+                  state: "timed_out",
+                  attempt,
+                  attemptTimeoutMs: policy.attempt_timeout_ms,
+                  failure,
+                })
+            } finally {
+              finishRetryAttempt()
+            }
           }
         }
         await settleRecoverableFailure()
+        if (state.closeoutRequested && !state.cancellation) {
+          const terminal = agent.state.messages.at(-1)
+          if (isAssistantMessage(terminal) && terminal.stopReason === "aborted")
+            agent.state.messages = agent.state.messages.slice(0, -1)
+          state.closeoutRequested = false
+          await agent.prompt([closeoutMessage(state.spec, this.#now())])
+          last = latestAssistant(agent.state.messages)
+          failure = this.#retryFailure(state, last)
+          await settleRecoverableFailure()
+        }
         if (failure && (await this.#automaticFallback(state, failure))) {
           last = latestAssistant(agent.state.messages)
           failure = PiSecurity.classify(
@@ -1754,7 +2758,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           )
           await settleRecoverableFailure()
         }
-        if (failure?.kind === "unavailable" && state.providerRetryActive)
+        if (failure?.retryable && state.providerRetryActive)
           this.#emitProviderRetry(state, {
             state: "exhausted",
             attempt: state.providerRetryAttempt,
@@ -1786,6 +2790,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       failure = failureWithDetail(failure, last?.errorMessage ?? (error instanceof Error ? error.message : String(error)))
       output ||= state.agent ? PiAudit.redactText(assistantText(latestAssistant(state.agent.state.messages))) : ""
     } finally {
+      state.finishProviderRetryAttempt?.()
       stopBudgetTimer()
       state.removePauseListener?.()
       state.removeAbortListener?.()
@@ -1809,6 +2814,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       )
       failure = auditedFailure(failure)
       const termination = terminationFor(state, failure)
+      const finalContextLimits = this.#contextLimits(state)
       const result: AgentRunResult = {
         id: state.id,
         ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
@@ -1817,6 +2823,28 @@ export class PiAgentSubsystem implements AgentSubsystem {
         provider: state.spec.provider,
         model: state.spec.model.id,
         providerAffinity: state.spec.providerAffinity,
+        reasoningEffort: state.spec.reasoning.requested,
+        effectiveReasoningEffort: state.spec.reasoning.effective,
+        context: {
+          catalogContextWindow: finalContextLimits.catalogContextWindow,
+          ...(finalContextLimits.configuredContextWindow === undefined
+            ? {}
+            : { configuredContextWindow: finalContextLimits.configuredContextWindow }),
+          trustedRouteWindow: finalContextLimits.trustedRouteWindow,
+          ...(finalContextLimits.configuredOperationalContextWindow === undefined
+            ? {}
+            : {
+                configuredOperationalContextWindow:
+                  finalContextLimits.configuredOperationalContextWindow,
+              }),
+          operationalContextWindow: finalContextLimits.operationalContextWindow,
+          ...(finalContextLimits.observedContextUpperBound === undefined
+            ? {}
+            : { observedContextUpperBound: finalContextLimits.observedContextUpperBound }),
+          effectiveOperationalWindow: finalContextLimits.effectiveOperationalWindow,
+          source: finalContextLimits.source,
+          warnings: state.spec.context.warnings,
+        },
         output,
         termination,
         ...(failure ? { failure } : {}),
@@ -1859,6 +2887,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       state.queue.close()
       if (state.spec.role === "root") state.rootQueue.close()
       if (state.spec.role !== "root") this.#activeDelegatedRuns = Math.max(0, this.#activeDelegatedRuns - 1)
+      this.#notifyDelegationWaiters()
       const parent = state.spec.parentID ? this.#states.get(state.spec.parentID) : undefined
       parent?.childResults.push(result)
       this.#states.delete(state.id)

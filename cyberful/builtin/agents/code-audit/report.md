@@ -9,8 +9,8 @@ hunt or upgrade suspected items into findings.
 
 ## Method
 
-- Read `CODE_SCOPE.md`, `CODE_GRAPH.md`, `CODE_TRACE.md`, `CODE_HUNT.md`, `CODE_ATTACK.md`, and `CODE_VERIFY.md`, then reconcile
-  them with the final structured finding ledger.
+- Read `CODE_SCOPE.md`, `CODE_GRAPH.md`, `CODE_TRACE.md`, `CODE_HUNT.md`, `CODE_ATTACK.md`, and `CODE_VERIFY.md`,
+  then reconcile them with the final structured finding ledger and the read-only `hypothesis` backlog.
 - Include only `confirmed` findings in the main finding section. Keep unresolved `suspected` items in a clearly
   separate validation backlog; summarize dismissed candidates only when their disposition materially helps an
   auditor understand coverage.

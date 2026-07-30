@@ -1,6 +1,8 @@
 // ── Pi Provider And Model Registry ───────────────────────────────
 // Materializes only providers declared in settings.yaml, preserving provider
-// auth semantics and a real system-message channel for every AgentRun.
+// auth semantics, trusted catalog limits, and a bounded operational window.
+// → cyberful/src/config/settings.ts — supplies route-local working-context limits.
+// @docs/user-guide/settings.md
 // ─────────────────────────────────────────────────────────────────
 
 import {
@@ -26,6 +28,7 @@ export interface ProviderSettings {
   readonly model: string
   readonly base_url?: string
   readonly context_window?: number
+  readonly operational_context_window?: number
   readonly max_output_tokens?: number
   readonly auth:
     | { readonly type: "subscription" }
@@ -40,6 +43,21 @@ export interface AgentProviderSettings {
 
 const MAIN_ADAPTERS = new Set(["openai-codex", "zai", "kimi-coding", "moonshotai", "openai-completions"])
 const SUBSCRIPTION_ADAPTERS = new Set(["openai-codex", "zai", "kimi-coding"])
+export const DEFAULT_OPERATIONAL_CONTEXT_WINDOW = 256_000
+
+export interface ModelContextCapacity {
+  readonly catalogContextWindow: number
+  readonly configuredContextWindow?: number
+  readonly trustedRouteWindow: number
+  readonly configuredOperationalContextWindow?: number
+  readonly operationalContextWindow: number
+  readonly source:
+    | "catalog_default"
+    | "catalog_restricted"
+    | "configured_operational"
+    | "configured_operational_clamped"
+  readonly warnings: readonly string[]
+}
 
 function storedApiKeyAuth(auth: ApiKeyAuth): ApiKeyAuth {
   const login = auth.login
@@ -112,6 +130,7 @@ function configuredBuiltinProvider(
   id: string,
   provider: Provider,
   auth: ProviderAuth,
+  settings: ProviderSettings,
 ): Provider {
   if (provider.refreshModels || provider.filterModels)
     throw new Error(`Pi provider adapter '${provider.id}' cannot be aliased because its model catalog is dynamic`)
@@ -121,7 +140,23 @@ function configuredBuiltinProvider(
     ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.headers ? { headers: provider.headers } : {}),
     auth,
-    getModels: () => provider.getModels().map((model) => ({ ...model, provider: id })),
+    getModels: () =>
+      provider.getModels().map((model) => {
+        const contextWindow =
+          settings.context_window === undefined
+            ? model.contextWindow
+            : Math.min(settings.context_window, model.contextWindow)
+        const maxTokens =
+          settings.max_output_tokens === undefined
+            ? model.maxTokens
+            : Math.min(settings.max_output_tokens, model.maxTokens)
+        return {
+          ...model,
+          provider: id,
+          contextWindow,
+          maxTokens,
+        }
+      }),
     stream: (model, context, options) => provider.stream(model, context, options),
     streamSimple: (model, context, options) => provider.streamSimple(model, context, options),
   }
@@ -142,18 +177,19 @@ function declaredProvider(id: string, settings: ProviderSettings): Provider {
     const apiKey = provider.auth.apiKey
     const auth = oauth?.login ? { oauth } : apiKey?.login ? { apiKey: storedApiKeyAuth(apiKey) } : undefined
     if (!auth) throw new Error(`Pi provider '${id}' does not expose an interactive subscription login`)
-    return configuredBuiltinProvider(id, provider, auth)
+    return configuredBuiltinProvider(id, provider, auth, settings)
   }
   if (!provider.auth.apiKey)
     throw new Error(`Pi provider '${id}' does not support environment API-key authentication`)
   return configuredBuiltinProvider(id, provider, {
     apiKey: envApiKeyAuth(provider.auth.apiKey.name, [settings.auth.variable]),
-  })
+  }, settings)
 }
 
 export interface PiModels {
   readonly models: Models
   model(providerID: string): Model<Api>
+  contextCapacity(providerID: string): ModelContextCapacity
   adapter(providerID: string): string
   loginType(providerID: string): AuthType
 }
@@ -185,6 +221,60 @@ export function createPiModels(settings: AgentProviderSettings, credentials: Cre
   for (const [id, providerSettings] of Object.entries(settings.providers))
     models.setProvider(declaredProvider(id, providerSettings))
 
+  const contextCapacity = (providerID: string): ModelContextCapacity => {
+    const configured = settings.providers[providerID]
+    if (!configured) throw new Error(`Provider '${providerID}' is not configured`)
+    const model = models.getModel(providerID, configured.model)
+    if (!model) throw new Error(`Model '${configured.model}' is not available from provider '${providerID}'`)
+    const warnings: string[] = []
+    const catalogModel =
+      configured.adapter === "openai-completions"
+        ? model
+        : builtinProviders()
+            .find((candidate) => candidate.id === configured.adapter)
+            ?.getModels()
+            .find((candidate) => candidate.id === configured.model)
+    const catalogContextWindow = catalogModel?.contextWindow ?? model.contextWindow
+    const trustedRouteWindow = model.contextWindow
+    if (
+      configured.context_window !== undefined &&
+      configured.context_window > catalogContextWindow &&
+      configured.adapter !== "openai-completions"
+    )
+      warnings.push(
+        `context_window ${configured.context_window} exceeds catalog limit ${catalogContextWindow} and was ignored`,
+      )
+    const requestedOperational =
+      configured.operational_context_window ??
+      Math.min(trustedRouteWindow, DEFAULT_OPERATIONAL_CONTEXT_WINDOW)
+    const operationalContextWindow = Math.min(requestedOperational, trustedRouteWindow)
+    if (requestedOperational > trustedRouteWindow)
+      warnings.push(
+        `operational_context_window ${requestedOperational} exceeds trusted route limit ${trustedRouteWindow} and was clamped`,
+      )
+    const source: ModelContextCapacity["source"] =
+      configured.operational_context_window !== undefined
+        ? configured.operational_context_window > trustedRouteWindow
+          ? "configured_operational_clamped"
+          : "configured_operational"
+        : configured.context_window !== undefined && configured.context_window < catalogContextWindow
+          ? "catalog_restricted"
+          : "catalog_default"
+    return {
+      catalogContextWindow,
+      ...(configured.context_window === undefined
+        ? {}
+        : { configuredContextWindow: configured.context_window }),
+      trustedRouteWindow,
+      ...(configured.operational_context_window === undefined
+        ? {}
+        : { configuredOperationalContextWindow: configured.operational_context_window }),
+      operationalContextWindow,
+      source,
+      warnings,
+    }
+  }
+
   return {
     models,
     model(providerID) {
@@ -195,6 +285,7 @@ export function createPiModels(settings: AgentProviderSettings, credentials: Cre
       assertAuthenticSystemChannel(configured.adapter, model)
       return model
     },
+    contextCapacity,
     adapter(providerID) {
       const configured = settings.providers[providerID]
       if (!configured) throw new Error(`Provider '${providerID}' is not configured`)

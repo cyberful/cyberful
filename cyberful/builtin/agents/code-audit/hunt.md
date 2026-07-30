@@ -20,13 +20,14 @@ not vulnerabilities.
   misconfiguration; and robotics/firmware/PLC/HDL trust, update, debug, MMIO/DMA, signal, and real-time paths.
 - For each candidate establish the source or prerequisite, reachable path, failed or questionable control,
   sensitive sink/effect, affected authority, build/runtime conditions, representative location, and variants.
-- Use graph variant queries and source inspection to group one systemic cause without losing distinct impact
-  paths. Record candidates through `code_finding` as `suspected`; keep locations, traces, evidence, weakness,
-  confidence, and relationships structured. Never place secrets or raw personal data in a finding.
+- Reopen Trace hypotheses assigned to Hunt. Use graph variant queries and source inspection to group one
+  systemic cause without losing distinct impact paths. Keep speculative paths in `hypothesis`; promote one
+  through `code_finding` as `suspected` only after positive code/context evidence exists, then link its
+  hypothesis with `finding_id`. Never place secrets or raw personal data in either registry.
 - Challenge architecture claims and framework defaults at their concrete enforcement points. For diff audits,
   review every changed security-sensitive line plus the graph-derived blast radius and plausible alternate paths.
 - Record negative coverage for major classes examined without a candidate. Preserve context-dependent and
-  unreachable cases for verification instead of quietly dropping them.
+  unreachable cases by disposition or by queueing them to Attack instead of quietly dropping them.
 
 ## Deliverable
 

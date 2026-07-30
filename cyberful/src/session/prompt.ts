@@ -4,6 +4,7 @@
 // → cyberful/src/subsystem/orchestrator.ts — advances workflow phases.
 // → cyberful/src/subsystem/zap/runtime.ts — owns authorized runtime-test resources.
 // → cyberful/src/subsystem/ghidra/runtime.ts — owns persistent binary-analysis resources.
+// → cyberful/src/subsystem/container.ts — proves disposable session resources are absent.
 // → cyberful/src/util/bounded-output.ts — bounds retained user shell output.
 // ─────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { SubsystemOrchestrator } from "@/subsystem/orchestrator"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
+import { SubsystemRunStateArtifact } from "@/subsystem/run-state-artifact"
 import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/subsystem/subsystem"
 import { SubsystemUsage } from "@/subsystem/usage"
 import { SubsystemVerdict } from "@/subsystem/verdict"
@@ -1271,17 +1273,44 @@ export const layer = Layer.effect(
         Effect.ensuring(Effect.promise(engagementGhidra.stop)),
         Effect.ensuring(Effect.promise(engagementZap.stop)),
         Effect.ensuring(
-          Effect.promise(() =>
-            Promise.allSettled([
-              SubsystemContainer.remove(container),
-              SubsystemContainer.remove(`${container}-offline`),
-              SubsystemContainer.remove(`${container}-online`),
-            ]).then((outcomes) => {
-              const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []))
-              if (failures.length > 0)
-                throw new AggregateError(failures, "one or more engagement containers failed to stop")
-            }),
-          ),
+          Effect.promise(async () => {
+            try {
+              const cleanup = await SubsystemContainer.removeSession(session.id, [
+                container,
+                `${container}-offline`,
+                `${container}-online`,
+              ])
+              await SubsystemRunStateArtifact.recordTerminalCleanup({
+                workarea: workareaCwd,
+                sessionID: session.id,
+                state: "closed",
+                removed: cleanup.removed,
+                remaining: cleanup.remaining,
+              })
+            } catch (error) {
+              const removed =
+                error instanceof SubsystemContainer.SessionContainerCleanupError
+                  ? error.removed
+                  : []
+              const remaining =
+                error instanceof SubsystemContainer.SessionContainerCleanupError
+                  ? error.remaining
+                  : [container]
+              await SubsystemRunStateArtifact.recordTerminalCleanup({
+                workarea: workareaCwd,
+                sessionID: session.id,
+                state: "closed_with_cleanup_errors",
+                removed,
+                remaining,
+              }).catch((stateError) => {
+                throw new AggregateError(
+                  [error, stateError],
+                  "engagement container cleanup and terminal state persistence failed",
+                )
+              })
+              throw error
+            }
+          }),
         ),
       )
 

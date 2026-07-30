@@ -38,6 +38,7 @@ export type ExpertPhaseEntry = {
   status?: "running" | "completed"
   phaseStatus?: ExpertPhaseStatus
   contextCompaction?: ExpertContextCompaction
+  providerRetry?: ExpertProviderRetry
   actor?: PhaseActivityActor
   actorState?: PhaseActivityActorState
   actorTransitionID?: string
@@ -73,13 +74,25 @@ export type ExpertPhaseStatus = {
 }
 
 export type ExpertContextCompaction = {
-  state: "completed" | "recovered" | "failed"
+  state: "completed" | "noop" | "recovered" | "failed"
   mode: "proactive" | "emergency"
+  reason?: string
   estimatedTokensBefore: number
   estimatedTokensAfter: number
   messagesRemoved: number
   toolResultsVirtualized: number
   artifactsPreserved: number
+  modelSummary: boolean
+  summaryArtifact?: string
+  detail?: string
+}
+
+export type ExpertProviderRetry = {
+  state: "scheduled" | "attempting" | "succeeded" | "timed_out" | "exhausted" | "cancelled"
+  attempt: number
+  maxRetries: number
+  delayMs?: number
+  providerCode?: string
 }
 
 // ── Public Updates Delimit Readable Phase Turns ──────────────────
@@ -134,28 +147,63 @@ export function decodeExpertContextCompaction(text: string): ExpertContextCompac
     if (!isRecord(value) || !isRecord(value.contextCompaction)) return
     const compaction = value.contextCompaction
     if (
-      !["completed", "recovered", "failed"].includes(String(compaction.state)) ||
+      !["completed", "noop", "recovered", "failed"].includes(String(compaction.state)) ||
       !["proactive", "emergency"].includes(String(compaction.mode)) ||
       typeof compaction.estimatedTokensBefore !== "number" ||
       typeof compaction.estimatedTokensAfter !== "number" ||
       typeof compaction.messagesRemoved !== "number" ||
       typeof compaction.toolResultsVirtualized !== "number" ||
-      typeof compaction.artifactsPreserved !== "number"
+      typeof compaction.artifactsPreserved !== "number" ||
+      (compaction.modelSummary !== undefined && typeof compaction.modelSummary !== "boolean")
     )
       return
-    return compaction as ExpertContextCompaction
+    return {
+      ...(compaction as Omit<ExpertContextCompaction, "modelSummary">),
+      modelSummary: compaction.modelSummary === true,
+    }
   } catch {
     return
+  }
+}
+
+export function decodeExpertProviderRetry(text: string): ExpertProviderRetry | undefined {
+  const match = text.match(
+    /^Provider retry (scheduled|attempting|succeeded|timed_out|exhausted|cancelled): attempt (\d+)\/(\d+)(?: after (\d+) ms)?(?: \(([^)]+)\))?\.$/,
+  )
+  if (!match) return
+  const state = match[1] as ExpertProviderRetry["state"]
+  const attempt = Number(match[2])
+  const maxRetries = Number(match[3])
+  const delayMs = match[4] === undefined ? undefined : Number(match[4])
+  if (!Number.isSafeInteger(attempt) || !Number.isSafeInteger(maxRetries) || attempt < 1 || maxRetries < 1) return
+  if (delayMs !== undefined && (!Number.isSafeInteger(delayMs) || delayMs < 0)) return
+  return {
+    state,
+    attempt,
+    maxRetries,
+    ...(delayMs === undefined ? {} : { delayMs }),
+    ...(match[5] ? { providerCode: match[5] } : {}),
   }
 }
 
 export function expertContextCompactionText(compaction: ExpertContextCompaction): string {
   const action =
     compaction.state === "completed"
-      ? "Context compacted"
+      ? compaction.reason === "target_unreachable"
+        ? "Context rotated (target unreachable)"
+        : compaction.reason === "context_rotation" || compaction.modelSummary
+          ? "Context rotated with model checkpoint"
+          : "Context compacted"
+      : compaction.state === "noop"
+        ? "Context compaction exhausted"
       : compaction.state === "recovered"
         ? "Context recovered"
-        : "Context compaction failed"
+        : compaction.reason === "model_summary_failed" || compaction.reason === "summary_failed"
+          ? "Model context checkpoint failed"
+          : compaction.reason === "active_tail_too_large" ||
+              compaction.reason === "context_rotation_failed"
+            ? "Context rotation failed"
+            : "Context compaction failed"
   return [
     `↻ ${action}`,
     `${Locale.number(compaction.estimatedTokensBefore)} → ${Locale.number(compaction.estimatedTokensAfter)} tokens`,
@@ -353,6 +401,7 @@ export function foldExpertActivity(
     if (entries.some((entry) => entry.id === a.id)) return entries
     const status = decodeExpertPhaseStatus(a.text)
     const contextCompaction = decodeExpertContextCompaction(a.text)
+    const providerRetry = decodeExpertProviderRetry(a.text)
     return [
       ...entries,
       {
@@ -366,6 +415,7 @@ export function foldExpertActivity(
         tool: "",
         phaseStatus: status,
         contextCompaction,
+        providerRetry,
       },
     ]
   }

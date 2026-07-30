@@ -11,6 +11,8 @@ import { appendFile, mkdir, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { isRecord } from "@/util/record"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import type { ToolUsageEvent } from "./tool-usage"
+import type { EngagementPolicy } from "./engagement-policy"
 
 export const BROWSER_ACTION_META_KEY = "cyberful.dev/browser-action"
 
@@ -25,6 +27,18 @@ export interface BrowserAction {
   readonly outcome: "ok" | "error"
   readonly status?: number
 }
+
+type EgressAction = {
+  readonly origin: string
+  readonly pathFamily: string
+  readonly method?: string
+  readonly outcome: "ok" | "error"
+  readonly route?: string
+}
+
+type CoverageAction =
+  | ({ readonly kind: "browser" } & BrowserAction)
+  | ({ readonly kind: "egress" } & EgressAction)
 
 function decode(value: unknown): BrowserAction | undefined {
   if (!isRecord(value)) return
@@ -59,7 +73,7 @@ export class SurfaceCoverage {
   readonly #phase: string
   readonly #ledger: string
   readonly #summary: string
-  readonly #records: BrowserAction[] = []
+  readonly #records: CoverageAction[] = []
   #queue: Promise<void> = Promise.resolve()
 
   constructor(workareaRoot: string, phase: string) {
@@ -70,14 +84,35 @@ export class SurfaceCoverage {
     this.#summary = path.join(root, "surface-coverage", `${phase}.summary.json`)
   }
 
-  observe(result: CallToolResult): Promise<void> {
-    const action = browserAction(result)
+  observe(
+    result: CallToolResult,
+    egress?: Pick<
+      ToolUsageEvent,
+      "egress_host" | "egress_method" | "egress_path_family" | "egress_route"
+    >,
+  ): Promise<void> {
+    const browser = browserAction(result)
+    const action: CoverageAction | undefined = browser
+      ? { kind: "browser", ...browser }
+      : egress?.egress_host && egress.egress_path_family
+        ? {
+            kind: "egress",
+            origin: `network://${egress.egress_host}`,
+            pathFamily: egress.egress_path_family,
+            method: egress.egress_method,
+            route: egress.egress_route,
+            outcome: result.isError ? "error" : "ok",
+          }
+        : undefined
     if (!action) return Promise.resolve()
     const pending = this.#queue.then(async () => {
       this.#records.push(action)
       await mkdir(path.dirname(this.#summary), { recursive: true, mode: 0o700 })
       await writeFile(this.#ledger, "", { flag: "a", mode: 0o600 })
-      await appendFile(this.#ledger, `${JSON.stringify({ version: 1, time_iso: new Date().toISOString(), phase: this.#phase, ...action })}\n`)
+      await appendFile(
+        this.#ledger,
+        `${JSON.stringify({ version: 1, time_iso: new Date().toISOString(), phase: this.#phase, ...action })}\n`,
+      )
       await this.#publishSummary()
     })
     this.#queue = pending.then(() => undefined, () => undefined)
@@ -85,7 +120,10 @@ export class SurfaceCoverage {
   }
 
   currentScope(profile: number): Pick<BrowserAction, "profile" | "pageID" | "origin"> | undefined {
-    const action = this.#records.findLast((entry) => entry.profile === profile)
+    const action = this.#records.findLast(
+      (entry): entry is Extract<CoverageAction, { kind: "browser" }> =>
+        entry.kind === "browser" && entry.profile === profile,
+    )
     return action ? { profile: action.profile, pageID: action.pageID, origin: action.origin } : undefined
   }
 
@@ -93,10 +131,37 @@ export class SurfaceCoverage {
     return this.#queue
   }
 
+  async handoffError(policy: EngagementPolicy | undefined) {
+    await this.#queue
+    if (this.#phase !== "recon" || !policy) return
+    const missing = policy.profiles.flatMap((profile) => {
+      if (profile.readiness !== "READY" || profile.scope !== "IN_SCOPE") return []
+      const records = this.#records.filter(
+        (entry): entry is Extract<CoverageAction, { kind: "browser" }> =>
+          entry.kind === "browser" && entry.profile === profile.profile,
+      )
+      const reachedOrigin = records.some(
+        (entry) => entry.outcome === "ok" && (!profile.origin || entry.origin === profile.origin),
+      )
+      const meaningfulAction = records.some(
+        (entry) =>
+          entry.outcome === "ok" &&
+          ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily),
+      )
+      return reachedOrigin && meaningfulAction ? [] : [profile.profile]
+    })
+    if (missing.length > 0)
+      return `surface coverage is incomplete for READY + IN_SCOPE profiles: ${missing.join(", ")}`
+  }
+
   async #publishSummary() {
     const exercised = new Set(
       this.#records
-        .filter((entry) => ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily))
+        .filter(
+          (entry) =>
+            entry.kind === "egress" ||
+            ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily),
+        )
         .map((entry) => `${entry.origin}${entry.pathFamily}`),
     )
     const observed = new Set(this.#records.map((entry) => `${entry.origin}${entry.pathFamily}`))
@@ -105,17 +170,45 @@ export class SurfaceCoverage {
       phase: this.#phase,
       origins: sorted(this.#records.map((entry) => entry.origin)),
       route_families: sorted(observed),
-      methods_observed: sorted(this.#records.filter((entry) => entry.action === "browser_navigate").map(() => "GET")),
-      ui_action_families: sorted(this.#records.map((entry) => entry.actionFamily)),
-      profiles: sorted(this.#records.map((entry) => entry.profile)),
+      methods_observed: sorted(
+        this.#records.flatMap((entry) =>
+          entry.kind === "egress" ? (entry.method ? [entry.method] : []) : entry.action === "browser_navigate" ? ["GET"] : [],
+        ),
+      ),
+      ui_action_families: sorted(
+        this.#records.flatMap((entry) => (entry.kind === "browser" ? [entry.actionFamily] : [])),
+      ),
+      profiles: sorted(this.#records.flatMap((entry) => (entry.kind === "browser" ? [entry.profile] : []))),
       protocols: sorted(this.#records.map((entry) => entry.origin.split(":", 1)[0] ?? "unknown")),
-      state_transitions: sorted(this.#records.map((entry) => entry.pageTransition)),
+      state_transitions: sorted(
+        this.#records.flatMap((entry) => (entry.kind === "browser" ? [entry.pageTransition] : [])),
+      ),
       observed_not_exercised: sorted([...observed].filter((route) => !exercised.has(route))),
       blocked_or_failed: sorted(
         this.#records
-          .filter((entry) => entry.outcome === "error" || entry.status === 401 || entry.status === 403)
+          .filter(
+            (entry) =>
+              entry.outcome === "error" ||
+              (entry.kind === "browser" && (entry.status === 401 || entry.status === 403)),
+          )
           .map((entry) => `${entry.origin}${entry.pathFamily}`),
       ),
+      per_profile: [1, 2, 3, 4, 5].flatMap((profile) => {
+        const records = this.#records.filter(
+          (entry): entry is Extract<CoverageAction, { kind: "browser" }> =>
+            entry.kind === "browser" && entry.profile === profile,
+        )
+        if (records.length === 0) return []
+        return [{
+          profile,
+          origins: sorted(records.map((entry) => entry.origin)),
+          route_families: sorted(records.map((entry) => `${entry.origin}${entry.pathFamily}`)),
+          meaningful_actions: records.filter((entry) =>
+            ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily),
+          ).length,
+          errors: records.filter((entry) => entry.outcome === "error").length,
+        }]
+      }),
     }
     const temporary = `${this.#summary}.${randomUUID()}.tmp`
     await writeFile(temporary, JSON.stringify(summary, null, 2) + "\n", { mode: 0o600, flag: "wx" })

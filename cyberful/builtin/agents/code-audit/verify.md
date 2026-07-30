@@ -21,6 +21,8 @@ disproved paths, and leave a validated finding ledger for reporting.
   expose host credentials, mutate the user's checkout, or attack anything except the local lab.
 - Transition each structured finding with `code_finding`: `confirmed`, `dismissed`, or retain `suspected` only
   when the exact missing fact is documented.
+- Reconcile the linked hypothesis at the same time: confirmed finding to `CONFIRMED`, benign or unreachable
+  dismissal to `DISPROVED`, and a retained suspected finding to `SUSPECTED` or `INCONCLUSIVE` with its next step.
 - A confirmed finding requires a reachable path, failed control, material effect, affected authority, stable
   locations/traces, and reproducible evidence. Severity follows proven impact, never the vulnerability label.
 

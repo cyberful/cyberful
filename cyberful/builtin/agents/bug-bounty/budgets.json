@@ -6,6 +6,14 @@
   "hacker": 360,
   "verify": 180,
   "report": 90,
+  "$closeout": {
+    "brief": 5,
+    "recon": 5,
+    "exploit": 5,
+    "hacker": 5,
+    "verify": 5,
+    "report": 5
+  },
   "$novelty": {
     "recon": { "required": true },
     "exploit": { "required": true },

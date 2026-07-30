@@ -268,7 +268,7 @@ function securityPolicyBlock(
   }
 }
 
-function ordinaryFailure(structured: StructuredEvidence): OrdinaryFailure | undefined {
+function ordinaryFailure(structured: StructuredEvidence, adapter: string): OrdinaryFailure | undefined {
   if (!structured.failed) return
   if (structured.stopReasons.includes("aborted"))
     return { kind: "cancelled", providerCode: "aborted", retryable: false }
@@ -286,6 +286,8 @@ function ordinaryFailure(structured: StructuredEvidence): OrdinaryFailure | unde
   if (providerCode && RATE_LIMIT_CODES.has(providerCode)) return { kind: "rate_limit", ...common, retryable: true }
   if (httpStatus === 429) return { kind: "rate_limit", ...common, retryable: true }
   if (providerCode && CAPACITY_CODES.has(providerCode)) return { kind: "capacity", ...common, retryable: false }
+  if (adapter === "openai-codex" && providerCode === "23")
+    return { kind: "timeout", ...common, retryable: true }
   if (providerCode && TIMEOUT_CODES.has(providerCode)) return { kind: "timeout", ...common, retryable: true }
   if (httpStatus === 408 || httpStatus === 504) return { kind: "timeout", ...common, retryable: true }
   if (providerCode && NETWORK_CODES.has(providerCode)) return { kind: "network", ...common, retryable: true }
@@ -301,7 +303,7 @@ export function classify(observation: FailureObservation): Failure | undefined {
   const structured = evidence(observation)
   if (structured.stopReasons.includes("aborted"))
     return { kind: "cancelled", providerCode: "aborted", retryable: false }
-  return securityPolicyBlock(observation, structured) ?? ordinaryFailure(structured)
+  return securityPolicyBlock(observation, structured) ?? ordinaryFailure(structured, observation.adapter)
 }
 
 export function isSecurityPolicyBlock(failure: Failure | undefined): failure is SecurityPolicyBlock {

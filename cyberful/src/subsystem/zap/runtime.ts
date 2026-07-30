@@ -14,6 +14,7 @@ import { errorMessage } from "@/util/error"
 import { Process } from "@/util/process"
 import { BoundedByteTail } from "@/util/bounded-output"
 import { dockerOwnershipLabels } from "@/util/container-ownership"
+import { applyEngagementRateLimit, readEngagementPolicy } from "../gateway/engagement-policy"
 import {
   cyberZapBridgeImage,
   cyberZapBridgeCommand,
@@ -466,7 +467,12 @@ export async function startEngagement(input: {
   signal?: AbortSignal
 }): Promise<EngagementRuntime> {
   input.signal?.throwIfAborted()
-  if (!shouldEnableCyberZap()) return { env: {}, degraded: false, stop: () => Promise.resolve() }
+  const engagementPolicy = await readEngagementPolicy(input.workarea)
+  if (!shouldEnableCyberZap()) {
+    if (engagementPolicy?.global_http_rps !== null && engagementPolicy?.global_http_rps !== undefined)
+      throw new Error("OWASP ZAP cannot be disabled while the engagement defines a global HTTP rate limit")
+    return { env: {}, degraded: false, stop: () => Promise.resolve() }
+  }
 
   const targetWarning = localTargetWarning(input.objective ?? "")
   const session = slug(input.sessionID)
@@ -514,6 +520,12 @@ export async function startEngagement(input: {
       await commandOutput(["docker", "port", container, "8080/tcp"], { signal: input.signal }),
     )}`
     await waitForApi(proxyUrl, apiKey, container, input.signal)
+    if (engagementPolicy)
+      await applyEngagementRateLimit(engagementPolicy, {
+        proxyUrl,
+        apiKey,
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
     const spki = await certificateSpki(proxyUrl, apiKey, input.signal)
     const env = {
       ...runtimeEnv,
@@ -549,6 +561,11 @@ export async function startEngagement(input: {
       cleanupError = failure
     }
     if (input.signal?.aborted) throw input.signal.reason
+    if (engagementPolicy?.global_http_rps !== null && engagementPolicy?.global_http_rps !== undefined)
+      throw new Error(
+        `OWASP ZAP is required because the engagement defines a global HTTP rate limit: ${errorMessage(error)}`,
+        { cause: error },
+      )
     const warning = [
       `OWASP ZAP unavailable; browser traffic will use the direct fallback: ${errorMessage(error)}`,
       cleanupError ? `ZAP container cleanup also failed: ${errorMessage(cleanupError)}` : undefined,

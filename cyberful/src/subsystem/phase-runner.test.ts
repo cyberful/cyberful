@@ -476,6 +476,16 @@ describe("runPhase transcript persistence", () => {
               provider: "main-test",
               model: "gpt-5.4",
               providerAffinity: "main",
+              reasoningEffort: "ultra",
+              effectiveReasoningEffort: "xhigh",
+              context: {
+                catalogContextWindow: 272_000,
+                trustedRouteWindow: 272_000,
+                operationalContextWindow: 256_000,
+                effectiveOperationalWindow: 256_000,
+                source: "catalog_default",
+                warnings: [],
+              },
               promptSystemSha256: "sha256",
               promptManifest: {
                 workflow: "pentest",
@@ -746,6 +756,43 @@ describe("runPhase transcript persistence", () => {
       "Phase budget exhausted before an explicit handoff; advancing with sealed partial deliverable 'EXPLOIT.md'.",
     )
     expect(result.warnings.join("\n")).not.toContain("Required handoff was not completed")
+  })
+
+  test("a Brief budget cutoff preserves MISSION.md but cannot advance without explicit handoff", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({
+        workflow: "pentest",
+        phase: "brief",
+        objective: "prepare the engagement mission",
+        handoff: { successor: "recon" },
+      }),
+      deps({
+        run: async () => ({
+          stdout: "{}",
+          stderr: "",
+          exitCode: 1,
+          timedOut: true,
+          termination: "budget_exhausted",
+        }),
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ brief: 10 })
+          const instruction = phaseInstructionFile(filePath)
+          if (instruction) return instruction
+          throw Object.assign(new Error("handoff signal does not exist"), { code: "ENOENT" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        writeArtifactManifest: async () => {},
+      }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.handoff).toBeUndefined()
+    expect(result.phaseFailure).toMatchObject({
+      source: "contract",
+      class: "handoff_invalid",
+    })
+    expect(result.warnings.join("\n")).not.toContain("advancing with sealed partial deliverable")
   })
 
   test("a phase budget cutoff still halts when its required deliverable is missing", async () => {
@@ -1053,9 +1100,15 @@ describe("runPhase transcript persistence", () => {
       const manifest: unknown = JSON.parse(contents)
       expect(result.runtimeManifest).toBe("raw/phase-manifests/recon.runtime.json")
       expect(manifest).toMatchObject({
-        version: 3,
+        version: 4,
         phase: "recon",
         backend: "pi",
+        budget: {
+          retryWaitMs: 0,
+          retryCompensationMs: 0,
+          retryCompensationCapReached: false,
+          closeoutReserveMs: 30_000,
+        },
       })
       expect(contents).not.toContain("developerInstructions")
       expect(contents).not.toContain("baseInstructions")

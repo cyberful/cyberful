@@ -122,6 +122,18 @@ apparently idle started/completed rows. The card reports its linked child run,
 provider/model, elapsed time, latest activity, tool count, final state, and
 failure when present.
 
+Launch preflight prints each route's provider/model and reasoning effort. When
+the configured profile resolves to another provider-supported value it uses
+`requested → effective`, for example `ultra → max`. The structured run lifecycle
+and `raw/operations/run-state.json` retain both values.
+
+Context maintenance appears as one terminal timeline row. A successful memory
+replacement is **Context rotated with model checkpoint**; a safe result above
+the 35% target is marked partial, while summary, persistence, or irreducible-tail
+failures use warning color. Deterministic tool-result archival can independently
+report a muted no-op. Historical `context_compaction` transcript entries remain
+readable.
+
 Selecting a user or assistant message opens **Message Actions**. The dialog only
 offers **Copy**, which places the message's visible, non-synthetic text on the
 clipboard; it does not fork the session, revert history, or repopulate the
@@ -137,4 +149,7 @@ the diagnostic text itself is never classification evidence.
 Completion uses `success`, `warning`, `blocked`, or `failed`. Missing required
 deliverables, invalid handoffs, provider exhaustion, and unverified cleanup are
 failures—not “completed with warnings”. A warning indicates only a completed
-run with non-terminal degradation.
+run with non-terminal degradation. Session cleanup likewise records `closed`
+only after Docker absence is verified; `closed_with_cleanup_errors` keeps
+remaining resources and the lifecycle fault visible in
+`raw/operations/run-state.json`.

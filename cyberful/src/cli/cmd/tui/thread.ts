@@ -176,7 +176,11 @@ export const TuiThreadCommand = cmd({
           : provider.route === "fallback"
             ? `${UI.Style.TEXT_WARNING}!${UI.Style.TEXT_NORMAL}`
             : `${UI.Style.TEXT_DANGER}✗${UI.Style.TEXT_NORMAL}`
-        UI.println(`  ${marker} ${provider.route} · ${provider.id}/${provider.model}`)
+        const requestedEffort = provider.reasoningEffort ?? Settings.reasoningEffort(settings)
+        const effectiveEffort = provider.effectiveReasoningEffort ?? requestedEffort
+        const effort =
+          requestedEffort === effectiveEffort ? effectiveEffort : `${requestedEffort} → ${effectiveEffort}`
+        UI.println(`  ${marker} ${provider.route} · ${provider.id}/${provider.model} · reasoning ${effort}`)
       }
       if (!agentStatus.ready) {
         throw new Error(`Pi Agent preflight failed: ${agentStatus.errors.join("; ")}`)

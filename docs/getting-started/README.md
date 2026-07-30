@@ -112,7 +112,8 @@ Rules of engagement:
 
 Access:
 - A standard test account and a tenant-administrator account are available.
-- Ask me when credentials are required.
+- Credentials are supplied for both accounts; store them as session variables
+  and complete ordinary login flows autonomously.
 
 Deliverable:
 - Technical findings, executive summary, and remediation guidance.
@@ -125,10 +126,13 @@ attach an existing scope file or other engagement material.
 Brief does not run security tests. When you declare one or more existing browser
 accounts, it makes one normal application visit per supplied profile to verify
 that the target session is authenticated, visibly distinct where promised, and
-routed through ZAP. A failed login, unavailable profile, or degraded proxy opens
-a blocking question: repair the named profile and select **OK, retry**. Brief
-rechecks it and does not create the required `MISSION.md` or advance to Recon
-while declared access remains broken.
+routed through ZAP. When sufficient credentials were supplied, Brief stores
+them as session variables and completes the normal login autonomously through
+host-resolved `{{var:name}}` references. It opens a blocking **OK, retry**
+question only for a human-only challenge, missing second factor, rejected or
+locked access, unavailable profile, or degraded proxy. Brief rechecks only the
+failed readiness step and does not create the required `MISSION.md` or advance
+to Recon while declared access remains broken.
 
 The same normal journey inventories application dependencies for downstream
 reasoning. Automatically contacted CDNs, backends, status services, and third

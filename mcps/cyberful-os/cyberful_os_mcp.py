@@ -64,7 +64,7 @@ MAX_ENV_VALUE_BYTES = 32 * 1024
 DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
-PASSTHROUGH_ENV_KEYS = ()
+PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY",)
 NO_TELEMETRY_ENV = {
     "DISABLE_UPDATE_CHECK": "true",
     "DO_NOT_TRACK": "1",
@@ -351,6 +351,16 @@ def docker_environment() -> dict[str, str]:
 
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     next_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
+    proxy = next_env.pop("CYBERFUL_OS_HTTP_PROXY", None)
+    if proxy:
+        next_env.update({
+            "HTTP_PROXY": proxy,
+            "HTTPS_PROXY": proxy,
+            "http_proxy": proxy,
+            "https_proxy": proxy,
+            "NO_PROXY": "127.0.0.1,localhost",
+            "no_proxy": "127.0.0.1,localhost",
+        })
     if extra_env:
         next_env.update(normalize_extra_env(extra_env) or {})
     next_env.update(NO_TELEMETRY_ENV)

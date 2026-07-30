@@ -1355,6 +1355,7 @@ function ExpertPhaseRow(props: {
   )
   const semanticProgress = createMemo(() => isExpertSemanticProgress(props.entry.text))
   const contextCompaction = createMemo(() => props.entry.contextCompaction)
+  const providerRetry = createMemo(() => props.entry.providerRetry)
   // Synthetic ToolPart props let a phase-feed tool render through the same GenericTool as session tools.
   const toolPart = createMemo<ToolPart>(() => {
     const e = props.entry
@@ -1507,8 +1508,26 @@ function ExpertPhaseRow(props: {
             when={props.entry.phaseStatus?.ok ? props.entry.phaseStatus : undefined}
             fallback={
               <box
-                marginTop={semanticProgress() || contextCompaction() ? 1 : 2}
-                marginBottom={semanticProgress() || contextCompaction() ? 1 : 2}
+                marginTop={
+                  providerRetry()
+                    ? providerRetry()?.state === "scheduled"
+                      ? 1
+                      : 0
+                    : semanticProgress() || contextCompaction()
+                      ? 1
+                      : 2
+                }
+                marginBottom={
+                  providerRetry()
+                    ? providerRetry()?.state === "succeeded"
+                      || providerRetry()?.state === "exhausted"
+                      || providerRetry()?.state === "cancelled"
+                      ? 1
+                      : 0
+                    : semanticProgress() || contextCompaction()
+                      ? 1
+                      : 2
+                }
                 paddingLeft={3}
                 flexShrink={0}
               >
@@ -1518,7 +1537,15 @@ function ExpertPhaseRow(props: {
                       fg: contextCompaction()
                         ? contextCompaction()?.state === "failed"
                           ? theme.warning
-                          : theme.info
+                          : contextCompaction()?.state === "noop"
+                            ? theme.textMuted
+                            : theme.info
+                        : providerRetry()
+                          ? providerRetry()?.state === "succeeded"
+                            ? theme.success
+                            : providerRetry()?.state === "exhausted" || providerRetry()?.state === "cancelled"
+                              ? theme.error
+                              : theme.warning
                         : semanticProgress()
                           ? theme.textMuted
                           : props.entry.phaseStatus

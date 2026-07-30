@@ -9,6 +9,7 @@
 
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -24,6 +25,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { apiParameters, operationKey } from "./zap_policy.mjs"
 import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
+import { replayRequest } from "./zap_history_replay.mjs"
 import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
 import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
@@ -320,6 +322,28 @@ async function nativeTool(name, args) {
           })
         : value,
     )
+  }
+  if (name === "zap_history_replay") {
+    const source = await hostApiJson("core", "view", "message", { id: args.id })
+    const message = source?.message ?? source
+    const replay = replayRequest(message, args)
+    const result = await hostApiFetch("core", "action", "sendRequest", {
+      request: replay.request,
+      followRedirects: args.follow_redirects === true,
+    })
+    const sent = result?.sendRequest?.[0]
+    if (!sent) throw new Error("ZAP sendRequest returned no replay message")
+    const metadata = messageMetadata(sent)
+    const target = new URL(replay.targetUrl)
+    return text({
+      source_id: args.id,
+      replay_id: metadata.id,
+      target: `${target.origin}${target.pathname}`,
+      mutation_summary: replay.mutationSummary,
+      response: metadata,
+      response_sha256: createHash("sha256").update(typeof sent.responseBody === "string" ? sent.responseBody : "").digest("hex"),
+      cyberful_projection: "metadata",
+    })
   }
   if (name === "zap_websocket_history") {
     return text(

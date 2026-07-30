@@ -8,7 +8,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core"
 import { createHash } from "node:crypto"
 import { Unsafe } from "typebox"
-import type { Settings } from "@/config/settings"
+import { Settings } from "@/config/settings"
 import type {
   AgentEvent,
   AgentRunResult,
@@ -20,7 +20,7 @@ import type { DynamicTool, SubsystemFailure, SubsystemMcpServer } from "./subsys
 import type { CompiledAgentPrompt } from "./prompt-compiler"
 import type { SkillRegistry } from "./pi-skills"
 import type { AskHuman } from "./human-question"
-import type { Controller as ApprovalController } from "./approval-state"
+import type { Controller as PhaseBudgetClock } from "./phase-budget-clock"
 import { PiCredentialStore } from "./pi-credentials"
 import { PiAgentSubsystem } from "./pi-agent"
 import { durableFallbackLedgerForSession } from "./pi-fallback-ledger"
@@ -28,6 +28,8 @@ import { connectPiMcp } from "./pi-mcp"
 import { createPiModels } from "./pi-models"
 import { PiAudit } from "./pi-audit"
 import { replaceWorkareaFile } from "@/workarea"
+import { RunStateArtifact } from "./run-state-artifact"
+import { PiReasoning } from "./pi-reasoning"
 
 export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "subsystem_failed"
 
@@ -57,8 +59,10 @@ export interface RunInput {
   readonly abort?: AbortSignal
   readonly timeoutMs: number
   readonly askQuestion?: AskHuman
-  readonly approvalState?: ApprovalController
+  readonly budgetClock?: PhaseBudgetClock
+  readonly closeoutReserveMs?: number
   readonly handoffOwner: boolean
+  readonly providerRoute?: "main" | "fallback"
   readonly transcript?: {
     readonly append: (line: string) => Promise<void>
   }
@@ -142,6 +146,8 @@ function finalLine(result: AgentRunResult): string {
       provider: result.provider,
       model: result.model,
       providerAffinity: result.providerAffinity,
+      reasoningEffort: result.reasoningEffort,
+      effectiveReasoningEffort: result.effectiveReasoningEffort,
       termination: result.termination,
       failure: result.failure,
       usage: result.usage,
@@ -215,6 +221,14 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
   let bridge: Awaited<ReturnType<typeof connectPiMcp>> | undefined
   let subsystem: PiAgentSubsystem | undefined
   const persistedLiveArtifacts = new Set<string>()
+  const liveState = new RunStateArtifact({
+    workarea: input.workarea,
+    workflow: input.compiledPrompt.manifest.workflow,
+    phase: input.compiledPrompt.manifest.phase,
+    deadlineAt: input.deadlineAt,
+    budgetClock: input.budgetClock,
+    closeoutReserveMs: input.closeoutReserveMs ?? 0,
+  })
   try {
     const credentials = new PiCredentialStore()
     const registry = createPiModels(input.settings.agent, credentials)
@@ -230,14 +244,22 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       onShutdown: () => bridge!.close(),
     })
     activeWorkers.add(subsystem)
-    const provider = input.settings.agent.main_provider
+    const providerRoute = input.providerRoute ?? "main"
+    const provider =
+      providerRoute === "fallback"
+        ? input.settings.agent.fallback_provider
+        : input.settings.agent.main_provider
+    if (!provider) throw new Error("phase recovery requested a fallback provider, but none is configured")
+    const model = registry.model(provider)
     const rootSpec: AgentRunSpec = {
       sessionID: input.sessionID,
       role: "root",
       depth: 0,
       provider,
-      model: registry.model(provider),
-      providerAffinity: "main",
+      model,
+      context: registry.contextCapacity(provider),
+      providerAffinity: providerRoute,
+      reasoning: PiReasoning.resolve(Settings.reasoningEffort(input.settings), model),
       prompt: input.compiledPrompt,
       compileChildPrompt: input.compileChildPrompt,
       task: input.task,
@@ -252,8 +274,9 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       skills: input.skills.catalog,
       budget: {
         deadlineAt: input.deadlineAt,
-        maxOutputTokens: registry.model(provider).maxTokens,
-        ...(input.approvalState ? { pause: input.approvalState } : {}),
+        maxOutputTokens: model.maxTokens,
+        ...(input.budgetClock ? { clock: input.budgetClock } : {}),
+        ...(input.closeoutReserveMs ? { closeoutReserveMs: input.closeoutReserveMs } : {}),
       },
       abort: input.abort,
       delegation: {
@@ -261,6 +284,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
         maxPerRun: input.settings.agent.subagents.max_per_run,
         maxConcurrent: input.settings.agent.subagents.max_concurrent,
         maxDepth: input.settings.agent.subagents.max_depth,
+        maxRuntimeMs: (input.settings.agent.subagents.timeout_minutes ?? 30) * 60_000,
       },
       handoffOwner: input.handoffOwner,
       transcript: {
@@ -278,12 +302,14 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     const root = await subsystem.start(rootSpec)
     const consumeEvents = (async () => {
       for await (const event of root.events) {
+        await liveState.observe(event)
         await input.transcript?.append(`${transcriptLine(event)}\n`)
         onEvent?.(await projectLiveEvent(event, input.workarea, persistedLiveArtifacts))
       }
     })()
     const result = await root.result
     await consumeEvents
+    await liveState.close()
     await input.transcript?.append(`${finalLine(result)}\n`)
     const termination = terminationOf(result)
     return {
@@ -306,6 +332,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       failureReason: errorDetail(error),
     }
   } finally {
+    await liveState.close().catch(() => undefined)
     if (subsystem) {
       await subsystem.shutdown().catch(() => undefined)
       activeWorkers.delete(subsystem)

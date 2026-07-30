@@ -217,9 +217,9 @@ describe("AgentPromptCompiler", () => {
     expect(() =>
       AgentPromptCompiler.compile(input({ role: "subagent", providerRoute: "main", handoffOwner: true })),
     ).toThrow("only the original root AgentRun")
-    expect(() => AgentPromptCompiler.compile(input({ role: "root", providerRoute: "fallback" }))).toThrow(
-      "original root AgentRun must use the main provider route",
-    )
+    const recoveryRoot = AgentPromptCompiler.compile(input({ role: "root", providerRoute: "fallback" }))
+    expect(recoveryRoot.system).toContain("This is the original root AgentRun for the phase")
+    expect(recoveryRoot.system).toContain("fallback provider affinity")
   })
 
   test("keeps handoff ownership only on the original root and supports a root without handoff", () => {
