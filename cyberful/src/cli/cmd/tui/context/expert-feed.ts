@@ -39,6 +39,7 @@ export type ExpertPhaseEntry = {
   phaseStatus?: ExpertPhaseStatus
   contextCompaction?: ExpertContextCompaction
   providerRetry?: ExpertProviderRetry
+  runtimeDiagnostic?: ExpertRuntimeDiagnostic
   actor?: PhaseActivityActor
   actorState?: PhaseActivityActorState
   actorTransitionID?: string
@@ -95,6 +96,17 @@ export type ExpertProviderRetry = {
   providerCode?: string
 }
 
+export type ExpertRuntimeDiagnostic = {
+  component: "gateway" | "zap" | "browser" | "mcp"
+  profile?: string
+  stage: "startup" | "connect" | "tool" | "shutdown"
+  severity: "warning" | "error"
+  errorClass: string
+  code?: string
+  message: string
+  path: string
+}
+
 // ── Public Updates Delimit Readable Phase Turns ──────────────────
 // One subsystem run can stream many public updates and tool calls. Each root
 // prose update begins a readable turn, while delegated prose and following rows
@@ -122,6 +134,10 @@ export function expertActorStateText(state: PhaseActivityActorState): string {
   if (state === "completed") return "completed"
   if (state === "interrupted") return "interrupted"
   return "failed"
+}
+
+export function expertActorIdentityText(actor: PhaseActivityActor | undefined): string | undefined {
+  return actor?.displayName && actor.emoji ? `${actor.emoji} ${actor.displayName}` : undefined
 }
 
 export function expertActorCardLabel(label: string): string {
@@ -186,6 +202,62 @@ export function decodeExpertProviderRetry(text: string): ExpertProviderRetry | u
   }
 }
 
+// ── Runtime Notices Do Not Imply Phase Failure ───────────────────
+// The recorder has already sanitized and bounded the detail before publishing
+// this host-owned status payload. The feed validates that envelope once, then
+// labels tool failures as recoverable because Pi receives the failed call and
+// may continue. Legacy path-only rows remain readable after restart, while the
+// terminal phase status remains the sole authority for a blocking outcome.
+// ─────────────────────────────────────────────────────────────────
+export function decodeExpertRuntimeDiagnostic(text: string): ExpertRuntimeDiagnostic | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.runtimeDiagnostic)) return
+    const diagnostic = value.runtimeDiagnostic
+    if (
+      !["gateway", "zap", "browser", "mcp"].includes(String(diagnostic.component)) ||
+      !["startup", "connect", "tool", "shutdown"].includes(String(diagnostic.stage)) ||
+      !["warning", "error"].includes(String(diagnostic.severity)) ||
+      typeof diagnostic.errorClass !== "string" ||
+      typeof diagnostic.message !== "string" ||
+      typeof diagnostic.path !== "string" ||
+      (diagnostic.profile !== undefined && typeof diagnostic.profile !== "string") ||
+      (diagnostic.code !== undefined && typeof diagnostic.code !== "string")
+    )
+      return
+    return diagnostic as ExpertRuntimeDiagnostic
+  } catch {
+    const legacy = text.match(/^Runtime diagnostic:\s*([^·]+?)\s*·\s*([^·]+?)\s*·\s*(.+)$/u)
+    if (!legacy) return
+    const component = legacy[1]?.trim()
+    if (!component || !["gateway", "zap", "browser", "mcp"].includes(component)) return
+    return {
+      component: component as ExpertRuntimeDiagnostic["component"],
+      stage: "startup",
+      severity: "warning",
+      errorClass: legacy[2]?.trim() || "RuntimeDiagnostic",
+      message: "Sanitized details are available in the local diagnostic log.",
+      path: legacy[3]?.trim() || "raw/operations/runtime-diagnostics.jsonl",
+    }
+  }
+}
+
+export function expertRuntimeDiagnosticText(diagnostic: ExpertRuntimeDiagnostic): string {
+  const headline =
+    diagnostic.stage === "tool"
+      ? diagnostic.severity === "error"
+        ? "Tool failed; run continues"
+        : "Tool warning; run continues"
+      : diagnostic.severity === "error"
+        ? `Runtime ${diagnostic.stage} error`
+        : `Runtime ${diagnostic.stage} notice`
+  const source = diagnostic.profile ? `${diagnostic.component}/${diagnostic.profile}` : diagnostic.component
+  const code = diagnostic.code ? ` (${diagnostic.code})` : ""
+  return (
+    `ⓘ ${headline} · ${source} · ${diagnostic.errorClass}${code} · ${diagnostic.message}` + ` · log: ${diagnostic.path}`
+  )
+}
+
 export function expertContextCompactionText(compaction: ExpertContextCompaction): string {
   const action =
     compaction.state === "completed"
@@ -196,14 +268,13 @@ export function expertContextCompactionText(compaction: ExpertContextCompaction)
           : "Context compacted"
       : compaction.state === "noop"
         ? "Context compaction exhausted"
-      : compaction.state === "recovered"
-        ? "Context recovered"
-        : compaction.reason === "model_summary_failed" || compaction.reason === "summary_failed"
-          ? "Model context checkpoint failed"
-          : compaction.reason === "active_tail_too_large" ||
-              compaction.reason === "context_rotation_failed"
-            ? "Context rotation failed"
-            : "Context compaction failed"
+        : compaction.state === "recovered"
+          ? "Context recovered"
+          : compaction.reason === "model_summary_failed" || compaction.reason === "summary_failed"
+            ? "Model context checkpoint failed"
+            : compaction.reason === "active_tail_too_large" || compaction.reason === "context_rotation_failed"
+              ? "Context rotation failed"
+              : "Context compaction failed"
   return [
     `↻ ${action}`,
     `${Locale.number(compaction.estimatedTokensBefore)} → ${Locale.number(compaction.estimatedTokensAfter)} tokens`,
@@ -294,9 +365,7 @@ function phaseStatusText(status: ExpertPhaseStatus): string {
   const approvalWait = status.approvalWaitMs ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}` : ""
   const warning = status.failure?.detail ?? status.warnings[0]
   const additionalWarnings = status.failure ? status.warnings.length : Math.max(0, status.warnings.length - 1)
-  const detail = warning
-    ? ` · ${warning}${additionalWarnings > 0 ? ` (+${additionalWarnings})` : ""}`
-    : ""
+  const detail = warning ? ` · ${warning}${additionalWarnings > 0 ? ` (+${additionalWarnings})` : ""}` : ""
   return (
     `Phase failed · ${status.backend} · ${status.termination} · worker exit ${status.exitCode} · ${elapsed}s · ` +
     `limit ${limit}m (effective ${effective}m) · deadline ${new Date(status.deadlineAt).toISOString()}` +
@@ -402,6 +471,7 @@ export function foldExpertActivity(
     const status = decodeExpertPhaseStatus(a.text)
     const contextCompaction = decodeExpertContextCompaction(a.text)
     const providerRetry = decodeExpertProviderRetry(a.text)
+    const runtimeDiagnostic = decodeExpertRuntimeDiagnostic(a.text)
     return [
       ...entries,
       {
@@ -411,11 +481,14 @@ export function foldExpertActivity(
           ? phaseStatusText(status)
           : contextCompaction
             ? expertContextCompactionText(contextCompaction)
-            : a.text,
+            : runtimeDiagnostic
+              ? expertRuntimeDiagnosticText(runtimeDiagnostic)
+              : a.text,
         tool: "",
         phaseStatus: status,
         contextCompaction,
         providerRetry,
+        runtimeDiagnostic,
       },
     ]
   }

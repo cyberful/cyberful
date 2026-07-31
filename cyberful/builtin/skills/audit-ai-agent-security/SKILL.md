@@ -1,53 +1,82 @@
 ---
 name: audit-ai-agent-security
-description: Audit LLM applications, retrieval systems, multimodal pipelines, autonomous agents, tool calling, memory, model and data supply chains, and AI output consumers during authorized penetration tests or code audits. Use for direct or indirect prompt injection, excessive agency, tool abuse, cross-tenant retrieval, data poisoning, sensitive disclosure, unsafe output handling, model extraction, denial of wallet, and agent control-plane review.
+description: Map and aggressively test the security boundaries of LLM applications, RAG systems, multimodal ingestion, autonomous agents, tool calling, memory, delegation, model fallbacks, plugins, MCP servers, and AI output consumers during authorized penetration tests or code audits. Use for direct, indirect, stored, multimodal, tool-output, error, memory, and cross-agent prompt injection; capability and identity mapping; excessive agency; workspace or synthetic-secret access; controlled egress and SSRF; parser and code-execution chains; cross-tenant retrieval; persistent poisoning; unsafe output handling; fallback bypass; denial of wallet; and AI control-plane review.
 ---
 
 # Audit AI and Agent Security
 
-## Model Authority Outside the Prompt
+## Establish the Capability Map
 
-Map model inputs, system and developer instructions, retrieved content, memory, tools, identities, approvals, output consumers, model provider, plugins, data pipelines, and human operators. Mark each trust boundary and which component-not the model-enforces it.
+Classify every AI surface as `rag_only`, `tool_enabled`, or `unknown` before testing. Record the authenticated identity, tenant, approval boundary, delegation and fallback behavior, and each reachable capability:
 
-Treat model output as untrusted interpretation. Prompt hierarchy improves behavior but is not a deterministic authorization, confidentiality, or integrity boundary.
+- retrieval source, database, vector store, memory, and cache;
+- filesystem, workspace, uploads, document parsers, and generated artifacts;
+- browser, HTTP, webhook, email, messaging, and network egress;
+- shell, notebook, interpreter, template engine, plugin, and package manager;
+- IAM, cloud, signing, deployment, secret manager, and financial actions;
+- output consumed as HTML, Markdown, URL, CSV, SQL, code, shell, or another tool schema.
 
-Read [llm-risk-catalog.md](references/llm-risk-catalog.md) for the application risk surface. Read [agent-tool-boundaries.md](references/agent-tool-boundaries.md) for capability containment. Read [rag-memory-supply-chain.md](references/rag-memory-supply-chain.md) for retrieval, memory, and model/data provenance.
+Map credentials and resource scope outside the prompt. Treat model instructions as behavior guidance, never as authorization, confidentiality, or integrity enforcement.
 
-## Build a Capability Graph
+Read [agent-tool-boundaries.md](references/agent-tool-boundaries.md) for tool-chain escalation and deterministic mediation. Read [llm-risk-catalog.md](references/llm-risk-catalog.md) for the required injection and execution matrix. Read [rag-memory-supply-chain.md](references/rag-memory-supply-chain.md) for ingestion, retrieval, memory, and poisoning tests.
 
-For each tool or action, record:
+## Register Before Testing
 
-- schema and semantic capability;
-- credentials and tenant context;
-- resources selectable by arguments;
-- read, write, execution, communication, and financial effect;
-- preconditions and approval;
-- return data reintroduced into context;
-- retry, rollback, and idempotency;
-- audit and revocation.
+Create one hypothesis before each discriminating test. Link the untrusted source, expected boundary, intended safe effect, target capability, prerequisites, and evidence path.
 
-Derive the maximum effect of one model decision and of a multi-step chain. A read tool can become a write primitive if its content is interpreted by a later tool; a low-risk search tool can expose instructions that steer a privileged agent.
+For every relevant chain, finish with exactly one outcome:
 
-## Test Control-Data Separation
+- `tested`: the boundary and security-relevant effect were exercised;
+- `disproved`: evidence rules out the proposed primitive under tested conditions;
+- `inconclusive`: a concrete prerequisite or technical limit prevented a verdict;
+- `not_applicable`: the mapped architecture has no required capability.
 
-Inject benign canary instructions through every untrusted channel: user message, retrieved page, document metadata, image text, tool result, email, code comment, issue, memory, and cross-agent message. Observe whether the content alters tool selection, arguments, disclosure, destination, or approval behavior.
+Do not infer `not_applicable` from a refusal or a single failed payload. Do not stop at prompt disclosure when a mapped tool, parser, identity, or output consumer provides a plausible escalation path.
 
-Vary placement, encoding, language, quoted data, delayed activation, references, and multi-turn state. The finding is the security-relevant effect, not the model following an unusual sentence.
+## Exercise the Injection Sources
 
-## Validate Deterministic Enforcement
+Place benign canary instructions in each reachable untrusted channel:
 
-Inspect whether code outside the model constrains:
+- direct user input;
+- retrieved pages, documents, metadata, comments, alt text, OCR-visible pixels, and hidden layers;
+- stored memory, vector content, tool output, error text, and retry feedback;
+- email, issue, webhook, code comment, generated artifact, and handoff capsule;
+- another agent, delegated task, fallback model, or downgraded route.
 
-- authenticated principal and tenant;
-- allowed tools and per-tool resource scope;
-- structured arguments and canonicalization;
-- destination and recipient;
-- sensitive-data release;
-- action approval and transaction preview;
-- budget, iteration, concurrency, and recursion;
-- memory write and retrieval scope;
-- output encoding before downstream interpreters.
+Vary encoding, language, quoting, transformation tasks, delayed activation, multi-turn state, and tool-result prerequisites. Measure changes to tool selection, arguments, identity, destination, disclosure, approval, memory writes, or downstream interpretation. A surprising text answer alone is not the finding; the failed deterministic boundary and resulting capability are.
 
-## Report the Failed Boundary
+## Escalate According to the Map
 
-Provide the injected source, model decision, tool or consumer path, deterministic control that was absent or bypassed, resulting capability, reproducibility across trials, and context prerequisites. Recommend capability reduction and external enforcement before prompt changes.
+Test the shortest safe chain first, then deepen only when evidence supports it:
+
+1. Demonstrate instruction influence with a unique marker.
+2. Demonstrate access using a synthetic canary resource created for the engagement, never an unrelated real secret.
+3. Demonstrate controlled propagation to an approved local sink or collaborator endpoint.
+4. Demonstrate the maximum non-destructive capability: cross-tenant read, SSRF canary, authenticated browser side effect, parser action, shell marker, or downstream interpreter influence.
+5. Stop before destructive, persistent, costly, or third-party effects; report the proven primitive and bounded consequence.
+
+Include these branches whenever the capability map supports them:
+
+- hidden prompt or context disclosure;
+- workspace reads, including synthetic `.env`, cloud, SSH, signing, API, or token-shaped canaries;
+- file-read-to-controlled-egress;
+- SSRF to authorized loopback, private, metadata-simulator, or internal-service canaries;
+- shell, notebook, template, plugin, package-manager, or code-execution markers;
+- parser SSRF, archive traversal, SVG/HTML active content, OCR, metadata, and safe deserialization probes;
+- cross-tenant retrieval, stale ACL, confused deputy, or shared-cache leakage;
+- authenticated browser, email-recipient, webhook, and integration side effects;
+- persistent memory, artifact, capsule, and handoff poisoning;
+- retry, fallback, model downgrade, streaming, or guard-order bypass;
+- output injection into HTML, Markdown, CSV, SQL, shell, templates, or tool schemas;
+- MCP schema/tool-discovery abuse, recursive delegation, and denial-of-wallet;
+- IAM, signing, deployment, and secret-manager primitives using synthetic or read-only proof.
+
+## Preserve Safety and Evidence
+
+Use unique markers, hashes, local fixtures, redacted metadata, inert destinations, and least-privilege test identities. Never exfiltrate real credentials, send attacker-controlled messages to uninvolved recipients, execute destructive commands, persist uncontrolled poisoning, or incur material spend.
+
+Record the source, exact preconditions, model decision, tool or parser path, canonical arguments, deterministic control that failed, observed effect, reproducibility, and artifact references. Distinguish provider refusal, rate limit, unavailable tooling, and genuine absence of a primitive from model avoidance.
+
+## Recommend the Boundary Fix
+
+Reduce capabilities and credentials first. Enforce tenant, resource, destination, recipient, egress, approval, budget, recursion, and output encoding in host or gateway code. Bind approvals to canonical resolved actions. Taint untrusted tool and retrieval output. Treat prompt changes as defense in depth.

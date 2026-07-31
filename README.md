@@ -138,8 +138,10 @@ tracks stable questions, owners, tests, evidence, phase transfers, finding
 links, and final dispositions. The same registry serves Pentest and Code Audit;
 Bug Bounty additionally requires a qualitative contrarian synthesis.
 
-The Bug Bounty ceilings are deliberately long: 30 minutes for Brief, 240 for
-Recon, 360 each for Exploit and Hacker, 180 for Verify, and 90 for Report.
+Bug Bounty uses 30 minutes for Brief, 60 for Recon, 120 each for Exploit and
+Hacker, 180 for Verify, and 90 for Report. Pentest uses the same 60/120/120
+research budgets. Provider wait can extend each research phase by at most one
+shared 15-minute pool; explicit human approval wait is tracked separately.
 Novelty remains qualitative: convergence triggers a contrarian pivot, not a
 quota, while browser surface coverage steers the phases toward unvisited real
 journeys. Every `READY` and `IN_SCOPE` profile must reach its origin and perform
@@ -356,7 +358,8 @@ Transient `unavailable` provider failures, including abnormal Codex WebSocket
 closure `1006`, retry the same turn with bounded jitter while preserving
 completed tool results. Retry backoff and response wait suspend active phase
 time, but suspension ends before tools returned by the retry execute; each
-attempt is capped at ten minutes and total default compensation at 30 minutes.
+attempt is capped at ten minutes and the entire phase shares at most 15 minutes
+of default extension across root, children, fallback, retry, and recovery.
 Runtime state keeps full retry wait separate from the capped compensation
 applied to the deadline. Large MCP catalogs remain fully available through
 per-run `tool_search` loading, and long browser pages can be read with
@@ -369,6 +372,18 @@ remain authoritative. Built-in model catalog limits cannot be enlarged by
 settings. GPT-5.6 Sol, GLM-5.2, and Kimi K3 default to a 256K working window,
 and emergency `context_length_exceeded` recovery learns a lower session/route
 bound before retrying once without executing a completed tool twice.
+
+Provider calls are reconciled locally in
+`raw/operations/provider-usage.jsonl`, split between root and delegated
+AgentRuns without adding reasoning twice. The TUI shows compact `R>`/`S>`
+input, cached, and generated totals plus a live count of active hypotheses.
+Sanitized gateway, ZAP, browser, and MCP failures are retained as bounded,
+deduplicated V2 records in `raw/operations/runtime-diagnostics.jsonl` without
+placing bodies, stack traces, or details into model context. Successful tool
+output never becomes a connection warning. Routine gateway `stdio` lifecycle
+records and timestamp-prefixed `TRACE`/`DEBUG`/`INFO` logs remain
+informational. Actionable notices distinguish recovered retries, non-blocking
+tool failures, degraded observability, and terminal lifecycle failures.
 
 Phase transcripts are appended owner-only while a phase runs. Terminal outcomes
 distinguish success, warning, blocked, and failed, with structured primary

@@ -16,7 +16,6 @@ const MAX_NOTES_CHARS = 12_000
 const MAX_NEXT_CHARS = 6_000
 const MAX_STATE_STRING_CHARS = 2_000
 const MAX_STATE_ITEMS = 64
-const HISTORICAL_USER_TOKEN_LIMIT = 16_000
 export const HOST_CHECKPOINT_PREFIX = "[Host-owned semantic context checkpoint]"
 
 export const MODEL_SUMMARY_MAX_TOKENS = 8_192
@@ -69,9 +68,9 @@ export interface SemanticProjection {
 
 export interface RotationHistory {
   readonly messages: AgentMessage[]
-  readonly sourceMessages: number
   readonly activeMessages: number
-  readonly historicalUserMessages: number
+  readonly summarizedMessages: number
+  readonly splitTurn: boolean
 }
 
 export function validateRotationHistory(messages: readonly AgentMessage[]): void {
@@ -390,13 +389,6 @@ function isHostCheckpoint(message: AgentMessage): boolean {
   )
 }
 
-function hasToolCalls(message: AgentMessage): boolean {
-  return (
-    message.role === "assistant" &&
-    message.content.some((item) => item.type === "toolCall")
-  )
-}
-
 function toolCallIDs(message: AgentMessage): readonly string[] {
   if (message.role !== "assistant") return []
   return message.content.flatMap((item) =>
@@ -404,72 +396,52 @@ function toolCallIDs(message: AgentMessage): readonly string[] {
   )
 }
 
-// ── Rotation Preserves The Irreducible Conversation Tail ─────────
-// A checkpoint replaces all earlier semantic detail, but the most recent user
-// turn and its complete assistant/tool exchange remain verbatim. A final
-// completed tool chain immediately before that turn is retained as a continuity
-// anchor. Older user instructions are admitted newest-first under a 16K cap and
-// then restored to chronological order. Host checkpoints are never mistaken for
-// operator input, so consecutive rotations replace rather than accumulate them.
+function validCutPoint(message: AgentMessage): boolean {
+  return message.role === "user" || message.role === "assistant"
+}
+
+// ── Rotation Keeps A Budgeted Suffix, Not An Entire Agent Turn ────
+// Cyberful phases commonly contain one operator message followed by hundreds of
+// assistant and tool exchanges, so retaining everything after the latest user
+// message makes that whole phase irreducible. Rotation instead walks backward
+// under a token budget and starts only at a user or assistant boundary. A cut
+// never starts at a tool result, and final validation proves that every retained
+// tool call still owns all of its results. The durable transcript remains the
+// complete history while the model sees one checkpoint plus the recent suffix.
 //
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 export function buildRotationHistory(input: {
   readonly messages: readonly AgentMessage[]
   readonly checkpoint: UserMessage
-  readonly historicalUserTokenLimit?: number
+  readonly recentTokenLimit: number
 }): RotationHistory {
+  if (!Number.isFinite(input.recentTokenLimit) || input.recentTokenLimit < 0)
+    throw new Error("rotation recentTokenLimit must be a non-negative finite number")
+
   const source = input.messages.filter((message) => !isHostCheckpoint(message))
-  const activeStart = source.findLastIndex((message) => message.role === "user")
-  const effectiveActiveStart = activeStart < 0 ? source.length : activeStart
-  const active = source.slice(effectiveActiveStart)
-
-  let chainStart = effectiveActiveStart
-  for (let index = effectiveActiveStart - 1; index >= 0; index--) {
+  let recentTokens = 0
+  let suffixStart = source.length
+  for (let index = source.length - 1; index >= 0; index--) {
     const message = source[index]
-    if (!message || !hasToolCalls(message)) continue
-    const expected = new Set(toolCallIDs(message))
-    const results = source.slice(index + 1, effectiveActiveStart)
-    const complete =
-      expected.size > 0 &&
-      results.length > 0 &&
-      results.every((candidate) => candidate.role === "toolResult") &&
-      results.every(
-        (candidate) => candidate.role !== "toolResult" || expected.delete(candidate.toolCallId),
-      ) &&
-      expected.size === 0
-    if (complete) chainStart = index
-    break
+    if (!message) continue
+    recentTokens += estimateTokens(message)
+    if (recentTokens > input.recentTokenLimit) break
+    if (validCutPoint(message)) suffixStart = index
   }
-  const latestCompleteChain =
-    chainStart < effectiveActiveStart ? source.slice(chainStart, effectiveActiveStart) : []
 
-  const historicalLimit = input.historicalUserTokenLimit ?? HISTORICAL_USER_TOKEN_LIMIT
-  let historicalTokens = 0
-  const historicalUsers = source
-    .slice(0, chainStart)
-    .filter((message): message is UserMessage => message.role === "user")
-    .toReversed()
-    .filter((message) => {
-      const tokens = estimateTokens(message)
-      if (historicalTokens + tokens > historicalLimit) return false
-      historicalTokens += tokens
-      return true
-    })
-    .toReversed()
-
-  const rotated = [
-    input.checkpoint,
-    ...historicalUsers,
-    ...latestCompleteChain,
-    ...active,
-  ]
+  const suffix = source.slice(suffixStart)
+  const rotated = [input.checkpoint, ...suffix]
   validateRotationHistory(rotated)
+  const summarized = source.slice(0, suffixStart)
   return {
     messages: rotated,
-    sourceMessages: input.messages.length,
-    activeMessages: active.length + latestCompleteChain.length + 1,
-    historicalUserMessages: historicalUsers.length,
+    activeMessages: suffix.length + 1,
+    summarizedMessages: summarized.length,
+    splitTurn:
+      suffix.length > 0 &&
+      summarized.some((message) => message.role === "user") &&
+      !suffix.some((message) => message.role === "user"),
   }
 }
 

@@ -41,6 +41,8 @@ describe("run-state artifact", () => {
           catalogContextWindow: 272_000,
           trustedRouteWindow: 272_000,
           operationalContextWindow: 256_000,
+          continuationReserveTokens: 16_384,
+          hardInputTokens: 255_616,
           effectiveOperationalWindow: 256_000,
           source: "catalog_default",
           warnings: [],

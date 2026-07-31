@@ -397,7 +397,6 @@ async function runInteractiveRuntime(input: RunRuntimeInput): Promise<void> {
                   phase: "idle",
                   duration: "",
                   startedAt: undefined,
-                  usage: "",
                   first: true,
                 },
               })

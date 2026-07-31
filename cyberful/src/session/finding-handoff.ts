@@ -6,6 +6,7 @@
 
 import { FindingRegistry } from "@/finding/registry"
 import { SubsystemVerdict } from "@/subsystem/verdict"
+import type { HandoffSnapshotV2 } from "@/subsystem/handoff-snapshot"
 
 export function findingWorkflow(value: string): FindingRegistry.Workflow {
   if (value === "pentest" || value === "bug-bounty" || value === "code-audit") return value
@@ -19,6 +20,7 @@ export async function findingHandoffWarning(
     workflow: FindingRegistry.Workflow
     phase: string
     verdicts?: SubsystemVerdict.Ledger
+    snapshot?: HandoffSnapshotV2
   },
 ) {
   const current = (await store.list(input.runID)).filter((item) => item.currentRun !== undefined)
@@ -34,6 +36,7 @@ export async function findingHandoffWarning(
       : undefined
   }
   if (!SubsystemVerdict.requiredFor(input.workflow, input.phase)) return
+  if (input.snapshot) return
   if (!input.verdicts) return "Finding registry cannot reconcile a missing handoff verdict inventory."
 
   // ── Positive Verdicts Enter The Registry Before Handoff ────────

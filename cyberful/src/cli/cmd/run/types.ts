@@ -64,7 +64,6 @@ export type FooterState = {
   queue: number
   duration: string
   startedAt: number | undefined
-  usage: string
   first: boolean
   interrupt: number
   exit: number

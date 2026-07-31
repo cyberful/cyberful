@@ -57,11 +57,11 @@ describe("PhaseBudgetClock", () => {
     clock.close()
   })
 
-  test("records the full retry wait while stopping compensation at the 30-minute cap", () => {
+  test("records the full retry wait while stopping compensation at the 15-minute cap", () => {
     let now = 0
     const clock = SubsystemPhaseBudgetClock.create({
       deadlineAt: 600_000,
-      retryCompensationCapMs: 1_800_000,
+      retryCompensationCapMs: 900_000,
       now: () => now,
     })
 
@@ -71,10 +71,42 @@ describe("PhaseBudgetClock", () => {
 
     expect(clock.snapshot()).toMatchObject({
       retryWaitMs: 2_400_000,
-      retryCompensationMs: 1_800_000,
-      pausedMs: 1_800_000,
-      deadlineAt: 2_400_000,
+      retryCompensationMs: 900_000,
+      pausedMs: 900_000,
+      deadlineAt: 1_500_000,
       retryCompensationCapReached: true,
+    })
+    clock.close()
+  })
+
+  test("inherits cumulative waits without extending a replacement owner's fresh deadline twice", () => {
+    let now = 10_000
+    const clock = SubsystemPhaseBudgetClock.create({
+      deadlineAt: 70_000,
+      retryCompensationCapMs: 900_000,
+      initialApprovalWaitMs: 2_000,
+      initialRetryWaitMs: 12_000,
+      initialRetryCompensationMs: 10_000,
+      now: () => now,
+    })
+
+    expect(clock.snapshot()).toMatchObject({
+      deadlineAt: 70_000,
+      pausedMs: 0,
+      approvalWaitMs: 2_000,
+      retryWaitMs: 12_000,
+      retryCompensationMs: 10_000,
+    })
+
+    const release = clock.suspend("provider_retry")
+    now += 5_000
+    release()
+
+    expect(clock.snapshot()).toMatchObject({
+      deadlineAt: 75_000,
+      pausedMs: 5_000,
+      retryWaitMs: 17_000,
+      retryCompensationMs: 15_000,
     })
     clock.close()
   })

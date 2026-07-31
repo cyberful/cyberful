@@ -11,6 +11,15 @@ an origin allowlist, redirect policy, or a separate operation denylist. This is
 deliberate: the active workflow mission and agent instructions own engagement
 scope, while ZAP remains a fully capable analysis runtime.
 
+Call `zap_api_catalog` before a generic `zap_api_call`. The catalog reflects
+the installed ZAP version and includes known required and optional parameters.
+The bridge validates operation names and these parameter contracts locally, so
+missing operations, missing parameters, and missing resources return distinct
+structured errors with a bounded list of alternatives instead of an opaque
+HTTP 400. In particular, `script:action:load` requires `scriptName`,
+`scriptType`, `scriptEngine`, and `fileName`; `script:view:globalCustomVar`
+requires `varKey`.
+
 The browser is proxied through ZAP by default. Trust is scoped to the runtime's
 CA public-key pin, while bridge and API keys live in owner-only temporary host
 files rather than model arguments or environment output.
@@ -46,6 +55,12 @@ permit handoff. Failures return bounded, sanitized ZAP fields together with
 `retryable: false`, `user_action_required: false`, and `policy_stored: false`.
 Brief records that technical blocker once and stops without asking the operator
 to repair an otherwise healthy runtime from inside the run.
+
+Gateway startup, upstream connection, tool, and shutdown failures are retained
+locally in `raw/operations/runtime-diagnostics.jsonl`. Records preserve a
+sanitized host/port error class and repetition count but remove credentials,
+cookies, URL userinfo/query values, HTTP bodies, prompts, controls, and the full
+environment. The model does not receive these diagnostics automatically.
 
 ## History replay
 

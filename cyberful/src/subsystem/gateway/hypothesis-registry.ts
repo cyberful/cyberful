@@ -26,7 +26,8 @@ const STATES = [
   "INCONCLUSIVE",
   "UNTESTABLE",
 ] as const
-type State = (typeof STATES)[number]
+export type HypothesisState = (typeof STATES)[number]
+const ACTIVE_HYPOTHESIS_STATES = ["OPEN", "QUEUED", "TESTING", "SUSPECTED"] as const
 const OMISSION_REASONS = [
   "not_discovered",
   "not_loaded",
@@ -55,25 +56,37 @@ interface Transition {
   readonly time_iso: string
   readonly phase: string
   readonly owner: string
-  readonly from?: State
-  readonly to: State
+  readonly from?: HypothesisState
+  readonly to: HypothesisState
   readonly evidence: readonly string[]
   readonly reason?: string
 }
 
-interface Hypothesis {
+interface OwnershipTransition {
+  readonly time_iso: string
+  readonly fromRunID?: string
+  readonly toRunID: string
+  readonly toDisplayName: string
+  readonly toKind: "root" | "subagent" | "fallback"
+  readonly reason: "recorded" | "claimed" | "phase_recovery" | "child_finished"
+}
+
+export interface Hypothesis {
   readonly id: string
   readonly fingerprint_sha256: string
   readonly workflow: string
   readonly phase: string
   readonly owner: string
+  readonly ownerRunID?: string
+  readonly ownerDisplayName?: string
+  readonly ownerKind?: "root" | "subagent" | "fallback"
   readonly description: string
   readonly root_cause: string
   readonly surface: string
   readonly discriminator: string
   readonly candidate_tools: readonly string[]
   readonly omitted_tools: ReadonlyArray<{ readonly tool: string; readonly reason: OmissionReason }>
-  readonly state: State
+  readonly state: HypothesisState
   readonly evidence: readonly string[]
   readonly evidence_refs: readonly string[]
   readonly blocker?: string
@@ -84,6 +97,7 @@ interface Hypothesis {
   readonly scope_resolution?: ScopeResolution
   readonly graph_refs: readonly string[]
   readonly transitions: readonly Transition[]
+  readonly ownershipTransitions?: readonly OwnershipTransition[]
 }
 
 interface Synthesis {
@@ -101,6 +115,19 @@ interface Registry {
   readonly updated_at: string
   readonly hypotheses: readonly Hypothesis[]
   readonly syntheses: readonly Synthesis[]
+}
+
+export interface HypothesisRegistryView {
+  readonly revision: number
+  readonly workflow: string
+  readonly activeCount: number
+  readonly countsByState: Readonly<Record<HypothesisState, number>>
+}
+
+interface HostActor {
+  readonly runID: string
+  readonly displayName: string
+  readonly kind: "root" | "subagent" | "fallback"
 }
 
 function emptyRegistry(): Registry {
@@ -140,10 +167,58 @@ function textArray(value: unknown, label: string, maximumItems: number): readonl
   return value.map((item, index) => boundedText(item, `${label}[${index}]`, 1_000))
 }
 
-function state(value: unknown): State {
+function state(value: unknown): HypothesisState {
   if (typeof value !== "string" || !STATES.some((candidate) => candidate === value))
     throw new Error(`hypothesis state must be one of ${STATES.join(", ")}`)
-  return value as State
+  return value as HypothesisState
+}
+
+function hostActor(value: unknown): HostActor | undefined {
+  if (!isRecord(value)) return
+  const kind = value.kind
+  if (kind !== "root" && kind !== "subagent" && kind !== "fallback") return
+  return {
+    runID: identifier(value.runID, "hypothesis host actor runID"),
+    displayName: boundedText(value.displayName, "hypothesis host actor displayName", 160),
+    kind,
+  }
+}
+
+function reassignedOwnership(
+  previous: Hypothesis,
+  actor: HostActor | undefined,
+  time: string,
+  reason: "claimed" | "phase_recovery" | "child_finished",
+): Partial<
+  Pick<Hypothesis, "ownerRunID" | "ownerDisplayName" | "ownerKind" | "ownershipTransitions">
+> {
+  if (!actor) return {}
+  return {
+    ownerRunID: actor.runID,
+    ownerDisplayName: actor.displayName,
+    ownerKind: actor.kind,
+    ...(actor.runID === previous.ownerRunID
+      ? {}
+      : {
+          ownershipTransitions: [
+            ...(previous.ownershipTransitions ?? []),
+            {
+              time_iso: time,
+              ...(previous.ownerRunID ? { fromRunID: previous.ownerRunID } : {}),
+              toRunID: actor.runID,
+              toDisplayName: actor.displayName,
+              toKind: actor.kind,
+              reason,
+            },
+          ],
+        }),
+  }
+}
+
+function isActiveHypothesisState(
+  value: HypothesisState,
+): value is (typeof ACTIVE_HYPOTHESIS_STATES)[number] {
+  return ACTIVE_HYPOTHESIS_STATES.some((candidate) => candidate === value)
 }
 
 function blockerReason(value: unknown): BlockerReason | undefined {
@@ -212,8 +287,42 @@ function parseRegistry(value: unknown): Registry {
   return value as unknown as Registry
 }
 
+async function readRegistry(workarea: string): Promise<Registry> {
+  const content = await readFile(path.join(workarea, HYPOTHESIS_REGISTRY_PATH), "utf8").catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined
+      throw error
+    },
+  )
+  return content === undefined ? emptyRegistry() : parseRegistry(JSON.parse(content))
+}
+
+export async function readHypothesisRegistryView(
+  workarea: string,
+  workflow: string,
+): Promise<HypothesisRegistryView> {
+  const registry = await readRegistry(workarea)
+  const countsByState = Object.fromEntries(STATES.map((candidate) => [candidate, 0])) as Record<
+    HypothesisState,
+    number
+  >
+  for (const hypothesis of registry.hypotheses) {
+    if (hypothesis.workflow !== workflow) continue
+    countsByState[hypothesis.state]++
+  }
+  return {
+    revision: registry.revision,
+    workflow,
+    activeCount: ACTIVE_HYPOTHESIS_STATES.reduce(
+      (total, candidate) => total + countsByState[candidate],
+      0,
+    ),
+    countsByState,
+  }
+}
+
 function validateDisposition(input: {
-  readonly state: State
+  readonly state: HypothesisState
   readonly evidence: readonly string[]
   readonly blocker?: string
   readonly blockerReason?: BlockerReason
@@ -280,13 +389,18 @@ export class HypothesisRegistry {
 
   handle(args: Record<string, unknown>) {
     if (args.action === "get") return this.get(args.id)
-    if (args.action === "list" || args.action === "status") return this.list(args)
+    if (args.action === "list") return this.list(args)
+    if (args.action === "recover_ownership") {
+      if (args._cyberful_host !== true)
+        throw new Error("hypothesis ownership recovery is host-only")
+      return this.#recoverOwnership(args)
+    }
     if (this.#readOnly) throw new Error("hypothesis registry is read-only in this phase")
     if (args.action === "record") return this.#record(args)
     if (args.action === "update") return this.#update(args)
     if (args.action === "reopen") return this.#reopen(args)
     if (args.action === "synthesize") return this.#synthesize(args)
-    throw new Error("hypothesis action must be record, update, reopen, get, list, status, or synthesize")
+    throw new Error("hypothesis action must be record, update, reopen, get, list, or synthesize")
   }
 
   async get(value: unknown) {
@@ -300,10 +414,7 @@ export class HypothesisRegistry {
     const registry = await this.#read()
     const requestedState = args.state === undefined ? undefined : state(args.state)
     const hypotheses = registry.hypotheses.filter(
-      (hypothesis) =>
-        (args.workflow === undefined || hypothesis.workflow === args.workflow) &&
-        (args.phase === undefined || hypothesis.phase === args.phase) &&
-        (requestedState === undefined || hypothesis.state === requestedState),
+      (hypothesis) => requestedState === undefined || hypothesis.state === requestedState,
     )
     return {
       revision: registry.revision,
@@ -330,24 +441,13 @@ export class HypothesisRegistry {
       return "hypothesis registry requires phase synthesis before handoff"
   }
 
-  async verdictInventory() {
-    const hypotheses = (await this.#read()).hypotheses.filter(
-      (hypothesis) => hypothesis.workflow === this.#workflow && hypothesis.phase === this.#phase,
-    )
+  async snapshot() {
+    const registry = await this.#read()
     return {
-      confirmed: hypotheses.flatMap((item) => item.state === "CONFIRMED" && item.finding_id ? [item.finding_id] : []),
-      disproved: hypotheses.filter((item) => item.state === "DISPROVED").map((item) => item.id),
-      suspected: hypotheses.flatMap((item) =>
-        item.state === "SUSPECTED" && item.finding_id
-          ? [{ id: item.finding_id, positive_evidence: item.evidence.join("; ") }]
-          : [],
+      revision: registry.revision,
+      hypotheses: registry.hypotheses.filter(
+        (hypothesis) => hypothesis.workflow === this.#workflow && hypothesis.phase === this.#phase,
       ),
-      inconclusive: hypotheses
-        .filter((item) => item.state === "INCONCLUSIVE")
-        .map((item) => ({ id: item.id, ambiguity: item.blocker ?? item.evidence.join("; ") })),
-      untestable: hypotheses
-        .filter((item) => item.state === "UNTESTABLE" && item.blocker_reason && item.next_step)
-        .map((item) => ({ id: item.id, blocker_reason: item.blocker_reason!, next_step: item.next_step! })),
     }
   }
 
@@ -373,6 +473,7 @@ export class HypothesisRegistry {
       const duplicate = registry.hypotheses.find((item) => item.fingerprint_sha256 === fingerprintSha256)
       if (duplicate) throw new Error(`hypothesis duplicates '${duplicate.id}'`)
       const owner = boundedText(args.owner, "hypothesis owner", 160)
+      const actor = hostActor(args._cyberful_actor)
       const now = new Date().toISOString()
       const hypothesis: Hypothesis = {
         id,
@@ -380,6 +481,13 @@ export class HypothesisRegistry {
         workflow: this.#workflow,
         phase: this.#phase,
         owner,
+        ...(actor
+          ? {
+              ownerRunID: actor.runID,
+              ownerDisplayName: actor.displayName,
+              ownerKind: actor.kind,
+            }
+          : {}),
         description,
         root_cause: rootCause,
         surface,
@@ -391,6 +499,19 @@ export class HypothesisRegistry {
         evidence_refs: textArray(args.evidence_refs, "hypothesis evidence_refs", 50),
         graph_refs: textArray(args.graph_refs, "hypothesis graph_refs", 50),
         transitions: [{ time_iso: now, phase: this.#phase, owner, to: "OPEN", evidence: [] }],
+        ...(actor
+          ? {
+              ownershipTransitions: [
+                {
+                  time_iso: now,
+                  toRunID: actor.runID,
+                  toDisplayName: actor.displayName,
+                  toKind: actor.kind,
+                  reason: "recorded" as const,
+                },
+              ],
+            }
+          : {}),
       }
       return { registry: { ...registry, hypotheses: [...registry.hypotheses, hypothesis] }, result: hypothesis }
     })
@@ -402,6 +523,7 @@ export class HypothesisRegistry {
       const index = registry.hypotheses.findIndex((item) => item.id === id)
       if (index < 0) throw new Error(`hypothesis '${id}' does not exist`)
       const previous = registry.hypotheses[index]!
+      const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
       const evidence = textArray(args.evidence, "hypothesis evidence", 50)
       const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
@@ -428,6 +550,7 @@ export class HypothesisRegistry {
         ...previous,
         phase: this.#phase,
         owner,
+        ...reassignedOwnership(previous, actor, now, "claimed"),
         state: nextState,
         evidence: [...previous.evidence, ...evidence],
         evidence_refs: [
@@ -480,14 +603,19 @@ export class HypothesisRegistry {
       const index = registry.hypotheses.findIndex((item) => item.id === id)
       if (index < 0) throw new Error(`hypothesis '${id}' does not exist`)
       const previous = registry.hypotheses[index]!
+      const actor = hostActor(args._cyberful_actor)
       if (previous.state !== "QUEUED" || previous.next_phase !== this.#phase)
-        throw new Error(`hypothesis '${id}' is not queued to phase '${this.#phase}'`)
+        throw new Error(
+          `hypothesis '${id}' cannot reopen in '${this.#phase}'; current state is ${previous.state}` +
+            (previous.next_phase ? ` and queued phase is '${previous.next_phase}'` : ""),
+        )
       const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
       const now = new Date().toISOString()
       const updated: Hypothesis = {
         ...previous,
         phase: this.#phase,
         owner,
+        ...reassignedOwnership(previous, actor, now, "claimed"),
         state: "TESTING",
         next_phase: undefined,
         transitions: [
@@ -521,30 +649,77 @@ export class HypothesisRegistry {
         remaining_unknowns: textArray(args.remaining_unknowns, "hypothesis remaining_unknowns", 30),
       }
       if (synthesis.evidence.length === 0) throw new Error("hypothesis synthesis requires evidence")
+      const activeBlockingHypotheses = registry.hypotheses.filter(
+        (hypothesis) =>
+          hypothesis.workflow === this.#workflow &&
+          hypothesis.phase === this.#phase &&
+          (hypothesis.state === "OPEN" || hypothesis.state === "TESTING"),
+      ).length
       return {
         registry: {
           ...registry,
           syntheses: [...registry.syntheses.filter((item) => item.phase !== this.#phase), synthesis],
         },
-        result: synthesis,
+        result: { ...synthesis, activeBlockingHypotheses },
+      }
+    })
+  }
+
+  #recoverOwnership(args: Record<string, unknown>) {
+    const target = hostActor(args._cyberful_actor)
+    if (!target) throw new Error("hypothesis ownership recovery requires a host actor")
+    const fromRunID =
+      args.fromRunID === "*"
+        ? "*"
+        : identifier(args.fromRunID, "hypothesis ownership source runID")
+    if (args.reason !== "phase_recovery" && args.reason !== "child_finished")
+      throw new Error("hypothesis ownership recovery reason is invalid")
+    const reason = args.reason
+    return this.#mutate((registry) => {
+      const recovered: Array<{ readonly id: string; readonly nextStep?: string }> = []
+      const now = new Date().toISOString()
+      const hypotheses = registry.hypotheses.map((hypothesis) => {
+        if (
+          hypothesis.workflow !== this.#workflow ||
+          hypothesis.phase !== this.#phase ||
+          !isActiveHypothesisState(hypothesis.state) ||
+          (fromRunID !== "*" && hypothesis.ownerRunID !== fromRunID) ||
+          hypothesis.ownerRunID === target.runID
+        )
+          return hypothesis
+        recovered.push({
+          id: hypothesis.id,
+          ...(hypothesis.next_step ? { nextStep: hypothesis.next_step } : {}),
+        })
+        return {
+          ...hypothesis,
+          ...reassignedOwnership(hypothesis, target, now, reason),
+        }
+      })
+      return {
+        registry: { ...registry, hypotheses },
+        result: recovered,
+        changed: recovered.length > 0,
       }
     })
   }
 
   async #read(): Promise<Registry> {
     await this.#queue
-    const file = path.join(this.#workarea, HYPOTHESIS_REGISTRY_PATH)
-    const content = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined
-      throw error
-    })
-    return content === undefined ? emptyRegistry() : parseRegistry(JSON.parse(content))
+    return readRegistry(this.#workarea)
   }
 
-  #mutate<T>(operation: (registry: Registry) => { readonly registry: Registry; readonly result: T }): Promise<T> {
+  #mutate<T>(
+    operation: (registry: Registry) => {
+      readonly registry: Registry
+      readonly result: T
+      readonly changed?: boolean
+    },
+  ): Promise<T> {
     const pending = this.#queue.then(async () => {
-      const current = await this.#readUnlocked()
+      const current = await readRegistry(this.#workarea)
       const mutation = operation(current)
+      if (mutation.changed === false) return mutation.result
       const next: Registry = {
         ...mutation.registry,
         revision: current.revision + 1,
@@ -558,15 +733,59 @@ export class HypothesisRegistry {
     this.#queue = pending.then(() => undefined, () => undefined)
     return pending
   }
+}
 
-  async #readUnlocked(): Promise<Registry> {
-    const content = await readFile(path.join(this.#workarea, HYPOTHESIS_REGISTRY_PATH), "utf8").catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined
-        throw error
-      },
-    )
-    return content === undefined ? emptyRegistry() : parseRegistry(JSON.parse(content))
+const hypothesisEvidenceProperties = {
+  evidence: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+  evidence_refs: { type: "array", maxItems: 50, items: { type: "string" } },
+  graph_refs: { type: "array", maxItems: 50, items: { type: "string" } },
+  omitted_tools: {
+    type: "array",
+    maxItems: 30,
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: { tool: { type: "string" }, reason: { type: "string", enum: OMISSION_REASONS } },
+      required: ["tool", "reason"],
+    },
+  },
+}
+const scopeResolutionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    exact_action: { type: "string" },
+    asset: { type: "string" },
+    required_rule: { type: "string" },
+    sources_checked: { type: "array", items: { type: "string" } },
+    ambiguity: { type: "string" },
+    resolution_attempt: { type: "string" },
+    next_step: { type: "string" },
+  },
+  required: [
+    "exact_action",
+    "asset",
+    "required_rule",
+    "sources_checked",
+    "ambiguity",
+    "resolution_attempt",
+    "next_step",
+  ],
+}
+
+function hypothesisActionSchema(
+  action: string,
+  properties: Record<string, unknown> = {},
+  required: readonly string[] = [],
+) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      action: { type: "string", enum: [action] },
+      ...properties,
+    },
+    required: ["action", ...required],
   }
 }
 
@@ -576,64 +795,106 @@ export const HYPOTHESIS_TOOL_DEF = {
     "Record, test, carry, and close durable hypotheses across phases. OPEN and TESTING block handoff; QUEUED requires an exact successor and next step; positive states require a linked finding.",
   inputSchema: {
     type: "object" as const,
-    additionalProperties: true,
-    properties: {
-      action: { type: "string", enum: ["record", "update", "reopen", "get", "list", "status", "synthesize"] },
-      id: { type: "string" },
-      workflow: { type: "string" },
-      phase: { type: "string" },
-      owner: { type: "string" },
-      description: { type: "string" },
-      root_cause: { type: "string" },
-      surface: { type: "string" },
-      discriminator: { type: "string" },
-      candidate_tools: { type: "array", items: { type: "string" } },
-      omitted_tools: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: { tool: { type: "string" }, reason: { type: "string", enum: OMISSION_REASONS } },
-          required: ["tool", "reason"],
+    oneOf: [
+      hypothesisActionSchema(
+        "record",
+        {
+          id: { type: "string" },
+          owner: { type: "string" },
+          description: { type: "string" },
+          root_cause: { type: "string" },
+          surface: { type: "string" },
+          discriminator: { type: "string" },
+          candidate_tools: { type: "array", maxItems: 30, items: { type: "string" } },
+          ...hypothesisEvidenceProperties,
         },
-      },
-      graph_refs: { type: "array", items: { type: "string" } },
-      state: { type: "string", enum: STATES },
-      evidence: { type: "array", items: { type: "string" } },
-      evidence_refs: { type: "array", items: { type: "string" } },
-      blocker: { type: "string" },
-      blocker_reason: { type: "string", enum: BLOCKER_REASONS },
-      next_step: { type: "string" },
-      next_phase: { type: "string" },
-      finding_id: { type: "string" },
-      reason: { type: "string" },
-      scope_resolution: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          exact_action: { type: "string" },
-          asset: { type: "string" },
-          required_rule: { type: "string" },
-          sources_checked: { type: "array", items: { type: "string" } },
-          ambiguity: { type: "string" },
-          resolution_attempt: { type: "string" },
+        ["id", "owner", "description", "root_cause", "surface", "discriminator"],
+      ),
+      hypothesisActionSchema(
+        "update",
+        {
+          id: { type: "string" },
+          state: { type: "string", enum: ["QUEUED"] },
+          owner: { type: "string" },
+          next_phase: { type: "string" },
           next_step: { type: "string" },
+          ...hypothesisEvidenceProperties,
         },
-        required: [
-          "exact_action",
-          "asset",
-          "required_rule",
-          "sources_checked",
-          "ambiguity",
-          "resolution_attempt",
-          "next_step",
-        ],
-      },
-      outcome: { type: "string", enum: ["diversified", "exhausted"] },
-      summary: { type: "string" },
-      remaining_unknowns: { type: "array", items: { type: "string" } },
-    },
-    required: ["action"],
+        ["id", "state", "next_phase", "next_step"],
+      ),
+      ...(["SUSPECTED", "CONFIRMED"] as const).map((state) =>
+        hypothesisActionSchema(
+          "update",
+          {
+            id: { type: "string" },
+            state: { type: "string", enum: [state] },
+            owner: { type: "string" },
+            finding_id: { type: "string" },
+            reason: { type: "string" },
+            ...hypothesisEvidenceProperties,
+          },
+          ["id", "state", "finding_id", "evidence", "reason"],
+        ),
+      ),
+      hypothesisActionSchema(
+        "update",
+        {
+          id: { type: "string" },
+          state: { type: "string", enum: ["DISPROVED"] },
+          owner: { type: "string" },
+          reason: { type: "string" },
+          ...hypothesisEvidenceProperties,
+        },
+        ["id", "state", "evidence", "reason"],
+      ),
+      hypothesisActionSchema(
+        "update",
+        {
+          id: { type: "string" },
+          state: { type: "string", enum: ["INCONCLUSIVE"] },
+          owner: { type: "string" },
+          blocker: { type: "string" },
+          next_step: { type: "string" },
+          reason: { type: "string" },
+          ...hypothesisEvidenceProperties,
+        },
+        ["id", "state", "evidence", "blocker", "next_step", "reason"],
+      ),
+      hypothesisActionSchema(
+        "update",
+        {
+          id: { type: "string" },
+          state: { type: "string", enum: ["UNTESTABLE"] },
+          owner: { type: "string" },
+          blocker: { type: "string" },
+          blocker_reason: { type: "string", enum: BLOCKER_REASONS },
+          next_step: { type: "string" },
+          reason: { type: "string" },
+          scope_resolution: scopeResolutionSchema,
+          ...hypothesisEvidenceProperties,
+        },
+        ["id", "state", "blocker", "blocker_reason", "next_step", "reason"],
+      ),
+      hypothesisActionSchema(
+        "reopen",
+        { id: { type: "string" }, owner: { type: "string" } },
+        ["id"],
+      ),
+      hypothesisActionSchema("get", { id: { type: "string" } }, ["id"]),
+      hypothesisActionSchema("list", {
+        state: { type: "string", enum: STATES },
+      }),
+      hypothesisActionSchema(
+        "synthesize",
+        {
+          outcome: { type: "string", enum: ["diversified", "exhausted"] },
+          summary: { type: "string" },
+          evidence: { type: "array", minItems: 1, maxItems: 30, items: { type: "string" } },
+          remaining_unknowns: { type: "array", maxItems: 30, items: { type: "string" } },
+        },
+        ["outcome", "summary", "evidence"],
+      ),
+    ],
   },
 }
 

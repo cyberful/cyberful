@@ -533,6 +533,8 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     ...(options.abort ? { abort: options.abort } : {}),
     delegation: {
       enabled: true,
+      provider: "main",
+      reasoningEffort: "high",
       maxPerRun: options.maxPerRun ?? 8,
       maxConcurrent: options.maxConcurrent ?? 8,
       maxDepth: options.maxDepth ?? 3,
@@ -1223,11 +1225,13 @@ describe("Pi complete root and main-route subagent runs", () => {
     const events = rotationEvents(await collectEvents(run))
     expect(events.map((event) => event.state)).toEqual(["started", "completed"])
     expect(events[0]?.limits).toMatchObject({
-      effectiveOperationalWindow: 256_000,
-      triggerTokens: 192_000,
-      targetTokens: 89_600,
+      operationalContextWindow: 256_000,
+      continuationReserveTokens: expect.any(Number),
+      hardInputTokens: expect.any(Number),
     })
-    expect(events[0]?.estimatedTokensBefore).toBeGreaterThanOrEqual(192_000)
+    expect(events[0]?.estimatedTokensBefore).toBeGreaterThanOrEqual(
+      events[0]?.limits.triggerTokens ?? Number.POSITIVE_INFINITY,
+    )
     expect(events[0]?.estimatedTokensBefore).toBeLessThan(283_000)
   })
 
@@ -1374,7 +1378,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(attempts[1]?.sourceMessages).toBeLessThan(attempts[0]?.sourceMessages ?? 0)
   })
 
-  test("terminates safely when the irreducible active turn remains above the trigger", async () => {
+  test("summarizes the settled prefix when one autonomous turn exceeds the trigger", async () => {
     const workarea = await temporaryWorkarea()
     const smallCheckpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
       name: "small_checkpoint",
@@ -1417,20 +1421,17 @@ describe("Pi complete root and main-route subagent runs", () => {
     )
 
     expect(await run.result).toMatchObject({
-      termination: "provider_failed",
-      failure: {
-        kind: "unknown",
-        detail: expect.stringContaining("active_tail_too_large"),
-      },
+      termination: "completed",
+      output: "continued after model-assisted context compaction",
       toolCalls: 1,
     })
     const events = rotationEvents(await collectEvents(run))
-    expect(events.map((event) => event.state)).toEqual(["started", "failed"])
+    expect(events.map((event) => event.state)).toEqual(["started", "completed"])
     expect(events.at(-1)).toMatchObject({
-      reason: "active_tail_too_large",
       artifactsPreserved: 1,
       summarizerProvider: MAIN_PROVIDER,
       summarizerReasoningEffort: "medium",
+      splitTurn: false,
     })
     const summaryArtifact = events.at(-1)?.checkpoint?.path
     expect(summaryArtifact).toStartWith("raw/context-summaries/")
@@ -1439,10 +1440,11 @@ describe("Pi complete root and main-route subagent runs", () => {
       version: 2,
       generation: 1,
     })
-    expect(provider.calls).toHaveLength(2)
+    expect(events.at(-1)?.summarizedMessages).toBeGreaterThan(0)
+    expect(provider.calls).toHaveLength(3)
   })
 
-  test("installs the best safe tail and reports target_unreachable below the trigger", async () => {
+  test("does not repeat a completed tool after compacting its oversized turn prefix", async () => {
     const workarea = await temporaryWorkarea()
     const completeOutput = "virtualizable-active-evidence-".repeat(6_000)
     let executions = 0
@@ -1462,7 +1464,10 @@ describe("Pi complete root and main-route subagent runs", () => {
     const provider = new InMemoryProvider((call) => {
       if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
         return contextCheckpoint(call)
-      if (toolResultCount(call) === 0)
+      if (
+        toolResultCount(call) === 0 &&
+        !userTexts(call).some((text) => text.includes("[Host-owned semantic context checkpoint]"))
+      )
         return assistant(
           call,
           [
@@ -1494,16 +1499,17 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
     expect(executions).toBe(1)
     const events = rotationEvents(await collectEvents(run))
-    expect(events.map((event) => event.state)).toEqual(["started", "partial"])
+    expect(events.map((event) => event.state)).toEqual(["started", "completed"])
     expect(events.at(-1)).toMatchObject({
-      reason: "target_unreachable",
       limits: {
-        triggerTokens: 75_000,
-        targetTokens: 35_000,
+        continuationReserveTokens: expect.any(Number),
+        hardInputTokens: expect.any(Number),
       },
     })
-    expect(events.at(-1)?.estimatedTokensAfter).toBeGreaterThan(35_000)
-    expect(events.at(-1)?.estimatedTokensAfter).toBeLessThan(75_000)
+    expect(events.at(-1)?.estimatedTokensAfter).toBeLessThanOrEqual(
+      events.at(-1)?.limits.targetTokens ?? 0,
+    )
+    expect(events.at(-1)?.summarizedMessages).toBeGreaterThan(0)
   })
 
   test("recovers the same AgentRun from context_length_exceeded without reexecuting completed tools", async () => {
@@ -1986,6 +1992,8 @@ describe("Pi complete root and main-route subagent runs", () => {
             task: "analyze one parser boundary",
             expected_result: "return a verified parser result",
             output_artifact: "raw/delegations/parser.md",
+            display_name: "api-monster",
+            emoji: "👾",
           })
         if (results === 1) return toolCall(call, "handoff", {})
         return assistant(call, "root complete")
@@ -2063,6 +2071,11 @@ describe("Pi complete root and main-route subagent runs", () => {
         providerAffinity: "main",
       },
     ])
+    expect(started[1]?.identity).toEqual({ displayName: "api-monster", emoji: "👾" })
+    expect(started[2]?.identity).toMatchObject({
+      displayName: expect.stringMatching(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      emoji: expect.any(String),
+    })
     expect(started.every((event) => event.promptSystemSha256.length === 64)).toBeTrue()
     const delegatedLifecycle = activityEvents(events).filter(
       (event) =>

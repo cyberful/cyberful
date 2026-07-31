@@ -41,6 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3 \
     python3-pip \
     python3-venv \
+    ripgrep \
     ruby \
     screen \
     socat \
@@ -168,7 +169,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     h8mail \
     holehe \
     maigret \
-    socialscan
+    socialscan \
+    websocket-client==1.8.0
 
 # ───────────────────────────────────────────────────────────────────────────
 # 8. Mobile dynamic analysis / mobile app security Python tools
@@ -371,7 +373,11 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
   && cloudsplaining --version
 
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    python3 -m venv /opt/prowler-venv \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+  && apt-get install -y --no-install-recommends build-essential python3-dev \
+  && python3 -m venv /opt/prowler-venv \
   && /opt/prowler-venv/bin/pip install --upgrade pip setuptools wheel \
   && /opt/prowler-venv/bin/pip install "prowler==${PROWLER_VERSION}" \
   && /opt/prowler-venv/bin/pip check \
@@ -455,7 +461,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
   && apt-get install -y --no-install-recommends \
     afl++ \
-    build-essential \
     clang \
     default-jre-headless \
     libclang-rt-dev \
@@ -525,6 +530,8 @@ COPY mcp_framing.py /opt/cyberful-os/mcp_framing.py
 COPY prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
+  && rg --version \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c 'import websocket; print(websocket.__version__)' \
   && nuclei -version \
   && semgrep --version \
   && syft version \

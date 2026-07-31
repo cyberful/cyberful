@@ -88,6 +88,12 @@ import {
 } from "../human-question"
 import { gatewayPhasePolicy, runtimeNetworkAllowed, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
+import { FindingRegistry } from "@/finding/registry"
+import {
+  createHandoffSnapshot,
+  HandoffSnapshotError,
+  type HandoffSnapshotV2,
+} from "../handoff-snapshot"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
@@ -197,6 +203,37 @@ function text(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: body }], ...(isError ? { isError: true } : {}) }
 }
 
+function contractError(input: {
+  code: string
+  path: string
+  expected: string
+  received?: unknown
+  receivedType?: string
+  retryable?: boolean
+  hint: string
+  message: string
+  ids?: readonly string[]
+}) {
+  const receivedType =
+    input.receivedType ??
+    (input.received === null ? "null" : Array.isArray(input.received) ? "array" : typeof input.received)
+  return text(
+    {
+      error: {
+        code: input.code,
+        path: input.path,
+        expected: input.expected,
+        receivedType,
+        retryable: input.retryable ?? true,
+        hint: input.hint,
+        message: input.message,
+        ...(input.ids ? { ids: input.ids } : {}),
+      },
+    },
+    true,
+  )
+}
+
 function liveTargetToolDefinitions(input: {
   testObjects: boolean
   egress: boolean
@@ -251,8 +288,15 @@ function nodeErrorCode(error: unknown) {
 }
 
 async function settleOperations(label: string, operations: ReadonlyArray<() => Promise<void>>) {
-  const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
-  const failures = outcomes
+  const first = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
+  const failedOperations = first.flatMap((outcome, index) =>
+    outcome.status === "rejected" ? [operations[index]!] : [],
+  )
+  if (failedOperations.length === 0) return
+  const retried = await Promise.allSettled(
+    failedOperations.map((operation) => Promise.resolve().then(operation)),
+  )
+  const failures = retried
     .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
     .map((outcome): unknown => outcome.reason)
   if (failures.length > 0) throw new AggregateError(failures, label)
@@ -509,6 +553,7 @@ interface HandoffConfig {
   signalPath: string
   workareaRoot?: string
   artifact?: string
+  sessionID: string
 }
 
 function handoffConfig(): HandoffConfig | undefined {
@@ -528,7 +573,15 @@ function handoffConfig(): HandoffConfig | undefined {
     throw new Error("expert-gateway handoff artifact must be a relative workarea path")
   if (artifact && !workareaRoot)
     throw new Error("expert-gateway handoff artifact validation requires the workarea root")
-  return { phase, workflow: gatewayPhasePolicy().workflow, successor, signalPath, workareaRoot, artifact }
+  return {
+    phase,
+    workflow: gatewayPhasePolicy().workflow,
+    successor,
+    signalPath,
+    workareaRoot,
+    artifact,
+    sessionID: boundSession(),
+  }
 }
 
 function handoffToolDef(config: HandoffConfig) {
@@ -575,11 +628,6 @@ function handoffToolDef(config: HandoffConfig) {
           },
           required: ["title", "summaryMarkdown"],
         },
-        verdicts: {
-          ...SubsystemVerdict.INPUT_SCHEMA,
-          description:
-            "Deprecated compatibility input. New phases derive this inventory from the canonical hypothesis registry.",
-        },
       },
       required: ["summary", ...(config.artifact ? ["artifact"] : [])],
     },
@@ -595,52 +643,139 @@ async function handleHandoff(
     coverage?: SurfaceCoverage
     engagementPolicy?: EngagementPolicy
     engagementPolicyRequired?: boolean
+    findings?: FindingRegistry.Store
   } = {},
 ) {
   const summary = typeof args.summary === "string" ? args.summary.trim() : ""
-  if (!summary) return text({ error: "handoff requires a non-empty summary" })
+  if (!summary)
+    return contractError({
+      code: "HANDOFF_SUMMARY_REQUIRED",
+      path: "summary",
+      expected: "non-empty string",
+      received: args.summary,
+      hint: "Summarize the completed phase and retry handoff.",
+      message: "handoff requires a non-empty summary",
+    })
   const target = typeof args.target === "string" ? args.target.trim() : undefined
   if (config.successor && target && target !== config.successor)
-    return text({ error: `handoff target '${target}' is not allowed; expected '${config.successor}'` })
+    return contractError({
+      code: "HANDOFF_TARGET_INVALID",
+      path: "target",
+      expected: config.successor,
+      received: args.target,
+      hint: `Set target to '${config.successor}' or omit it.`,
+      message: `handoff target '${target}' is not allowed`,
+    })
   if (!config.successor && target && target !== "complete")
-    return text({ error: `terminal handoff target '${target}' is not allowed; use 'complete' or omit target` })
+    return contractError({
+      code: "HANDOFF_TARGET_INVALID",
+      path: "target",
+      expected: "complete or omitted",
+      received: args.target,
+      hint: "Set target to 'complete' or omit it.",
+      message: `terminal handoff target '${target}' is not allowed`,
+    })
   const artifact = typeof args.artifact === "string" ? args.artifact.trim() : undefined
   if (artifact && (path.isAbsolute(artifact) || artifact.split(/[\\/]+/).includes("..")))
-    return text({ error: "handoff artifact must be a relative path inside the workarea" })
+    return contractError({
+      code: "HANDOFF_ARTIFACT_PATH_INVALID",
+      path: "artifact",
+      expected: "relative path inside the workarea",
+      received: args.artifact,
+      hint: "Use the configured workarea-root artifact path.",
+      message: "handoff artifact must be a relative path inside the workarea",
+    })
   if (config.artifact && artifact !== config.artifact)
-    return text({
-      error: `handoff requires artifact '${config.artifact}' at the workarea root; inside cyberful-os use '/workspace/${config.artifact}'`,
+    return contractError({
+      code: "HANDOFF_ARTIFACT_INVALID",
+      path: "artifact",
+      expected: config.artifact,
+      received: args.artifact,
+      hint: `Inside cyberful-os write '/workspace/${config.artifact}'.`,
+      message: `handoff requires artifact '${config.artifact}' at the workarea root`,
     })
   const completion = args.completion === undefined ? undefined : SubsystemCompletion.parseCandidate(args.completion)
   if (args.completion !== undefined && !completion)
-    return text({ error: "handoff completion requires a non-empty title and summaryMarkdown" })
-  const rawVerdicts =
-    args.verdicts ??
-    (SubsystemVerdict.requiredFor(config.workflow, config.phase)
-      ? await guards.hypotheses?.verdictInventory()
-      : undefined)
-  let verdicts: ReturnType<typeof SubsystemVerdict.parse>
-  try {
-    verdicts = SubsystemVerdict.parse(rawVerdicts)
-  } catch (error) {
-    return text({ error: error instanceof Error ? error.message : String(error) }, true)
+    return contractError({
+      code: "HANDOFF_COMPLETION_INVALID",
+      path: "completion",
+      expected: "object with non-empty title and summaryMarkdown",
+      received: args.completion,
+      hint: "Complete both presentation fields or omit completion.",
+      message: "handoff completion requires a non-empty title and summaryMarkdown",
+    })
+  let snapshot: HandoffSnapshotV2 | undefined
+  if (SubsystemVerdict.requiredFor(config.workflow, config.phase)) {
+    if (!guards.findings || !guards.hypotheses)
+      return contractError({
+        code: "HANDOFF_RECONCILIATION_UNAVAILABLE",
+        path: "handoff",
+        expected: "host-owned finding and hypothesis registries",
+        receivedType: "unavailable",
+        retryable: false,
+        hint: "The phase gateway must expose both registry guards.",
+        message: "handoff reconciliation is unavailable",
+      })
+    try {
+      snapshot = await createHandoffSnapshot({
+        findings: guards.findings,
+        hypotheses: guards.hypotheses,
+        runID: config.sessionID,
+      })
+    } catch (error) {
+      if (error instanceof HandoffSnapshotError)
+        return contractError({
+          code: error.code,
+          path: "handoff.snapshot",
+          expected: "stable registries with same-state links for positive hypotheses",
+          receivedType: "registry-divergence",
+          hint: error.message,
+          message: "handoff registry reconciliation failed",
+          ids: error.ids,
+        })
+      throw error
+    }
   }
-  if (SubsystemVerdict.requiredFor(config.workflow, config.phase) && !verdicts)
-    return text({ error: "handoff requires a structured verdict inventory for this phase" }, true)
   const lifecycleError = await guards.testObjects?.handoffError()
-  if (lifecycleError) return text({ error: lifecycleError }, true)
+  if (lifecycleError)
+    return contractError({
+      code: "HANDOFF_LIFECYCLE_INCOMPLETE",
+      path: "test_objects",
+      expected: "all test objects reconciled",
+      received: lifecycleError,
+      hint: lifecycleError,
+      message: "handoff test-object lifecycle is incomplete",
+    })
   const hypothesisError = await guards.hypotheses?.handoffError(config.successor)
-  if (hypothesisError) return text({ error: hypothesisError }, true)
+  if (hypothesisError)
+    return contractError({
+      code: "HANDOFF_HYPOTHESES_INCOMPLETE",
+      path: "hypotheses",
+      expected: "all phase hypotheses resolved or correctly queued",
+      received: hypothesisError,
+      hint: hypothesisError,
+      message: "handoff hypothesis reconciliation failed",
+    })
   if (guards.engagementPolicyRequired && !guards.engagementPolicy)
-    return text(
-      {
-        error:
-          "handoff requires engagement_policy set to succeed in this Brief; the host must enforce and persist the traffic policy first",
-      },
-      true,
-    )
+    return contractError({
+      code: "HANDOFF_ENGAGEMENT_POLICY_REQUIRED",
+      path: "engagement_policy",
+      expected: "persisted host-enforced engagement policy",
+      received: guards.engagementPolicy,
+      retryable: false,
+      hint: "The host must enforce and persist the traffic policy first.",
+      message: "handoff requires engagement_policy to succeed in this Brief",
+    })
   const coverageError = await guards.coverage?.handoffError(guards.engagementPolicy)
-  if (coverageError) return text({ error: coverageError }, true)
+  if (coverageError)
+    return contractError({
+      code: "HANDOFF_COVERAGE_INCOMPLETE",
+      path: "surface_coverage",
+      expected: "required coverage dispositions",
+      received: coverageError,
+      hint: coverageError,
+      message: "handoff surface coverage is incomplete",
+    })
   // ── Handoff Acceptance Proves The Required Artifact Exists ──────
   // A model may successfully create a deliverable beneath the wrong nested
   // directory while believing it wrote to the workarea root. Recording the
@@ -656,20 +791,33 @@ async function handleHandoff(
     try {
       const info = await lstat(artifactPath)
       if (!info.isFile() || info.size === 0)
-        return text({
-          error: `required deliverable '${config.artifact}' must be a non-empty regular file at the workarea root; inside cyberful-os use '/workspace/${config.artifact}'`,
+        return contractError({
+          code: "HANDOFF_ARTIFACT_INVALID",
+          path: "artifact",
+          expected: "non-empty regular file at the workarea root",
+          received: info.isFile() ? info.size : "non-file",
+          hint: `Inside cyberful-os write '/workspace/${config.artifact}'.`,
+          message: `required deliverable '${config.artifact}' is not a non-empty regular file`,
         })
     } catch (error) {
       if (nodeErrorCode(error) === "ENOENT")
-        return text({
-          error: `required deliverable '${config.artifact}' is missing from the workarea root; inside cyberful-os write '/workspace/${config.artifact}' and retry handoff`,
+        return contractError({
+          code: "HANDOFF_ARTIFACT_MISSING",
+          path: "artifact",
+          expected: config.artifact,
+          received: undefined,
+          hint: `Inside cyberful-os write '/workspace/${config.artifact}' and retry handoff.`,
+          message: `required deliverable '${config.artifact}' is missing from the workarea root`,
         })
-      return text(
-        {
-          error: `could not validate required deliverable '${config.artifact}': ${error instanceof Error ? error.message : String(error)}`,
-        },
-        true,
-      )
+      return contractError({
+        code: "HANDOFF_ARTIFACT_UNREADABLE",
+        path: "artifact",
+        expected: "readable regular file",
+        received: nodeErrorCode(error) ?? error,
+        retryable: false,
+        hint: "Inspect workarea permissions and host storage health.",
+        message: `could not validate required deliverable '${config.artifact}'`,
+      })
     }
   }
   try {
@@ -681,13 +829,22 @@ async function handleHandoff(
         summary,
         artifact,
         completion,
-        verdicts: rawVerdicts,
+        snapshot,
         time: Date.now(),
       }),
       { flag: "wx" },
     )
   } catch (error) {
-    if (nodeErrorCode(error) === "EEXIST") return text({ error: "handoff was already recorded" })
+    if (nodeErrorCode(error) === "EEXIST")
+      return contractError({
+        code: "HANDOFF_ALREADY_RECORDED",
+        path: "handoff",
+        expected: "one accepted handoff per phase attempt",
+        received: "existing signal",
+        retryable: false,
+        hint: "Stop the phase; the host already owns the accepted handoff.",
+        message: "handoff was already recorded",
+      })
     throw error
   }
   return text({
@@ -1382,7 +1539,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         }),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
-      const failures = outcomes.flatMap((outcome) =>
+      const operationFailures = outcomes.flatMap((outcome) =>
         outcome.status === "rejected" ? [outcome.reason as unknown] : [],
       )
       const cleanup = await reapCapturedProcessTree(captured, {
@@ -1391,17 +1548,28 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
             processes,
           }),
       }).catch((error) => {
-        failures.push(error)
+        operationFailures.push(error)
         return undefined
       })
-      if (cleanup?.remaining.length)
-        failures.push(
-          new Error(
-            `Phase gateway could not reap owned MCP processes: ${cleanup.remaining.map((process) => process.pid).join(", ")}`,
-          ),
+      const remaining = cleanup?.remaining ?? []
+      if (!cleanup || remaining.length > 0)
+        throw new AggregateError(
+          [
+            ...operationFailures,
+            ...(remaining.length > 0
+              ? [
+                  new Error(
+                    `Phase gateway could not reap owned MCP processes: ${remaining.map((process) => process.pid).join(", ")}`,
+                  ),
+                ]
+              : []),
+          ],
+          "one or more phase gateway upstreams failed to close",
         )
-      if (failures.length > 0)
-        throw new AggregateError(failures, "one or more phase gateway upstreams failed to close")
+      if (operationFailures.length > 0)
+        log.warn("phase gateway cleanup recovered after owned-process reaping", {
+          failureCount: operationFailures.length,
+        })
     },
   }
 }
@@ -1470,6 +1638,10 @@ export async function createGatewayServer(opts?: {
           readOnly: policy.hypothesisReadOnly,
           synthesisRequired: SubsystemNovelty.parseEnvironment()?.required === true,
         })
+      : undefined
+  const findings =
+    workareaRoot && policy.workflow
+      ? new FindingRegistry.Store(workareaRoot, { workarea: path.basename(workareaRoot) })
       : undefined
   const engagementPolicy =
     workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
@@ -1541,6 +1713,7 @@ export async function createGatewayServer(opts?: {
         engagementPolicy:
           engagementPolicy && !engagementPolicySetThisPhase ? undefined : enforcedEngagementPolicy,
         engagementPolicyRequired: engagementPolicy !== undefined,
+        findings,
       })
     })
 
@@ -1673,7 +1846,19 @@ export async function createGatewayServer(opts?: {
         try {
           return text(await hypotheses.handle(args))
         } catch (error) {
-          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+          return text(
+            {
+              error: {
+                code: "HYPOTHESIS_VALIDATION_FAILED",
+                path: "hypothesis",
+                expected: "input matching the advertised state transition",
+                receivedType: Array.isArray(args) ? "array" : typeof args,
+                retryable: true,
+                hint: error instanceof Error ? error.message : String(error),
+              },
+            },
+            true,
+          )
         }
       })
       continue
@@ -1706,8 +1891,20 @@ export async function createGatewayServer(opts?: {
           await usage.record({ tool: name, outcome: "ok", egress_blocked: false, ...observation })
           return text({ ok: true, observation })
         } catch (error) {
-          log.warn("egress observation degraded", { error })
-          return text({ ok: false, observability: "degraded", output: "Network execution remains unaffected." })
+          log.debug("egress observation degraded", { error })
+          return text({
+            ok: false,
+            observability: "degraded",
+            error: {
+              code: "EGRESS_OBSERVATION_DEGRADED",
+              path: "egress",
+              expected: "one bounded destination observation",
+              receivedType: Array.isArray(args) ? "array" : typeof args,
+              retryable: true,
+              hint: error instanceof Error ? error.message : String(error),
+            },
+            output: "Network execution remains unaffected.",
+          })
         }
       })
       continue

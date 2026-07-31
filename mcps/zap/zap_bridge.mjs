@@ -23,7 +23,13 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import { apiParameters, operationKey } from "./zap_policy.mjs"
+import {
+  apiOperationContract,
+  operationKey,
+  validatedApiParameters,
+  ZapApiContractError,
+  zapApiResponseError,
+} from "./zap_policy.mjs"
 import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
 import { replayRequest } from "./zap_history_replay.mjs"
 import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
@@ -167,17 +173,23 @@ async function hostApiFetch(component, type, operation, input = {}) {
 
 async function apiFetchOperation(component, type, operation, input, enforceCatalog, key) {
   if (enforceCatalog && !apiCatalog.has(key))
-    throw new Error(`operation is not present in this ZAP API catalog: ${key}`)
+    throw new ZapApiContractError(
+      "ZAP_OPERATION_UNAVAILABLE",
+      key,
+      `Operation is not present in this ZAP API catalog: ${key}`,
+      Array.from(apiCatalog.keys()).filter((candidate) => candidate.startsWith(`${component}:${type}:`)),
+    )
+  const parameters = validatedApiParameters(key, input)
 
   const response = await zapFetch(
-    apiUrl(component, type, operation, input),
+    apiUrl(component, type, operation, parameters),
     {
       headers: { Accept: type === "other" ? "*/*" : "application/json" },
     },
     `ZAP API ${key}`,
   )
   if (!response.ok)
-    throw new Error(`ZAP API ${key} returned HTTP ${response.status}: ${await responseSnippet(response)}`)
+    throw zapApiResponseError(key, response.status, await responseSnippet(response))
   return boundedResponse(response, key)
 }
 
@@ -185,7 +197,7 @@ function apiUrl(component, type, operation, input) {
   const format = type === "other" ? "OTHER" : "JSON"
   const url = new URL(`/${format}/${encodeURIComponent(component)}/${type}/${encodeURIComponent(operation)}/`, API_URL)
   url.searchParams.set("apikey", API_KEY)
-  Object.entries(apiParameters(input)).forEach(([name, value]) => url.searchParams.set(name, value))
+  Object.entries(input).forEach(([name, value]) => url.searchParams.set(name, value))
   return url
 }
 
@@ -250,9 +262,23 @@ async function fetchApiUi(pathname) {
 async function nativeTool(name, args) {
   if (name === "zap_api_catalog") {
     return text(
-      Array.from(apiCatalog.values()).filter(
-        (item) => (!args.component || item.component === args.component) && (!args.type || item.type === args.type),
-      ),
+      Array.from(apiCatalog.entries())
+        .filter(
+          ([, item]) =>
+            (!args.component || item.component === args.component) && (!args.type || item.type === args.type),
+        )
+        .map(([key, item]) => {
+          const contract = apiOperationContract(key)
+          return {
+            ...item,
+            ...(contract
+              ? {
+                  requiredParameters: contract.required,
+                  optionalParameters: contract.optional,
+                }
+              : {}),
+          }
+        }),
     )
   }
   if (name === "zap_api_call") return text(await apiFetch(args.component, args.type, args.operation, args.parameters))
@@ -430,6 +456,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments || {}
     return await nativeTool(request.params.name, args)
   } catch (error) {
+    if (error instanceof ZapApiContractError)
+      return text(
+        {
+          error: {
+            code: error.code,
+            path: error.path,
+            expected: "an operation and parameters supported by the installed ZAP catalog",
+            receivedType: "invalid",
+            retryable: true,
+            hint: error.message,
+            ...(error.alternatives.length > 0 ? { alternatives: error.alternatives } : {}),
+          },
+        },
+        true,
+      )
     return text({ error: message(error) }, true)
   }
 })

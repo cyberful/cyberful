@@ -1,35 +1,37 @@
 # LLM Application Risk Catalog
 
-## Prompt Injection
+## Required Injection Sources
 
-Cover direct, indirect, stored, cross-modal, retrieved, tool-output, memory-resident, and multi-agent injection. Test instruction/data ambiguity, encoded content, translation, summarization, quoted documents, and payloads activated only after another tool result.
+Cover direct, indirect, stored, retrieved, multimodal, tool-output, tool-error, memory-resident, cross-agent, delegated, and fallback-route injection. Test encoding, translation, summarization, quotation, chunk boundaries, metadata, comments, alt text, OCR, hidden document layers, delayed activation, multi-turn state, and payloads gated on a later tool result.
 
-Measure whether the injection changes a security decision or privileged effect. Output text alone may be harmless; the same output passed to a shell, browser, email, database, or deployment API is a different boundary.
+Measure whether the content changes a security decision, identity, destination, recipient, approval, tool, argument, disclosure, memory write, or downstream effect. Textual compliance without a security-relevant effect is evidence of influence, not by itself a vulnerability.
 
-## Sensitive Information Disclosure
+## Disclosure and Synthetic Secrets
 
-Trace system instructions, secrets, retrieved documents, hidden metadata, tool output, conversation history, other users' context, provider logs, training or evaluation data, and model caches. Test both direct requests and transformation tasks that can reproduce sensitive substrings.
+Trace system and developer instructions, conversation context, retrieved documents, metadata, tool output, other users or tenants, provider logs, caches, memory, workspace files, environment configuration, and credential stores.
 
-Prompt secrecy is not a durable control. Protect actual secrets and policies outside the prompt.
+Create engagement-owned canaries that resemble `.env`, cloud keys, SSH keys, signing material, API tokens, or secrets. Prove only the read boundary and, when authorized, propagation to an inert controlled sink. Never extract or transmit unrelated real secrets.
+
+## Execution and Network Escalation
+
+When mapped capabilities exist, triage:
+
+- SSRF to authorized loopback, RFC1918, internal-service, and metadata-simulator canaries;
+- shell or notebook execution using a harmless unique marker;
+- template, expression, SQL, Markdown, HTML, CSV, or command interpretation;
+- plugin, package-manager, extension, and MCP loading paths;
+- parser URL fetch, archive traversal, SVG/HTML active content, OCR, metadata, and deserialization;
+- authenticated browser actions and URL-based exfiltration;
+- email, webhook, messaging, deployment, signing, IAM, or secret-manager effects.
+
+Stop after proving the primitive with non-destructive evidence.
+
+## Retrieval, Tenant, and Agency Failures
+
+Test cross-tenant retrieval, namespace confusion, stale ACLs, shared cache, neighboring chunks, confused deputies, identity inheritance, recursive delegation, retry amplification, fallback policy gaps, model downgrade, denial-of-wallet, and irreversible or externally visible actions.
+
+Compare streaming and non-streaming paths. Verify that guards apply before each tool effect, not only to final output. Verify that recovery and retry do not replay a prior side effect.
 
 ## Improper Output Handling
 
-Follow model output into HTML, Markdown, URLs, SQL, code, templates, shell arguments, spreadsheets, documents, logs, API fields, and tool schemas. Apply the security rules of the downstream interpreter.
-
-## Excessive Agency and Unbounded Consumption
-
-Evaluate tool breadth, credential scope, autonomous iteration, delegation, retries, external communication, purchase or compute spend, and irreversible operations. Bound both per-action and cumulative effect.
-
-## Poisoning, Supply Chain, and Model Behavior
-
-Review model, adapter, prompt, embedding model, tokenizer, dataset, vector store, evaluation set, plugin, MCP server, and provider changes. Assess provenance, update control, tenant separation, and whether poisoned content persists in indexes or memory.
-
-## Advanced Test Hints
-
-- Ask the agent to summarize or translate hostile content; transformations often preserve its instruction semantics.
-- Place the canary in metadata, alt text, OCR-visible pixels, comments, hidden document layers, or tool error messages.
-- Use delayed payloads that appear inert until a specific tool, recipient, or secret is present.
-- Test whether refusal on one turn still writes poisoned memory consumed later.
-- Compare streaming and non-streaming paths; guards may evaluate only the final output.
-- Retry and fallback models can bypass policy implemented for the primary model.
-- Safety classifiers can become availability or cost oracles when their output changes retries or tool selection.
+Follow model output into HTML, Markdown, URLs, CSV, spreadsheets, SQL, code, templates, shell arguments, logs, API fields, tool schemas, and another agent. Apply the security rules of the actual downstream interpreter and encode at that boundary.

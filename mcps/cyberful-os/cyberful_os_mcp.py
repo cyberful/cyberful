@@ -1184,8 +1184,16 @@ def handle_shell(args: dict[str, Any]) -> dict[str, Any]:
     # ───────────────────────────────────────────────────────────────────
     try:
         result["_meta"] = {EGRESS_META_KEY: _shell_egress_metadata(command, args.get("egress"), to)}
-    except (TypeError, ValueError) as exc:
-        eprint(f"shell egress observation degraded: {type(exc).__name__}")
+    except (TypeError, ValueError):
+        result["_meta"] = {
+            EGRESS_META_KEY: {
+                "version": 1,
+                "route": "cyberful-os/docker-direct",
+                "observability": "degraded",
+                "deadline_ms": to * 1000,
+                "destination_changed": False,
+            }
+        }
     return result
 
 
@@ -2445,6 +2453,24 @@ def _exposed_tool_registry() -> list[ToolEntry]:
 
 
 def tool_result_from_exception(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ValueError):
+        return tool_result(
+            json.dumps(
+                {
+                    "error": {
+                        "code": "INVALID_TOOL_ARGUMENTS",
+                        "path": "arguments",
+                        "expected": "input matching the advertised tool schema",
+                        "receivedType": "invalid",
+                        "retryable": True,
+                        "hint": str(exc),
+                    }
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            is_error=True,
+        )
     return {
         "content": [{"type": "text", "text": f"error: {type(exc).__name__}: {exc}\n"}],
         "isError": True,

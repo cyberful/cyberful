@@ -59,6 +59,7 @@ export type Event =
   | EventSessionStatus
   | EventSessionIdle
   | EventFindingRegistryUpdated1
+  | EventHypothesisRegistryUpdated1
   | EventTodoUpdated
   | EventVcsBranchUpdated
   | EventTuiPromptAppend
@@ -719,6 +720,7 @@ export type GlobalEvent = {
     | EventSessionStatus
     | EventSessionIdle
     | EventFindingRegistryUpdated
+    | EventHypothesisRegistryUpdated
     | EventTodoUpdated
     | EventVcsBranchUpdated
     | EventTuiPromptAppend
@@ -1896,6 +1898,9 @@ export type SessionSubsystemDescriptor = {
 export type SessionPhaseActivityActor = {
   id: string
   label?: string
+  displayName?: string
+  emoji?: string
+  role?: "root" | "subagent" | "fallback"
   parentID?: string
   sourceCallID?: string
   provider?: string
@@ -1910,6 +1915,15 @@ export type SessionPhaseActivityArtifact = {
   path: string
   sha256: string
   bytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type SessionPhaseActivityUsage = {
+  scopeID: string
+  inputTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  generatedTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  reasoningTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  cacheReadTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  cacheWriteTokens: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type EventSessionNextSubsystemPhaseActivity = {
@@ -1927,6 +1941,7 @@ export type EventSessionNextSubsystemPhaseActivity = {
     actorState?: "started" | "active" | "interacted" | "completed" | "interrupted" | "failed"
     actorTransitionID?: string
     artifact?: SessionPhaseActivityArtifact
+    usage?: SessionPhaseActivityUsage
   }
 }
 
@@ -2216,6 +2231,16 @@ export type EventFindingRegistryUpdated = {
   }
 }
 
+export type EventHypothesisRegistryUpdated = {
+  id: string
+  type: "hypothesis.registry.updated"
+  properties: {
+    sessionID: string
+    workarea: string
+    revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
 export type EventTodoUpdated = {
   id: string
   type: "todo.updated"
@@ -2249,11 +2274,60 @@ export type EventGlobalDisposed = {
   }
 }
 
+export type SessionHypothesisRegistryView = {
+  revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  workflow: string
+  activeCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  countsByState: {
+    OPEN: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    QUEUED: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    TESTING: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    SUSPECTED: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    CONFIRMED: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    DISPROVED: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    INCONCLUSIVE: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    UNTESTABLE: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type SessionProviderUsageView = {
+  root: {
+    input: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    cacheRead: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    cacheWrite: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    generated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reasoning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  subagents: {
+    input: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    cacheRead: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    cacheWrite: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    generated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reasoning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  scopes: Array<{
+    runID: string
+    parentRunID?: string
+    runKind: "root" | "subagent" | "fallback"
+    group: "root" | "subagents"
+    totals: {
+      input: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheRead: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheWrite: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      generated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      reasoning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+  }>
+}
+
 export type SessionDelivery = "immediate" | "deferred"
 
 export type SessionPhaseActivityActor1 = {
   id: string
   label?: string
+  displayName?: string
+  emoji?: string
+  role?: "root" | "subagent" | "fallback"
   parentID?: string
   sourceCallID?: string
   provider?: string
@@ -2270,9 +2344,28 @@ export type SessionPhaseActivityArtifact1 = {
   bytes: number | "NaN" | "Infinity" | "-Infinity"
 }
 
+export type SessionPhaseActivityUsage1 = {
+  scopeID: string
+  inputTokens: number | "NaN" | "Infinity" | "-Infinity"
+  generatedTokens: number | "NaN" | "Infinity" | "-Infinity"
+  reasoningTokens: number | "NaN" | "Infinity" | "-Infinity"
+  cacheReadTokens: number | "NaN" | "Infinity" | "-Infinity"
+  cacheWriteTokens: number | "NaN" | "Infinity" | "-Infinity"
+}
+
 export type EventFindingRegistryUpdated1 = {
   id: string
   type: "finding.registry.updated"
+  properties: {
+    sessionID: string
+    workarea: string
+    revision: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventHypothesisRegistryUpdated1 = {
+  id: string
+  type: "hypothesis.registry.updated"
   properties: {
     sessionID: string
     workarea: string
@@ -3794,6 +3887,72 @@ export type SessionFindingsResponses = {
 }
 
 export type SessionFindingsResponse = SessionFindingsResponses[keyof SessionFindingsResponses]
+
+export type SessionHypothesesData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/hypotheses"
+}
+
+export type SessionHypothesesErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionHypothesesError = SessionHypothesesErrors[keyof SessionHypothesesErrors]
+
+export type SessionHypothesesResponses = {
+  /**
+   * Active hypothesis registry view
+   */
+  200: SessionHypothesisRegistryView
+}
+
+export type SessionHypothesesResponse = SessionHypothesesResponses[keyof SessionHypothesesResponses]
+
+export type SessionProviderUsageData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/provider-usage"
+}
+
+export type SessionProviderUsageErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionProviderUsageError = SessionProviderUsageErrors[keyof SessionProviderUsageErrors]
+
+export type SessionProviderUsageResponses = {
+  /**
+   * Provider usage totals
+   */
+  200: SessionProviderUsageView
+}
+
+export type SessionProviderUsageResponse = SessionProviderUsageResponses[keyof SessionProviderUsageResponses]
 
 export type SessionToolArtifactData = {
   body?: never

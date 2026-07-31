@@ -117,6 +117,22 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertIn("invalid environment variable name", result["content"][0]["text"])
         run_command.assert_not_called()
 
+    def test_rejects_multiple_egress_hosts_before_shell_execution(self):
+        with mock.patch.object(cyberful_os_mcp, "run_in_container") as run_command:
+            result = cyberful_os_mcp.handle_tool_call({
+                "name": "shell",
+                "arguments": {
+                    "command": "true",
+                    "egress": {"host": ["one.example.test", "two.example.test"]},
+                },
+            })
+
+        self.assertTrue(result["isError"])
+        error = json.loads(result["content"][0]["text"])["error"]
+        self.assertEqual(error["code"], "INVALID_TOOL_ARGUMENTS")
+        self.assertIn("expected string", error["hint"])
+        run_command.assert_not_called()
+
     def test_shell_dispatch_preserves_command_cwd_timeout_output_and_environment(self):
         completed = cyberful_os_mcp.CommandResult(
             target="cyberful-os",

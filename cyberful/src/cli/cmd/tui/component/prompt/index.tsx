@@ -39,6 +39,7 @@ import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, type JSX } from "@opentui/solid"
+import { useTerminalDimensions } from "@opentui/solid"
 import { useExit } from "../../context/exit"
 import * as Clipboard from "../../util/clipboard"
 import type { AssistantMessage, FilePart, Part, UserMessage } from "@/server/client"
@@ -61,6 +62,7 @@ import { ensureWorkarea, setLastWorkarea, workareaProjectRoot, workareaSystemPro
 import { DockerPreflight } from "@/dependency/docker-preflight"
 import * as Log from "@/util/log"
 import { ClearInput } from "@tui/component/clear-input"
+import { providerUsageFooter } from "./provider-usage-footer"
 
 export type PromptProps = {
   sessionID?: string
@@ -109,17 +111,6 @@ type FollowUpInput = {
 const DRAFT_RETENTION_MIN_CHARS = 20
 const log = Log.create({ service: "tui.prompt" })
 const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
-
-function assistantTokenTotal(message: AssistantMessage) {
-  return (
-    message.tokens.total ||
-    message.tokens.input +
-      message.tokens.output +
-      message.tokens.reasoning +
-      message.tokens.cache.read +
-      message.tokens.cache.write
-  )
-}
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -299,22 +290,15 @@ export function Prompt(props: PromptProps) {
     return workflow ? SubsystemPhase.sessionUsesAgentRuntime(workflow, sync.data.message[props.sessionID] ?? []) : false
   })
 
-  const usage = createMemo(() => {
-    if (!props.sessionID) return
-    const msg = sync.data.message[props.sessionID] ?? []
-    const last = msg.findLast(
-      (item): item is AssistantMessage => item.role === "assistant" && assistantTokenTotal(item) > 0,
-    )
-    if (!last) return
-
-    const tokens = assistantTokenTotal(last)
-    if (tokens <= 0) return
-
-    return {
-      tokens,
-      percent: undefined,
-      context: `${Locale.number(tokens)} tokens`,
-    }
+  const dimensions = useTerminalDimensions()
+  const providerUsage = createMemo(() =>
+    props.sessionID
+      ? providerUsageFooter(sync.data.provider_usage[props.sessionID])
+      : undefined,
+  )
+  const showProviderUsage = createMemo(() => {
+    const footer = providerUsage()
+    return Boolean(footer && dimensions().width >= footer.text.length + 48)
   })
   const steps = createMemo(() => {
     if (!props.sessionID) return
@@ -322,22 +306,6 @@ export function Prompt(props: PromptProps) {
     const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant")
     return last?.steps
   })
-  const contextUsageGlyph = createMemo(() => {
-    const percent = usage()?.percent
-    if (percent === undefined) return "○"
-    if (percent >= 100) return "●"
-    if (percent >= 75) return "◕"
-    if (percent >= 50) return "◑"
-    if (percent > 0) return "◔"
-    return "○"
-  })
-  const contextUsageColor = createMemo(() => {
-    const percent = usage()?.percent ?? 0
-    if (percent >= 90) return theme.error
-    if (percent >= 70) return theme.warning
-    return theme.textMuted
-  })
-
   // ── Session Elapsed Time Starts At The First User Prompt ────────
   // This clock represents the user's whole session rather than one assistant
   // turn, so idle time remains visible and later turns never reset it. The tick
@@ -380,7 +348,12 @@ export function Prompt(props: PromptProps) {
   const hasTodos = createMemo(() => todos().length > 0)
 
   const hasRightContent = createMemo(
-    () => Boolean(props.right) || hasTodos() || Boolean(usage()) || Boolean(steps()) || Boolean(globalElapsed()),
+    () =>
+      Boolean(props.right) ||
+      hasTodos() ||
+      showProviderUsage() ||
+      Boolean(steps()) ||
+      Boolean(globalElapsed()),
   )
 
   createEffect(
@@ -1562,14 +1535,23 @@ export function Prompt(props: PromptProps) {
                       </text>
                     )}
                   </Show>
-                  <Show when={(Boolean(globalElapsed()) || hasTodos() || steps()) && usage()}>
+                  <Show when={(Boolean(globalElapsed()) || hasTodos() || steps()) && showProviderUsage()}>
                     <text fg={theme.textMuted}>·</text>
                   </Show>
-                  <Show when={usage()}>
+                  <Show when={showProviderUsage() ? providerUsage() : undefined}>
                     {(item) => (
-                      <text fg={theme.textMuted} wrapMode="none">
-                        <span style={{ fg: contextUsageColor(), bold: true }}>{contextUsageGlyph()}</span>{" "}
-                        {item().context}
+                      <text wrapMode="none">
+                        <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>R</span>
+                        <span style={{ fg: theme.textMuted }}>&gt;</span>
+                        <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>
+                          {` i:${item().root.input} c:${item().root.cached} g:${item().root.generated} `}
+                        </span>
+                        <span style={{ fg: theme.textMuted }}>|</span>
+                        <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>{" S"}</span>
+                        <span style={{ fg: theme.textMuted }}>&gt;</span>
+                        <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>
+                          {` i:${item().subagents.input} c:${item().subagents.cached} g:${item().subagents.generated}`}
+                        </span>
                       </text>
                     )}
                   </Show>
@@ -1649,12 +1631,9 @@ export function Prompt(props: PromptProps) {
                         <spinner color={spinnerColor()} frames={BOUNCING_BAR_FRAMES} interval={BOUNCING_BAR_INTERVAL} />
                       </Show>
                     </box>
-                    {/* Show the Pi subsystem's session-wide live progress:
-                        "executing job" while a tool runs, else the classic "generating… N" — the token
-                        count with NO rate when the subsystem has reported one. */}
                     <Show
                       when={ep().lastKind === "tool"}
-                      fallback={<GenerationStatusText message={GenerationProgress.formatStatus(ep().tokens)} />}
+                      fallback={<text fg={theme.textMuted}>generating</text>}
                     >
                       <text fg={theme.textMuted}>executing job</text>
                     </Show>

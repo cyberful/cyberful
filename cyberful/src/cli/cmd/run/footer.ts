@@ -182,7 +182,6 @@ export class RunFooter implements FooterApi {
       queue: 0,
       duration: "",
       startedAt: undefined,
-      usage: "",
       first: options.first,
       interrupt: 0,
       exit: 0,
@@ -329,7 +328,6 @@ export class RunFooter implements FooterApi {
             ? next.startedAt
             : undefined
           : prev.startedAt,
-      usage: typeof next.usage === "string" ? next.usage : prev.usage,
       first: typeof next.first === "boolean" ? next.first : prev.first,
       interrupt:
         typeof next.interrupt === "number" && Number.isFinite(next.interrupt)

@@ -48,6 +48,9 @@ export type SubsystemDescriptor = typeof SubsystemDescriptor.Type
 export const PhaseActivityActor = Schema.Struct({
   id: Schema.String,
   label: Schema.String.pipe(Schema.optional),
+  displayName: Schema.String.pipe(Schema.optional),
+  emoji: Schema.String.pipe(Schema.optional),
+  role: Schema.Literals(["root", "subagent", "fallback"]).pipe(Schema.optional),
   parentID: Schema.String.pipe(Schema.optional),
   sourceCallID: Schema.String.pipe(Schema.optional),
   provider: Schema.String.pipe(Schema.optional),
@@ -79,6 +82,15 @@ export const PhaseActivityArtifact = Schema.Struct({
   identifier: "Session.PhaseActivityArtifact",
 })
 export type PhaseActivityArtifact = typeof PhaseActivityArtifact.Type
+
+export const PhaseActivityUsage = Schema.Struct({
+  scopeID: Schema.String,
+  inputTokens: Schema.Number,
+  generatedTokens: Schema.Number,
+  reasoningTokens: Schema.Number,
+  cacheReadTokens: Schema.Number,
+  cacheWriteTokens: Schema.Number,
+}).annotate({ identifier: "Session.PhaseActivityUsage" })
 
 const options = {
   aggregate: "sessionID",
@@ -154,7 +166,7 @@ export type SkillLearned = typeof SkillLearned.Type
 export const SubsystemPhaseActivity = Event.define({
   type: "session.next.subsystem.phase_activity",
   ...notifyOptions,
-  version: 4,
+  version: 5,
   schema: {
     ...Base,
     phase: Schema.String,
@@ -166,6 +178,7 @@ export const SubsystemPhaseActivity = Event.define({
     actorState: PhaseActivityActorState.pipe(Schema.optional),
     actorTransitionID: Schema.String.pipe(Schema.optional),
     artifact: PhaseActivityArtifact.pipe(Schema.optional),
+    usage: PhaseActivityUsage.pipe(Schema.optional),
   },
 })
 export type SubsystemPhaseActivity = typeof SubsystemPhaseActivity.Type

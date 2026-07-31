@@ -15,6 +15,8 @@ agent:
 
   subagents:
     enabled: true
+    provider: openai-codex
+    reasoning_effort: high
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2
@@ -35,6 +37,7 @@ agent:
     base_delay_ms: 1000
     max_delay_ms: 15000
     attempt_timeout_ms: 600000
+    max_phase_extension_minutes: 15
 
   phase_recovery:
     enabled: true
@@ -71,8 +74,9 @@ provider, or change the tool policy.
 `agent.reasoning_effort` accepts `minimal`, `low`, `medium`, `high`, `xhigh`,
 `max`, or `ultra` and defaults to `ultra`. On load, Cyberful inserts the
 explicit default into an existing `settings.yaml` that omitted it, preserving
-the rest of the document. Root, delegated, fallback, and phase-recovery
-AgentRuns all inherit the configured request.
+the rest of the document. Root, top-level fallback, and phase-recovery root
+AgentRuns use this request. Delegated AgentRuns use the independent
+`agent.subagents.reasoning_effort` profile described below.
 
 `ultra` is a portable Cyberful profile meaning “use the strongest reasoning
 level this route supports”; it is not forwarded as a provider wire value.
@@ -84,6 +88,25 @@ bounded subagent orchestration. Other models use Pi's supported-level clamping.
 `run_started`, terminal run metadata, and
 `raw/operations/run-state.json` record both `reasoning_effort` (requested) and
 `effective_reasoning_effort`, so a fallback downgrade remains visible.
+
+## Subagent route, reasoning, and identity
+
+`agent.subagents.provider` names an existing route and
+`agent.subagents.reasoning_effort` selects the child reasoning profile. New
+settings explicitly use `openai-codex` with `high`, resolving to
+`openai-codex/gpt-5.6-sol` in the generated default. Older settings use an
+available `openai-codex` route; if none exists they inherit `main_provider` with
+a runtime warning. An unavailable configured route fails explicitly.
+
+Fallback-affine descendants remain on the fallback provider but keep the child
+reasoning profile. Scope, persona, tools, traffic policy, workarea, and the
+single phase budget remain inherited from the parent.
+
+Before spawn, the host validates or deterministically generates an immutable
+short slug and one emoji. The TUI renders identities as
+`@{👾 api-monster}`. Terminal controls, bidi content, malformed emoji, and
+collisions cannot become display identities; AgentRun IDs remain the
+authoritative ownership keys.
 
 ## AgentRun context rotation
 
@@ -112,7 +135,13 @@ model limits from the web.
 to 35. At the default 256K operational window, rotation starts at exactly
 192,000 estimated input tokens and targets at most 89,600. The estimate includes
 the immutable system prompt, loaded tool schemas, messages, and projected tool
-results; it does not reserve hypothetical output or count generated reasoning.
+results; it does not count generated reasoning.
+
+The operational window and percentages are the soft compaction policy. The
+hard input limit is separate: Cyberful subtracts a fixed continuation reserve
+of at most 16,384 tokens, capped by the model's maximum output, from the trusted
+route window. This preserves room for the next response without lowering the
+normal 256K soft window.
 
 At a safe boundary between provider responses, Cyberful first archives selected
 historical ZAP, browser, cyberful-os, and host-tool results under
@@ -131,17 +160,22 @@ strings pass credential redaction. The versioned JSON artifact under
 `raw/context-summaries/` records its generation, source counts, source estimate,
 summarizer route/model/effort, evidence references, and SHA-256.
 
-After validation and persistence, Cyberful constructs a replacement memory from
-the host-owned checkpoint, at most 16K of recent historical user messages, the
-active turn from the latest operator message, and the latest complete
-assistant/tool-call/result chain. Older checkpoint messages do not accumulate.
-The host verifies pairing and size, then assigns `agent.state.messages` once.
-The original session transcript and durable workarea evidence remain complete.
+After validation and persistence, Cyberful constructs replacement memory from
+the host-owned checkpoint plus the newest complete message suffix that fits the
+remaining target budget. It walks backward and starts only at a user or
+assistant boundary; a tool result is retained only with its assistant tool
+call. Therefore a long autonomous turn can be compacted in the middle: its
+settled prefix lives in the checkpoint and only its bounded recent suffix is
+re-injected. Older checkpoint messages do not accumulate. The host verifies
+pairing and size, then assigns `agent.state.messages` once. The original session
+transcript and durable workarea evidence remain complete.
 
-If the irreducible tail is above 35% but below 75%, Cyberful installs it and
-emits `target_unreachable`. If that tail is still at or above the trigger, it
-terminates with `active_tail_too_large`; it never cuts the newest user message
-or breaks a tool-call/result pair.
+If replacement memory is above 35% but below the hard input limit, Cyberful
+installs it and emits `target_unreachable`; remaining above the soft trigger is
+not terminal. `active_tail_too_large` occurs only when checkpoint plus fixed
+context cannot fit under the hard limit. Cyberful then restarts the phase once
+on the same route with a reconciliation instruction that lists and preserves
+all hypotheses.
 
 `summarizer.provider: inherit` uses the AgentRun route. A configured provider
 name selects an already declared route. Summarizer effort defaults to `medium`
@@ -163,8 +197,9 @@ tools are not executed again and generic provider retry is not entered.
 
 New transcripts use `context_rotation` events with
 `started`/`completed`/`partial`/`failed`, generation, route/model/effort, every
-resolved limit and its source, before/after estimates, checkpoint attestation,
-and per-attempt token usage. Readers continue to accept historical
+resolved limit and its source, source/active/summarized message counts,
+split-turn status, before/after estimates, checkpoint attestation, and
+per-attempt token usage. Readers continue to accept historical
 `context_compaction` events. `run_started`, terminal run metadata,
 `raw/operations/run-state.json`, and the phase runtime manifest expose catalog,
 configured, operational, observed, and effective limits.
@@ -193,10 +228,13 @@ active phase time. Concurrent retries and approvals count as one union interval.
 `max_retries` accepts 1 through 10; both delays accept 100 through 60,000
 milliseconds. `attempt_timeout_ms` accepts 1,000 through 600,000 milliseconds,
 defaults to ten minutes, and aborts only the current retry attempt. Total retry
-compensation is capped at `max_retries × attempt_timeout_ms`. A server retry
+compensation is one phase-wide pool configured by
+`max_phase_extension_minutes`, which defaults to 15. Root, children, retries,
+fallback, and phase recovery share it; overlapping waits consume their temporal
+union. Exhausting it never resets or moves the deadline again. A server retry
 never starts the security fallback. Runtime artifacts distinguish the complete
 `retry_wait_ms` from capped `retry_compensation_ms`, so provider downtime
-remains visible even after the phase can no longer extend its deadline.
+remains visible after the phase can no longer extend its deadline.
 
 ## Phase provider recovery
 
@@ -317,6 +355,8 @@ agent:
 
   subagents:
     enabled: true
+    provider: openai-codex
+    reasoning_effort: high
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2
@@ -337,6 +377,7 @@ agent:
     base_delay_ms: 1000
     max_delay_ms: 15000
     attempt_timeout_ms: 600000
+    max_phase_extension_minutes: 15
 
   phase_recovery:
     enabled: true

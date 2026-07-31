@@ -285,6 +285,8 @@ function ordinaryFailure(structured: StructuredEvidence, adapter: string): Ordin
   if (httpStatus === 401 || httpStatus === 403) return { kind: "authentication", ...common, retryable: false }
   if (providerCode && RATE_LIMIT_CODES.has(providerCode)) return { kind: "rate_limit", ...common, retryable: true }
   if (httpStatus === 429) return { kind: "rate_limit", ...common, retryable: true }
+  if (providerCode === "active_tail_too_large")
+    return { kind: "capacity", ...common, retryable: true }
   if (providerCode && CAPACITY_CODES.has(providerCode)) return { kind: "capacity", ...common, retryable: false }
   if (adapter === "openai-codex" && providerCode === "23")
     return { kind: "timeout", ...common, retryable: true }

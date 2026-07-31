@@ -23,6 +23,15 @@ export interface Totals {
   }
 }
 
+export function canonicalTotal(input: {
+  readonly input: number
+  readonly output: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+}): number {
+  return input.input + input.cacheRead + input.cacheWrite + input.output
+}
+
 export interface ContextChurn {
   readonly uncachedInput: number
   readonly cacheReadRatio: number

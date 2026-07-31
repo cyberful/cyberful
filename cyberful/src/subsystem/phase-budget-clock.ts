@@ -34,6 +34,9 @@ export interface Controller {
 interface Options {
   readonly deadlineAt: number
   readonly retryCompensationCapMs: number
+  readonly initialApprovalWaitMs?: number
+  readonly initialRetryWaitMs?: number
+  readonly initialRetryCompensationMs?: number
   readonly now?: () => number
 }
 
@@ -53,9 +56,12 @@ export function create(options: Options): Controller {
   const retryCompensationCapMs = Math.max(0, options.retryCompensationCapMs)
   let lastObservedAt = now()
   let totalPausedMs = 0
-  let approvalWaitMs = 0
-  let retryWaitMs = 0
-  let retryCompensationMs = 0
+  let approvalWaitMs = Math.max(0, options.initialApprovalWaitMs ?? 0)
+  let retryWaitMs = Math.max(0, options.initialRetryWaitMs ?? 0)
+  let retryCompensationMs = Math.min(
+    retryCompensationCapMs,
+    Math.max(0, options.initialRetryCompensationMs ?? 0),
+  )
   let capTimer: ReturnType<typeof setTimeout> | undefined
   let closed = false
 

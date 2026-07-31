@@ -20,6 +20,11 @@ export type AgentRunRole = "root" | "subagent" | "fallback"
 export type ProviderAffinity = "main" | "fallback"
 export type AgentRunTermination = "completed" | "budget_exhausted" | "cancelled" | "provider_failed" | "failed"
 
+export interface AgentRunIdentity {
+  readonly displayName: string
+  readonly emoji: string
+}
+
 export interface SubsystemStatus {
   /** The mandatory main route can start an AgentRun. */
   readonly ready: boolean
@@ -48,6 +53,8 @@ export interface AgentRunBudget {
 
 export interface DelegationLimits {
   readonly enabled: boolean
+  readonly provider: string
+  readonly reasoningEffort: Settings.ReasoningEffort
   readonly maxPerRun: number
   readonly maxConcurrent: number
   readonly maxDepth: number
@@ -74,6 +81,11 @@ export interface AgentTaskCapsule {
   readonly artifacts?: readonly string[]
 }
 
+export interface RecoveredHypothesis {
+  readonly id: string
+  readonly nextStep?: string
+}
+
 export interface ChildPromptInput {
   readonly role: Exclude<AgentRunRole, "root">
   readonly providerRoute: ProviderRoute
@@ -86,6 +98,7 @@ export interface AgentRunSpec {
   readonly role: AgentRunRole
   readonly parentID?: AgentRunID
   readonly sourceCallID?: string
+  readonly identity?: AgentRunIdentity
   readonly phaseRootID?: AgentRunID
   readonly depth: number
   readonly provider: string
@@ -100,10 +113,22 @@ export interface AgentRunSpec {
   readonly gateway?: SubsystemMcpServer
   readonly tools: readonly AgentTool[]
   readonly gatewayTools?: (run: {
+    readonly id: AgentRunID
     readonly role: AgentRunRole
+    readonly parentID?: AgentRunID
+    readonly identity?: AgentRunIdentity
     readonly handoffOwner: boolean
     readonly providerAffinity: ProviderAffinity
   }) => readonly AgentTool[]
+  readonly recoverHypothesisOwnership?: (input: {
+    readonly fromRunID: AgentRunID | "*"
+    readonly to: {
+      readonly runID: AgentRunID
+      readonly displayName: string
+      readonly kind: AgentRunRole
+    }
+    readonly reason: "phase_recovery" | "child_finished"
+  }) => Promise<readonly RecoveredHypothesis[]>
   readonly skills: readonly PromptSkill[]
   readonly budget: AgentRunBudget
   readonly abort?: AbortSignal
@@ -123,6 +148,7 @@ export type AgentEvent =
       readonly provider: string
       readonly model: string
       readonly providerAffinity: ProviderAffinity
+      readonly identity?: AgentRunIdentity
       readonly reasoningEffort: Settings.ReasoningEffort
       readonly effectiveReasoningEffort: ReasoningPlan["effective"]
       readonly context: {
@@ -132,6 +158,8 @@ export type AgentEvent =
         readonly configuredOperationalContextWindow?: number
         readonly operationalContextWindow: number
         readonly observedContextUpperBound?: number
+        readonly continuationReserveTokens: number
+        readonly hardInputTokens: number
         readonly effectiveOperationalWindow: number
         readonly source: ModelContextCapacity["source"] | "observed_upper_bound"
         readonly warnings: readonly string[]
@@ -169,6 +197,9 @@ export type AgentEvent =
       readonly attemptTimeoutMs?: number
       readonly retryWaitMs?: number
       readonly compensationMs?: number
+      readonly providerWaitMs?: number
+      readonly phaseExtensionMs?: number
+      readonly phaseExtensionCapMs?: number
       readonly deadlineAt?: number
       readonly compensationCapReached?: boolean
       readonly failure?: Failure
@@ -177,6 +208,7 @@ export type AgentEvent =
       readonly type: "phase_closeout"
       readonly runID: AgentRunID
       readonly state: "entered"
+      readonly cause?: "reserve" | "hypothesis_exhausted"
       readonly reserveMs: number
       readonly remainingMs: number
       readonly deadlineAt: number
@@ -222,6 +254,8 @@ export type AgentEvent =
         readonly configuredOperationalContextWindow?: number
         readonly operationalContextWindow: number
         readonly observedContextUpperBound?: number
+        readonly continuationReserveTokens: number
+        readonly hardInputTokens: number
         readonly effectiveOperationalWindow: number
         readonly triggerTokens: number
         readonly targetTokens: number
@@ -231,6 +265,8 @@ export type AgentEvent =
       readonly estimatedTokensAfter: number
       readonly sourceMessages: number
       readonly activeMessages: number
+      readonly summarizedMessages: number
+      readonly splitTurn: boolean
       readonly toolResultsVirtualized: number
       readonly artifactsPreserved: number
       readonly checkpoint?: {
@@ -251,9 +287,7 @@ export type AgentEvent =
         | "target_unreachable"
         | "active_tail_too_large"
         | "summary_failed"
-        | "persistence_error"
         | "disabled_model_summary"
-        | "context_rotation_failed"
       readonly detail?: string
     }
   | {
@@ -267,6 +301,7 @@ export type AgentEvent =
       readonly fallbackAdmissions: number
       readonly fallbackDescendants: number
       readonly toolCalls: number
+      readonly recoveredHypotheses?: readonly RecoveredHypothesis[]
     }
 
 export interface AgentRunUsage {
@@ -285,6 +320,7 @@ export interface AgentRunResult {
   readonly provider: string
   readonly model: string
   readonly providerAffinity: ProviderAffinity
+  readonly identity?: AgentRunIdentity
   readonly reasoningEffort: Settings.ReasoningEffort
   readonly effectiveReasoningEffort: ReasoningPlan["effective"]
   readonly context: Extract<AgentEvent, { type: "run_started" }>["context"]
@@ -298,6 +334,7 @@ export interface AgentRunResult {
   readonly toolCalls: number
   readonly fallbackAdmissions: number
   readonly fallbackDescendants: number
+  readonly recoveredHypotheses: readonly RecoveredHypothesis[]
 }
 
 export interface AgentRun {

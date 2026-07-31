@@ -134,7 +134,7 @@ describe("model-assisted context checkpoints", () => {
     ).toThrow("is not present in source context")
   })
 
-  test("replaces older checkpoints while preserving the active turn and complete tool chain", () => {
+  test("replaces older checkpoints while retaining a complete recent suffix", () => {
     const checkpoint = {
       role: "user",
       content: "[Host-owned semantic context checkpoint]\nnew",
@@ -200,6 +200,7 @@ describe("model-assisted context checkpoints", () => {
         },
       ],
       checkpoint,
+      recentTokenLimit: 1_000,
     })
 
     expect(history.messages[0]).toBe(checkpoint)
@@ -219,6 +220,82 @@ describe("model-assisted context checkpoints", () => {
       "user",
       "assistant",
     ])
+    expect(history.summarizedMessages).toBe(0)
+    expect(history.splitTurn).toBeFalse()
+  })
+
+  test("compacts the settled prefix of one long operator turn", () => {
+    const checkpoint = {
+      role: "user",
+      content: "[Host-owned semantic context checkpoint]\ncurrent state",
+      timestamp: 10,
+    } as const
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Run the complete autonomous phase.", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "settled notebook ".repeat(1_000) }],
+        api: "openai-codex-responses",
+        provider: "main",
+        model: "test",
+        stopReason: "stop",
+        timestamp: 2,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-recent",
+            name: "evidence",
+            arguments: {},
+          },
+        ],
+        api: "openai-codex-responses",
+        provider: "main",
+        model: "test",
+        stopReason: "toolUse",
+        timestamp: 3,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-recent",
+        toolName: "evidence",
+        content: [{ type: "text", text: "recent result" }],
+        isError: false,
+        timestamp: 4,
+      },
+    ]
+
+    const history = buildRotationHistory({
+      messages,
+      checkpoint,
+      recentTokenLimit: 100,
+    })
+
+    expect(history.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+    ])
+    expect(history.summarizedMessages).toBe(2)
+    expect(history.splitTurn).toBeTrue()
   })
 
   test("rejects an atomic replacement that would orphan a tool result", () => {
@@ -240,6 +317,7 @@ describe("model-assisted context checkpoints", () => {
           content: "[Host-owned semantic context checkpoint]\nvalidated",
           timestamp: 3,
         },
+        recentTokenLimit: 1_000,
       }),
     ).toThrow("orphan tool result")
   })

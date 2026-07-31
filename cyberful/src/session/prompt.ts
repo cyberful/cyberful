@@ -42,6 +42,7 @@ import { SubsystemPhaseRunner } from "@/subsystem/phase-runner"
 import { SubsystemRunStateArtifact } from "@/subsystem/run-state-artifact"
 import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/subsystem/subsystem"
 import { SubsystemUsage } from "@/subsystem/usage"
+import { RuntimeDiagnosticRecorder } from "@/subsystem/runtime-diagnostics"
 import { SubsystemVerdict } from "@/subsystem/verdict"
 import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
@@ -79,6 +80,8 @@ import { SessionAskContext } from "./ask-context"
 import { SessionRuntimeCompatibility } from "./runtime-compatibility"
 import { FindingRegistry } from "@/finding/registry"
 import { SessionFinding } from "./finding"
+import { SessionHypothesis } from "./hypothesis"
+import { readHypothesisRegistryView } from "@/subsystem/gateway/hypothesis-registry"
 import { createCodeGraphService } from "@/code-graph/service"
 import { findingHandoffWarning, findingWorkflow } from "./finding-handoff"
 import type { CommandInput, LoopInput, PromptInput, ShellInput } from "./prompt-input"
@@ -966,6 +969,17 @@ export const layer = Layer.effect(
       const generatedTokens = SubsystemUsage.createSessionCounter()
       const persistedOutputTokens = session.tokens?.output ?? 0
       const activePhaseRuns = new Set<object>()
+      const hypothesisCalls = new Set<string>()
+      const publishHypothesisRevision = () =>
+        Effect.promise(() => readHypothesisRegistryView(workareaCwd, workflow)).pipe(
+          Effect.flatMap((view) =>
+            events.publish(SessionHypothesis.Event.Updated, {
+              sessionID: session.id,
+              workarea,
+              revision: view.revision,
+            }),
+          ),
+        )
       const publishPhase = (
         phase: string,
         kind: "start" | "end" | "text" | "tool" | "output" | "progress" | "status" | "agent",
@@ -975,6 +989,7 @@ export const layer = Layer.effect(
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
         artifact?: PhaseActivityArtifact,
+        usage?: SubsystemUsage.Snapshot,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -988,6 +1003,18 @@ export const layer = Layer.effect(
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
           ...(artifact ? { artifact } : {}),
+          ...(usage
+            ? {
+                usage: {
+                  scopeID: usage.scopeID ?? "root",
+                  inputTokens: usage.inputTokens ?? 0,
+                  generatedTokens: usage.generatedTokens,
+                  reasoningTokens: usage.reasoningTokens ?? 0,
+                  cacheReadTokens: usage.cacheReadTokens ?? 0,
+                  cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                },
+              }
+            : {}),
         })
       const runPhaseStreaming = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
         const run = {}
@@ -1042,6 +1069,20 @@ export const layer = Layer.effect(
               // JSON as a user-facing TUI status row. Drop them at the event boundary.
               // ─────────────────────────────────────────────────────────────────
               if (activity.kind === "reasoning") return
+              if (
+                activity.kind === "tool" &&
+                activity.tool === "hypothesis" &&
+                typeof activity.input === "object" &&
+                activity.input !== null &&
+                "action" in activity.input &&
+                !["get", "list", "status"].includes(String(activity.input.action))
+              )
+                hypothesisCalls.add(activity.callID)
+              const hypothesisMutationCompleted =
+                activity.kind === "output" && hypothesisCalls.delete(activity.callID)
+              const hypothesisOwnershipRecovered =
+                activity.kind === "status" &&
+                activity.text.startsWith("Hypothesis ownership recovered by ")
               bridge.fork(
                 publishPhase(
                   spec.phase,
@@ -1058,8 +1099,11 @@ export const layer = Layer.effect(
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
                   activity.kind === "output" ? activity.artifact : undefined,
+                  activity.kind === "progress" ? activity.usage : undefined,
                 ),
               )
+              if (hypothesisMutationCompleted || hypothesisOwnershipRecovered)
+                bridge.fork(publishHypothesisRevision())
             },
             onSemanticProgress: (progress) => {
               if (spec.abort?.aborted) return
@@ -1121,6 +1165,7 @@ export const layer = Layer.effect(
           workflow: registryWorkflow,
           phase: spec.phase,
           verdicts: result.handoff?.verdicts,
+          snapshot: result.handoff?.snapshot,
         })
         if (registryWarning)
           result = {
@@ -1220,13 +1265,41 @@ export const layer = Layer.effect(
       // Live-target workflows deliberately retain one engagement-wide proxy/history. Code Audit stays offline.
       const engagementZap =
         zapRuntimeLifecycle(workflow) === "engagement"
-          ? yield* Effect.promise((signal) =>
-              SubsystemZapRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd, objective, signal }),
-            )
+          ? yield* Effect.promise(async (signal) => {
+              const diagnostics = new RuntimeDiagnosticRecorder({
+                workarea: workareaCwd,
+                sessionID: session.id,
+                workflow,
+                phase: startPhase,
+                attempt: 1,
+              })
+              try {
+                return await SubsystemZapRuntime.startEngagement({
+                  sessionID: session.id,
+                  workarea: workareaCwd,
+                  objective,
+                  signal,
+                  onDiagnostic: (diagnostic) =>
+                    diagnostics.record({
+                      component: "zap",
+                      profile: "engagement",
+                      stage: "startup",
+                      severity: diagnostic.severity,
+                      errorClass: diagnostic.errorClass,
+                      message: diagnostic.message,
+                    }),
+                })
+              } finally {
+                await diagnostics.close().catch(() => undefined)
+              }
+            })
           : { env: {}, degraded: false, stop: () => Promise.resolve() }
-      const runtimeWarnings = [engagementZap.warning, engagementGhidra.warning].filter((warning): warning is string =>
-        Boolean(warning),
-      )
+      const runtimeWarnings = [
+        engagementZap.degraded
+          ? "ZAP startup degraded; sanitized details are available at raw/operations/runtime-diagnostics.jsonl."
+          : engagementZap.warning,
+        engagementGhidra.warning,
+      ].filter((warning): warning is string => Boolean(warning))
       const engagementObjective =
         runtimeWarnings.length > 0
           ? `${objective}\n\n## Runtime warning\n${runtimeWarnings.join("\n")}\nContinue within scope using the remaining tools.`
@@ -1419,6 +1492,7 @@ export const layer = Layer.effect(
         actorState?: PhaseActivityActorState,
         actorTransitionID?: string,
         artifact?: PhaseActivityArtifact,
+        usage?: SubsystemUsage.Snapshot,
       ) =>
         events.publish(SessionEvent.SubsystemPhaseActivity, {
           sessionID: session.id,
@@ -1432,6 +1506,18 @@ export const layer = Layer.effect(
           ...(actorState ? { actorState } : {}),
           ...(actorTransitionID ? { actorTransitionID } : {}),
           ...(artifact ? { artifact } : {}),
+          ...(usage
+            ? {
+                usage: {
+                  scopeID: usage.scopeID ?? "root",
+                  inputTokens: usage.inputTokens ?? 0,
+                  generatedTokens: usage.generatedTokens,
+                  reasoningTokens: usage.reasoningTokens ?? 0,
+                  cacheReadTokens: usage.cacheReadTokens ?? 0,
+                  cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                },
+              }
+            : {}),
         })
       const runtimeObjective = [
         history,
@@ -1504,6 +1590,7 @@ export const layer = Layer.effect(
                   activity.kind === "agent" ? activity.state : undefined,
                   activity.kind === "agent" ? activity.transitionID : undefined,
                   activity.kind === "output" ? activity.artifact : undefined,
+                  activity.kind === "progress" ? activity.usage : undefined,
                 ),
               )
             },

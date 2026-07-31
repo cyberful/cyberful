@@ -105,6 +105,10 @@ function jsonContent(result: CallToolResult) {
   return recordValue(JSON.parse(textContent(result)), "tool JSON content")
 }
 
+function errorContent(result: CallToolResult) {
+  return recordValue(jsonContent(result).error, "tool contract error")
+}
+
 async function callVariable(client: McpClient, args: Record<string, unknown>) {
   const res = await client.callTool({ name: "variable", arguments: args })
   return jsonContent(res)
@@ -869,7 +873,7 @@ describe("expert-gateway handoff tool", () => {
         arguments: { summary: "brief recorded", artifact: "MISSION.md", target: "recon" },
       })
       expect(blocked.isError).toBe(true)
-      expect(jsonContent(blocked).error).toContain("engagement_policy set to succeed")
+      expect(errorContent(blocked).message).toContain("engagement_policy")
 
       fetch.mockResolvedValue(new Response('{"Result":"OK"}', { status: 200 }))
       const installed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
@@ -934,7 +938,15 @@ describe("expert-gateway handoff tool", () => {
         name: "handoff",
         arguments: { summary: "done", artifact: "EXPLOIT.md", target: "report" },
       })
-      expect(jsonContent(refused).error).toContain("not allowed")
+      expect(errorContent(refused).message).toContain("not allowed")
+      expect(errorContent(refused)).toMatchObject({
+        code: "HANDOFF_TARGET_INVALID",
+        path: "target",
+        expected: "hacker",
+        receivedType: "string",
+        retryable: true,
+        hint: expect.any(String),
+      })
 
       await mkdir(path.join(dir, "work", "anthropic"), { recursive: true })
       await writeFile(path.join(dir, "work", "anthropic", "EXPLOIT.md"), "wrong nested copy")
@@ -950,8 +962,8 @@ describe("expert-gateway handoff tool", () => {
           },
         },
       })
-      expect(jsonContent(wrongPath).error).toContain("missing from the workarea root")
-      expect(jsonContent(wrongPath).error).toContain("/workspace/EXPLOIT.md")
+      expect(errorContent(wrongPath).message).toContain("missing from the workarea root")
+      expect(errorContent(wrongPath).hint).toContain("/workspace/EXPLOIT.md")
       await writeFile(path.join(dir, "EXPLOIT.md"), "root deliverable")
       const accepted = await c.callTool({
         name: "handoff",
@@ -970,7 +982,7 @@ describe("expert-gateway handoff tool", () => {
         name: "handoff",
         arguments: { summary: "second attempt", artifact: "EXPLOIT.md" },
       })
-      expect(jsonContent(duplicate).error).toContain("already recorded")
+      expect(errorContent(duplicate).message).toContain("already recorded")
       expect(JSON.parse(await readFile(signal, "utf8"))).toEqual(
         expect.objectContaining({
           phase: "exploit",
@@ -1056,8 +1068,12 @@ describe("expert-gateway handoff tool", () => {
       })
       expect(jsonContent(accepted).successor).toBe("hacker")
       expect(JSON.parse(await readFile(signal, "utf8"))).toMatchObject({
-        verdicts: {
-          untestable: [{ id: "B3", blocker_reason: "MISSING_PREREQUISITE" }],
+        snapshot: {
+          version: 2,
+          counts: {
+            hypotheses: { UNTESTABLE: 1 },
+            findings: { CONFIRMED: 0, SUSPECTED: 0 },
+          },
         },
       })
     } finally {
@@ -1120,7 +1136,7 @@ describe("expert-gateway handoff tool", () => {
         name: "handoff",
         arguments: { summary: "recon complete", artifact: "RECON.md" },
       })
-      expect(jsonContent(openObject).error).toContain("test object lifecycle")
+      expect(errorContent(openObject).message).toContain("test-object lifecycle")
 
       await c.callTool({
         name: "test_object",
@@ -1130,7 +1146,7 @@ describe("expert-gateway handoff tool", () => {
         name: "handoff",
         arguments: { summary: "recon complete", artifact: "RECON.md" },
       })
-      expect(jsonContent(missingNovelty).error).toContain("phase synthesis")
+      expect(errorContent(missingNovelty).hint).toContain("phase synthesis")
 
       const synthesis = await c.callTool({
         name: "hypothesis",

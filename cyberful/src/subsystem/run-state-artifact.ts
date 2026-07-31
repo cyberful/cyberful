@@ -160,9 +160,13 @@ export class RunStateArtifact {
             ...(budget
               ? {
                   approval_wait_ms: Math.round(budget.approvalWaitMs),
+                  human_wait_ms: Math.round(budget.approvalWaitMs),
                   retry_wait_ms: Math.round(budget.retryWaitMs),
+                  provider_wait_ms: Math.round(budget.retryWaitMs),
                   retry_compensation_ms: Math.round(budget.retryCompensationMs),
+                  phase_extension_ms: Math.round(budget.retryCompensationMs),
                   retry_compensation_cap_ms: budget.retryCompensationCapMs,
+                  phase_extension_cap_ms: budget.retryCompensationCapMs,
                   retry_compensation_cap_reached: budget.retryCompensationCapReached,
                 }
               : {}),

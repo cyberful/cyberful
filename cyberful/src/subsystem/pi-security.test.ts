@@ -311,6 +311,7 @@ describe("Pi ordinary provider failures", () => {
       [{ message: { stopReason: "error", diagnostics: [{ error: { code: 1006 } }] } }, "unavailable", true],
       [{ upstream: { error: { code: "invalid_response" } } }, "malformed_output", false],
       [{ upstream: { error: { code: "usage_limit_reached" } } }, "capacity", false],
+      [{ upstream: { error: { code: "active_tail_too_large" } } }, "capacity", true],
       [{ message: { stopReason: "error", diagnostics: [{ error: { code: "oauth" } }] } }, "authentication", false],
     ] as const
 

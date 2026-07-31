@@ -67,8 +67,14 @@ passes. `raw/operations/run-state.json` records `closed` only after the final
 inventory proves absence; survivors or an unavailable inventory produce
 `closed_with_cleanup_errors` and a lifecycle failure.
 
-The host derives phase handoff verdicts from the canonical
-`raw/hypotheses/registry.json`. Each hypothesis has one mutually exclusive state:
+The host keeps findings and hypotheses as separate authorities. At Exploit and
+Hacker handoff it takes a coherent snapshot of both registries and validates
+only positive links: a `CONFIRMED` or `SUSPECTED` hypothesis must link a
+current-run finding in the same state. A finding does not need a matching
+positive hypothesis, so a confirmed observation can coexist with a disproved
+narrower bypass or impact hypothesis.
+
+Each hypothesis in `raw/hypotheses/registry.json` has one state:
 `OPEN`, `TESTING`, `QUEUED`, `CONFIRMED`, `DISPROVED`, `SUSPECTED`,
 `INCONCLUSIVE`, or `UNTESTABLE`.
 `SUSPECTED` requires affirmative target evidence. `INCONCLUSIVE` means a valid
@@ -79,7 +85,9 @@ inflating the suspected-finding count.
 
 `CONFIRMED` and `SUSPECTED` entries must link current-run findings. Negative-only
 outcomes can retain stable backlog IDs when they never met the positive-evidence
-threshold for entering the finding registry.
+threshold for entering the finding registry. Closed and queued hypotheses keep
+their stable IDs, evidence, and transition history across phases; Report reads
+the complete registry rather than a reconstructed subset.
 
 Before using `UNTESTABLE` for a credible, high-value path, Exploit and Hacker
 actively seek safe prerequisites in existing evidence, ordinary product flows,
@@ -178,11 +186,15 @@ whose scope is `IN_SCOPE`, `OUT_OF_SCOPE`, or action-specific `UNRESOLVED`.
 Broken promised access blocks Recon; one unresolved action does not block
 independent in-scope research.
 
-Bug Bounty uses longer active-execution ceilings suited to sustained research: Brief
-30 minutes, Recon 240, Exploit 360, Hacker 360, Verify 180, and Report 90.
+Bug Bounty uses bounded research ceilings: Brief 30 minutes, Recon 60, Exploit
+120, Hacker 120, Verify 180, and Report 90. Pentest uses the same 60/120/120
+budgets for Recon, Exploit, and Hacker.
 Every Bug Bounty phase reserves the final five minutes for closeout. Pentest
 reserves three minutes in Brief and five in every later phase; every Code Audit
-phase reserves five.
+phase reserves five. Provider retry and response waits may extend one research
+phase by at most 15 minutes in total, so the autonomous hard ceilings are
+75/135/135 minutes for Recon/Exploit/Hacker. Explicit human approval wait is
+recorded separately and excluded.
 Recon, Exploit, and Hacker receive a qualitative novelty contract through the
 shared `hypothesis` registry. Its synthesis
 treats endpoint, payload-spelling, or version variations of one mechanism as
@@ -191,6 +203,9 @@ then performs a contrarian pivot and writes a synthesis of semantically distinct
 avenues, or explains with target-specific evidence why further diversification
 is exhausted. There are no numeric quotas or minimum route, click, hypothesis,
 or family counts that block handoff.
+An exhausted synthesis with no `OPEN` or `TESTING` hypotheses enters closeout
+early. A diversified synthesis continues only through its recorded
+discriminators.
 
 Recon prioritizes real authenticated journeys and broad route/action coverage.
 Redacted browser metadata produces an append-only surface map; Exploit and

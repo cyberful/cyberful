@@ -68,6 +68,11 @@ describe("Settings", () => {
     expect(Settings.compactionPolicy(settings)).toEqual(Settings.DEFAULT_COMPACTION)
     expect(settings.agent.retry).toEqual(Settings.DEFAULT_RETRY)
     expect(Settings.retryPolicy(settings)).toEqual(Settings.DEFAULT_RETRY)
+    expect(Settings.subagentPolicy(settings)).toEqual({
+      provider: "openai-codex",
+      reasoning_effort: "high",
+      source: "configured",
+    })
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
     expect(settings.agent.fallback.automatic_security_block.enabled).toBe(false)
     expect(Settings.phaseRecoveryPolicy(settings)).toEqual({
@@ -142,6 +147,7 @@ describe("Settings", () => {
       base_delay_ms: 500,
       max_delay_ms: 2_000,
       attempt_timeout_ms: 300_000,
+      max_phase_extension_minutes: 15,
     })
 
     expect(() =>
@@ -184,6 +190,37 @@ describe("Settings", () => {
         ),
       ),
     ).toThrow(/agent\.retry\.attempt_timeout_ms/)
+  })
+
+  test("resolves a dedicated subagent route and falls back explicitly for legacy settings", () => {
+    const dedicated = Settings.parse(
+      validSettings().replace(
+        "    enabled: true\n",
+        "    enabled: true\n    provider: main\n    reasoning_effort: medium\n",
+      ),
+    )
+    expect(Settings.subagentPolicy(dedicated)).toEqual({
+      provider: "main",
+      reasoning_effort: "medium",
+      source: "configured",
+    })
+
+    const legacy = Settings.parse(validSettings())
+    expect(Settings.subagentPolicy(legacy)).toMatchObject({
+      provider: "main",
+      reasoning_effort: "high",
+      source: "main-provider-fallback",
+      warning: expect.stringContaining("inherit"),
+    })
+
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "    enabled: true\n",
+          "    enabled: true\n    provider: missing\n",
+        ),
+      ),
+    ).toThrow(/subagents\.provider references unconfigured provider/)
   })
 
   test("accepts a conservative context compaction threshold and rejects unsafe percentages", () => {

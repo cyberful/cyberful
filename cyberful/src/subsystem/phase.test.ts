@@ -556,6 +556,9 @@ describe("phase orchestration (runAndAdvance)", () => {
                 code: "server_is_overloaded",
                 detail: "provider overloaded",
               },
+              approvalWaitMs: 2_000,
+              retryWaitMs: 12_000,
+              retryCompensationMs: 10_000,
               recoveryPolicy: {
                 enabled: true,
                 maxRestarts: 1,
@@ -587,12 +590,64 @@ describe("phase orchestration (runAndAdvance)", () => {
       ["recon", 2, "fallback"],
     ])
     expect(specs[1]?.objective).toContain("Do not repeat an operation")
+    expect(specs[1]?.timeoutMs).toBe(59_900)
+    expect(specs[1]?.budgetCarry).toEqual({
+      approvalWaitMs: 2_000,
+      retryWaitMs: 12_000,
+      phaseExtensionMs: 10_000,
+    })
     expect(out.phaseAttempts.slice(0, 2).map((attempt) => [attempt.phase, attempt.attempt, attempt.recovered])).toEqual([
       ["recon", 1, true],
       ["recon", 2, false],
     ])
     expect(out.terminal).toBe(true)
     expect(out.outcome).toBe("warning")
+  })
+
+  test("a hard context tail restarts once on the same route and reconciles hypotheses", async () => {
+    const specs: PhaseSpec[] = []
+    let reconAttempts = 0
+    await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && reconAttempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "capacity",
+                providerCode: "active_tail_too_large",
+                retryable: true,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "capacity",
+                code: "active_tail_too_large",
+                detail: "minimal context reached the hard input limit",
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: true,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.phase, spec.attempt, spec.providerRoute])).toEqual([
+      ["recon", 1, "main"],
+      ["recon", 2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain("list the current hypothesis registry")
   })
 
   test("terminal contract failures are failed while a plain interruption is blocked", async () => {

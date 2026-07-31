@@ -116,6 +116,12 @@ normalized kind, status and code when available, plus a bounded,
 credential-redacted operator diagnostic; raw provider diagnostics are not
 persisted.
 
+Provider usage is append-only at `raw/operations/provider-usage.jsonl`, one
+entry per provider call with run ancestry and disjoint token fields. Sanitized
+gateway, MCP, ZAP, and browser lifecycle failures are separately retained at
+`raw/operations/runtime-diagnostics.jsonl`; neither artifact is inserted into
+model context automatically.
+
 Large results sent to the terminal are a display concern only. Cyberful keeps
 the model and transcript result unchanged, stores one redacted copy under
 `raw/tool-results/` with its byte size and SHA-256, and sends at most 12 KiB to

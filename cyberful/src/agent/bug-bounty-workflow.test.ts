@@ -16,11 +16,11 @@ import { isRecord } from "@/util/record"
 
 const PHASES = [
   ["brief", "MISSION.md", 30],
-  ["recon", "RECON.md", 240],
-  ["exploit", "EXPLOIT.md", 360],
-  ["hacker", "HACKER.md", 360],
-  ["verify", "BUG_BOUNTY_VERIFY.md", 180],
-  ["report", "BUG_BOUNTY_REPORT.md", 90],
+  ["recon", "RECON.md", 60],
+  ["exploit", "EXPLOIT.md", 120],
+  ["hacker", "HACKER.md", 120],
+  ["verify", "BUG_BOUNTY_VERIFY.md", 45],
+  ["report", "BUG_BOUNTY_REPORT.md", 30],
 ] as const
 
 describe("built-in Bug Bounty Program workflow", () => {
@@ -76,7 +76,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     )
   })
 
-  test("packages long Bug Bounty budgets, artifacts, successors, and delegation limits", () => {
+  test("packages bounded Bug Bounty budgets, artifacts, successors, and delegation limits", () => {
     const budgets: unknown = JSON.parse(fs.readFileSync(SubsystemPhase.budgetsPath(home), "utf8"))
     if (!isRecord(budgets)) throw new Error("Bug Bounty budgets must be an object")
 

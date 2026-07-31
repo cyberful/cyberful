@@ -465,6 +465,11 @@ export async function startEngagement(input: {
   workarea: string
   objective?: string
   signal?: AbortSignal
+  onDiagnostic?: (input: {
+    readonly severity: "warning" | "error"
+    readonly errorClass: string
+    readonly message: string
+  }) => void
 }): Promise<EngagementRuntime> {
   input.signal?.throwIfAborted()
   const engagementPolicy = await readEngagementPolicy(input.workarea)
@@ -561,6 +566,23 @@ export async function startEngagement(input: {
       cleanupError = failure
     }
     if (input.signal?.aborted) throw input.signal.reason
+    input.onDiagnostic?.({
+      severity: "error",
+      errorClass:
+        error instanceof Error && error.name !== "Error"
+          ? error.name || "ZapStartupError"
+          : "ZapStartupError",
+      message: errorMessage(error),
+    })
+    if (cleanupError)
+      input.onDiagnostic?.({
+        severity: "error",
+        errorClass:
+          cleanupError instanceof Error && cleanupError.name !== "Error"
+            ? cleanupError.name || "ZapCleanupError"
+            : "ZapCleanupError",
+        message: errorMessage(cleanupError),
+      })
     if (engagementPolicy?.global_http_rps !== null && engagementPolicy?.global_http_rps !== undefined)
       throw new Error(
         `OWASP ZAP is required because the engagement defines a global HTTP rate limit: ${errorMessage(error)}`,

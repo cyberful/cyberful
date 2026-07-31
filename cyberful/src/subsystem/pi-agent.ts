@@ -26,6 +26,7 @@ import type {
   AgentEvent,
   AgentRun,
   AgentRunID,
+  AgentRunIdentity,
   AgentRunResult,
   AgentRunSpec,
   AgentRunTermination,
@@ -34,6 +35,7 @@ import type {
   AgentTaskCapsule,
   ChildPromptInput,
   ProviderAffinity,
+  RecoveredHypothesis,
   SubsystemStatus,
 } from "./agent-subsystem"
 import type { PiModels } from "./pi-models"
@@ -66,6 +68,10 @@ import {
   type PiFallbackLedger,
 } from "./pi-fallback-ledger"
 import type { PhaseActivity, PhaseActivityActor } from "./subsystem"
+import type {
+  ProviderCallKind,
+  ProviderUsageLedger,
+} from "./provider-usage"
 
 const DelegateTaskParameters = Type.Object(
   {
@@ -100,6 +106,20 @@ const DelegateTaskParameters = Type.Object(
       description:
         "Workarea-relative durable artifact the child must create or update. Partial output remains available after timeout or failure.",
     }),
+    display_name: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 32,
+        description: "Optional short kebab-case identity proposed for the child, such as api-monster.",
+      }),
+    ),
+    emoji: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 16,
+        description: "Optional single emoji grapheme proposed for the child.",
+      }),
+    ),
   },
   { additionalProperties: false },
 )
@@ -165,6 +185,7 @@ interface PiAgentSubsystemOptions {
   readonly createRunID?: () => AgentRunID
   readonly onPayload?: (payload: unknown, system: string, adapter: string) => unknown
   readonly onShutdown?: () => Promise<void>
+  readonly usageLedger?: ProviderUsageLedger
 }
 
 interface RunState {
@@ -194,6 +215,7 @@ interface RunState {
   cumulativeUsage: AgentRunUsage
   providerRetryAttempt: number
   providerRetryActive: boolean
+  providerCallKind: ProviderCallKind
   readonly contextArtifacts: Map<string, ContextArtifactReference>
   readonly contextProjections: Map<string, ContextProjectionEntry>
   readonly contextRecoveryKeys: Set<string>
@@ -201,8 +223,7 @@ interface RunState {
   contextRecoveryProviderCallsRemaining?: number
   contextRotationGeneration: number
   contextCompactionEmergency: boolean
-  contextRotationFailure?: {
-    readonly generationHash: string
+  contextRotationWatermark?: {
     readonly estimatedTokens: number
     readonly userMessages: number
   }
@@ -224,6 +245,7 @@ type ContextRotationEvent = Extract<AgentEvent, { type: "context_rotation" }>
 type ContextRotationAttempt = ContextRotationEvent["attempts"][number]
 
 const observedContextUpperBounds = new Map<string, number>()
+const CONTEXT_CONTINUATION_RESERVE_TOKENS = 16_384
 
 class ContextCheckpointError extends Error {
   readonly attempts: readonly ContextRotationAttempt[]
@@ -235,6 +257,15 @@ class ContextCheckpointError extends Error {
   }
 }
 
+class ContextCapacityError extends Error {
+  readonly code = "active_tail_too_large"
+
+  constructor(message: string) {
+    super(message)
+    this.name = "ContextCapacityError"
+  }
+}
+
 interface StartChildOptions {
   readonly role: "subagent" | "fallback"
   readonly route: ProviderAffinity
@@ -242,6 +273,66 @@ interface StartChildOptions {
   readonly mode?: "proactive" | "automatic"
   readonly quotaExempt?: boolean
   readonly sourceCallID?: string
+  readonly proposedIdentity?: {
+    readonly displayName?: string
+    readonly emoji?: string
+  }
+}
+
+const AGENT_IDENTITY_ADJECTIVES = [
+  "api",
+  "auth",
+  "browser",
+  "cipher",
+  "cloud",
+  "cookie",
+  "data",
+  "header",
+  "parser",
+  "route",
+  "session",
+  "token",
+] as const
+const AGENT_IDENTITY_NOUNS = [
+  "comet",
+  "dragon",
+  "falcon",
+  "guardian",
+  "monster",
+  "owl",
+  "rocket",
+  "scanner",
+  "ship",
+  "spark",
+  "tiger",
+  "voyager",
+] as const
+const AGENT_IDENTITY_EMOJIS = ["👾", "🚀", "🦉", "🐉", "🛰️", "🔭", "🛡️", "🧭", "⚡", "🔬"] as const
+const AGENT_DISPLAY_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const AGENT_EMOJI = /\p{Extended_Pictographic}/u
+
+function validDisplayName(value: string | undefined): value is string {
+  return value !== undefined && value.length <= 32 && AGENT_DISPLAY_NAME.test(value)
+}
+
+function validEmoji(value: string | undefined): value is string {
+  if (!value || !AGENT_EMOJI.test(value)) return false
+  const segments = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)]
+  return segments.length === 1 && segments[0]?.segment === value
+}
+
+function deterministicIdentity(task: AgentTaskCapsule): AgentRunIdentity {
+  const digest = createHash("sha256")
+    .update(task.objective)
+    .update("\0")
+    .update((task.artifacts ?? []).join("\0"))
+    .digest()
+  return {
+    displayName: `${AGENT_IDENTITY_ADJECTIVES[digest[0]! % AGENT_IDENTITY_ADJECTIVES.length]}-${
+      AGENT_IDENTITY_NOUNS[digest[1]! % AGENT_IDENTITY_NOUNS.length]
+    }`,
+    emoji: AGENT_IDENTITY_EMOJIS[digest[2]! % AGENT_IDENTITY_EMOJIS.length]!,
+  }
 }
 
 class EventQueue<T> implements AsyncIterable<T>, AsyncIterator<T> {
@@ -344,10 +435,6 @@ function reducedCheckpointSource(messages: readonly AgentMessage[]): AgentMessag
     if (retainedTokens >= targetTokens) break
   }
   return retained.flat()
-}
-
-function rotationGenerationHash(messages: readonly AgentMessage[]): string {
-  return createHash("sha256").update(JSON.stringify(messages)).digest("hex")
 }
 
 function compactToolDescription(value: string): string {
@@ -654,6 +741,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
   readonly #random: () => number
   readonly #createRunID: () => AgentRunID
   readonly #fallbackLedger: PiFallbackLedger
+  readonly #usageLedger?: ProviderUsageLedger
 
   readonly #onPayload?: PiAgentSubsystemOptions["onPayload"]
   readonly #onShutdown?: () => Promise<void>
@@ -673,6 +761,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     this.#random = options.random ?? Math.random
     this.#createRunID = options.createRunID ?? (() => `run_${randomUUID()}`)
     this.#fallbackLedger = options.fallbackLedger ?? fallbackLedgerForSession(`worker_${randomUUID()}`)
+    this.#usageLedger = options.usageLedger
     this.#onPayload = options.onPayload
     this.#onShutdown = options.onShutdown
   }
@@ -750,7 +839,16 @@ export class PiAgentSubsystem implements AgentSubsystem {
       skillsUsed: new Set(),
       actor: {
         id,
-        label: `${spec.role} · ${spec.provider}/${spec.model.id}`,
+        label: spec.identity
+          ? `${spec.identity.emoji} ${spec.identity.displayName}`
+          : `${spec.role} · ${spec.provider}/${spec.model.id}`,
+        ...(spec.identity
+          ? {
+              displayName: spec.identity.displayName,
+              emoji: spec.identity.emoji,
+            }
+          : {}),
+        role: spec.role,
         ...(spec.parentID ? { parentID: spec.parentID } : {}),
         ...(spec.sourceCallID ? { sourceCallID: spec.sourceCallID } : {}),
         provider: spec.provider,
@@ -767,6 +865,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       cumulativeUsage: emptyUsage(),
       providerRetryAttempt: 0,
       providerRetryActive: false,
+      providerCallKind: "generation",
       closeout: false,
       closeoutRequested: false,
       contextArtifacts: new Map(),
@@ -853,6 +952,44 @@ export class PiAgentSubsystem implements AgentSubsystem {
     })
   }
 
+  #recordProviderUsage(
+    state: RunState,
+    input: {
+      readonly usage: Usage
+      readonly provider?: string
+      readonly model?: string
+      readonly reasoningRequested?: Settings.ReasoningEffort
+      readonly reasoningEffective?: string
+      readonly callKind: ProviderCallKind
+      readonly status: "completed" | "failed" | "cancelled"
+      readonly attempt: number
+    },
+  ): void {
+    const route = input.provider ?? state.spec.provider
+    this.#usageLedger?.record({
+      workflow: state.spec.prompt.manifest.workflow,
+      phase: state.spec.prompt.manifest.phase,
+      attempt: input.attempt,
+      runID: state.id,
+      ...(state.spec.parentID ? { parentRunID: state.spec.parentID } : {}),
+      depth: state.spec.depth,
+      runKind: state.spec.role,
+      provider: this.#registry.adapter(route),
+      route,
+      model: input.model ?? state.spec.model.id,
+      reasoningRequested: input.reasoningRequested ?? state.spec.reasoning.requested,
+      reasoningEffective: input.reasoningEffective ?? state.spec.reasoning.effective,
+      callKind: input.callKind,
+      status: input.status,
+      usage: agentRunUsage(input.usage),
+      reportedTotalTokens: input.usage.totalTokens,
+      telemetryComplete:
+        [input.usage.input, input.usage.output, input.usage.cacheRead, input.usage.cacheWrite].every(
+          (value) => typeof value === "number" && Number.isFinite(value),
+        ),
+    })
+  }
+
   #retryFailure(state: RunState, message: AssistantMessage | undefined): Failure | undefined {
     if (!message) return
     return PiSecurity.classify(
@@ -906,6 +1043,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
         ? {
             retryWaitMs: Math.round(budget.retryWaitMs),
             compensationMs: Math.round(budget.retryCompensationMs),
+            providerWaitMs: Math.round(budget.retryWaitMs),
+            phaseExtensionMs: Math.round(budget.retryCompensationMs),
+            phaseExtensionCapMs: Math.round(budget.retryCompensationCapMs),
             deadlineAt: Math.round(budget.deadlineAt),
             compensationCapReached: budget.retryCompensationCapReached,
           }
@@ -989,6 +1129,18 @@ export class PiAgentSubsystem implements AgentSubsystem {
   #contextLimits(state: RunState) {
     const policy = Settings.compactionPolicy(this.#settings)
     const observedContextUpperBound = observedContextUpperBounds.get(this.#contextRouteKey(state))
+    const continuationReserveTokens = Math.min(
+      CONTEXT_CONTINUATION_RESERVE_TOKENS,
+      state.spec.model.maxTokens,
+    )
+    const advertisedHardInputTokens = Math.max(
+      1,
+      state.spec.context.trustedRouteWindow - continuationReserveTokens,
+    )
+    const hardInputTokens = Math.min(
+      advertisedHardInputTokens,
+      observedContextUpperBound ?? Number.POSITIVE_INFINITY,
+    )
     const effectiveOperationalWindow = Math.min(
       state.spec.context.operationalContextWindow,
       observedContextUpperBound ?? Number.POSITIVE_INFINITY,
@@ -1012,6 +1164,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
           }),
       operationalContextWindow: state.spec.context.operationalContextWindow,
       ...(observedContextUpperBound === undefined ? {} : { observedContextUpperBound }),
+      continuationReserveTokens,
+      hardInputTokens,
       effectiveOperationalWindow,
       triggerTokens: Math.floor(
         (effectiveOperationalWindow * policy.trigger_percentage) / 100,
@@ -1038,8 +1192,14 @@ export class PiAgentSubsystem implements AgentSubsystem {
   ): number {
     const key = this.#contextRouteKeyFor(sessionID, provider)
     const capacity = this.#registry.contextCapacity(provider)
+    const model = this.#registry.model(provider)
+    const advertisedHardInputTokens = Math.max(
+      1,
+      capacity.trustedRouteWindow -
+        Math.min(CONTEXT_CONTINUATION_RESERVE_TOKENS, model.maxTokens),
+    )
     const current = Math.min(
-      capacity.operationalContextWindow,
+      advertisedHardInputTokens,
       observedContextUpperBounds.get(key) ?? Number.POSITIVE_INFINITY,
     )
     const learned = Math.max(1, Math.floor(failedInputTokens * 0.8))
@@ -1099,9 +1259,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
   }): Promise<{
     readonly projection: SemanticProjection
     readonly attempts: readonly ContextRotationAttempt[]
-    readonly summarizerProvider: string
-    readonly summarizerModel: string
-    readonly summarizerReasoningEffort: Settings.ReasoningEffort
   }> {
     const policy = Settings.compactionPolicy(this.#settings)
     const configuredProvider =
@@ -1221,6 +1378,21 @@ export class PiAgentSubsystem implements AgentSubsystem {
         continue
       }
 
+      this.#recordProviderUsage(input.state, {
+        usage: response.usage,
+        provider: plan.provider,
+        model: model.id,
+        reasoningRequested: policy.summarizer.reasoning_effort,
+        reasoningEffective: reasoning.effective,
+        callKind: "context-summary",
+        status:
+          response.stopReason === "error"
+            ? "failed"
+            : response.stopReason === "aborted"
+              ? "cancelled"
+              : "completed",
+        attempt: attempts.length + 1,
+      })
       input.state.cumulativeUsage = addUsage(input.state.cumulativeUsage, response.usage)
       const failure = PiSecurity.classify(
         providerObservation(
@@ -1305,9 +1477,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
         return {
           projection,
           attempts,
-          summarizerProvider: plan.provider,
-          summarizerModel: model.id,
-          summarizerReasoningEffort: policy.summarizer.reasoning_effort,
         }
       } catch (error) {
         attempts.push({
@@ -1397,7 +1566,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
     })
     if (!need) return providerMessages
 
-    const generationHash = rotationGenerationHash(providerMessages)
     const userMessageCount = messages.filter(
       (message) =>
         message.role === "user" &&
@@ -1406,12 +1574,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
           message.content.startsWith("[Host-owned semantic context checkpoint]")
         ),
     ).length
-    const failed = state.contextRotationFailure
+    const watermark = state.contextRotationWatermark
     if (
       mode === "proactive" &&
-      failed !== undefined &&
-      failed.userMessages === userMessageCount &&
-      estimatedTokens < failed.estimatedTokens + 8_192
+      watermark !== undefined &&
+      watermark.userMessages === userMessageCount &&
+      estimatedTokens < watermark.estimatedTokens + 8_192
     )
       return providerMessages
 
@@ -1432,11 +1600,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
       limits,
       estimatedTokensBefore: estimatedTokens,
       sourceMessages: messages.length,
+      summarizedMessages: 0,
+      splitTurn: false,
     } as const
 
     if (!policy.model_summary) {
-      state.contextRotationFailure = {
-        generationHash,
+      state.contextRotationWatermark = {
         estimatedTokens,
         userMessages: userMessageCount,
       }
@@ -1492,37 +1661,25 @@ export class PiAgentSubsystem implements AgentSubsystem {
         sourceEstimatedTokens: estimatedTokens,
         signal,
       })
-      let history = buildRotationHistory({
+      const checkpointTokens = estimateAgentContextTokens({
+        systemPrompt: state.spec.prompt.system,
+        messages: [semantic.projection.message],
+        tools,
+      })
+      const recentTokenLimit = Math.max(0, need.targetTokens - checkpointTokens)
+      const history = buildRotationHistory({
         messages: result.messages,
         checkpoint: semantic.projection.message,
+        recentTokenLimit,
       })
-      let estimatedTokensAfter = estimateAgentContextTokens({
+      const estimatedTokensAfter = estimateAgentContextTokens({
         systemPrompt: state.spec.prompt.system,
         messages: history.messages,
         tools,
       })
-      for (
-        let historicalLimit = 8_000;
-        estimatedTokensAfter > need.targetTokens &&
-        history.historicalUserMessages > 0 &&
-        historicalLimit >= 0;
-        historicalLimit = historicalLimit === 0 ? -1 : Math.floor(historicalLimit / 2)
-      ) {
-        history = buildRotationHistory({
-          messages: result.messages,
-          checkpoint: semantic.projection.message,
-          historicalUserTokenLimit: historicalLimit,
-        })
-        estimatedTokensAfter = estimateAgentContextTokens({
-          systemPrompt: state.spec.prompt.system,
-          messages: history.messages,
-          tools,
-        })
-      }
 
-      if (estimatedTokensAfter >= need.triggerTokens) {
-        state.contextRotationFailure = {
-          generationHash,
+      if (estimatedTokensAfter >= limits.hardInputTokens) {
+        state.contextRotationWatermark = {
           estimatedTokens,
           userMessages: userMessageCount,
         }
@@ -1532,13 +1689,18 @@ export class PiAgentSubsystem implements AgentSubsystem {
           state: "failed",
           estimatedTokensAfter,
           activeMessages: history.activeMessages,
+          summarizedMessages: history.summarizedMessages,
+          splitTurn: history.splitTurn,
           toolResultsVirtualized: result.toolResultsVirtualized,
           artifactsPreserved: result.artifactsPreserved + 1,
           checkpoint: semantic.projection.artifact,
           attempts: semantic.attempts,
           reason: "active_tail_too_large",
+          detail: `Rotated input estimate ${estimatedTokensAfter} reached the hard input limit ${limits.hardInputTokens}.`,
         })
-        throw new Error("active_tail_too_large: irreducible active context exceeds the rotation trigger")
+        throw new ContextCapacityError(
+          `active_tail_too_large: rotated input estimate ${estimatedTokensAfter} reaches hard input limit ${limits.hardInputTokens}`,
+        )
       }
 
       const rotationState =
@@ -1547,7 +1709,16 @@ export class PiAgentSubsystem implements AgentSubsystem {
       if (!activeAgent) throw new Error("context rotation lost its active AgentRun")
       activeAgent.state.messages = history.messages
       state.contextRotationGeneration = generation
-      state.contextRotationFailure = undefined
+      const rotatedUserMessageCount = history.messages
+        .slice(1)
+        .filter((message) => message.role === "user").length
+      state.contextRotationWatermark =
+        rotationState === "partial"
+          ? {
+              estimatedTokens: estimatedTokensAfter,
+              userMessages: rotatedUserMessageCount,
+            }
+          : undefined
       state.lastProviderInputEstimate = estimatedTokensAfter
       this.#emitContextRotation(state, {
         ...eventBase,
@@ -1555,6 +1726,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         state: rotationState,
         estimatedTokensAfter,
         activeMessages: history.activeMessages,
+        summarizedMessages: history.summarizedMessages,
+        splitTurn: history.splitTurn,
         toolResultsVirtualized: result.toolResultsVirtualized,
         artifactsPreserved: result.artifactsPreserved + 1,
         checkpoint: semantic.projection.artifact,
@@ -1563,9 +1736,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       })
       return history.messages
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("active_tail_too_large")) throw error
-      state.contextRotationFailure = {
-        generationHash,
+      if (error instanceof ContextCapacityError) throw error
+      state.contextRotationWatermark = {
         estimatedTokens,
         userMessages: userMessageCount,
       }
@@ -1638,6 +1810,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     state.contextCompactionEmergency = true
     state.contextRecoveryProviderCallsRemaining = 1
     state.lastHTTPStatus = undefined
+    state.providerCallKind = "recovery"
     try {
       await agent.continue()
     } catch (error) {
@@ -1652,6 +1825,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       }
     } finally {
       state.contextRecoveryProviderCallsRemaining = undefined
+      if (state.providerCallKind === "recovery") state.providerCallKind = "generation"
     }
 
     const next = this.#retryFailure(state, latestAssistant(agent.state.messages))
@@ -1678,7 +1852,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
   #toolSet(state: RunState): AgentTool[] {
     const gatewayTools =
       state.spec.gatewayTools?.({
+        id: state.id,
         role: state.spec.role,
+        ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
+        ...(state.spec.identity ? { identity: state.spec.identity } : {}),
         handoffOwner: state.spec.handoffOwner,
         providerAffinity: state.spec.providerAffinity,
       }) ?? []
@@ -1818,6 +1995,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
             artifacts: [...new Set([...(input.artifacts ?? []), outputArtifact])],
           }),
           sourceCallID: callID,
+          proposedIdentity: {
+            displayName: input.display_name,
+            emoji: input.emoji,
+          },
         })
         const result = await child.result
         const artifact = await readWorkareaFileChunk(state.spec.workarea, outputArtifact, { limit: 1 })
@@ -1830,6 +2011,11 @@ export class PiAgentSubsystem implements AgentSubsystem {
               text: [
                 `Child AgentRun ${result.id} ${result.termination}.`,
                 `Durable output: ${outputArtifact} (${artifact.available ? `${artifact.bytes} bytes` : "not created"}).`,
+                result.recoveredHypotheses.length > 0
+                  ? `Recovered hypotheses: ${result.recoveredHypotheses
+                      .map((item) => `${item.id}${item.nextStep ? ` → ${item.nextStep}` : ""}`)
+                      .join("; ")}.`
+                  : "Recovered hypotheses: none.",
                 result.output || "The child returned no textual result.",
               ].join("\n\n"),
             },
@@ -1840,6 +2026,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             provider: result.provider,
             model: result.model,
             failure: result.failure,
+            recoveredHypotheses: result.recoveredHypotheses,
             artifact,
           },
         }
@@ -2048,10 +2235,32 @@ export class PiAgentSubsystem implements AgentSubsystem {
       throw new Error("A fallback-affine subtree cannot return to the main provider")
 
     const provider =
-      options.route === "main" ? this.#settings.agent.main_provider : this.#settings.agent.fallback_provider
+      options.route === "main"
+        ? parent.spec.delegation.provider
+        : this.#settings.agent.fallback_provider
     if (!provider) throw new Error("No fallback provider is configured")
     const model = this.#registry.model(provider)
-    const reasoning = PiReasoning.resolve(Settings.reasoningEffort(this.#settings), model)
+    const reasoning = PiReasoning.resolve(parent.spec.delegation.reasoningEffort, model)
+    const generatedIdentity = deterministicIdentity(options.task)
+    const proposed = options.proposedIdentity
+    const baseIdentity: AgentRunIdentity = {
+      displayName: validDisplayName(proposed?.displayName)
+        ? proposed.displayName
+        : generatedIdentity.displayName,
+      emoji: validEmoji(proposed?.emoji) ? proposed.emoji : generatedIdentity.emoji,
+    }
+    const existingNames = new Set(
+      [...this.#states.values()]
+        .map((candidate) => candidate.spec.identity?.displayName)
+        .filter((name): name is string => Boolean(name)),
+    )
+    let displayName = baseIdentity.displayName
+    for (let suffix = 2; existingNames.has(displayName); suffix++)
+      displayName = `${baseIdentity.displayName.slice(
+        0,
+        Math.max(1, 31 - String(suffix).length),
+      )}-${suffix}`
+    const identity = { ...baseIdentity, displayName }
     const promptInput: ChildPromptInput = {
       role: options.role,
       providerRoute: options.route,
@@ -2067,6 +2276,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       role: options.role,
       parentID: parent.id,
       sourceCallID: options.sourceCallID,
+      identity,
       phaseRootID: parent.spec.role === "root" ? parent.id : parent.spec.phaseRootID,
       depth: parent.spec.depth + 1,
       provider,
@@ -2305,6 +2515,19 @@ export class PiAgentSubsystem implements AgentSubsystem {
     }
     if (event.type === "message_end" && isAssistantMessage(event.message)) {
       state.finishProviderRetryAttempt?.()
+      const callKind = state.providerCallKind
+      this.#recordProviderUsage(state, {
+        usage: event.message.usage,
+        callKind,
+        status:
+          event.message.stopReason === "error"
+            ? "failed"
+            : event.message.stopReason === "aborted"
+              ? "cancelled"
+              : "completed",
+        attempt: Math.max(1, state.providerRetryAttempt + 1),
+      })
+      state.providerCallKind = "generation"
       const failure = this.#retryFailure(state, event.message)
       const contextRecoveryKey = this.#contextRecoveryKey(state, failure)
       const discardedAttempt =
@@ -2369,8 +2592,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       return
     }
     if (event.type === "tool_execution_end") {
+      const details = record(event.result)?.details
       if (event.toolName === "skill_read" && !event.isError) {
-        const details = record(event.result)?.details
         const skill = record(details)?.skill
         const kind = record(details)?.kind
         if (typeof skill === "string" && skill.trim()) {
@@ -2378,6 +2601,52 @@ export class PiAgentSubsystem implements AgentSubsystem {
           if (kind === "instructions") state.skillsRead.add(skill)
         }
       }
+      if (
+        event.toolName === "hypothesis" &&
+        !event.isError &&
+        record(details)?.synthesisOutcome === "exhausted" &&
+        record(details)?.activeBlockingHypotheses === 0 &&
+        state.spec.role === "root" &&
+        state.spec.handoffOwner &&
+        !state.closeout &&
+        !state.cancellation
+      ) {
+        const remaining = this.#remainingBudget(state)
+        state.closeout = true
+        state.closeoutRequested = true
+        this.#emit(state, {
+          type: "phase_closeout",
+          runID: state.id,
+          state: "entered",
+          cause: "hypothesis_exhausted",
+          reserveMs: Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0)),
+          remainingMs: remaining,
+          deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+        })
+        this.#emitActivity(state, {
+          kind: "status",
+          text:
+            "Phase mode: closeout · hypothesis synthesis is exhausted with no OPEN/TESTING hypotheses · research tools disabled.",
+        })
+        this.#notifyDelegationWaiters({ all: true })
+        state.agent?.abort()
+        void Promise.allSettled(
+          [...state.children]
+            .map((id) => this.#states.get(id))
+            .filter((child): child is RunState => child !== undefined)
+            .map((child) => this.#cancelState(child, "Hypothesis synthesis requested closeout", "cancel")),
+        )
+      }
+      if (
+        event.toolName === "hypothesis" &&
+        !event.isError &&
+        record(details)?.synthesisOutcome === "diversified"
+      )
+        this.#emitActivity(state, {
+          kind: "status",
+          text:
+            "Hypothesis synthesis diversified: continue only with the recorded discriminators; avoid repeating converged work.",
+        })
       this.#emitActivity(state, {
         kind: "output",
         text:
@@ -2400,6 +2669,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       provider: state.spec.provider,
       model: state.spec.model.id,
       providerAffinity: state.spec.providerAffinity,
+      ...(state.spec.identity ? { identity: state.spec.identity } : {}),
       reasoningEffort: state.spec.reasoning.requested,
       effectiveReasoningEffort: state.spec.reasoning.effective,
       context: {
@@ -2418,6 +2688,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         ...(contextLimits.observedContextUpperBound === undefined
           ? {}
           : { observedContextUpperBound: contextLimits.observedContextUpperBound }),
+        continuationReserveTokens: contextLimits.continuationReserveTokens,
+        hardInputTokens: contextLimits.hardInputTokens,
         effectiveOperationalWindow: contextLimits.effectiveOperationalWindow,
         source: contextLimits.source,
         warnings: state.spec.context.warnings,
@@ -2477,6 +2749,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           type: "phase_closeout",
           runID: state.id,
           state: "entered",
+          cause: "reserve",
           reserveMs,
           remainingMs: remaining,
           deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
@@ -2508,6 +2781,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             type: "phase_closeout",
             runID: state.id,
             state: "entered",
+            cause: "reserve",
             reserveMs,
             remainingMs: reserveMs,
             deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
@@ -2704,6 +2978,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
             state.providerRetryAttempt = attempt
             state.providerRetryActive = true
+            state.providerCallKind = "retry"
             state.lastHTTPStatus = undefined
             this.#emitProviderRetry(state, {
               state: "attempting",
@@ -2737,6 +3012,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
                 })
             } finally {
               finishRetryAttempt()
+              if (state.providerCallKind === "retry") state.providerCallKind = "generation"
             }
           }
         }
@@ -2815,6 +3091,40 @@ export class PiAgentSubsystem implements AgentSubsystem {
       failure = auditedFailure(failure)
       const termination = terminationFor(state, failure)
       const finalContextLimits = this.#contextLimits(state)
+      let recoveredHypotheses: readonly RecoveredHypothesis[] = []
+      if (state.spec.role !== "root" && state.spec.recoverHypothesisOwnership) {
+        let ancestor = state.spec.parentID ? this.#states.get(state.spec.parentID) : undefined
+        while (ancestor?.finished && ancestor.spec.parentID)
+          ancestor = this.#states.get(ancestor.spec.parentID)
+        if (ancestor && !ancestor.finished) {
+          recoveredHypotheses = await state.spec
+            .recoverHypothesisOwnership({
+              fromRunID: state.id,
+              to: {
+                runID: ancestor.id,
+                displayName: ancestor.spec.identity?.displayName ?? ancestor.spec.role,
+                kind: ancestor.spec.role,
+              },
+              reason: "child_finished",
+            })
+            .catch((error) => {
+              this.#emitActivity(state, {
+                kind: "status",
+                text: `Hypothesis ownership recovery failed: ${boundedFailureDetail(
+                  error instanceof Error ? error.message : String(error),
+                )}`,
+              })
+              return []
+            })
+          if (recoveredHypotheses.length > 0)
+            this.#emitActivity(state, {
+              kind: "status",
+              text: `Hypothesis ownership recovered by ${ancestor.spec.identity?.displayName ?? ancestor.spec.role}: ${recoveredHypotheses
+                .map((item) => item.id)
+                .join(", ")}.`,
+            })
+        }
+      }
       const result: AgentRunResult = {
         id: state.id,
         ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
@@ -2823,6 +3133,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         provider: state.spec.provider,
         model: state.spec.model.id,
         providerAffinity: state.spec.providerAffinity,
+        ...(state.spec.identity ? { identity: state.spec.identity } : {}),
         reasoningEffort: state.spec.reasoning.requested,
         effectiveReasoningEffort: state.spec.reasoning.effective,
         context: {
@@ -2841,6 +3152,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
           ...(finalContextLimits.observedContextUpperBound === undefined
             ? {}
             : { observedContextUpperBound: finalContextLimits.observedContextUpperBound }),
+          continuationReserveTokens: finalContextLimits.continuationReserveTokens,
+          hardInputTokens: finalContextLimits.hardInputTokens,
           effectiveOperationalWindow: finalContextLimits.effectiveOperationalWindow,
           source: finalContextLimits.source,
           warnings: state.spec.context.warnings,
@@ -2855,6 +3168,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         toolCalls: state.toolCalls,
         fallbackAdmissions: state.fallbackAdmissions,
         fallbackDescendants: state.fallbackDescendants,
+        recoveredHypotheses,
       }
       state.finished = true
       this.#emitActivity(state, {
@@ -2882,6 +3196,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         fallbackAdmissions: state.fallbackAdmissions,
         fallbackDescendants: state.fallbackDescendants,
         toolCalls: state.toolCalls,
+        recoveredHypotheses,
       })
       state.resolveResult(result)
       state.queue.close()

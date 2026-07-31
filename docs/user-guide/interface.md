@@ -85,6 +85,12 @@ focus it and press `Enter`, to open the scrollable detail with evidence, gaps,
 next step, and observation history by run and phase. The sidebar is
 informational; it does not edit registry state.
 
+Below the Findings heading, a muted `(i) N active hypotheses` row appears when
+the workflow has unresolved `OPEN`, `QUEUED`, `TESTING`, or `SUSPECTED`
+hypotheses. `CONFIRMED`, `DISPROVED`, `INCONCLUSIVE`, and `UNTESTABLE` are not
+counted. The host hydrates this view on session open and refreshes by registry
+revision, so restarts and child-ownership recovery remain accurate.
+
 Use `Ctrl+X`, then `F`, choose **Toggle findings** in the command palette, type
 `/findings`, or click the **Findings N** composer indicator to show or hide it.
 Cyberful opens it automatically when the first finding arrives only if no
@@ -145,6 +151,20 @@ no model summary uses the same host-owned diagnostic instead of reporting only
 that no text was produced. Security fallback remains stricter than this display:
 only a provider-structured `security_policy_block` can start it automatically;
 the diagnostic text itself is never classification evidence.
+
+The prompt footer has one token indicator:
+`R> i:… c:… g:… | S> i:… c:… g:…`, where `R` is root work, `S` is all
+delegated work, `i` is non-cached input, `c` is cache-read input, and `g` is
+generated output with reasoning already included. It replaces the former
+single total and child token counters. The complete segment disappears on a
+narrow terminal rather than wrapping. Runtime ZAP/browser failures show only
+their component, error class, and local diagnostics artifact path. Normal
+gateway `stdio` start/close messages and explicit `TRACE`, `DEBUG`, or `INFO`
+logs remain silent in the interface. Actionable diagnostics use compact muted
+rows with no blank lines between them. Each row names the affected component
+and stage, includes a bounded sanitized explanation, links the local log, and
+states when an individual tool failure allows the run to continue. Orange and
+red phase styling is reserved for terminal outcomes and retry failures.
 
 Completion uses `success`, `warning`, `blocked`, or `failed`. Missing required
 deliverables, invalid handoffs, provider exhaustion, and unverified cleanup are

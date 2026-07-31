@@ -10,9 +10,11 @@ active work → reserved closeout → artifact + root handoff → host validatio
 
 A phase cannot move forward just by saying it is done. The `handoff` tool first
 checks that the exact required deliverable is a non-empty regular file at the
-workarea root, keeping a wrong-path attempt inside the same AgentRun so it can
-be repaired. Cyberful records the handoff only after that check, then rechecks
-and seals the file after owner shutdown before starting the next phase. The real
+workarea root. For live Exploit and Hacker it also takes one coherent snapshot
+of the finding and hypothesis registries and validates their positive links.
+A failed check returns inside the same AgentRun so it can be repaired; Cyberful
+does not accept or record the handoff first. After owner shutdown it rechecks
+the snapshot digest, seals the artifact, and starts the next phase. The real
 memory is the saved workarea and evidence—not an invisible chat history.
 
 The terminal outcome is one of `success`, `warning`, `blocked`, or `failed`.
@@ -30,7 +32,10 @@ ending the original root `AgentRun`, cancels children and pending delegations,
 and inserts a host-owned closeout instruction into that same root. Target
 traffic, scanners, lab execution, new research, and delegation are blocked.
 Only local evidence reads, deliverable and ledger reconciliation, cleanup, and
-`handoff` remain. The final deadline is still binding. `budgets.json` configures
+`handoff` remain. The final deadline is still binding. An `exhausted`
+hypothesis synthesis with no `OPEN` or `TESTING` entries enters this same
+closeout path early; a `diversified` synthesis continues only with its recorded
+discriminators. `budgets.json` configures
 the reserve under `$closeout`: Pentest Brief uses three minutes; other Pentest
 phases and every Bug Bounty and Code Audit phase use five. Ask has no reserve.
 Legacy files default to three minutes for phases up to 30 minutes and five
@@ -55,8 +60,10 @@ including backoff and provider response wait. Overlapping retries and approvals
 extend the deadline once, not once per actor. Each attempt has
 `attempt_timeout_ms` (ten minutes by default and at most ten minutes); timeout
 aborts only that attempt and proceeds to the next retry. Total retry
-compensation is capped at `max_retries × attempt_timeout_ms` (30 minutes with
-defaults). Events, manifests, and `run-state.json` expose retry wait,
+compensation is one phase-wide pool configured by
+`max_phase_extension_minutes` (15 minutes by default). Root, child, fallback,
+concurrent retry, and phase-recovery waits share that pool and overlapping
+intervals count once. Events, manifests, and `run-state.json` expose retry wait,
 applied compensation, effective deadline, and cap state as distinct values:
 `retry_wait_ms` remains the full union of retry intervals even after the cap,
 while `retry_compensation_ms` stops at the configured cap. A transient retry
@@ -189,14 +196,15 @@ only that every object has a terminal disposition. It does not convert an
 explicit residual record into a block or broaden the approval policy. The
 durable record is `raw/operations/test-object-lifecycle.jsonl`.
 
-Exploit and Hacker handoffs for Pentest and Bug Bounty carry a structured,
-mutually exclusive verdict inventory. Positive-evidence suspicion, an ambiguous
-executed test, and a test that never ran are distinct host-validated states.
-Untestable entries use a bounded blocker taxonomy and retain the exact next
-step, so downstream phases can distinguish product evidence from a coverage gap.
-Confirmed and suspected IDs must resolve to current-run findings. Negative-only
-outcomes that never met the registry admission threshold retain stable backlog
-IDs without being promoted into findings.
+Exploit and Hacker handoffs for Pentest and Bug Bounty carry a bounded,
+host-owned snapshot of two separate authorities. The finding registry owns all
+positive findings; the hypothesis registry owns investigation coverage,
+negative and inconclusive results, phase transfers, and links to findings.
+Confirmed and suspected hypotheses must link to current-run findings in the
+same state. The inverse is deliberately not required: a valid confirmed
+finding may coexist with a disproved, narrower impact or bypass hypothesis.
+This preserves both facts instead of forcing an artificial one-to-one
+inventory.
 
 Every workarea also owns an authoritative live finding registry at
 `raw/findings/registry.json`. It keeps stable finding IDs and aliases, run
@@ -213,10 +221,11 @@ The registry separates technical state (`SUSPECTED`, `INCONCLUSIVE`,
 `SURVIVES`, `REVISE`, or `DEMOTE`), Bug Bounty submission disposition, and
 severity. Recon through Verify use the host-owned `finding` tool to `record`,
 `revisit`, `update`, `alias`, `list`, or `get`; Report can only `list` and
-`get`. Exploit and Hacker cannot hand off when a current-run finding is missing,
-duplicated, or state-divergent, or when a positive verdict is not registered.
-Negative-only backlog verdicts do not alter the registry. Verify must record the
-workflow's final decisions.
+`get`. Exploit and Hacker cannot hand off while work is genuinely unfinished,
+when a queued hypothesis targets the wrong successor, or when a positive
+hypothesis has no matching current-run finding. A finding does not need a
+positive hypothesis counterpart. Negative-only hypotheses do not alter the
+finding registry. Verify must record the workflow's final decisions.
 
 Writes take a cross-process workarea lock, re-read the latest revision under
 that lock, and replace the JSON atomically. Invalid JSON, unknown schema
@@ -235,7 +244,10 @@ finding link, and transition history with closure reasons. The lifecycle is
 `INCONCLUSIVE`, or `UNTESTABLE`. A hypothesis is recorded before its first
 discriminating test and updated immediately afterward. `OPEN` and `TESTING`
 block handoff; `QUEUED` carries an exact successor and next test. Positive
-states link the separate finding authority. Report receives read-only access.
+states link the separate finding authority. Closed hypotheses remain in the
+session registry with their evidence and transition history; queuing and
+reopening preserve the same ID. Report receives read-only access to the full
+registry, so phase transitions do not discard hypotheses.
 
 Bug Bounty research phases additionally require a qualitative contrarian
 synthesis through the same `hypothesis` tool. This records meaningfully
@@ -337,15 +349,26 @@ must already occur in source context, and all strings are redacted.
 The owner-only, versioned JSON under `raw/context-summaries/` records generation,
 source counts and estimate, summarizer route/model/effort, evidence references,
 and SHA-256. Only after parsing, persistence, and size validation does the host
-atomically replace `agent.state.messages`. The replacement contains the
-checkpoint, up to 16K of recent historical user messages, the current turn from
-the latest operator input, and the latest complete assistant/tool-call/result
-chain. Older checkpoints do not accumulate.
+atomically replace `agent.state.messages`.
 
-If that irreducible memory remains above 35% but below 75%, the safe partial
-result is installed with `target_unreachable`. At or above the trigger it is
-terminal `active_tail_too_large`; Cyberful never cuts the newest user message
-or breaks a tool-call/result pair.
+The replacement is deliberately small: the checkpoint followed by the newest
+complete suffix that fits the remaining target budget. Cyberful walks backward
+from the latest message and starts the suffix only at a user or assistant
+boundary, never at a tool result. Assistant tool calls and their results remain
+one complete group. This may split one long autonomous operator turn: the
+settled prefix is represented by the checkpoint while only its recent work is
+re-injected. Older checkpoints do not accumulate, and the append-only transcript
+remains the complete history.
+
+The operational window is the soft working limit. A separate hard input limit
+subtracts a fixed continuation reserve, up to 16,384 tokens and the model's
+maximum output, from the trusted route window. A replacement above the target
+but below the hard limit is installed with `target_unreachable`; it does not
+fail merely because it remains above the soft trigger. `active_tail_too_large`
+is reserved for the exceptional case where even checkpoint plus fixed context
+cannot fit below the hard limit. The phase then receives one recovery attempt
+on the same model route, with an explicit instruction to reconcile every
+hypothesis before continuing.
 
 The summarizer defaults to the active route at `medium` effort. It can select a
 different declared route. A context rejection permits one retry on the same
@@ -362,7 +385,8 @@ rejection terminates as `context_rotation_failed`. Generic provider retry is
 not entered and completed tools are not executed again.
 
 New `context_rotation` events report `started`, `completed`, `partial`, or
-`failed`, generation, all limits and provenance, token estimates, checkpoint,
+`failed`, generation, all limits and provenance, source/active/summarized
+message counts, whether the suffix split a turn, token estimates, checkpoint,
 and per-attempt summarizer usage. Historical `context_compaction` events remain
 readable, and deterministic tool-result archival retains its existing event
 contract.
@@ -432,6 +456,10 @@ workarea, gateway, browser/ZAP state, Ghidra project, skill catalog, traffic
 policy, depth, concurrency, and budget limits. Children are attributed in the
 activity feed but do not become host phases or separate Cyberful sessions.
 Each `delegate_task` call carries a host-owned `sourceCallID` into its child.
+It also receives a host-validated immutable display identity before spawn.
+The parent may propose a short slug and one emoji; otherwise the host derives
+them deterministically from the task and resolves collisions. The TUI renders
+the identity as `@{👾 api-monster}`, while run IDs remain ownership keys.
 The TUI folds that child's lifecycle into the originating card and shows the
 run ID, provider/model, elapsed time, last activity, tool count, terminal state,
 and structured failure. Unassociated actors remain independent rows.
@@ -445,6 +473,17 @@ Every delegation names one workarea-relative `output_artifact`, and its child
 deadline is the smaller of the remaining phase budget and
 `agent.subagents.timeout_minutes` (30 minutes by default). Timeout and provider
 failure still return the artifact path and whether partial bytes exist.
+The child provider and reasoning profile are independently configured through
+`agent.subagents.provider` and `agent.subagents.reasoning_effort`; defaults are
+the `openai-codex/gpt-5.6-sol` route at `high`. A fallback-affine tree cannot
+change provider.
+
+Every hypothesis stores authenticated `ownerRunID`, display metadata, and an
+append-only ownership transition history. When a child terminates, the single
+registry writer atomically transfers its nonterminal work to the nearest live
+ancestor and returns recovered IDs and next steps. Phase recovery acquires
+otherwise stranded active work. Handoff fails closed if active work has no
+live owner.
 
 `raw/operations/run-state.json` atomically materializes the current phase,
 `work` or `closeout` mode, effective deadline, closeout reserve and remaining
@@ -492,6 +531,36 @@ Every child inherits the owning phase's authority and safety boundary and owns
 its task through a verdict. It may begin passively, but runs safe in-scope
 discriminators itself. Shared mutable resources are used non-overlapping or
 serially; task partitioning and contention are not `UNTESTABLE` blockers.
+
+## Provider usage and runtime diagnostics
+
+Every provider call appends one row to
+`raw/operations/provider-usage.jsonl`, including run ancestry, role, route,
+requested and effective reasoning, call kind, status, non-cached input, cache
+read/write, generated output, reasoning, and telemetry completeness. Reasoning
+is already part of generated output and is never added to canonical volume.
+The ledger is authoritative for root/subagent, phase, fallback, route, model,
+and session reconciliation; cumulative events are only a live view.
+
+The prompt footer exposes one compact projection:
+`R> i:2,03K c:1,22M g:50,13K | S> i:… c:… g:…`. `R` contains top-level,
+recovery-root, and top-level fallback work; `S` contains delegated AgentRuns at
+all depths. If the complete segment cannot fit, it is hidden rather than
+wrapped or truncated.
+
+Gateway, MCP, ZAP, and browser startup, connect, tool, timeout, and shutdown
+failures append sanitized bounded V2 rows to
+`raw/operations/runtime-diagnostics.jsonl`. Each row carries a stable
+root-cause signature, outcome, blocking flag, count, timestamps, original byte
+count, a short redacted preview, and a message hash. Credentials, cookies, URL
+userinfo/query values, controls, bodies, prompts, documents, stack traces, and
+full environments are excluded. Successful tool output is never interpreted
+as a connection diagnostic. Routine lifecycle lines and explicit `TRACE`,
+`DEBUG`, or `INFO` records remain informational even when stderr contains a
+timestamp or prefix; stderr severity is interpreted together with the exit
+outcome. The TUI distinguishes recovered retries, non-blocking tool failures,
+degraded observability, and blocking lifecycle failures. Details are not
+inserted into model context, and V1 rows remain readable.
 
 `Escape` aborts the active AgentRun tree. While a blocking question
 owns focus, one `Escape` only arms dismissal and a second deliberate press after

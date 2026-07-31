@@ -95,6 +95,12 @@ the human can choose:
 Cyberful never solves the challenge, injects a bypass token, or interprets
 ordinary session steering as one of these decisions.
 
+Browser gateway startup, connection, tool, timeout, and incomplete-shutdown
+errors are retained in the same bounded
+`raw/operations/runtime-diagnostics.jsonl` used by other runtime components.
+The TUI exposes only component, class, and artifact path; sanitized detail is
+kept out of agent context.
+
 Every browser result carries a redacted `_meta["cyberful.dev/browser-action"]`
 envelope with profile, page ID, origin, path family, action family, page
 transition, outcome, and status when available. It excludes selectors, entered

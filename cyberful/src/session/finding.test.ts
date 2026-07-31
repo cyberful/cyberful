@@ -48,12 +48,27 @@ test("publishes revisions and keeps the Report finding tool read-only", async ()
         action: "record",
         key: "BBP-014",
         title: "Missing device-flow binding",
-        positive_evidence: "The callback accepted a challenge without the expected initial binding.",
+        positive_evidence: [
+          "The callback accepted a challenge without the expected initial binding.",
+          " A negative control kept the expected binding. ",
+          "The callback accepted a challenge without the expected initial binding.",
+        ],
         severity: "HIGH",
       },
       { signal },
     ),
   ).toMatchObject({ success: true })
+  expect(await store.get("BBP-014")).toMatchObject({
+    observations: [
+      {
+        disposition: {
+          state: "SUSPECTED",
+          positiveEvidence:
+            "The callback accepted a challenge without the expected initial binding.\nA negative control kept the expected binding.",
+        },
+      },
+    ],
+  })
 
   const readonly = SessionFinding.dynamicTool(store, { ...run, phase: "report" }, { readonly: true })
   expect(
@@ -67,9 +82,26 @@ test("publishes revisions and keeps the Report finding tool read-only", async ()
       },
       { signal },
     ),
-  ).toEqual({
-    success: false,
-    text: "The finding registry is read-only in Report; use list or get.",
+  ).toMatchObject({ success: false })
+  const readonlyError = JSON.parse(
+    (
+      await readonly.execute(
+        {
+          action: "update",
+          id: "BBP-014",
+          state: "DISPROVED",
+          disproof: "A control explained the behavior.",
+          summary: "Rejected.",
+        },
+        { signal },
+      )
+    ).text,
+  )
+  expect(readonlyError).toMatchObject({
+    error: {
+      code: "FINDING_READ_ONLY",
+      retryable: true,
+    },
   })
   expect((await store.get("BBP-014"))?.observations).toHaveLength(1)
   expect(revisions).toEqual([1, 2])

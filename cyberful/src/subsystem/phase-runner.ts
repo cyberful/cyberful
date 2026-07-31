@@ -21,6 +21,10 @@ import { SubsystemCompletion, type Candidate as CompletionCandidate } from "./co
 import { SubsystemNovelty, type Contract as NoveltyContract } from "./novelty"
 import { SubsystemUsage, type ContextChurn, type Totals as UsageTotals } from "./usage"
 import { SubsystemVerdict, type Ledger as VerdictLedger } from "./verdict"
+import {
+  parseHandoffSnapshot,
+  type HandoffSnapshotV2,
+} from "./handoff-snapshot"
 import type { DynamicTool, SubsystemFailure } from "./subsystem"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
@@ -50,6 +54,13 @@ export interface PhaseSpec {
   // Recovery attempts use a fresh owner and may switch to the configured fallback route.
   attempt?: number
   providerRoute?: "main" | "fallback"
+  // Host-owned cumulative waits from prior owners of the same phase. Recovery
+  // inherits these counters so it cannot reset the shared extension pool.
+  budgetCarry?: {
+    readonly approvalWaitMs: number
+    readonly retryWaitMs: number
+    readonly phaseExtensionMs: number
+  }
   abort?: AbortSignal
   // Absolute file to persist this excursion's raw AgentEvent transcript to (the caller resolves it,
   // normally beside the session journal via SessionReportLog.expertTranscriptFile). Unset ⇒ no
@@ -71,6 +82,7 @@ export interface PhaseHandoff {
   artifact?: string
   completion?: CompletionCandidate
   verdicts?: VerdictLedger
+  snapshot?: HandoffSnapshotV2
 }
 
 export type PhaseFailureSource = "provider" | "contract" | "lifecycle"
@@ -341,7 +353,7 @@ export async function writeArtifactManifest(manifestPath: string, artifactPath: 
 export async function writeRuntimeManifest(manifestPath: string, workarea: string, result: PhaseResult) {
   const relativeManifest = containedArtifactPath(workarea, manifestPath, "phase-manifests", [3, 4])
   const payload = {
-    version: 4,
+    version: 6,
     phase: result.phase,
     termination: result.termination,
     backend: result.backend,
@@ -353,16 +365,32 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
     noveltyContract: result.noveltyContract,
     budget: {
       limitMs: result.limitMs,
+      baseBudgetMs: result.limitMs,
       effectiveLimitMs: result.effectiveLimitMs,
       deadlineAt: result.deadlineAt,
       approvalWaitMs: result.approvalWaitMs ?? 0,
+      humanWaitMs: result.approvalWaitMs ?? 0,
       retryWaitMs: result.retryWaitMs ?? 0,
+      providerWaitMs: result.retryWaitMs ?? 0,
       retryCompensationMs: result.retryCompensationMs ?? 0,
+      phaseExtensionMs: result.retryCompensationMs ?? 0,
       retryCompensationCapMs: result.retryCompensationCapMs ?? 0,
+      phaseExtensionCapMs: result.retryCompensationCapMs ?? 0,
       retryCompensationCapReached: result.retryCompensationCapReached ?? false,
       closeoutReserveMs: result.closeoutReserveMs ?? 0,
+      remainingMs: Math.max(0, result.deadlineAt - Date.now()),
+      exitCause: result.termination,
     },
     verdicts: result.handoff?.verdicts ? SubsystemVerdict.counts(result.handoff.verdicts) : undefined,
+    handoffSnapshot: result.handoff?.snapshot
+      ? {
+          version: result.handoff.snapshot.version,
+          findingRegistryRevision: result.handoff.snapshot.findingRegistryRevision,
+          hypothesisRegistryRevision: result.handoff.snapshot.hypothesisRegistryRevision,
+          counts: result.handoff.snapshot.counts,
+          digestSha256: result.handoff.snapshot.digestSha256,
+        }
+      : undefined,
   }
   await replaceWorkareaFile(workarea, relativeManifest, `${JSON.stringify(payload, null, 2)}\n`)
 }
@@ -619,20 +647,24 @@ export function buildPhasePrompt(
     "- Browser profiles 1–5 are separate identities; keep their state and evidence separate.",
     "- Use `question` only for a concrete missing authorization, fact, or human CAPTCHA action.",
     "- Do not retry a target request that returns HTTP `429`. Cyberful adds no retry rule for other outcomes.",
+    "- Check HTTP status/content type and inspect JSON shape before parsing; tolerate optional fields in `jq` and scripts.",
     "- For a CAPTCHA, preserve and foreground the challenged page, ask with `question kind=captcha`, then confirm resolution with `browser_captcha_status`. Other work continues.",
     ...(spec.phase !== "report"
       ? [
-          "- Record each concrete hypothesis before its first discriminating test and update it immediately after the result. Every hypothesis must be closed or queued to the exact successor before handoff.",
+          "- Record hypotheses before testing, update them after each result, and close or queue them to the exact successor before handoff.",
         ]
       : []),
     ...(workflow !== "code-audit" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
       ? [
-          "- Treat the Brief matrix as an authorization/readiness floor, not a finite test checklist. Record newly discovered questions with `hypothesis`; before handoff close each one or queue it to the exact successor with a next step.",
-          "- If hypotheses converge on variants of one mechanism, use `hypothesis synthesize` to document a substantive pivot or evidenced exhaustion.",
+          "- Treat the Brief matrix as a floor, not a checklist; add newly discovered hypotheses and queue unfinished ones to the exact successor.",
+          "- If hypotheses converge, use `hypothesis synthesize` for a substantive pivot or evidenced exhaustion.",
           "- Use `finding` as soon as positive target evidence supports SUSPECTED; `record` requires a cautious provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity. Do not register mere hypotheses or backlog.",
           "- Revisit historical findings explicitly, then update every technical, verification, severity, or Bug Bounty submission decision.",
+          "- Use `zap_api_catalog` before `zap_api_call`; supply its required parameters.",
           ...(spec.phase === "exploit" || spec.phase === "hacker"
-            ? ["- Before handoff, use `finding list`; the host derives the handoff verdict inventory from the hypothesis registry."]
+            ? [
+                "- Before handoff, list findings; the host snapshots both registries and validates positive links.",
+              ]
             : []),
           ...(spec.phase === "verify"
             ? [
@@ -712,14 +744,17 @@ async function readHandoff(
     const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : ""
     const artifact = typeof parsed.artifact === "string" ? parsed.artifact : undefined
     const completion = SubsystemCompletion.parseCandidate(parsed.completion)
+    const snapshot = parseHandoffSnapshot(parsed.snapshot)
     const verdicts = SubsystemVerdict.parse(parsed.verdicts)
     if (parsed.phase !== spec.phase)
       return { warning: "Handoff phase does not match the running phase.", missing: false }
     if (successor !== spec.handoff?.successor)
       return { warning: "Handoff successor does not match the configured chain.", missing: false }
     if (!summary) return { warning: "Handoff summary is empty.", missing: false }
-    if (SubsystemVerdict.requiredFor(spec.workflow, spec.phase) && !verdicts)
-      return { warning: "Handoff requires a structured verdict inventory for this phase.", missing: false }
+    if (parsed.snapshot !== undefined && !snapshot)
+      return { warning: "Handoff snapshot failed its V2 integrity check.", missing: false }
+    if (SubsystemVerdict.requiredFor(spec.workflow, spec.phase) && !snapshot && !verdicts)
+      return { warning: "Handoff requires a host-owned V2 snapshot for this phase.", missing: false }
     return {
       value: {
         phase: spec.phase,
@@ -728,6 +763,7 @@ async function readHandoff(
         artifact,
         completion,
         ...(verdicts ? { verdicts } : {}),
+        ...(snapshot ? { snapshot } : {}),
       },
       missing: false,
     }
@@ -1008,12 +1044,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const defaultMinutes = spec.timeoutMs > 0 ? spec.timeoutMs / 60_000 : SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES
   const budget = await readBudget(deps.readFile, SubsystemPhase.budgetsPath(spec.home), spec.phase, defaultMinutes)
   const limitMs = Math.round(budget.minutes * 60_000)
+  const attemptLimitMs =
+    (spec.attempt ?? 1) > 1 && spec.timeoutMs > 0 ? Math.min(limitMs, spec.timeoutMs) : limitMs
   const budgetWarnings = [budget.warning, budget.closeout.warning, budget.noveltyWarning].filter(
     (item): item is string => Boolean(item),
   )
   const beforeSetup = now()
-  const initialDeadline = beforeSetup + limitMs
-  const initialEffectiveLimitMs = limitMs
+  const initialDeadline = beforeSetup + attemptLimitMs
+  const initialEffectiveLimitMs = attemptLimitMs
 
   const promptSetup = await (async () => {
     const settingsDirectory = spec.settingsDirectory ?? process.cwd()
@@ -1050,12 +1088,16 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   // Signal files outlive their subprocess briefly, so every attempt gets a nonce. A gateway from a timed-out
   // attempt can never write into a retried phase's handoff or PID path.
   const signalKey = `${safeRunKey}-${process.pid}-${randomUUID()}`
+  const phaseRootRunID = `run_${randomUUID()}`
   const handoffPath = spec.handoff ? path.join(os.tmpdir(), `expert-phase-handoff-${signalKey}.json`) : undefined
   const gatewayPidPath = path.join(os.tmpdir(), `expert-phase-gateway-pid-${signalKey}.json`)
   const retryPolicy = Settings.retryPolicy(promptSetup.value.settings)
   const budgetClock = SubsystemPhaseBudgetClock.create({
     deadlineAt: initialDeadline,
-    retryCompensationCapMs: retryPolicy.max_retries * retryPolicy.attempt_timeout_ms,
+    retryCompensationCapMs: retryPolicy.max_phase_extension_minutes * 60_000,
+    initialApprovalWaitMs: spec.budgetCarry?.approvalWaitMs,
+    initialRetryWaitMs: spec.budgetCarry?.retryWaitMs,
+    initialRetryCompensationMs: spec.budgetCarry?.phaseExtensionMs,
     now,
   })
   const questionHandler = deps.askQuestion
@@ -1265,6 +1307,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const runInput: SubsystemCli.RunInput = {
     settings: promptSetup.value.settings,
     sessionID: spec.sessionID,
+    rootRunID: phaseRootRunID,
     workarea: spec.workareaCwd,
     gateway: mcpServer,
     prompt: spec.objective,
@@ -1285,6 +1328,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     deadlineAt,
     abort: spec.abort,
     timeoutMs: effectiveLimitMs,
+    attempt: spec.attempt ?? 1,
     askQuestion,
     budgetClock,
     closeoutReserveMs: Math.round(budget.closeout.minutes * 60_000),

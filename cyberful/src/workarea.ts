@@ -181,6 +181,47 @@ export async function replaceWorkareaFile(
   return destination
 }
 
+// ── Append-Only Journals Retain The Same Workarea Boundary ──────
+// Provider and diagnostic ledgers are naturally line-oriented. O_APPEND gives
+// each queued writer one atomic leaf update without repeatedly replacing a
+// growing file; O_NOFOLLOW and the plain-parent checks retain the workarea
+// boundary used by replacement writes.
+// ─────────────────────────────────────────────────────────────────
+export async function appendWorkareaFile(
+  workareaRoot: string,
+  relativePath: string,
+  content: string | Uint8Array,
+  options: { readonly mode?: number } = {},
+) {
+  const segments = containedWorkareaSegments(relativePath, "Workarea file append")
+  const filename = segments.pop()
+  if (!filename) throw new Error("Workarea file append path must name a regular leaf.")
+  const root = await canonicalPlainWorkarea(workareaRoot)
+  const directory = segments.length > 0 ? await ensureWorkareaDirectory(root, segments.join("/")) : root
+  const destination = path.join(directory, filename)
+  const existing = await lstat(destination).catch((error: unknown) => {
+    if (isErrno(error, "ENOENT")) return undefined
+    throw error
+  })
+  if (existing && (!existing.isFile() || existing.isSymbolicLink()))
+    throw new Error("Workarea append destination must be a regular file, not a link or special file.")
+  const handle = await open(
+    destination,
+    constants.O_WRONLY |
+      constants.O_APPEND |
+      constants.O_CREAT |
+      (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+    options.mode ?? 0o600,
+  )
+  try {
+    await handle.writeFile(content)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  return destination
+}
+
 export interface WorkareaFileChunk {
   readonly content: string
   readonly offset: number

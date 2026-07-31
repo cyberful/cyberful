@@ -76,6 +76,9 @@ export interface SubsystemFailure {
 export type PhaseActivityActor = {
   id: string
   label?: string
+  displayName?: string
+  emoji?: string
+  role?: "root" | "subagent" | "fallback"
   parentID?: string
   sourceCallID?: string
   provider?: string

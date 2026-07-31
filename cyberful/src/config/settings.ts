@@ -47,6 +47,10 @@ const RetryAttemptTimeoutMs = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1_000),
   Schema.isLessThanOrEqualTo(600_000),
 )
+const PhaseExtensionMinutes = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(60),
+)
 const ReasoningEffort = Schema.Literals(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
 export type ReasoningEffort = Schema.Schema.Type<typeof ReasoningEffort>
 
@@ -80,6 +84,7 @@ export const DEFAULT_RETRY = {
   base_delay_ms: 1_000,
   max_delay_ms: 15_000,
   attempt_timeout_ms: 600_000,
+  max_phase_extension_minutes: 15,
 } as const
 
 export interface RetryPolicy {
@@ -88,6 +93,14 @@ export interface RetryPolicy {
   readonly base_delay_ms: number
   readonly max_delay_ms: number
   readonly attempt_timeout_ms: number
+  readonly max_phase_extension_minutes: number
+}
+
+export interface SubagentPolicy {
+  readonly provider: string
+  readonly reasoning_effort: ReasoningEffort
+  readonly source: "configured" | "openai-codex-default" | "main-provider-fallback"
+  readonly warning?: string
 }
 
 export const DEFAULT_PHASE_RECOVERY = {
@@ -131,6 +144,8 @@ export const Info = Schema.Struct({
     fallback_provider: Schema.optional(ProviderName),
     subagents: Schema.Struct({
       enabled: Schema.Boolean,
+      provider: Schema.optional(ProviderName),
+      reasoning_effort: Schema.optional(ReasoningEffort),
       max_per_run: PositiveInt,
       max_concurrent: PositiveInt,
       max_depth: PositiveInt,
@@ -157,6 +172,7 @@ export const Info = Schema.Struct({
         base_delay_ms: RetryDelayMs,
         max_delay_ms: RetryDelayMs,
         attempt_timeout_ms: Schema.optional(RetryAttemptTimeoutMs),
+        max_phase_extension_minutes: Schema.optional(PhaseExtensionMinutes),
       }),
     ),
     phase_recovery: Schema.optional(
@@ -194,6 +210,8 @@ agent:
 
   subagents:
     enabled: true
+    provider: openai-codex
+    reasoning_effort: high
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2
@@ -214,6 +232,7 @@ agent:
     base_delay_ms: 1000
     max_delay_ms: 15000
     attempt_timeout_ms: 600000
+    max_phase_extension_minutes: 15
 
   phase_recovery:
     enabled: true
@@ -367,6 +386,12 @@ function validateRouting(settings: Info, filePath: string): Info {
       `agent.compaction.summarizer.provider references unconfigured provider "${summarizerProvider}"`,
     ])
   }
+  const subagentProvider = settings.agent.subagents.provider
+  if (subagentProvider && !settings.agent.providers[subagentProvider]) {
+    throw new InvalidError(filePath, [
+      `agent.subagents.provider references unconfigured provider "${subagentProvider}"`,
+    ])
+  }
 
   for (const [providerName, provider] of Object.entries(settings.agent.providers)) {
     if (provider.base_url === undefined) continue
@@ -392,8 +417,36 @@ export function retryPolicy(settings: Info): RetryPolicy {
     ? {
         ...settings.agent.retry,
         attempt_timeout_ms: settings.agent.retry.attempt_timeout_ms ?? DEFAULT_RETRY.attempt_timeout_ms,
+        max_phase_extension_minutes:
+          settings.agent.retry.max_phase_extension_minutes ??
+          DEFAULT_RETRY.max_phase_extension_minutes,
       }
     : DEFAULT_RETRY
+}
+
+export function subagentPolicy(settings: Info): SubagentPolicy {
+  const configured = settings.agent.subagents.provider
+  if (configured) {
+    return {
+      provider: configured,
+      reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+      source: "configured",
+    }
+  }
+  if (settings.agent.providers["openai-codex"]) {
+    return {
+      provider: "openai-codex",
+      reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+      source: "openai-codex-default",
+    }
+  }
+  return {
+    provider: settings.agent.main_provider,
+    reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+    source: "main-provider-fallback",
+    warning:
+      "agent.subagents.provider is not configured and route openai-codex is unavailable; subagents inherit agent.main_provider",
+  }
 }
 
 export function phaseRecoveryPolicy(settings: Info): PhaseRecoveryPolicy {
