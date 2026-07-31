@@ -83,6 +83,11 @@ test never ran and therefore records a typed blocker plus an exact next step.
 This prevents missing access, tools, applicability, authority, or budget from
 inflating the suspected-finding count.
 
+Call `hypothesis update` with `state: TESTING` before a first discriminator or
+retest. Executed dispositions are rejected unless the current state is
+`TESTING`; `OPEN` may still move directly to `QUEUED` or `UNTESTABLE`, and a
+queued hypothesis enters `TESTING` through `reopen` in its named successor.
+
 `CONFIRMED` and `SUSPECTED` entries must link current-run findings. Negative-only
 outcomes can retain stable backlog IDs when they never met the positive-evidence
 threshold for entering the finding registry. Closed and queued hypotheses keep
@@ -102,6 +107,9 @@ Exploit and Hacker subagents inherit the phase's complete execution authority
 and retain ownership of each task through its verdict. They may start passively,
 but run safe in-scope discriminators themselves; task partitioning and shared-
 resource contention are not `UNTESTABLE` blockers.
+Each child reserves the configured closeout interval before its own deadline,
+uses that time only for local evidence and its required `output_artifact`, and
+does not change the root phase mode while closing out.
 
 ## Pentest
 

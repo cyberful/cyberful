@@ -326,6 +326,8 @@ function deterministicIdentity(task: AgentTaskCapsule): AgentRunIdentity {
     .update(task.objective)
     .update("\0")
     .update((task.artifacts ?? []).join("\0"))
+    .update("\0")
+    .update(task.outputArtifact ?? "")
     .digest()
   return {
     displayName: `${AGENT_IDENTITY_ADJECTIVES[digest[0]! % AGENT_IDENTITY_ADJECTIVES.length]}-${
@@ -586,12 +588,14 @@ function taskCapsule(input: {
   readonly expected_result?: string
   readonly context?: string
   readonly artifacts?: readonly string[]
+  readonly outputArtifact?: string
 }): AgentTaskCapsule {
   return {
     objective: input.task.trim(),
     ...(input.expected_result?.trim() ? { expectedResult: input.expected_result.trim() } : {}),
     ...(input.context?.trim() ? { context: input.context.trim() } : {}),
     ...(input.artifacts?.length ? { artifacts: input.artifacts.map((item) => item.trim()).filter(Boolean) } : {}),
+    ...(input.outputArtifact ? { outputArtifact: input.outputArtifact } : {}),
   }
 }
 
@@ -612,6 +616,7 @@ function capsuleText(task: AgentTaskCapsule): string {
     task.objective,
     ...(task.expectedResult ? ["", "# Expected result", task.expectedResult] : []),
     ...(task.context ? ["", "# Minimum explicit context", task.context] : []),
+    ...(task.outputArtifact ? ["", "# Required durable output", task.outputArtifact] : []),
     ...(task.artifacts?.length
       ? ["", "# Relevant workarea artifacts", ...task.artifacts.map((item) => `- ${item}`)]
       : []),
@@ -650,19 +655,19 @@ function userMessages(spec: AgentRunSpec): UserMessage[] {
 }
 
 function closeoutMessage(spec: AgentRunSpec, timestamp: number): UserMessage {
-  const deliverable = spec.task.artifacts?.[0]
+  const deliverable = spec.task.outputArtifact ?? spec.task.artifacts?.[0]
   return {
     role: "user",
     content: [
       {
         type: "text",
         text: [
-          "HOST-OWNED PHASE CLOSEOUT",
-          "The research portion of this phase is over. Do not start or resume target traffic, scanning,",
+          spec.handoffOwner ? "HOST-OWNED PHASE CLOSEOUT" : "HOST-OWNED AGENTRUN CLOSEOUT",
+          "The active research portion of this run is over. Do not start or resume target traffic, scanning,",
           "lab execution, new analysis branches, or delegation. Use only already captured local evidence.",
           deliverable
             ? `Finish and reconcile the required deliverable '${deliverable}' now.`
-            : "Finish and reconcile the phase deliverable now.",
+            : "Finish and reconcile the assigned deliverable now.",
           "Update the hypothesis, finding, test-object, and coverage records to match the evidence.",
           spec.handoffOwner
             ? "Call handoff with a concise, explicit successor summary before the final deadline."
@@ -684,7 +689,6 @@ function closeoutToolAllowed(name: string): boolean {
       "test_object",
       "engagement_policy",
       "variable",
-      "shell",
       "skill_read",
       "tool_search",
     ].includes(name)
@@ -1991,8 +1995,11 @@ export class PiAgentSubsystem implements AgentSubsystem {
           role: "subagent",
           route: state.spec.providerAffinity,
           task: taskCapsule({
-            ...input,
-            artifacts: [...new Set([...(input.artifacts ?? []), outputArtifact])],
+            task: input.task,
+            expected_result: input.expected_result,
+            context: input.context,
+            artifacts: input.artifacts,
+            outputArtifact,
           }),
           sourceCallID: callID,
           proposedIdentity: {
@@ -2715,6 +2722,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
           "Context rotation warning: model_summary=false disables semantic history rotation; only deterministic tool-result archival remains and context exhaustion is possible.",
       })
 
+    // ── Every AgentRun Reserves Its Own Closeout ──────────────────
+    // Root, delegated, and fallback runs inherit one closeout reserve inside
+    // their existing deadline; the reserve never extends phase or child budget.
+    // Root closeout remains the only event that changes global phase mode, while
+    // a child closes only itself and its descendants. The interrupted turn then
+    // resumes with local-only tools and any explicit task output artifact.
+    // ────────────────────────────────────────────────────────────────
     state.timerRemainingMs = state.spec.budget.deadlineAt - this.#now()
     const stopBudgetTimer = () => {
       if (!state.timer) return
@@ -2727,6 +2741,39 @@ export class PiAgentSubsystem implements AgentSubsystem {
         )
       state.timerStartedAt = undefined
     }
+    const enterReservedCloseout = (
+      remainingMs: number,
+      reserveMs: number,
+      restartTimer: () => void,
+    ) => {
+      state.timerRemainingMs = remainingMs
+      state.closeout = true
+      state.closeoutRequested = true
+      if (state.spec.role === "root" && state.spec.handoffOwner)
+        this.#emit(state, {
+          type: "phase_closeout",
+          runID: state.id,
+          state: "entered",
+          cause: "reserve",
+          reserveMs,
+          remainingMs,
+          deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+        })
+      const scope = state.spec.role === "root" && state.spec.handoffOwner ? "Phase" : "AgentRun"
+      this.#emitActivity(state, {
+        kind: "status",
+        text: `${scope} mode: closeout · ${Math.ceil(remainingMs / 1_000)}s remaining · research tools disabled.`,
+      })
+      this.#notifyDelegationWaiters({ all: true })
+      state.agent?.abort()
+      void Promise.allSettled(
+        [...state.children]
+          .map((id) => this.#states.get(id))
+          .filter((child): child is RunState => child !== undefined)
+          .map((child) => this.#cancelState(child, `${scope} entered closeout`, "cancel")),
+      )
+      restartTimer()
+    }
     const startBudgetTimer = () => {
       if (state.timer || state.finished || state.cancellation) return
       const remaining = state.timerRemainingMs ?? 0
@@ -2736,37 +2783,11 @@ export class PiAgentSubsystem implements AgentSubsystem {
         state.agent?.abort()
         return
       }
-      const reserveMs =
-        state.spec.role === "root" && state.spec.handoffOwner
-          ? Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0))
-          : 0
+      const reserveMs = Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0))
       const enteringCloseout = !state.closeout && reserveMs > 0
       const timerDurationMs = enteringCloseout ? Math.max(0, remaining - reserveMs) : remaining
       if (enteringCloseout && timerDurationMs <= 0) {
-        state.closeout = true
-        state.closeoutRequested = true
-        this.#emit(state, {
-          type: "phase_closeout",
-          runID: state.id,
-          state: "entered",
-          cause: "reserve",
-          reserveMs,
-          remainingMs: remaining,
-          deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
-        })
-        this.#emitActivity(state, {
-          kind: "status",
-          text: `Phase mode: closeout · ${Math.ceil(remaining / 1_000)}s remaining · research tools disabled.`,
-        })
-        this.#notifyDelegationWaiters({ all: true })
-        state.agent?.abort()
-        void Promise.allSettled(
-          [...state.children]
-            .map((id) => this.#states.get(id))
-            .filter((child): child is RunState => child !== undefined)
-            .map((child) => this.#cancelState(child, "Phase entered closeout", "cancel")),
-        )
-        startBudgetTimer()
+        enterReservedCloseout(remaining, reserveMs, startBudgetTimer)
         return
       }
       state.timerStartedAt = this.#now()
@@ -2774,31 +2795,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         state.timer = undefined
         state.timerStartedAt = undefined
         if (enteringCloseout) {
-          state.timerRemainingMs = reserveMs
-          state.closeout = true
-          state.closeoutRequested = true
-          this.#emit(state, {
-            type: "phase_closeout",
-            runID: state.id,
-            state: "entered",
-            cause: "reserve",
-            reserveMs,
-            remainingMs: reserveMs,
-            deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
-          })
-          this.#emitActivity(state, {
-            kind: "status",
-            text: `Phase mode: closeout · ${Math.ceil(reserveMs / 1_000)}s remaining · research tools disabled.`,
-          })
-          this.#notifyDelegationWaiters({ all: true })
-          state.agent?.abort()
-          void Promise.allSettled(
-            [...state.children]
-              .map((id) => this.#states.get(id))
-              .filter((child): child is RunState => child !== undefined)
-              .map((child) => this.#cancelState(child, "Phase entered closeout", "cancel")),
-          )
-          startBudgetTimer()
+          enterReservedCloseout(reserveMs, reserveMs, startBudgetTimer)
           return
         }
         state.timerRemainingMs = 0
@@ -2881,7 +2878,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
               return {
                 block: true,
                 reason:
-                  "Phase closeout permits only local evidence reads, deliverable and ledger reconciliation, cleanup, and handoff.",
+                  "Closeout permits only local evidence reads, deliverable and ledger reconciliation, cleanup, and root-owned handoff.",
               }
             if (toolCall.name === "handoff" && !state.spec.handoffOwner)
               return { block: true, reason: "Only the original phase root AgentRun may call handoff." }

@@ -39,17 +39,22 @@ async function render(markdown: string, resolveVars?: (m: string) => string, met
 }
 
 describe("renderReportToPdf", () => {
-  test("renders a finding with a severity chip and a GFM table to a non-trivial PDF", async () => {
+  test("renders separated findings with wrapped TOC titles and GFM tables to a non-trivial PDF", async () => {
     const md = [
       "# Report",
       "",
-      "## F1 - Example finding",
+      "## F1 - Example finding with a deliberately long title that wraps onto a second contents line",
       "Severity: CRITICAL",
       "",
       "| Request | Result | Meaning |",
       "| --- | --- | --- |",
       "| Own object | 200 | baseline |",
       "| Bogus id | 404 | genuine lookup |",
+      "",
+      "## F2 - Another finding",
+      "Severity: LOW",
+      "",
+      "Second finding body.",
       "",
     ].join("\n")
     const { pdf, bytes } = await render(md)
@@ -64,6 +69,34 @@ describe("renderReportToPdf", () => {
     expect(contents).toContain("EBGaramond-Bold")
     expect(contents).toContain("UbuntuMono-Regular")
     expect(contents).not.toContain("Avenir")
+  })
+
+  test("renders finding-specific PoCs with tagged, highlighted code and long request paths", async () => {
+    const md = [
+      "# Report",
+      "",
+      "## F1 - Object authorization drift",
+      "Severity: HIGH",
+      "",
+      "### Reproduction and evidence",
+      "",
+      "#### Proof of concept",
+      "",
+      "Prerequisite: two controlled users and one foreign object.",
+      "",
+      "```bash",
+      'API="https://api.example.test"',
+      'OBJECT_UUID="<CONTROLLED_FOREIGN_OBJECT_UUID>"',
+      'curl -sS -H "Authorization: Bearer <ATTACKER_BEARER>" \\',
+      '  "$API/api/contracts/$OBJECT_UUID/download" | jq \'keys\'',
+      "```",
+      "",
+      "Expected: the foreign request returns a signed-link response.",
+      "",
+    ].join("\n")
+    const { pdf, bytes } = await render(md)
+    expect(pdf).toBeTruthy()
+    expect(bytes).toBeGreaterThan(4000)
   })
 
   test("applies the optional {{var}} transform before rendering", async () => {
@@ -95,7 +128,7 @@ describe("renderReportToPdf", () => {
     const md = [
       "# Penetration Test Report — Acme",
       "",
-      "**Audit-ready penetration test report.** Mapped to SOC 2 and ISO/IEC 27001:2022; not a certification.",
+      "> **Audit-ready penetration test report.** Mapped to SOC 2 and ISO/IEC 27001:2022; not a certification.",
       "",
       "## Document Control",
       "",

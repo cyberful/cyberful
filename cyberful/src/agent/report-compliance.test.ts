@@ -55,4 +55,15 @@ describe("audit-ready report contract", () => {
       expect(text, `report persona must not over-claim: ${bad}`).not.toMatch(bad)
     }
   })
+
+  test("every upheld Pentest finding requires an evidence-bound, secret-safe PoC", async () => {
+    const text = await read("agents/pentest/report.md")
+    expect(text).toContain("#### Proof of concept")
+    expect(text).toMatch(/mandatory for every upheld finding/i)
+    expect(text).toMatch(/at least one fenced code block with an explicit language tag/i)
+    expect(text).toMatch(/negative or benign[\s\S]*control/i)
+    expect(text).toMatch(/never invent a runnable step/i)
+    expect(text).toMatch(/never live values or saved variables/i)
+    expect(text).toMatch(/exact restoration\/cleanup/i)
+  })
 })

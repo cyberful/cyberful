@@ -104,7 +104,9 @@ separates concrete anomalies and target-specific seams from retained coverage id
 impact, positive evidence, contrary evidence, and discriminating tests independently. Exploit performs
 systematic, reproducible validation. Hacker investigates unconventional chains and
 assumptions. Verify independently retests claims. Report produces the
-client-facing PDF.
+client-facing PDF, with a finding-specific, evidence-backed, secret-safe proof of
+concept for every confirmed issue. Tagged request and code blocks are syntax
+coloured and line-numbered for practical reproduction.
 
 Brief also installs the engagement's aggregate HTTP rate limit in its live ZAP
 runtime before committing the non-secret engagement policy. A failed
@@ -243,6 +245,9 @@ shuts down the current owner and gateway, and only then starts the next phase.
 Each sequential phase reserves its final three to five minutes for a host-owned
 closeout in the same root AgentRun: children and research stop, while local
 evidence, deliverable/ledger reconciliation, cleanup, and handoff remain.
+Each child independently reserves that same interval before its smaller child
+deadline so it can reconcile its required output artifact without changing the
+root phase mode; root closeout still cancels every remaining child.
 If the final deadline expires, Cyberful advances a research phase in degraded
 mode only when the required partial artifact can be sealed and cleanup succeeds.
 Brief never advances from a partial `MISSION.md` without explicit handoff.
@@ -276,7 +281,8 @@ Temporarily saturated subagent requests wait in a cancellable admission queue;
 Recon admits up to three direct subagents, while Exploit and Hacker admit up to
 five in both Pentest and Bug Bounty Program workflows.
 Each delegation has a durable output artifact and a 30-minute default child
-deadline bounded by the remaining phase budget.
+deadline bounded by the remaining phase budget. The configured closeout reserve
+is part of that deadline rather than an extension to it.
 
 All three workflows persist supported findings and their per-run history in
 `raw/findings/registry.json`. The TUI presents that live registry in an optional

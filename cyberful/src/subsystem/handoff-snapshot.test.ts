@@ -50,6 +50,10 @@ async function recordFinding(
   return recorded.id
 }
 
+async function beginTesting(hypotheses: HypothesisRegistry, id: string) {
+  await hypotheses.handle({ action: "update", id, state: "TESTING" })
+}
+
 describe("host-owned handoff snapshots", () => {
   test("keeps a confirmed observation when its narrower bypass hypothesis is disproved", async () => {
     const workarea = await temporaryWorkarea()
@@ -79,6 +83,7 @@ describe("host-owned handoff snapshots", () => {
           surface: `surface-${index + 1}`,
           discriminator: `positive differential ${index + 1}`,
         })
+        await beginTesting(hypotheses, id)
         await hypotheses.handle({
           action: "update",
           id,
@@ -97,6 +102,7 @@ describe("host-owned handoff snapshots", () => {
         surface: "provisional surface",
         discriminator: "provisional differential",
       })
+      await beginTesting(hypotheses, "H-SUSPECTED-1")
       await hypotheses.handle({
         action: "update",
         id: "H-SUSPECTED-1",
@@ -114,6 +120,7 @@ describe("host-owned handoff snapshots", () => {
         surface: "contract creation",
         discriminator: "attempt the first record beyond the enforced quota",
       })
+      await beginTesting(hypotheses, "H-QUOTA-BYPASS")
       await hypotheses.handle({
         action: "update",
         id: "H-QUOTA-BYPASS",
@@ -156,6 +163,7 @@ describe("host-owned handoff snapshots", () => {
         surface: "project API",
         discriminator: "positive response differential",
       })
+      await beginTesting(hypotheses, "H-MISSING")
       await hypotheses.handle({
         action: "update",
         id: "H-MISSING",

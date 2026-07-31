@@ -154,7 +154,7 @@ const EXPECTED_SYSTEM_SHA256 = {
   "pentest/exploit": "8403d4dff532e8ff08fc59fe4012a5c43cea0056902de572dc5a8321762ab81f",
   "pentest/hacker": "5470cfcbbff458534502c92ca295427cebbb76f5e5ef718ed2e9d1ac70810523",
   "pentest/verify": "50912aa7b7eda49653756e79d6a75c4ff3c5c8fc267ae48831d28f827cec52ce",
-  "pentest/report": "cc88a382d24e5f6c11cd8bca8eff1d6385b9e85586df8a8c8f56bcc79931e454",
+  "pentest/report": "6520250f2c157fbbc36aa39d4f40d7db4857462cca105103078792b25665d3cb",
   "bug-bounty/brief": "9e31c385cd6ad1f0ae712074f69a6552bd82388e934e426ef46e022d8511b392",
   "bug-bounty/recon": "0f252bee5abf45b2b03637ac8eb8efd5daee67857324196aee6e7002a2b5fa8c",
   "bug-bounty/exploit": "e80af7c607aa24f0f67cf63c57708043d026d1024b442f06f91413eff38ffb3b",

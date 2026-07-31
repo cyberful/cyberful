@@ -79,6 +79,7 @@ export interface AgentTaskCapsule {
   readonly expectedResult?: string
   readonly context?: string
   readonly artifacts?: readonly string[]
+  readonly outputArtifact?: string
 }
 
 export interface RecoveredHypothesis {

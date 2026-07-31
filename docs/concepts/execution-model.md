@@ -242,8 +242,11 @@ evidence and tool-call references, optional structured scope resolution,
 finding link, and transition history with closure reasons. The lifecycle is
 `OPEN`, `TESTING`, `QUEUED`, `SUSPECTED`, `CONFIRMED`, `DISPROVED`,
 `INCONCLUSIVE`, or `UNTESTABLE`. A hypothesis is recorded before its first
-discriminating test and updated immediately afterward. `OPEN` and `TESTING`
-block handoff; `QUEUED` carries an exact successor and next test. Positive
+discriminating test, enters `TESTING` before that test or any retest, and is
+updated immediately afterward. Executed dispositions (`SUSPECTED`, `CONFIRMED`,
+`DISPROVED`, and `INCONCLUSIVE`) are accepted only from `TESTING`; unexecuted
+work may move directly from `OPEN` to `QUEUED` or `UNTESTABLE`. `OPEN` and
+`TESTING` block handoff; `QUEUED` carries an exact successor and next test. Positive
 states link the separate finding authority. Closed hypotheses remain in the
 session registry with their evidence and transition history; queuing and
 reopening preserve the same ID. Report receives read-only access to the full
@@ -256,16 +259,19 @@ exhausted. `hypothesis synthesize` is the only model-facing novelty contract.
 Historical novelty and execution-ledger files remain readable diagnostic
 evidence, but new runs neither publish those tools nor write new entries.
 
-Browser calls also append redacted profile, origin, route-family, action-family,
-transition, outcome, and status metadata to
+Browser calls and egress observations append redacted profile, origin,
+route-family, method, action-family, transition, outcome, and HTTP status
+metadata to
 `raw/operations/surface-coverage.jsonl`, with a per-phase summary under
 `raw/operations/surface-coverage/`. Recon uses the map to maximize real journeys;
 Exploit and Hacker use remaining gaps as pivot candidates. Route breadth counts
 as coverage, not as causal novelty. Recon requires each Brief profile marked
 `READY` and `IN_SCOPE` to reach its declared origin and perform at least one
 meaningful navigation or interaction; there is no arbitrary click or route quota.
-ZAP and cyberful-os egress observations join the same map, so methods such as a
-KMS `POST` remain visible even when no browser navigation produced them.
+ZAP and cyberful-os egress observations join the same map even when a result
+also carries browser metadata. Summary version 2 groups methods, statuses, and
+outcomes per route; `failed_only` contains only routes without a successful
+observation. A valid HTTP denial remains an exercised surface, not a tool failure.
 
 Legacy `raw/operations/execution-ledger/<phase>.jsonl` and novelty files remain
 readable as historical evidence. Tool authorization and calls belong to
@@ -471,8 +477,12 @@ the shared Pentest and Bug Bounty personas admit up to three direct Recon
 subagents and five direct Exploit or Hacker subagents.
 Every delegation names one workarea-relative `output_artifact`, and its child
 deadline is the smaller of the remaining phase budget and
-`agent.subagents.timeout_minutes` (30 minutes by default). Timeout and provider
-failure still return the artifact path and whether partial bytes exist.
+`agent.subagents.timeout_minutes` (30 minutes by default). Each child reserves
+the same configured closeout interval before that deadline, stops research,
+cancels only its descendants, and receives its exact `output_artifact` for
+local reconciliation. Child closeout does not put the root or phase in closeout.
+Timeout and provider failure still return the artifact path and whether partial
+bytes exist.
 The child provider and reasoning profile are independently configured through
 `agent.subagents.provider` and `agent.subagents.reasoning_effort`; defaults are
 the `openai-codex/gpt-5.6-sol` route at `high`. A fallback-affine tree cannot

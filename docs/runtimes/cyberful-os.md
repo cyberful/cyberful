@@ -72,8 +72,9 @@ Nuclei exactly as they apply to every other tool.
 
 The `shell` tool accepts an optional metadata hint for network-bearing PoCs. It
 executes the command first, then attaches a redacted observation containing the
-host, method, path family, byte counts, attempts, redirects, deadline, actual
-route, and whether the destination differed from the hint. URL user information,
+host, method, HTTP status when declared, path family, byte counts, attempts,
+redirects, deadline, actual route, and whether the destination differed from
+the hint. URL user information,
 queries, fragments, headers, credentials, and bodies are never written to this
 ledger. Dynamic, personal, and opaque path identifiers are collapsed to a path
 family.
@@ -87,13 +88,23 @@ and the gateway records degraded observability when it can. The standalone
 also never controls network execution. Mission scope and safety policy remain
 separate from this telemetry. Missing metadata never causes a retry.
 
+The dedicated `requests` tool treats any completed HTTP exchange as a successful
+tool call, including `401`, `403`, `404`, and `500`. It records the application
+status separately as `egress_http_status`. If status and headers were received
+but body streaming later fails, the bounded response remains available with
+`body_complete: false` and a non-sensitive body error class. Failures before an
+HTTP response—such as connection and transport timeouts—remain tool errors.
+The `shell` contract is unchanged: a command that exits non-zero, including
+`curl --fail`, is still a process failure.
+
 The gateway merges these local-only fields into
 `raw/operations/tool-usage.csv`. No observation is exported from the machine,
 and missing fields remain empty rather than being inferred as proof. Tool
 failures are the exception to empty classification: every `outcome=error` row
 has one controlled `error_class`, with separate `error_code` and
-`tool_exit_code` columns when available. Arguments, output, and sensitive
-failure detail remain outside the CSV.
+`tool_exit_code` columns when available. Completed HTTP exchanges retain
+`egress_http_status` without changing the tool outcome. Arguments, output, and
+sensitive failure detail remain outside the CSV.
 
 ## Configuration
 

@@ -28,6 +28,7 @@ const STATES = [
 ] as const
 export type HypothesisState = (typeof STATES)[number]
 const ACTIVE_HYPOTHESIS_STATES = ["OPEN", "QUEUED", "TESTING", "SUSPECTED"] as const
+const EXECUTED_DISPOSITIONS = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE"] as const
 const OMISSION_REASONS = [
   "not_discovered",
   "not_loaded",
@@ -359,8 +360,10 @@ function validateDisposition(input: {
 // OPEN and TESTING mean the current phase still owns unfinished work and must
 // therefore block handoff. QUEUED is the explicit exception: it identifies the
 // exact successor and next discriminating action. Terminal dispositions retain
-// evidence, while positive states also link the separate finding authority.
-// This gives every phase one close-or-carry rule without workflow-specific logs.
+// evidence, while positive states also link the separate finding authority. An
+// executed disposition must first enter TESTING; OPEN may only skip execution
+// when work is carried or proven untestable. This gives every phase one
+// close-or-carry rule without workflow-specific logs.
 //
 // @docs/user-guide/workflows.md
 // ─────────────────────────────────────────────────────────────────
@@ -525,6 +528,22 @@ export class HypothesisRegistry {
       const previous = registry.hypotheses[index]!
       const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
+      if (
+        EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState) &&
+        previous.state !== "TESTING"
+      )
+        throw new Error(
+          `hypothesis '${id}' must enter TESTING before an executed ${nextState} disposition`,
+        )
+      if (
+        nextState === "TESTING" &&
+        previous.state !== "OPEN" &&
+        previous.state !== "SUSPECTED" &&
+        previous.state !== "CONFIRMED"
+      )
+        throw new Error(
+          `hypothesis '${id}' cannot enter TESTING from ${previous.state}; queued work must use reopen`,
+        )
       const evidence = textArray(args.evidence, "hypothesis evidence", 50)
       const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
       const blocker = optionalText(args.blocker, "hypothesis blocker", 1_000)
@@ -575,6 +594,16 @@ export class HypothesisRegistry {
         ...(nextPhase ? { next_phase: nextPhase } : {}),
         ...(findingID ? { finding_id: findingID } : {}),
         ...(typedScopeResolution ? { scope_resolution: typedScopeResolution } : {}),
+        ...(nextState === "TESTING"
+          ? {
+              blocker: undefined,
+              blocker_reason: undefined,
+              next_step: undefined,
+              next_phase: undefined,
+              finding_id: undefined,
+              scope_resolution: undefined,
+            }
+          : {}),
         ...(args.graph_refs === undefined
           ? {}
           : { graph_refs: [...new Set([...previous.graph_refs, ...textArray(args.graph_refs, "hypothesis graph_refs", 50)])] }),
@@ -809,6 +838,15 @@ export const HYPOTHESIS_TOOL_DEF = {
           ...hypothesisEvidenceProperties,
         },
         ["id", "owner", "description", "root_cause", "surface", "discriminator"],
+      ),
+      hypothesisActionSchema(
+        "update",
+        {
+          id: { type: "string" },
+          state: { type: "string", enum: ["TESTING"] },
+          owner: { type: "string" },
+        },
+        ["id", "state"],
       ),
       hypothesisActionSchema(
         "update",

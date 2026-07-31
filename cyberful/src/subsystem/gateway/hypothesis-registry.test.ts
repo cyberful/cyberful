@@ -8,7 +8,11 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { HypothesisRegistry, readHypothesisRegistryView } from "./hypothesis-registry"
+import {
+  HYPOTHESIS_TOOL_DEF,
+  HypothesisRegistry,
+  readHypothesisRegistryView,
+} from "./hypothesis-registry"
 
 async function temporaryWorkarea() {
   return await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-hypotheses-")))
@@ -96,6 +100,17 @@ describe("hypothesis registry", () => {
       }
       await registry.handle({ ...candidate, id: "H-LIVE-1" })
       await expect(registry.handle({ ...candidate, id: "H-LIVE-2" })).rejects.toThrow("duplicates")
+      await expect(
+        registry.handle({
+          action: "update",
+          id: "H-LIVE-1",
+          state: "SUSPECTED",
+          finding_id: "F-LIVE-1",
+          evidence: ["A second tenant received the synthetic object's metadata."],
+          reason: "The cross-tenant differential is positive and reproducible.",
+        }),
+      ).rejects.toThrow("must enter TESTING")
+      await registry.handle({ action: "update", id: "H-LIVE-1", state: "TESTING" })
       await registry.handle({
         action: "update",
         id: "H-LIVE-1",
@@ -108,6 +123,20 @@ describe("hypothesis registry", () => {
         state: "SUSPECTED",
         finding_id: "F-LIVE-1",
       })
+      await registry.handle({ action: "update", id: "H-LIVE-1", state: "TESTING" })
+      const testing = await registry.get("H-LIVE-1")
+      expect(testing).toMatchObject({ state: "TESTING" })
+      expect(testing.finding_id).toBeUndefined()
+      await registry.handle({
+        action: "update",
+        id: "H-LIVE-1",
+        state: "DISPROVED",
+        evidence: ["The repeated differential no longer reproduces under the same controls."],
+        reason: "The retest invalidated the prior positive result.",
+      })
+      const disproved = await registry.get("H-LIVE-1")
+      expect(disproved).toMatchObject({ state: "DISPROVED" })
+      expect(disproved.finding_id).toBeUndefined()
     } finally {
       await rm(workarea, { recursive: true, force: true })
     }
@@ -140,6 +169,12 @@ describe("hypothesis registry", () => {
         root_cause: "candidate parsing ambiguity",
         surface: "import parser",
         discriminator: "controlled malformed input",
+        _cyberful_actor: actor,
+      })
+      await registry.handle({
+        action: "update",
+        id: "H-OWN-2",
+        state: "TESTING",
         _cyberful_actor: actor,
       })
       await registry.handle({
@@ -198,5 +233,12 @@ describe("hypothesis registry", () => {
     } finally {
       await rm(workarea, { recursive: true, force: true })
     }
+  })
+
+  test("advertises TESTING as an ordinary update before executed dispositions", () => {
+    const alternatives = HYPOTHESIS_TOOL_DEF.inputSchema.oneOf as ReadonlyArray<{
+      readonly properties?: { readonly state?: { readonly enum?: readonly string[] } }
+    }>
+    expect(alternatives.some((schema) => schema.properties?.state?.enum?.includes("TESTING"))).toBeTrue()
   })
 })

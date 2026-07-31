@@ -40,6 +40,49 @@ def _run_embedded_locally(argv, **kwargs):
     )
 
 
+class _FakeRequestException(Exception):
+    pass
+
+
+def _embedded_requests_runner(response, request_options):
+    def request(**kwargs):
+        request_options.update(kwargs)
+        return response
+
+    def run_embedded(argv, **kwargs):
+        previous_stdin = sys.stdin
+        previous_stdout = sys.stdout
+        previous_requests = sys.modules.get("requests")
+        capture = io.StringIO()
+        sys.stdin = io.StringIO(kwargs["stdin"].decode("utf-8"))
+        sys.stdout = capture
+        sys.modules["requests"] = types.SimpleNamespace(
+            request=request,
+            exceptions=types.SimpleNamespace(RequestException=_FakeRequestException),
+        )
+        try:
+            exec(compile(argv[2], "<requests-tool>", "exec"), {})
+        finally:
+            sys.stdin = previous_stdin
+            sys.stdout = previous_stdout
+            if previous_requests is None:
+                sys.modules.pop("requests", None)
+            else:
+                sys.modules["requests"] = previous_requests
+        return cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="python3",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=1,
+            stdout=capture.getvalue(),
+            stderr="",
+            truncated=False,
+        )
+
+    return run_embedded
+
+
 class ToolSchemaBoundaryTest(unittest.TestCase):
     def test_registry_pairs_every_unique_public_name_with_a_handler_and_schema(self):
         registry = cyberful_os_mcp._exposed_tool_registry()
@@ -236,6 +279,7 @@ class RetainedInputTest(unittest.TestCase):
             reason = "OK"
             headers = {"content-type": "text/plain"}
             encoding = "utf-8"
+            history = []
             chunks_read = 0
 
             class Elapsed:
@@ -258,39 +302,11 @@ class RetainedInputTest(unittest.TestCase):
 
         response = Response()
 
-        def request(**kwargs):
-            request_options.update(kwargs)
-            return response
-
-        def run_embedded(argv, **kwargs):
-            previous_stdin = sys.stdin
-            previous_stdout = sys.stdout
-            previous_requests = sys.modules.get("requests")
-            capture = io.StringIO()
-            sys.stdin = io.StringIO(kwargs["stdin"].decode("utf-8"))
-            sys.stdout = capture
-            sys.modules["requests"] = types.SimpleNamespace(request=request)
-            try:
-                exec(compile(argv[2], "<requests-tool>", "exec"), {})
-            finally:
-                sys.stdin = previous_stdin
-                sys.stdout = previous_stdout
-                if previous_requests is None:
-                    sys.modules.pop("requests", None)
-                else:
-                    sys.modules["requests"] = previous_requests
-            return cyberful_os_mcp.CommandResult(
-                target="cyberful-os",
-                command="python3",
-                exit_code=0,
-                timed_out=False,
-                duration_ms=1,
-                stdout=capture.getvalue(),
-                stderr="",
-                truncated=False,
-            )
-
-        with mock.patch.object(cyberful_os_mcp, "run_argv_in_container", run_embedded):
+        with mock.patch.object(
+            cyberful_os_mcp,
+            "run_argv_in_container",
+            _embedded_requests_runner(response, request_options),
+        ):
             result = cyberful_os_mcp.handle_requests_tool({
                 "url": "https://target.invalid/data",
                 "max_body_chars": 5,
@@ -301,6 +317,52 @@ class RetainedInputTest(unittest.TestCase):
         self.assertTrue(payload["body_truncated"])
         self.assertEqual(response.chunks_read, 1)
         self.assertTrue(request_options["stream"])
+
+    def test_requests_keeps_an_http_denial_when_body_streaming_degrades(self):
+        request_options = {}
+
+        class Response:
+            url = "https://target.invalid/admin"
+            status_code = 403
+            reason = "Forbidden"
+            headers = {"content-type": "text/plain"}
+            encoding = "utf-8"
+            history = []
+
+            class Elapsed:
+                @staticmethod
+                def total_seconds():
+                    return 0.01
+
+            elapsed = Elapsed()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, **_kwargs):
+                yield b"partial denial"
+                raise _FakeRequestException("stream reset after headers")
+
+        response = Response()
+        with mock.patch.object(
+            cyberful_os_mcp,
+            "run_argv_in_container",
+            _embedded_requests_runner(response, request_options),
+        ):
+            result = cyberful_os_mcp.handle_requests_tool({
+                "url": "https://target.invalid/admin",
+                "method": "GET",
+            })
+
+        payload = _stdout_json(result)
+        self.assertFalse(result["isError"])
+        self.assertEqual(payload["status_code"], 403)
+        self.assertFalse(payload["body_complete"])
+        self.assertEqual(payload["body_error"], "_FakeRequestException")
+        self.assertEqual(result["_meta"][cyberful_os_mcp.EGRESS_META_KEY]["status"], 403)
 
     def test_wordlist_scan_reports_when_a_broad_directory_hits_its_entry_cap(self):
         with tempfile.TemporaryDirectory() as root:

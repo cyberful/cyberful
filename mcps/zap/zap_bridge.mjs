@@ -30,7 +30,7 @@ import {
   ZapApiContractError,
   zapApiResponseError,
 } from "./zap_policy.mjs"
-import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
+import { normalizedHttpRequest, recordedRequestTarget, recordedResponseStatus } from "./zap_http_request.mjs"
 import { replayRequest } from "./zap_history_replay.mjs"
 import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
@@ -68,10 +68,11 @@ function boundedPositiveInt(value, fallback, maximum, name) {
   return parsed
 }
 
-function text(value, isError = false) {
+function text(value, isError = false, metadata = undefined) {
   return {
     content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
     isError,
+    ...(metadata ? { _meta: metadata } : {}),
   }
 }
 
@@ -289,15 +290,32 @@ async function nativeTool(name, args) {
       followRedirects: args.follow_redirects === true,
     })
     const recordedUrl = recordedRequestTarget(result)
-    return text({
-      ...result,
-      cyberful_request_target: {
-        target_url: request.targetUrl,
-        scheme: request.scheme,
-        normalized_origin_form: request.normalizedOriginForm,
-        recorded_url: recordedUrl,
+    const destination = new URL(recordedUrl)
+    const status = recordedResponseStatus(result)
+    return text(
+      {
+        ...result,
+        cyberful_request_target: {
+          target_url: request.targetUrl,
+          scheme: request.scheme,
+          normalized_origin_form: request.normalizedOriginForm,
+          recorded_url: recordedUrl,
+        },
       },
-    })
+      false,
+      {
+        "cyberful.dev/egress": {
+          version: 1,
+          route: "zap",
+          observability: status === undefined ? "degraded" : "observed",
+          host: destination.host,
+          method: request.request.split(/\s+/, 1)[0],
+          path_family: destination.pathname,
+          ...(status === undefined ? {} : { status }),
+          attempts: 1,
+        },
+      },
+    )
   }
   if (name === "zap_generate_workarea_report") {
     const reportPath = engagementReportPath(args.file_path, WORKAREA)

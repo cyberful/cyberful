@@ -1973,7 +1973,12 @@ export async function createGatewayServer(opts?: {
           }
         }
       }
-      const egress = EgressObservation.observe(name, resolvedArgs, result)
+      const observedEgress = EgressObservation.observe(name, resolvedArgs, result)
+      const browserStatus = browserAction(result)?.status
+      const egress =
+        observedEgress && observedEgress.egress_http_status === undefined && browserStatus !== undefined
+          ? { ...observedEgress, egress_http_status: browserStatus }
+          : observedEgress
       await coverage?.observe(result, egress)
       await usage
         .record({

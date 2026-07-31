@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
@@ -502,6 +502,7 @@ interface RootSpecOptions {
   readonly workarea?: string
   readonly budgetClock?: AgentRunSpec["budget"]["clock"]
   readonly closeoutReserveMs?: number
+  readonly childMaxRuntimeMs?: number
   readonly abort?: AbortSignal
 }
 
@@ -538,7 +539,7 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
       maxPerRun: options.maxPerRun ?? 8,
       maxConcurrent: options.maxConcurrent ?? 8,
       maxDepth: options.maxDepth ?? 3,
-      maxRuntimeMs: 30 * 60_000,
+      maxRuntimeMs: options.childMaxRuntimeMs ?? 30 * 60_000,
     },
     handoffOwner: true,
     transcript: { enabled: true, includeSystemMessage: false, redactCredentials: true },
@@ -2772,6 +2773,89 @@ describe("Pi AgentRun steering and cancellation", () => {
     expect(userTexts(provider.calls[1]!).join("\n")).toContain("HOST-OWNED PHASE CLOSEOUT")
     expect(researchExecutions).toBe(0)
     expect(handoffs).toBe(1)
+  })
+
+  test("reserves child closeout time for its durable output without closing the phase", async () => {
+    const workarea = await temporaryWorkarea()
+    const outputArtifact = "raw/delegations/auth.md"
+    let shellExecutions = 0
+    const blockedShell: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "shell",
+      label: "Network-capable shell",
+      description: "Must not execute after the child enters closeout.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        shellExecutions++
+        return { content: [{ type: "text", text: "unexpected shell execution" }], details: {} }
+      },
+    }
+    const writeOutput: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "workarea_write_auth",
+      label: "Write delegated auth evidence",
+      description: "Write the bounded delegated auth result inside the test workarea.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        const destination = path.join(workarea, outputArtifact)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await writeFile(destination, "auth closeout complete\n")
+        return { content: [{ type: "text", text: "durable output written" }], details: {} }
+      },
+    }
+    const provider = new InMemoryProvider(async (call) => {
+      const role = runRole(call)
+      const results = toolResultCount(call)
+      if (role === "root") {
+        if (results === 0)
+          return toolCall(call, "delegate_task", {
+            task: "verify one bounded authentication control",
+            expected_result: "persist the auth verdict",
+            output_artifact: outputArtifact,
+          })
+        return assistant(call, "root continued after child closeout")
+      }
+      const closing = userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT"))
+      if (!closing) {
+        await new Promise<void>((resolve) => {
+          if (call.signal?.aborted) resolve()
+          else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+        })
+        return assistant(call, [], { stopReason: "aborted" })
+      }
+      if (results === 0) return toolCall(call, "shell", {})
+      if (results === 1) return toolCall(call, "workarea_write_auth", {})
+      return assistant(call, "child reconciled its durable output")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "child-closeout-root",
+        objective: "retain phase ownership while the child closes out",
+        tools: [blockedShell, writeOutput],
+        workarea,
+        deadlineAt: Date.now() + 2_000,
+        closeoutReserveMs: 100,
+        childMaxRuntimeMs: 180,
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({ termination: "completed", output: "root continued after child closeout" })
+    expect(shellExecutions).toBe(0)
+    expect(closeoutEvents(events)).toHaveLength(0)
+    expect(
+      activityEvents(events).some(
+        (event) => event.runID !== "child-closeout-root" && event.activity.kind === "status" &&
+          event.activity.text.startsWith("AgentRun mode: closeout"),
+      ),
+    ).toBeTrue()
+    expect(await readFile(path.join(workarea, outputArtifact), "utf8")).toBe("auth closeout complete\n")
+    const childCloseout = provider.calls.find(
+      (call) => runRole(call) === "subagent" &&
+        userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT")),
+    )
+    expect(userTexts(childCloseout!).join("\n")).toContain(outputArtifact)
   })
 
   test("enforces a cumulative output-token budget across provider turns", async () => {

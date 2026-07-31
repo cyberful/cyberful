@@ -150,6 +150,19 @@ findings, evidence references, severity, and remediation guidance. Code Audit
 control mappings are evidence about the examined implementation, not
 certification or an accredited attestation.
 
+Every confirmed Pentest finding includes its own evidence-backed proof of
+concept. The report states prerequisites, uses redacted placeholders instead of
+live secrets, shows an authoritative expected result plus an applicable control,
+and calls out restoration for mutations. Explicitly tagged request and code
+blocks are rendered in a dark panel with syntax colouring and line numbers; long
+request lines are reduced only as needed to stay inside the panel.
+
+The generated contents measures every section title and adds a consistent gap
+after its wrapped text, so long entries remain legible without colliding.
+Introductory audit-use notes stay compact, section headings use stable point
+spacing, and every severity-led finding begins after a short, faint divider
+with balanced vertical spacing before its severity badge.
+
 Bug Bounty Program produces Markdown instead of a consolidated PDF. Its
 `BUG_BOUNTY_REPORT.md` index links one portable report per submission-ready
 finding under `reports/bug-bounty/`. Held and non-reportable candidates remain

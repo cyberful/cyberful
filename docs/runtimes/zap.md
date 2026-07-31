@@ -64,6 +64,11 @@ environment. The model does not receive these diagnostics automatically.
 
 ## History replay
 
+`zap_http_request` treats an application response as a completed tool call for
+every HTTP status. Its local egress envelope records the effective host, method,
+path family, and response status, so expected denials remain evidence instead
+of MCP failures. ZAP API or transport failures remain tool errors.
+
 `zap_history_replay` clones one selected history message inside ZAP and applies
 up to 32 bounded header, query, or JSON Pointer mutations before sending exactly
 one request. Scheme, authority, path, and method remain immutable;
