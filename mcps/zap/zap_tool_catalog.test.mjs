@@ -17,6 +17,7 @@ describe("ZAP bridge tool catalog", () => {
       "zap_generate_workarea_report",
       "zap_history_search",
       "zap_history_get",
+      "zap_history_replay",
       "zap_websocket_history",
       "zap_context_auth",
       "zap_prompt_get",

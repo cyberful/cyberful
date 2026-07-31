@@ -28,6 +28,8 @@ build or release authority.
   rather than inventing function-level semantics.
 - Treat paths as hypotheses until code and contextual evidence establish their meaning. Do not record a
   confirmed finding merely because a graph path exists.
+- Record each material path with `hypothesis`, including stable graph node/path IDs in `graph_refs`. Before
+  handoff, disprove it, close it with evidence, or mark it `QUEUED` to `hunt` with the next discriminating step.
 
 ## Deliverable
 

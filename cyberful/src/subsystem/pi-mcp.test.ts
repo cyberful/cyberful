@@ -1,23 +1,30 @@
 // ── Pi Worker MCP Bridge Tests ───────────────────────────────────
 // Verifies real stdio discovery, authorization, host elicitation, content
-// projection, private descriptor isolation, and idempotent process cleanup.
+// projection, private descriptor isolation, diagnostic classification, and
+// idempotent process cleanup.
 // → cyberful/src/subsystem/pi-mcp.ts — owns the tested worker connection.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { connectPiMcp } from "./pi-mcp"
+import { RUNTIME_DIAGNOSTICS_PATH, RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
 import type { SubsystemMcpServer } from "./subsystem"
 
 const PRIVATE_VALUE = "must-remain-host-owned"
 
-function fixtureServer(): SubsystemMcpServer {
+function fixtureServer(stderrLine?: string): SubsystemMcpServer {
   return {
     name: "pi-mcp-fixture",
     command: process.execPath,
     args: [path.join(import.meta.dir, "pi-mcp.fixture.ts")],
     env: { BUN_BE_BUN: "1" },
-    privateEnv: { CYBERFUL_TEST_PRIVATE_VALUE: PRIVATE_VALUE },
+    privateEnv: {
+      CYBERFUL_TEST_PRIVATE_VALUE: PRIVATE_VALUE,
+      ...(stderrLine ? { CYBERFUL_TEST_STDERR_LINE: stderrLine } : {}),
+    },
   }
 }
 
@@ -173,6 +180,141 @@ describe("Pi MCP worker bridge", () => {
       expect(JSON.stringify(result)).not.toContain(PRIVATE_VALUE)
     } finally {
       await bridge.close()
+    }
+  })
+
+  test("does not reinterpret successful tool output as a runtime warning", async () => {
+    const workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-mcp-diagnostics-")))
+    const diagnostics = new RuntimeDiagnosticRecorder({
+      workarea,
+      sessionID: "session-1",
+      workflow: "bug-bounty",
+      phase: "recon",
+      attempt: 1,
+    })
+    const bridge = await connectPiMcp(fixtureServer(), {
+      cwd: import.meta.dir,
+      diagnostics,
+    })
+    try {
+      const echo = bridge
+        .toolsFor({ handoffAuthorized: false, isToolAllowed: () => true })
+        .find((tool) => tool.name === "echo")
+      expect(echo).toBeDefined()
+
+      const result = await echo!.execute("connection-diagnostic", {
+        value: "http://zap:8080 ConnectionError cookie=session-secret",
+      })
+      expect(result.details.isError).toBe(false)
+    } finally {
+      await bridge.close()
+      await diagnostics.close()
+    }
+
+    try {
+      const content = await readFile(path.join(workarea, RUNTIME_DIAGNOSTICS_PATH), "utf8").catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return ""
+          throw error
+        },
+      )
+      expect(content).toBe("")
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps routine stdio lifecycle silent without hiding actionable stderr", async () => {
+    const observations = [
+      {
+        message: "[browser] stdio server started",
+        component: "browser",
+        stage: "startup",
+        severity: "info",
+        errorClass: "GatewayLifecycle",
+        notificationCount: 0,
+      },
+      {
+        message: "[browser] stdio closed",
+        component: "browser",
+        stage: "shutdown",
+        severity: "info",
+        errorClass: "GatewayLifecycle",
+        notificationCount: 0,
+      },
+      {
+        message: "[browser] connection refused",
+        component: "browser",
+        stage: "startup",
+        severity: "warning",
+        errorClass: "GatewayStderr",
+        notificationCount: 1,
+      },
+      {
+        message: "2026-07-30T11:11:18.000Z INFO service=db opening database",
+        component: "gateway",
+        stage: "startup",
+        severity: "info",
+        errorClass: "GatewayLog",
+        notificationCount: 0,
+      },
+      {
+        message: "ERROR 2026-07-30T11:11:18 service=db migration failed",
+        component: "gateway",
+        stage: "startup",
+        severity: "error",
+        errorClass: "GatewayStderr",
+        notificationCount: 1,
+      },
+      {
+        message: "WARN phase gateway cleanup recovered after owned-process census",
+        component: "gateway",
+        stage: "shutdown",
+        severity: "info",
+        errorClass: "GatewayLifecycle",
+        notificationCount: 0,
+      },
+    ] as const
+
+    for (const observation of observations) {
+      const workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-mcp-lifecycle-")))
+      const notifications: unknown[] = []
+      const diagnostics = new RuntimeDiagnosticRecorder({
+        workarea,
+        sessionID: "session-1",
+        workflow: "pentest",
+        phase: "brief",
+        attempt: 1,
+        onFirst: (summary) => notifications.push(summary),
+      })
+      const bridge = await connectPiMcp(fixtureServer(observation.message), {
+        cwd: import.meta.dir,
+        diagnostics,
+      })
+      try {
+        expect(bridge.serverName).toBe("pi-mcp-fixture")
+      } finally {
+        await bridge.close()
+        await diagnostics.close()
+      }
+
+      try {
+        const rows = (await readFile(path.join(workarea, RUNTIME_DIAGNOSTICS_PATH), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({
+          component: observation.component,
+          stage: observation.stage,
+          severity: observation.severity,
+          errorClass: observation.errorClass,
+          message: observation.message,
+        })
+        expect(notifications).toHaveLength(observation.notificationCount)
+      } finally {
+        await rm(workarea, { recursive: true, force: true })
+      }
     }
   })
 })

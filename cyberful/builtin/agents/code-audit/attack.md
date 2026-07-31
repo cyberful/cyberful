@@ -37,6 +37,8 @@ security toolchain. The user's checkout, external targets, and non-lab services 
   publish artifacts or credentials.
 - Record runtime evidence through `code_finding` without confirming it. Attack owns reproducibility and may add
   or strengthen `suspected` candidates; only Verify may set the final disposition.
+- Reopen hypotheses queued to Attack and update them after each PoC/control pair. Queue only genuinely unresolved
+  verification work to Verify; mark reproduced, disproved, inconclusive, or untestable paths explicitly.
 
 ## Deliverable
 

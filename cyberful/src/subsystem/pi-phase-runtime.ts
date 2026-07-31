@@ -3,24 +3,19 @@
 // skill registry, provider registry, event transcript, and deterministic
 // shutdown.
 // → cyberful/src/subsystem/phase-runner.ts — validates phase completion.
+// → cyberful/src/subsystem/runtime-diagnostics.ts — aggregates bounded runtime outcomes.
 // ─────────────────────────────────────────────────────────────────
 
 import type { AgentTool } from "@earendil-works/pi-agent-core"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { Unsafe } from "typebox"
-import type { Settings } from "@/config/settings"
-import type {
-  AgentEvent,
-  AgentRunResult,
-  AgentRunSpec,
-  AgentTaskCapsule,
-  ChildPromptInput,
-} from "./agent-subsystem"
+import { Settings } from "@/config/settings"
+import type { AgentEvent, AgentRunResult, AgentRunSpec, AgentTaskCapsule, ChildPromptInput } from "./agent-subsystem"
 import type { DynamicTool, SubsystemFailure, SubsystemMcpServer } from "./subsystem"
 import type { CompiledAgentPrompt } from "./prompt-compiler"
 import type { SkillRegistry } from "./pi-skills"
 import type { AskHuman } from "./human-question"
-import type { Controller as ApprovalController } from "./approval-state"
+import type { Controller as PhaseBudgetClock } from "./phase-budget-clock"
 import { PiCredentialStore } from "./pi-credentials"
 import { PiAgentSubsystem } from "./pi-agent"
 import { durableFallbackLedgerForSession } from "./pi-fallback-ledger"
@@ -28,6 +23,10 @@ import { connectPiMcp } from "./pi-mcp"
 import { createPiModels } from "./pi-models"
 import { PiAudit } from "./pi-audit"
 import { replaceWorkareaFile } from "@/workarea"
+import { RunStateArtifact } from "./run-state-artifact"
+import { PiReasoning } from "./pi-reasoning"
+import { ProviderUsageLedger } from "./provider-usage"
+import { RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
 
 export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "subsystem_failed"
 
@@ -45,6 +44,7 @@ export interface RunResult {
 export interface RunInput {
   readonly settings: Settings.Info
   readonly sessionID: string
+  readonly rootRunID?: string
   readonly workarea: string
   readonly gateway: SubsystemMcpServer
   readonly prompt: string
@@ -56,9 +56,12 @@ export interface RunInput {
   readonly deadlineAt: number
   readonly abort?: AbortSignal
   readonly timeoutMs: number
+  readonly attempt?: number
   readonly askQuestion?: AskHuman
-  readonly approvalState?: ApprovalController
+  readonly budgetClock?: PhaseBudgetClock
+  readonly closeoutReserveMs?: number
   readonly handoffOwner: boolean
+  readonly providerRoute?: "main" | "fallback"
   readonly transcript?: {
     readonly append: (line: string) => Promise<void>
   }
@@ -75,6 +78,97 @@ export interface RunInput {
 
 const activeWorkers = new Set<PiAgentSubsystem>()
 export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
+
+function recordAgentDiagnostic(
+  event: AgentEvent,
+  diagnostics: RuntimeDiagnosticRecorder,
+): void {
+  if (event.type === "context_rotation") {
+    if (event.state === "started" || event.state === "completed") return
+    const blocking =
+      event.state === "failed" &&
+      event.reason === "active_tail_too_large"
+    diagnostics.record({
+      component: "agent",
+      profile: event.model,
+      stage: "context",
+      severity: blocking ? "error" : event.state === "failed" ? "warning" : "info",
+      errorClass: "ContextRotation",
+      ...(event.reason ? { code: event.reason } : {}),
+      outcome:
+        event.reason === "active_tail_too_large"
+          ? "capacity_failure"
+          : "context_rotation",
+      blocking,
+      message: [
+        `Context rotation ${event.state}.`,
+        `before=${event.estimatedTokensBefore}`,
+        `after=${event.estimatedTokensAfter}`,
+        `target=${event.limits.targetTokens}`,
+        `hard=${event.limits.hardInputTokens}`,
+        `summarized=${event.summarizedMessages}`,
+      ].join(" "),
+    })
+    return
+  }
+  if (event.type === "provider_retry" && event.state === "succeeded") {
+    diagnostics.record({
+      component: "agent",
+      profile: "provider",
+      stage: "provider",
+      severity: "info",
+      errorClass: "ProviderRetry",
+      code: "recovered_retry",
+      outcome: "recovered_retry",
+      blocking: false,
+      message: `Provider retry recovered after ${event.attempt} attempt(s).`,
+    })
+    return
+  }
+  if (event.type !== "run_finished" || !event.failure) return
+  diagnostics.record({
+    component: "agent",
+    profile: event.failure.kind,
+    stage: "provider",
+    severity: "error",
+    errorClass: "AgentRunFailure",
+    ...(event.failure.providerCode ? { code: event.failure.providerCode } : {}),
+    outcome:
+      event.failure.kind === "capacity"
+        ? "capacity_failure"
+        : "runtime_failure",
+    blocking: true,
+    message: `AgentRun terminated with ${event.failure.kind}${
+      event.failure.providerCode ? ` (${event.failure.providerCode})` : ""
+    }.`,
+  })
+}
+
+function emitObservabilityFailure(
+  onEvent: ((event: AgentEvent) => void) | undefined,
+  runID: string,
+  code: string,
+  error: unknown,
+): void {
+  onEvent?.({
+    type: "activity",
+    runID,
+    activity: {
+      kind: "status",
+      text: JSON.stringify({
+        runtimeDiagnostic: {
+          component: "phase",
+          stage: "shutdown",
+          severity: "error",
+          errorClass: error instanceof Error ? error.name || "Error" : "Error",
+          code,
+          outcome: "degraded_observability",
+          blocking: false,
+        },
+      }),
+    },
+  })
+}
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -113,8 +207,7 @@ function failureOf(result: AgentRunResult): SubsystemFailure | undefined {
 
 function failureReason(failure: NonNullable<AgentRunResult["failure"]>): string {
   const providerCode = failure.providerCode ? ` · provider code ${failure.providerCode}` : ""
-  const httpStatus =
-    "httpStatus" in failure && failure.httpStatus !== undefined ? ` · HTTP ${failure.httpStatus}` : ""
+  const httpStatus = "httpStatus" in failure && failure.httpStatus !== undefined ? ` · HTTP ${failure.httpStatus}` : ""
   const detail = failure.detail ? `: ${failure.detail}` : ""
   return `${failure.kind}${providerCode}${httpStatus}${detail}`
 }
@@ -142,6 +235,9 @@ function finalLine(result: AgentRunResult): string {
       provider: result.provider,
       model: result.model,
       providerAffinity: result.providerAffinity,
+      identity: result.identity,
+      reasoningEffort: result.reasoningEffort,
+      effectiveReasoningEffort: result.effectiveReasoningEffort,
       termination: result.termination,
       failure: result.failure,
       usage: result.usage,
@@ -215,29 +311,94 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
   let bridge: Awaited<ReturnType<typeof connectPiMcp>> | undefined
   let subsystem: PiAgentSubsystem | undefined
   const persistedLiveArtifacts = new Set<string>()
+  const rootID = input.rootRunID ?? `run_${randomUUID()}`
+  let diagnosticQueue = Promise.resolve()
+  const diagnostics = new RuntimeDiagnosticRecorder({
+    workarea: input.workarea,
+    sessionID: input.sessionID,
+    workflow: input.compiledPrompt.manifest.workflow,
+    phase: input.compiledPrompt.manifest.phase,
+    attempt: input.attempt ?? 1,
+    onFirst: (summary) => {
+      const event: AgentEvent = {
+        type: "activity",
+        runID: rootID,
+        activity: {
+          kind: "status",
+          text: JSON.stringify({ runtimeDiagnostic: summary }),
+        },
+      }
+      diagnosticQueue = diagnosticQueue.then(async () => {
+        await input.transcript?.append(`${transcriptLine(event)}\n`)
+        onEvent?.(event)
+      })
+    },
+  })
+  const usageLedger = new ProviderUsageLedger({
+    workarea: input.workarea,
+    sessionID: input.sessionID,
+  })
+  const liveState = new RunStateArtifact({
+    workarea: input.workarea,
+    workflow: input.compiledPrompt.manifest.workflow,
+    phase: input.compiledPrompt.manifest.phase,
+    deadlineAt: input.deadlineAt,
+    budgetClock: input.budgetClock,
+    closeoutReserveMs: input.closeoutReserveMs ?? 0,
+  })
   try {
     const credentials = new PiCredentialStore()
     const registry = createPiModels(input.settings.agent, credentials)
     bridge = await connectPiMcp(input.gateway, {
       cwd: input.workarea,
       askQuestion: input.askQuestion,
+      diagnostics,
     })
     const fallbackLedger = await durableFallbackLedgerForSession(input.sessionID)
     subsystem = new PiAgentSubsystem({
       settings: input.settings,
       registry,
       fallbackLedger,
+      usageLedger,
       onShutdown: () => bridge!.close(),
     })
     activeWorkers.add(subsystem)
-    const provider = input.settings.agent.main_provider
+    const providerRoute = input.providerRoute ?? "main"
+    const provider =
+      providerRoute === "fallback" ? input.settings.agent.fallback_provider : input.settings.agent.main_provider
+    if (!provider) throw new Error("phase recovery requested a fallback provider, but none is configured")
+    const model = registry.model(provider)
+    const subagentPolicy = Settings.subagentPolicy(input.settings)
+    registry.model(subagentPolicy.provider)
+    const phaseRecoveredHypotheses = await bridge.recoverHypotheses({
+      fromRunID: "*",
+      actor: { runID: rootID, displayName: "root", kind: "root" },
+      reason: "phase_recovery",
+    })
+    if (phaseRecoveredHypotheses.length > 0) {
+      const event: AgentEvent = {
+        type: "activity",
+        runID: rootID,
+        activity: {
+          kind: "status",
+          text: `Hypothesis ownership recovered by root: ${phaseRecoveredHypotheses
+            .map((item) => item.id)
+            .join(", ")}.`,
+        },
+      }
+      await input.transcript?.append(`${transcriptLine(event)}\n`)
+      onEvent?.(event)
+    }
     const rootSpec: AgentRunSpec = {
+      id: rootID,
       sessionID: input.sessionID,
       role: "root",
       depth: 0,
       provider,
-      model: registry.model(provider),
-      providerAffinity: "main",
+      model,
+      context: registry.contextCapacity(provider),
+      providerAffinity: providerRoute,
+      reasoning: PiReasoning.resolve(Settings.reasoningEffort(input.settings), model),
       prompt: input.compiledPrompt,
       compileChildPrompt: input.compileChildPrompt,
       task: input.task,
@@ -248,19 +409,34 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
         bridge!.toolsFor({
           handoffAuthorized: run.handoffOwner,
           isToolAllowed: () => true,
+          actor: {
+            runID: run.id,
+            displayName: run.identity?.displayName ?? run.role,
+            kind: run.role,
+          },
+        }),
+      recoverHypothesisOwnership: (request) =>
+        bridge!.recoverHypotheses({
+          fromRunID: request.fromRunID,
+          actor: request.to,
+          reason: request.reason,
         }),
       skills: input.skills.catalog,
       budget: {
         deadlineAt: input.deadlineAt,
-        maxOutputTokens: registry.model(provider).maxTokens,
-        ...(input.approvalState ? { pause: input.approvalState } : {}),
+        maxOutputTokens: model.maxTokens,
+        ...(input.budgetClock ? { clock: input.budgetClock } : {}),
+        ...(input.closeoutReserveMs ? { closeoutReserveMs: input.closeoutReserveMs } : {}),
       },
       abort: input.abort,
       delegation: {
         enabled: input.settings.agent.subagents.enabled,
+        provider: subagentPolicy.provider,
+        reasoningEffort: subagentPolicy.reasoning_effort,
         maxPerRun: input.settings.agent.subagents.max_per_run,
         maxConcurrent: input.settings.agent.subagents.max_concurrent,
         maxDepth: input.settings.agent.subagents.max_depth,
+        maxRuntimeMs: (input.settings.agent.subagents.timeout_minutes ?? 30) * 60_000,
       },
       handoffOwner: input.handoffOwner,
       transcript: {
@@ -278,12 +454,15 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     const root = await subsystem.start(rootSpec)
     const consumeEvents = (async () => {
       for await (const event of root.events) {
+        recordAgentDiagnostic(event, diagnostics)
+        await liveState.observe(event)
         await input.transcript?.append(`${transcriptLine(event)}\n`)
         onEvent?.(await projectLiveEvent(event, input.workarea, persistedLiveArtifacts))
       }
     })()
     const result = await root.result
     await consumeEvents
+    await liveState.close()
     await input.transcript?.append(`${finalLine(result)}\n`)
     const termination = terminationOf(result)
     return {
@@ -297,6 +476,14 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       agentResult: result,
     }
   } catch (error) {
+    diagnostics.record({
+      component: "gateway",
+      profile: input.gateway.name,
+      stage: "startup",
+      severity: "error",
+      errorClass: error instanceof Error ? error.name || "Error" : "Error",
+      message: errorDetail(error),
+    })
     return {
       stdout: "",
       stderr: errorDetail(error),
@@ -306,12 +493,67 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       failureReason: errorDetail(error),
     }
   } finally {
+    await usageLedger.close().catch((error) =>
+      diagnostics.record({
+        component: "gateway",
+        profile: "provider-usage",
+        stage: "shutdown",
+        severity: "error",
+        errorClass: error instanceof Error ? error.name || "Error" : "Error",
+        message: errorDetail(error),
+      }),
+    )
+    await liveState.close().catch((error) =>
+      diagnostics.record({
+        component: "phase",
+        profile: "run-state",
+        stage: "shutdown",
+        severity: "warning",
+        errorClass: error instanceof Error ? error.name || "Error" : "Error",
+        code: "run_state_close_failed",
+        outcome: "cleanup_failure",
+        blocking: false,
+        message: errorDetail(error),
+      }),
+    )
     if (subsystem) {
-      await subsystem.shutdown().catch(() => undefined)
+      await subsystem.shutdown().catch((error) =>
+        diagnostics.record({
+          component: "phase",
+          profile: input.gateway.name,
+          stage: "shutdown",
+          severity: "error",
+          errorClass: error instanceof Error ? error.name || "Error" : "Error",
+          code: "worker_shutdown_failed",
+          outcome: "cleanup_failure",
+          blocking: true,
+          message: errorDetail(error),
+        }),
+      )
       activeWorkers.delete(subsystem)
     } else {
-      await bridge?.close().catch(() => undefined)
+      await bridge?.close().catch((error) =>
+        diagnostics.record({
+          component: "phase",
+          profile: input.gateway.name,
+          stage: "shutdown",
+          severity: "error",
+          errorClass: error instanceof Error ? error.name || "Error" : "Error",
+          code: "gateway_shutdown_failed",
+          outcome: "cleanup_failure",
+          blocking: true,
+          message: errorDetail(error),
+        }),
+      )
     }
+    await diagnostics
+      .close()
+      .catch((error) =>
+        emitObservabilityFailure(onEvent, rootID, "runtime_diagnostics_close_failed", error),
+      )
+    await diagnosticQueue.catch((error) =>
+      emitObservabilityFailure(onEvent, rootID, "runtime_diagnostic_projection_failed", error),
+    )
   }
 }
 

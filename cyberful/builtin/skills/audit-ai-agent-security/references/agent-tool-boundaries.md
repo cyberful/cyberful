@@ -1,39 +1,37 @@
 # Agent and Tool Boundaries
 
-## Tool Contract Review
+## Capability and Identity Record
 
-Use narrow typed schemas, reject unknown fields, canonicalize identifiers, and authorize after resolution. Never let the model select raw credentials, arbitrary HTTP headers, unrestricted URLs, shell fragments, recipient identities, or tenant IDs merely because they fit a schema.
+For every tool, record its typed schema, semantic capability, effective principal, tenant, credentials, selectable resources, destinations, approvals, returned data, retries, rollback, idempotency, and cumulative cost. Separate read, write, execution, communication, financial, IAM, signing, and deployment effects.
 
-Separate tools by capability and identity. A single general-purpose HTTP, browser, code-execution, database, or cloud tool collapses many policy boundaries into model judgment.
+Resolve authorization after canonicalizing identifiers. Reject unknown fields. Do not let the model choose raw credentials, arbitrary headers, unrestricted URLs, shell fragments, recipient identities, tenant IDs, plugin locations, or package sources merely because a schema accepts strings.
+
+## Chain Escalation
+
+Test supported chains with synthetic resources and inert destinations:
+
+- filesystem read → issue, email, webhook, browser, or HTTP egress;
+- retrieved instruction → privileged tool call or delegated task;
+- browser read → authenticated form, link, download, or GET side effect;
+- parser fetch → loopback, private-service, or metadata-simulator canary;
+- tool error → new tool selection, destination, or argument;
+- generated Markdown/HTML/CSV/SQL → downstream interpreter action;
+- memory write → later privileged run or different identity;
+- child agent → inherited tools, context, credentials, or larger budget;
+- fallback/retry → policy or approval enforced only on the primary route;
+- tool discovery/schema text → instruction injection or hidden capability selection;
+- signing, deployment, IAM, or secret-manager read → controlled marker proof.
+
+Do not mark a chain disproved merely because one payload failed. Verify the prerequisite capability, identity, egress, parser, and downstream consumer first.
 
 ## Approval Semantics
 
-Approvals should bind canonical action, resource, recipient, principal, key parameters, and expiry. Display the actual transaction after resolution, not a model-written summary. Material argument changes require renewed approval.
-
-## Confused Deputies
-
-Check whether untrusted content can cause the agent to:
-
-- read a resource and send it to a content-selected destination;
-- act in the operator's identity for a different tenant;
-- attach credentials to a content-selected URL;
-- invoke a privileged tool based on a tool result;
-- reinterpret data as a new instruction to another agent;
-- move data between otherwise separated connectors.
+Bind approval to the canonical action, principal, tenant, resource, destination or recipient, key parameters, expected side effects, expiry, and bounded retries. Display the resolved transaction rather than a model-written summary. Require renewed approval after material argument changes.
 
 ## Tool-Result Taint
 
-Mark provenance and trust for tool results. Limit what returns to the model, strip active content only with format-aware transformations, and avoid embedding secrets unnecessary for the next decision.
-
-## Rare Chain Hints
-
-- A "read-only" browser can submit forms, follow authenticated links, trigger GET side effects, or leak via URL fetch.
-- A filesystem read plus issue/comment writer is a data-exfiltration chain.
-- A calendar or email tool may invite, forward, or notify external recipients as a side effect of apparently local changes.
-- Tool error strings often contain attacker-controlled server responses and are treated as authoritative diagnostics.
-- Delegation can amplify privilege when child agents inherit tools or context not visible in the parent approval.
-- An allowlisted tool can accept a reference to an object whose ownership is resolved only inside another service.
+Attach provenance and trust to tool results, errors, retrieved chunks, generated artifacts, and cross-agent messages. Return only data required for the next decision. Prevent attacker-controlled text from becoming trusted diagnostics or new instructions.
 
 ## Deterministic Mediation
 
-Place authorization, tenant binding, data-loss rules, recipient policy, network egress, rate and cost bounds, and transaction validation in the tool gateway or application code. Log canonical action and result with sensitive-field redaction.
+Enforce authorization, tenant binding, data-loss rules, egress, recipient policy, rate, spend, recursion, concurrency, destination validation, and transaction integrity in the gateway or application code. Log canonical action and result with sensitive-field redaction. Keep model refusals and prompt hierarchy as secondary controls.

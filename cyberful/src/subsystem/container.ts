@@ -2,6 +2,8 @@
 // Tracks cyberful-os containers activated by this process and reaps survivors on
 // cooperative shutdown, with a synchronous process-exit cleanup backstop.
 // → cyberful/src/subsystem/phase-runner.ts — registers per-engagement container ownership.
+// → cyberful/src/session/prompt.ts — verifies session-scoped absence before closure.
+// @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
 // ── Containers Outlive Subsystem Process Trees ───────────────────
@@ -13,19 +15,38 @@
 // survivor; process exit retains a synchronous last resort. Removing the
 // container never removes its host workarea bind mount.
 // ─────────────────────────────────────────────────────────────────
-import { RUN_OWNER_LABEL, runOwnerToken } from "@/util/container-ownership"
+import {
+  MANAGED_LABEL,
+  RUN_OWNER_LABEL,
+  SESSION_LABEL,
+  runOwnerToken,
+} from "@/util/container-ownership"
 
 export const OWNER_LABEL = RUN_OWNER_LABEL
 export const EXPERT_RUNTIME = "expert"
 
 const live = new Set<string>()
 const REAP_CONCURRENCY = 8
+const SESSION_CLEANUP_ATTEMPTS = 3
+const SESSION_CLEANUP_DELAY_MS = 100
 const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
 const DOCKER_CLEANUP_OUTPUT_BYTES = 64 * 1024
 let exitHookInstalled = false
 const liveListeners = new Set<(containers: string[]) => void>()
 
 type ReapOutcome = { failed: false } | { failed: true; error: unknown }
+
+export class SessionContainerCleanupError extends AggregateError {
+  readonly removed: readonly string[]
+  readonly remaining: readonly string[]
+
+  constructor(errors: readonly unknown[], removed: readonly string[], remaining: readonly string[]) {
+    super(errors, "one or more engagement containers failed to stop")
+    this.name = "SessionContainerCleanupError"
+    this.removed = removed
+    this.remaining = remaining
+  }
+}
 
 // ── Container Absence Is A Successful Cleanup Result ─────────────
 // A container may already be gone when normal completion and process shutdown
@@ -96,6 +117,63 @@ async function dockerOwnedContainers(runID?: string): Promise<string[]> {
 }
 
 let ownedContainerLister: (runID?: string) => Promise<string[]> = dockerOwnedContainers
+let sessionContainerLister: (sessionID: string, runID?: string) => Promise<string[]> =
+  dockerSessionContainers
+let cleanupDelay: (delayMs: number) => Promise<void> = (delayMs) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs)
+    timer.unref?.()
+  })
+
+function validSessionID(sessionID: string): string {
+  const normalized = sessionID.trim()
+  if (!/^[A-Za-z0-9._-]{1,256}$/.test(normalized))
+    throw new Error("Cyberful session id cannot be used as a Docker ownership filter")
+  return normalized
+}
+
+async function dockerSessionContainers(sessionID: string, runID?: string): Promise<string[]> {
+  if (!Bun.which("docker")) return []
+  const filters = [
+    "--filter",
+    `label=${MANAGED_LABEL}`,
+    ...ownerFilterArguments(runID),
+  ]
+  const proc = Bun.spawn(
+    [
+      "docker",
+      "ps",
+      "--all",
+      "--quiet",
+      ...filters,
+      "--filter",
+      `label=${SESSION_LABEL}=${validSessionID(sessionID)}`,
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: DOCKER_CLEANUP_TIMEOUT_MS,
+      maxBuffer: DOCKER_CLEANUP_OUTPUT_BYTES,
+    },
+  )
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  if (code !== 0) {
+    const detail = stderr.trim()
+    throw new Error(`failed to list session-owned Cyberful containers (exit ${code})${detail ? `: ${detail}` : ""}`)
+  }
+  return stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((id) => {
+      if (!/^[a-f0-9]{12,64}$/i.test(id)) throw new Error("Docker returned an invalid session container id")
+      return id
+    })
+}
 
 // ── Force-Fresh Reaping Preserves Future Ownership ───────────────
 // A new engagement removes any survivor before recreating its deterministic
@@ -182,6 +260,76 @@ export async function removeOwned(runID = process.env.CYBERFUL_RUN_ID?.trim()): 
     throw new AggregateError(failures, "one or more run-owned Cyberful containers could not be removed")
 }
 
+// ── Session Closure Proves Its Disposable Containers Are Absent ───
+// The generic cyberful-os dependency belongs to the worker process, while each
+// expert container belongs to one engagement session. Exact deterministic names
+// handle the normal path; immutable session and run-owner labels catch late
+// creations after an interrupted gateway. Three bounded passes tolerate that
+// race without touching another worker's containers, and the final label query
+// turns any survivor into a visible terminal cleanup failure.
+//
+// @docs/concepts/execution-model.md
+// ─────────────────────────────────────────────────────────────────
+export async function removeSession(
+  sessionID: string,
+  exactNames: readonly string[],
+  runID = process.env.CYBERFUL_RUN_ID?.trim(),
+): Promise<{ readonly removed: readonly string[]; readonly remaining: readonly string[] }> {
+  validSessionID(sessionID)
+  const targets = new Set(exactNames.map((name) => name.trim()).filter(Boolean))
+  const removed = new Set<string>()
+  let lastFailures: unknown[] = []
+
+  for (let attempt = 1; attempt <= SESSION_CLEANUP_ATTEMPTS; attempt += 1) {
+    let discovered: string[] = []
+    const discoveryFailures: unknown[] = []
+    try {
+      discovered = await sessionContainerLister(sessionID, runID)
+    } catch (error) {
+      discoveryFailures.push(error)
+    }
+    for (const name of discovered) targets.add(name)
+    const attempted = [...targets]
+    const outcomes = await Promise.allSettled(attempted.map(reaper))
+    lastFailures = [
+      ...discoveryFailures,
+      ...outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" ? [outcome.reason] : [],
+      ),
+    ]
+    outcomes.forEach((outcome, index) => {
+      const name = attempted[index]
+      if (outcome.status === "fulfilled" && name) removed.add(name)
+    })
+    if (attempt < SESSION_CLEANUP_ATTEMPTS)
+      await cleanupDelay(SESSION_CLEANUP_DELAY_MS)
+  }
+
+  let remaining: string[] = []
+  try {
+    remaining = await sessionContainerLister(sessionID, runID)
+  } catch (error) {
+    lastFailures = [...lastFailures, error]
+  }
+  if (remaining.length > 0 || lastFailures.length > 0)
+    throw new SessionContainerCleanupError(
+      [
+        ...lastFailures,
+        ...(remaining.length > 0
+          ? [new Error(`${remaining.length} session-owned Cyberful container(s) remain after cleanup`)]
+          : []),
+      ],
+      [...removed].toSorted(),
+      remaining,
+    )
+
+  for (const name of targets) if (live.delete(name)) notifyLive()
+  return {
+    removed: [...removed].toSorted(),
+    remaining: [],
+  }
+}
+
 // ── Shutdown Rechecks Docker After Registry Cleanup ───────────────────
 // The first pass handles known containers. The label sweep then catches a
 // container created by an already-dispatched Docker request after that pass.
@@ -223,9 +371,25 @@ export function setOwnedContainerListerForTests(fn: (runID?: string) => Promise<
   ownedContainerLister = fn
 }
 
+export function setSessionContainerListerForTests(
+  fn: (sessionID: string, runID?: string) => Promise<string[]>,
+): void {
+  sessionContainerLister = fn
+}
+
+export function setCleanupDelayForTests(fn: (delayMs: number) => Promise<void>): void {
+  cleanupDelay = fn
+}
+
 export function resetTestDoubles(): void {
   reaper = dockerRm
   ownedContainerLister = dockerOwnedContainers
+  sessionContainerLister = dockerSessionContainers
+  cleanupDelay = (delayMs) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, delayMs)
+      timer.unref?.()
+    })
   live.clear()
   notifyLive()
 }

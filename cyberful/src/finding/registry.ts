@@ -215,6 +215,18 @@ function boundedText(value: unknown, label: string, maximum: number) {
   return normalized
 }
 
+function positiveEvidence(value: unknown, label = "finding positive_evidence") {
+  if (!Array.isArray(value)) return boundedText(value, label, 8_000)
+  if (value.length === 0 || value.length > 32)
+    throw new Error(`${label} must be a string or an array of 1 to 32 strings`)
+  const normalized = [
+    ...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 8_000))),
+  ].join("\n")
+  if (normalized.length > 8_000)
+    throw new Error(`${label} must contain at most 8000 characters after normalization`)
+  return normalized
+}
+
 function optionalText(value: unknown, label: string, maximum: number) {
   return value === undefined ? undefined : boundedText(value, label, maximum)
 }
@@ -313,14 +325,14 @@ function decisions(input: Record<string, unknown>, workflow: Workflow, dispositi
 
 function disposition(input: Record<string, unknown>): Disposition {
   const state = enumValue(input.state, technicalStates, "finding state")
-  if (state === "SUSPECTED")
+  if (state === "SUSPECTED") {
+    const nextStep = optionalText(input.next_step, "finding next_step", 4_000)
     return {
       state,
-      positiveEvidence: boundedText(input.positive_evidence, "finding positive_evidence", 8_000),
-      ...(optionalText(input.next_step, "finding next_step", 4_000)
-        ? { nextStep: boundedText(input.next_step, "finding next_step", 4_000) }
-        : {}),
+      positiveEvidence: positiveEvidence(input.positive_evidence),
+      ...(nextStep ? { nextStep } : {}),
     }
+  }
   if (state === "INCONCLUSIVE")
     return {
       state,
@@ -501,15 +513,15 @@ export class Store {
   async record(input: Record<string, unknown>, runContext: RunContext, signal?: AbortSignal) {
     const key = reference(input.key, "finding key")
     const title = boundedText(input.title, "finding title", 300)
+    const evidence = positiveEvidence(input.positive_evidence)
+    const nextStep = optionalText(input.next_step, "finding next_step", 4_000)
     const technical: Disposition = {
       state: "SUSPECTED",
-      positiveEvidence: boundedText(input.positive_evidence, "finding positive_evidence", 8_000),
-      ...(optionalText(input.next_step, "finding next_step", 4_000)
-        ? { nextStep: boundedText(input.next_step, "finding next_step", 4_000) }
-        : {}),
+      positiveEvidence: evidence,
+      ...(nextStep ? { nextStep } : {}),
     }
     const severity = ratedSeverity(input.severity)
-    const summary = boundedText(input.summary ?? input.positive_evidence, "finding summary", 4_000)
+    const summary = boundedText(input.summary ?? evidence.replaceAll("\n", " • "), "finding summary", 4_000)
     const paths = evidencePaths(input.evidence_paths)
     const timestamp = this.#now().toISOString()
     const decisionsValue = decisions(input, runContext.workflow, technical)

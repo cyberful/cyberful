@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
@@ -27,9 +27,10 @@ import {
 import { Type } from "typebox"
 import { Settings } from "@/config/settings"
 import type { AgentEvent, AgentRun, AgentRunRole, AgentRunSpec, ProviderAffinity } from "./agent-subsystem"
-import { SubsystemApprovalState } from "./approval-state"
+import { SubsystemPhaseBudgetClock } from "./phase-budget-clock"
 import { clearFallbackLedger, fallbackLedgerForSession, PiAgentSubsystem } from "./pi-agent"
 import type { PiModels } from "./pi-models"
+import { PiReasoning } from "./pi-reasoning"
 import type { CompiledAgentPrompt, PromptSkill, ProviderRoute } from "./prompt-compiler"
 
 const MAIN_PROVIDER = "main"
@@ -70,7 +71,8 @@ type RunStartedEvent = Extract<AgentEvent, { type: "run_started" }>
 type FallbackEvent = Extract<AgentEvent, { type: "fallback" }>
 type ActivityEvent = Extract<AgentEvent, { type: "activity" }>
 type ProviderRetryEvent = Extract<AgentEvent, { type: "provider_retry" }>
-type ContextCompactionEvent = Extract<AgentEvent, { type: "context_compaction" }>
+type ContextRotationEvent = Extract<AgentEvent, { type: "context_rotation" }>
+type PhaseCloseoutEvent = Extract<AgentEvent, { type: "phase_closeout" }>
 
 interface CapturedCall {
   readonly ordinal: number
@@ -79,6 +81,8 @@ interface CapturedCall {
   readonly system: string
   readonly messages: readonly Message[]
   readonly toolNames: readonly string[]
+  readonly reasoning?: string
+  readonly payload?: unknown
   readonly signal?: AbortSignal
 }
 
@@ -169,6 +173,16 @@ function registry(): PiModels {
       if (providerID === FALLBACK_PROVIDER) return fallback
       throw new Error(`Unknown in-memory provider '${providerID}'`)
     },
+    contextCapacity(providerID) {
+      const resolved = providerID === MAIN_PROVIDER ? main : fallback
+      return {
+        catalogContextWindow: resolved.contextWindow,
+        trustedRouteWindow: resolved.contextWindow,
+        operationalContextWindow: Math.min(256_000, resolved.contextWindow),
+        source: "catalog_default",
+        warnings: [],
+      }
+    },
     adapter(providerID) {
       if (providerID === MAIN_PROVIDER) return "openai-codex"
       if (providerID === FALLBACK_PROVIDER) return "openai-completions"
@@ -187,6 +201,16 @@ function registryWithLimits(contextWindow: number, maxTokens: number): PiModels 
     ...base,
     model(providerID) {
       return providerID === MAIN_PROVIDER ? main : base.model(providerID)
+    },
+    contextCapacity(providerID) {
+      if (providerID !== MAIN_PROVIDER) return base.contextCapacity(providerID)
+      return {
+        catalogContextWindow: contextWindow,
+        trustedRouteWindow: contextWindow,
+        operationalContextWindow: Math.min(256_000, contextWindow),
+        source: "catalog_default",
+        warnings: [],
+      }
     },
   }
 }
@@ -311,6 +335,41 @@ function contextLengthError(call: CapturedCall, content: string | [] = []): Assi
   })
 }
 
+function contextCheckpoint(call: CapturedCall): AssistantMessage {
+  return assistant(
+    call,
+    JSON.stringify({
+      working_notes:
+        "Preserve the authorized objective, completed evidence collection, and current operational continuity.",
+      structured_state: {
+        objective: "Continue the current authorized Cyberful objective.",
+        phase: "exploit",
+        current_state: "The active tool chain completed and the next bounded step remains open.",
+        scope_and_constraints: ["Use only the authorized workarea."],
+        decisions: [
+          {
+            decision: "Continue from the persisted checkpoint.",
+            rationale: "The preceding tool result is already complete.",
+          },
+        ],
+        verified_facts: ["The active tool chain completed."],
+        hypotheses: [],
+        findings: [],
+        tests_completed: ["Completed the active tool chain."],
+        tests_pending: [],
+        activities_completed: ["Captured the active evidence."],
+        activities_open: ["Finish the bounded turn."],
+        blockers: [],
+        errors_and_failed_attempts: [],
+        mistakes_not_to_repeat: ["Do not execute the completed tool call again."],
+        evidence_refs: [],
+        next_actions: ["Finish the bounded turn."],
+      },
+      what_i_would_do_next: "Continue without re-executing completed tool calls.",
+    }),
+  )
+}
+
 // ── The Fake Provider Preserves The Real Pi Loop ────────────────
 // Tests replace only the network boundary: Pi still receives system state,
 // executes actual AgentTool definitions, follows tool-result turns, and owns
@@ -325,7 +384,8 @@ class InMemoryProvider {
 
   constructor(response: ResponseFactory, providerOptions: InMemoryProviderOptions = {}) {
     this.stream = async (model, context, streamOptions) => {
-      await streamOptions?.onPayload?.(this.#payload(model, context), model)
+      const originalPayload = this.#payload(model, context, streamOptions?.reasoning)
+      const payload = await streamOptions?.onPayload?.(originalPayload, model) ?? originalPayload
       const call: CapturedCall = {
         ordinal: this.calls.length + 1,
         provider: model.provider,
@@ -333,6 +393,8 @@ class InMemoryProvider {
         system: context.systemPrompt ?? "",
         messages: structuredClone(context.messages),
         toolNames: context.tools?.map((tool) => tool.name) ?? [],
+        ...(streamOptions?.reasoning ? { reasoning: streamOptions.reasoning } : {}),
+        payload,
         ...(streamOptions?.signal ? { signal: streamOptions.signal } : {}),
       }
       this.calls.push(call)
@@ -373,11 +435,12 @@ class InMemoryProvider {
     return new Promise((resolve) => this.#waiters.push({ count, resolve }))
   }
 
-  #payload(model: Model<Api>, context: Context): unknown {
+  #payload(model: Model<Api>, context: Context, reasoning?: string): unknown {
     if (model.api === "openai-codex-responses") {
       return {
         instructions: context.systemPrompt,
         input: [{ role: "user", content: "In-memory provider request." }],
+        ...(reasoning ? { reasoning: { effort: reasoning, summary: "auto" } } : {}),
       }
     }
     return {
@@ -437,19 +500,24 @@ interface RootSpecOptions {
   readonly deadlineAt?: number
   readonly maxOutputTokens?: number
   readonly workarea?: string
-  readonly budgetPause?: AgentRunSpec["budget"]["pause"]
+  readonly budgetClock?: AgentRunSpec["budget"]["clock"]
+  readonly closeoutReserveMs?: number
+  readonly childMaxRuntimeMs?: number
   readonly abort?: AbortSignal
 }
 
 function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
+  const resolvedModel = models.model(MAIN_PROVIDER)
   return {
     id: options.id,
     sessionID: options.sessionID ?? `session-${options.id}`,
     role: "root",
     depth: 0,
     provider: MAIN_PROVIDER,
-    model: models.model(MAIN_PROVIDER),
+    model: resolvedModel,
+    context: models.contextCapacity(MAIN_PROVIDER),
     providerAffinity: "main",
+    reasoning: PiReasoning.resolve("ultra", resolvedModel),
     prompt: prompt("root", "main", options.objective, true),
     compileChildPrompt: (input) => prompt(input.role, input.providerRoute, input.task.objective, false),
     task: { objective: options.objective, expectedResult: "Return verified evidence." },
@@ -460,14 +528,18 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
       maxOutputTokens: options.maxOutputTokens ?? 8_192,
-      ...(options.budgetPause ? { pause: options.budgetPause } : {}),
+      ...(options.budgetClock ? { clock: options.budgetClock } : {}),
+      ...(options.closeoutReserveMs ? { closeoutReserveMs: options.closeoutReserveMs } : {}),
     },
     ...(options.abort ? { abort: options.abort } : {}),
     delegation: {
       enabled: true,
+      provider: "main",
+      reasoningEffort: "high",
       maxPerRun: options.maxPerRun ?? 8,
       maxConcurrent: options.maxConcurrent ?? 8,
       maxDepth: options.maxDepth ?? 3,
+      maxRuntimeMs: options.childMaxRuntimeMs ?? 30 * 60_000,
     },
     handoffOwner: true,
     transcript: { enabled: true, includeSystemMessage: false, redactCredentials: true },
@@ -526,11 +598,57 @@ function retryEvents(events: readonly AgentEvent[]): readonly ProviderRetryEvent
   return events.filter((event): event is ProviderRetryEvent => event.type === "provider_retry")
 }
 
-function compactionEvents(events: readonly AgentEvent[]): readonly ContextCompactionEvent[] {
-  return events.filter((event): event is ContextCompactionEvent => event.type === "context_compaction")
+function rotationEvents(events: readonly AgentEvent[]): readonly ContextRotationEvent[] {
+  return events.filter((event): event is ContextRotationEvent => event.type === "context_rotation")
+}
+
+function closeoutEvents(events: readonly AgentEvent[]): readonly PhaseCloseoutEvent[] {
+  return events.filter((event): event is PhaseCloseoutEvent => event.type === "phase_closeout")
 }
 
 describe("Pi complete root and main-route subagent runs", () => {
+  test("maps configured ultra to the supported Codex max payload and records both levels", async () => {
+    const base = registry()
+    const sol = {
+      ...base.model(MAIN_PROVIDER),
+      id: "gpt-5.6-sol",
+      reasoning: true,
+      thinkingLevelMap: { max: "max" },
+    } satisfies Model<Api>
+    const models: PiModels = {
+      ...base,
+      model(providerID) {
+        return providerID === MAIN_PROVIDER ? sol : base.model(providerID)
+      },
+    }
+    const provider = new InMemoryProvider((call) => assistant(call, "ultra request completed"))
+    const runtime = subsystem(provider, models)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "ultra-reasoning",
+        objective: "verify the exact configured reasoning effort",
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(provider.calls[0]).toMatchObject({
+      reasoning: "max",
+      payload: { reasoning: { effort: "max", summary: "auto" } },
+    })
+    expect(startedEvents(events)[0]).toMatchObject({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "ultra",
+      effectiveReasoningEffort: "max",
+    })
+    expect(result).toMatchObject({
+      reasoningEffort: "ultra",
+      effectiveReasoningEffort: "max",
+      termination: "completed",
+    })
+  })
+
   test("redacts secret-shaped assistant text across provider deltas and in the final result", async () => {
     const apiKey = "sk-crossdeltasecret123456"
     const provider = new InMemoryProvider(
@@ -694,6 +812,62 @@ describe("Pi complete root and main-route subagent runs", () => {
     ])
   })
 
+  test("stops retry compensation before tools execute after a successful provider response", async () => {
+    let clockNow = 1_000
+    const delayedTool: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "delayed_local_tool",
+      label: "Complete delayed local work",
+      description: "Advance the controlled clock after the retry response has completed.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        clockNow += 60_000
+        return {
+          content: [{ type: "text", text: "delayed local work complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (call.ordinal === 1) return unavailableError(call)
+      if (call.ordinal === 2) return toolCall(call, "delayed_local_tool", {})
+      return assistant(call, "retry response and later tool work completed")
+    })
+    const deadlineAt = clockNow + 600_000
+    const budgetClock = SubsystemPhaseBudgetClock.create({
+      deadlineAt,
+      retryCompensationCapMs: 1_800_000,
+      now: () => clockNow,
+    })
+    const runtime = subsystem(provider, registry(), () => clockNow, {
+      random: () => 0.5,
+      sleep: async (delayMs) => {
+        clockNow += delayMs
+      },
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-tool-boundary",
+        objective: "release retry compensation before executing the returned tool call",
+        tools: [delayedTool],
+        deadlineAt,
+        budgetClock,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "retry response and later tool work completed",
+      toolCalls: 1,
+    })
+    expect(budgetClock.snapshot()).toMatchObject({
+      pending: false,
+      retryWaitMs: 500,
+      retryCompensationMs: 500,
+      deadlineAt: deadlineAt + 500,
+    })
+    budgetClock.close()
+  })
+
   test("retries the exact Codex server_is_overloaded provider failure", async () => {
     const provider = new InMemoryProvider((call) =>
       call.ordinal === 1 ? unavailableError(call, [], "server_is_overloaded") : assistant(call, "recovered"),
@@ -750,7 +924,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(retryEvents(await collectEvents(run))).toEqual([])
   })
 
-  test("does not retry retryable failures outside the unavailable class", async () => {
+  test("retries every provider failure classified as retryable", async () => {
     const provider = new InMemoryProvider((call) =>
       assistant(call, [], {
         stopReason: "error",
@@ -776,8 +950,79 @@ describe("Pi complete root and main-route subagent runs", () => {
       termination: "provider_failed",
       failure: { kind: "rate_limit", retryable: true },
     })
-    expect(provider.calls).toHaveLength(1)
-    expect(retryEvents(await collectEvents(run))).toEqual([])
+    expect(provider.calls).toHaveLength(4)
+    expect(retryEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
+      "scheduled",
+      "attempting",
+      "scheduled",
+      "attempting",
+      "scheduled",
+      "attempting",
+      "exhausted",
+    ])
+  })
+
+  test("aborts only a timed-out retry attempt and proceeds to the next retry", async () => {
+    const provider = new InMemoryProvider(async (call) => {
+      if (call.ordinal === 1) return unavailableError(call)
+      if (call.ordinal === 2) {
+        await new Promise<void>((resolve) => {
+          if (call.signal?.aborted) resolve()
+          else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+        })
+        return assistant(call, [], { stopReason: "aborted" })
+      }
+      return assistant(call, "recovered after one timed-out retry")
+    })
+    const baseSettings = settings()
+    const configuredSettings: Settings.Info = {
+      ...baseSettings,
+      agent: {
+        ...baseSettings.agent,
+        retry: {
+          enabled: true,
+          max_retries: 2,
+          base_delay_ms: 100,
+          max_delay_ms: 100,
+          attempt_timeout_ms: 1_000,
+        },
+      },
+    }
+    const deadlineAt = Date.now() + 250
+    const budgetClock = SubsystemPhaseBudgetClock.create({
+      deadlineAt,
+      retryCompensationCapMs: 2_000,
+    })
+    const runtime = subsystem(provider, registry(), undefined, { settings: configuredSettings })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "provider-retry-attempt-timeout",
+        objective: "recover after a bounded provider retry attempt",
+        deadlineAt,
+        budgetClock,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "recovered after one timed-out retry",
+    })
+    const retries = retryEvents(await collectEvents(run))
+    expect(retries.map((event) => event.state)).toEqual([
+      "scheduled",
+      "attempting",
+      "timed_out",
+      "scheduled",
+      "attempting",
+      "succeeded",
+    ])
+    expect(retries.find((event) => event.state === "timed_out")).toMatchObject({
+      attempt: 1,
+      attemptTimeoutMs: 1_000,
+      failure: { kind: "timeout", providerCode: "retry_attempt_timeout" },
+    })
+    expect(budgetClock.pausedMs("provider_retry")).toBeGreaterThanOrEqual(1_000)
+    budgetClock.close()
   })
 
   test("cancels an interruptible provider backoff without starting the retry request", async () => {
@@ -840,7 +1085,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(JSON.stringify(events)).not.toContain("discarded budget partial")
   })
 
-  test("reuses one compacted provider projection across later turns without repeating compaction", async () => {
+  test("installs one rotated history and does not re-execute completed tools", async () => {
     const workarea = await temporaryWorkarea()
     const fullOutput = `first evidence\n${"large-target-response-".repeat(6_000)}\nlast evidence`
     let executions = 0
@@ -872,8 +1117,13 @@ describe("Pi complete root and main-route subagent runs", () => {
       },
     }
     const provider = new InMemoryProvider((call) => {
-      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
-      if (call.ordinal === 2) return toolCall(call, "small_checkpoint", {})
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
+      const results = call.messages.filter((message) => message.role === "toolResult")
+      if (!results.some((message) => message.toolName === "evidence_dump"))
+        return toolCall(call, "evidence_dump", {})
+      if (!results.some((message) => message.toolName === "small_checkpoint"))
+        return toolCall(call, "small_checkpoint", {})
       return assistant(call, "continued after proactive context compaction")
     })
     const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
@@ -900,31 +1150,27 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
     expect(executions).toBe(1)
     expect(checkpoints).toBe(1)
-    expect(provider.calls).toHaveLength(3)
+    expect(provider.calls).toHaveLength(4)
     expect(projectedText).toContain("Historical tool result virtualized")
     expect(
       textContent(
-        provider.calls[2]?.messages.find((message) => message.role === "toolResult" && message.toolName === "evidence_dump")
+        provider.calls[3]?.messages.find((message) => message.role === "toolResult" && message.toolName === "evidence_dump")
           ?.content ?? [],
       ),
     ).toContain("Historical tool result virtualized")
     expect(relativePath).toStartWith("raw/context-tool-results/")
-    expect(compactionEvents(events).map((event) => event.state)).toEqual([
-      "scheduled",
-      "started",
-      "completed",
-    ])
+    expect(rotationEvents(events).map((event) => event.state)).toEqual(["started", "completed"])
     expect(
       activityEvents(events).filter(
         (event) =>
           event.activity.kind === "status" && event.activity.text.includes('"contextCompaction"'),
       ),
     ).toHaveLength(1)
-    expect(compactionEvents(events).at(-1)).toMatchObject({
+    expect(rotationEvents(events).at(-1)).toMatchObject({
       mode: "proactive",
-      messagesRemoved: 0,
+      estimatedTokensAfter: expect.any(Number),
       toolResultsVirtualized: 1,
-      artifactsPreserved: 1,
+      artifactsPreserved: 2,
     })
     if (!relativePath) throw new Error("Proactive compaction did not expose its complete artifact")
     const artifact = JSON.parse(await readFile(path.join(workarea, relativePath), "utf8")) as {
@@ -933,9 +1179,343 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(artifact.content[0]?.text).toBe(fullOutput)
   })
 
+  test("replays the Rydoo pressure range by rotating before 283K without a loop", async () => {
+    const workarea = await temporaryWorkarea()
+    const completeOutput = "rydoo-replay-evidence-".repeat(40_000)
+    let executions = 0
+    let summaries = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect synthetic Rydoo evidence",
+      description: "Return a replay-sized result before the historical failure range.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: completeOutput }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint"))) {
+        summaries++
+        return contextCheckpoint(call)
+      }
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      return assistant(call, "continued before the historical Rydoo context failure range")
+    })
+    const runtime = subsystem(provider, registryWithLimits(256_000, 8_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "rydoo-context-replay",
+        objective: "rotate before the historical 283K to 307K failure range",
+        tools: [evidenceDump],
+        workarea,
+        maxOutputTokens: 8_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued before the historical Rydoo context failure range",
+      toolCalls: 1,
+    })
+    expect(executions).toBe(1)
+    expect(summaries).toBe(1)
+    const events = rotationEvents(await collectEvents(run))
+    expect(events.map((event) => event.state)).toEqual(["started", "completed"])
+    expect(events[0]?.limits).toMatchObject({
+      operationalContextWindow: 256_000,
+      continuationReserveTokens: expect.any(Number),
+      hardInputTokens: expect.any(Number),
+    })
+    expect(events[0]?.estimatedTokensBefore).toBeGreaterThanOrEqual(
+      events[0]?.limits.triggerTokens ?? Number.POSITIVE_INFINITY,
+    )
+    expect(events[0]?.estimatedTokensBefore).toBeLessThan(283_000)
+  })
+
+  test("uses a declared alternate summarizer route and independent effort", async () => {
+    const workarea = await temporaryWorkarea()
+    const completeOutput = "alternate-summary-evidence-".repeat(6_000)
+    let executions = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect alternate-summary evidence",
+      description: "Return one large authorized result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: completeOutput }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      return assistant(call, "continued after alternate-route summary")
+    })
+    const baseSettings = settings()
+    const configuredSettings: Settings.Info = {
+      ...baseSettings,
+      agent: {
+        ...baseSettings.agent,
+        compaction: {
+          enabled: true,
+          trigger_percentage: 75,
+          target_percentage: 35,
+          model_summary: true,
+          summarizer: {
+            provider: FALLBACK_PROVIDER,
+            reasoning_effort: "high",
+          },
+        },
+      },
+    }
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000), undefined, {
+      settings: configuredSettings,
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "alternate-context-summarizer",
+        objective: "rotate through a declared alternate summarizer route",
+        tools: [evidenceDump],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued after alternate-route summary",
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls.map((call) => call.provider)).toEqual([
+      MAIN_PROVIDER,
+      FALLBACK_PROVIDER,
+      MAIN_PROVIDER,
+    ])
+    expect(rotationEvents(await collectEvents(run)).at(-1)).toMatchObject({
+      state: "completed",
+      summarizerProvider: FALLBACK_PROVIDER,
+      summarizerReasoningEffort: "high",
+    })
+  })
+
+  test("reduces one rejected summarizer source before one active-route attempt", async () => {
+    const workarea = await temporaryWorkarea()
+    const completeOutput = "three-attempt-summary-evidence-".repeat(6_000)
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect three-attempt evidence",
+      description: "Return one large authorized result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: completeOutput }],
+        details: { complete: true },
+      }),
+    }
+    let summarizerCalls = 0
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint"))) {
+        summarizerCalls++
+        if (summarizerCalls <= 2) return contextLengthError(call)
+        return contextCheckpoint(call)
+      }
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      return assistant(call, "continued after bounded summary recovery")
+    })
+    const baseSettings = settings()
+    const configuredSettings: Settings.Info = {
+      ...baseSettings,
+      agent: {
+        ...baseSettings.agent,
+        compaction: {
+          enabled: true,
+          trigger_percentage: 75,
+          target_percentage: 35,
+          model_summary: true,
+          summarizer: {
+            provider: FALLBACK_PROVIDER,
+            reasoning_effort: "medium",
+          },
+        },
+      },
+    }
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000), undefined, {
+      settings: configuredSettings,
+    })
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "bounded-context-summary-retry",
+        objective: "recover one rejected summary without opening another route",
+        tools: [evidenceDump],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued after bounded summary recovery",
+    })
+    expect(provider.calls.map((call) => call.provider)).toEqual([
+      MAIN_PROVIDER,
+      FALLBACK_PROVIDER,
+      FALLBACK_PROVIDER,
+      MAIN_PROVIDER,
+      MAIN_PROVIDER,
+    ])
+    const attempts = rotationEvents(await collectEvents(run)).at(-1)?.attempts ?? []
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual([
+      "context_error",
+      "context_error",
+      "completed",
+    ])
+    expect(attempts[1]?.sourceMessages).toBeLessThan(attempts[0]?.sourceMessages ?? 0)
+  })
+
+  test("summarizes the settled prefix when one autonomous turn exceeds the trigger", async () => {
+    const workarea = await temporaryWorkarea()
+    const smallCheckpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "small_checkpoint",
+      label: "Record a small checkpoint",
+      description: "Return a bounded result that cannot save tokens through virtualization.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "small checkpoint complete" }],
+        details: { complete: true },
+      }),
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
+      if (call.ordinal === 1)
+        return assistant(
+          call,
+          [
+            {
+              type: "text",
+              text: `Operational notebook before compaction.\n${"context-pressure-without-tool-savings-".repeat(4_000)}`,
+            },
+            fauxToolCall("small_checkpoint", {}, { id: "small-semantic-call" }),
+          ],
+          { stopReason: "toolUse" },
+        )
+      if (!userTexts(call).some((text) => text.includes("[Host-owned semantic context checkpoint]")))
+        throw new Error("The continuation did not receive the persisted model checkpoint")
+      return assistant(call, "continued after model-assisted context compaction")
+    })
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "semantic-context-compaction",
+        objective: "preserve working notes when deterministic compaction is exhausted",
+        tools: [smallCheckpoint],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued after model-assisted context compaction",
+      toolCalls: 1,
+    })
+    const events = rotationEvents(await collectEvents(run))
+    expect(events.map((event) => event.state)).toEqual(["started", "completed"])
+    expect(events.at(-1)).toMatchObject({
+      artifactsPreserved: 1,
+      summarizerProvider: MAIN_PROVIDER,
+      summarizerReasoningEffort: "medium",
+      splitTurn: false,
+    })
+    const summaryArtifact = events.at(-1)?.checkpoint?.path
+    expect(summaryArtifact).toStartWith("raw/context-summaries/")
+    if (!summaryArtifact) throw new Error("Model compaction did not expose its durable checkpoint")
+    expect(JSON.parse(await readFile(path.join(workarea, summaryArtifact), "utf8"))).toMatchObject({
+      version: 2,
+      generation: 1,
+    })
+    expect(events.at(-1)?.summarizedMessages).toBeGreaterThan(0)
+    expect(provider.calls).toHaveLength(3)
+  })
+
+  test("does not repeat a completed tool after compacting its oversized turn prefix", async () => {
+    const workarea = await temporaryWorkarea()
+    const completeOutput = "virtualizable-active-evidence-".repeat(6_000)
+    let executions = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect partially reducible evidence",
+      description: "Return a large result beside an irreducible active notebook.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: completeOutput }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
+      if (
+        toolResultCount(call) === 0 &&
+        !userTexts(call).some((text) => text.includes("[Host-owned semantic context checkpoint]"))
+      )
+        return assistant(
+          call,
+          [
+            {
+              type: "text",
+              text: `Active notebook.\n${"irreducible-active-note-".repeat(7_000)}`,
+            },
+            fauxToolCall("evidence_dump", {}, { id: "partial-evidence-call" }),
+          ],
+          { stopReason: "toolUse" },
+        )
+      return assistant(call, "continued from the best safe partial rotation")
+    })
+    const runtime = subsystem(provider, registryWithLimits(100_000, 8_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "partial-context-rotation",
+        objective: "retain an indispensable active notebook below the trigger",
+        tools: [evidenceDump],
+        workarea,
+        maxOutputTokens: 8_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued from the best safe partial rotation",
+      toolCalls: 1,
+    })
+    expect(executions).toBe(1)
+    const events = rotationEvents(await collectEvents(run))
+    expect(events.map((event) => event.state)).toEqual(["started", "completed"])
+    expect(events.at(-1)).toMatchObject({
+      limits: {
+        continuationReserveTokens: expect.any(Number),
+        hardInputTokens: expect.any(Number),
+      },
+    })
+    expect(events.at(-1)?.estimatedTokensAfter).toBeLessThanOrEqual(
+      events.at(-1)?.limits.targetTokens ?? 0,
+    )
+    expect(events.at(-1)?.summarizedMessages).toBeGreaterThan(0)
+  })
+
   test("recovers the same AgentRun from context_length_exceeded without reexecuting completed tools", async () => {
     const workarea = await temporaryWorkarea()
-    const fullOutput = `emergency evidence\n${"context-pressure-".repeat(600)}`
+    const fullOutput = `emergency evidence\n${"context-pressure-".repeat(6_000)}`
     let executions = 0
     const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
       name: "evidence_dump",
@@ -951,6 +1531,8 @@ describe("Pi complete root and main-route subagent runs", () => {
       },
     }
     const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
       if (call.ordinal === 1) return toolCall(call, "evidence_dump", {})
       if (call.ordinal === 2) return contextLengthError(call, "discarded context-error partial")
       const projected = call.messages.find((message) => message.role === "toolResult")
@@ -978,25 +1560,87 @@ describe("Pi complete root and main-route subagent runs", () => {
       toolCalls: 1,
     })
     expect(executions).toBe(1)
-    expect(provider.calls).toHaveLength(3)
+    expect(provider.calls).toHaveLength(4)
     expect(retryEvents(events)).toEqual([])
-    expect(compactionEvents(events).map((event) => event.state)).toEqual([
-      "scheduled",
-      "started",
-      "completed",
-      "recovered",
-    ])
-    expect(compactionEvents(events).at(-1)).toMatchObject({
+    expect(rotationEvents(events).map((event) => event.state)).toEqual(["started", "completed"])
+    expect(rotationEvents(events).at(-1)).toMatchObject({
       mode: "emergency",
-      messagesRemoved: 1,
       toolResultsVirtualized: 1,
-      artifactsPreserved: 1,
+      artifactsPreserved: 2,
     })
+    expect(result.context.observedContextUpperBound).toBeDefined()
     expect(
       activityEvents(events)
         .flatMap((event) => (event.activity.kind === "text" ? [event.activity.text] : []))
         .join("\n"),
     ).not.toContain("discarded context-error partial")
+
+    const followupRuntime = subsystem(
+      new InMemoryProvider((call) => assistant(call, "observed route limit inherited")),
+    )
+    const followup = await followupRuntime.subsystem.start(
+      rootSpec(followupRuntime.models, {
+        id: "observed-context-followup",
+        sessionID: "session-emergency-context-recovery",
+        objective: "inherit the learned route limit in the same session",
+      }),
+    )
+    expect(await followup.result).toMatchObject({ termination: "completed" })
+    expect(startedEvents(await collectEvents(followup))[0]?.context).toMatchObject({
+      observedContextUpperBound: result.context.observedContextUpperBound,
+      effectiveOperationalWindow: result.context.observedContextUpperBound,
+      source: "observed_upper_bound",
+    })
+  })
+
+  test("terminates after the single post-rotation generation rejects context again", async () => {
+    const workarea = await temporaryWorkarea()
+    const completeOutput = "terminal-context-evidence-".repeat(6_000)
+    let executions = 0
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect terminal recovery evidence",
+      description: "Return evidence that must not execute twice.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: completeOutput }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
+        return contextCheckpoint(call)
+      if (call.ordinal === 1) return toolCall(call, "evidence_dump", {})
+      return contextLengthError(call)
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "terminal-context-recovery",
+        objective: "stop after one rejected emergency generation",
+        tools: [evidenceDump],
+        workarea,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "provider_failed",
+      failure: {
+        kind: "capacity",
+        providerCode: "context_rotation_failed",
+        retryable: false,
+      },
+      toolCalls: 1,
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls).toHaveLength(4)
+    expect(rotationEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
+      "started",
+      "completed",
+    ])
   })
 
   test("reports failed compaction and keeps the original result when artifact persistence is unavailable", async () => {
@@ -1035,8 +1679,86 @@ describe("Pi complete root and main-route subagent runs", () => {
       termination: "completed",
       output: "continued with the unmodified result",
     })
-    expect(compactionEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
-      "scheduled",
+    const rotations = rotationEvents(await collectEvents(run))
+    expect(rotations.map((event) => event.state)).toEqual(["started", "failed"])
+    expect(rotations.at(-1)).toMatchObject({ reason: "summary_failed" })
+  })
+
+  test("latches a failed summary until a new user message or 8K more context arrives", async () => {
+    const workarea = await temporaryWorkarea()
+    let summaries = 0
+    let firstExecutions = 0
+    let secondExecutions = 0
+    const first: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "first_checkpoint",
+      label: "Record the first checkpoint",
+      description: "Return a small first result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        firstExecutions++
+        return {
+          content: [{ type: "text", text: "first checkpoint complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const second: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "second_checkpoint",
+      label: "Record the second checkpoint",
+      description: "Return a small second result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        secondExecutions++
+        return {
+          content: [{ type: "text", text: "second checkpoint complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint"))) {
+        summaries++
+        return assistant(call, "{\"malformed\":true}")
+      }
+      const toolNames = call.messages.flatMap((message) =>
+        message.role === "toolResult" ? [message.toolName] : [],
+      )
+      if (!toolNames.includes("first_checkpoint"))
+        return assistant(
+          call,
+          [
+            {
+              type: "text",
+              text: `Operational notebook.\n${"context-pressure-without-summary-retry-".repeat(4_000)}`,
+            },
+            fauxToolCall("first_checkpoint", {}, { id: "first-checkpoint-call" }),
+          ],
+          { stopReason: "toolUse" },
+        )
+      if (!toolNames.includes("second_checkpoint"))
+        return toolCall(call, "second_checkpoint", {})
+      return assistant(call, "continued without looping the failed summary")
+    })
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "context-summary-failure-latch",
+        objective: "continue safely after one malformed summary",
+        tools: [first, second],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued without looping the failed summary",
+      toolCalls: 2,
+    })
+    expect(summaries).toBe(1)
+    expect(firstExecutions).toBe(1)
+    expect(secondExecutions).toBe(1)
+    expect(rotationEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
       "started",
       "failed",
     ])
@@ -1103,6 +1825,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
     expect(snapshots).toBe(1)
     expect(provider.calls[0]!.toolNames).toContain("tool_search")
+    expect(provider.calls[0]!.toolNames).toContain("delegation_status")
     expect(provider.calls[0]!.toolNames).toContain("handoff")
     expect(provider.calls[0]!.toolNames).not.toContain("browser_snapshot")
     expect(provider.calls[0]!.toolNames).not.toContain("zap_active_scan")
@@ -1217,6 +1940,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         return toolCall(call, "delegate_task", {
           task: "inspect the child tool catalog without loading anything",
           expected_result: "report whether browser_snapshot was inherited",
+          output_artifact: "raw/delegations/catalog.md",
         })
       if (results === 2)
         return toolCall(call, "request_fallback_delegation", {
@@ -1268,6 +1992,9 @@ describe("Pi complete root and main-route subagent runs", () => {
           return toolCall(call, "delegate_task", {
             task: "analyze one parser boundary",
             expected_result: "return a verified parser result",
+            output_artifact: "raw/delegations/parser.md",
+            display_name: "api-monster",
+            emoji: "👾",
           })
         if (results === 1) return toolCall(call, "handoff", {})
         return assistant(call, "root complete")
@@ -1277,6 +2004,7 @@ describe("Pi complete root and main-route subagent runs", () => {
           return toolCall(call, "delegate_task", {
             task: "verify nested evidence",
             expected_result: "return the nested verdict",
+            output_artifact: "raw/delegations/nested.md",
           })
         return assistant(call, "child complete")
       }
@@ -1344,6 +2072,11 @@ describe("Pi complete root and main-route subagent runs", () => {
         providerAffinity: "main",
       },
     ])
+    expect(started[1]?.identity).toEqual({ displayName: "api-monster", emoji: "👾" })
+    expect(started[2]?.identity).toMatchObject({
+      displayName: expect.stringMatching(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      emoji: expect.any(String),
+    })
     expect(started.every((event) => event.promptSystemSha256.length === 64)).toBeTrue()
     const delegatedLifecycle = activityEvents(events).filter(
       (event) =>
@@ -1676,6 +2409,7 @@ describe("Pi complete fallback AgentRuns", () => {
           return toolCall(call, "delegate_task", {
             task: "perform the provider-sensitive delegated check",
             expected_result: "return the delegated evidence",
+            output_artifact: "raw/delegations/provider.md",
           })
         return assistant(call, "root synthesized delegated fallback evidence")
       }
@@ -1761,6 +2495,7 @@ describe("Pi complete fallback AgentRuns", () => {
           return toolCall(call, "delegate_task", {
             task: "verify one nested fallback discriminator",
             expected_result: "return nested evidence",
+            output_artifact: "raw/delegations/fallback-nested.md",
           })
         return assistant(call, "complete fallback result with nested evidence")
       }
@@ -1981,6 +2716,148 @@ describe("Pi complete fallback AgentRuns", () => {
 })
 
 describe("Pi AgentRun steering and cancellation", () => {
+  test("keeps the same root, blocks research tools, and writes handoff during reserved closeout", async () => {
+    let researchExecutions = 0
+    let handoffs = 0
+    const provider = new InMemoryProvider(async (call) => {
+      if (call.ordinal === 1) {
+        await new Promise<void>((resolve) => {
+          if (call.signal?.aborted) resolve()
+          else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+        })
+        return assistant(call, [], { stopReason: "aborted" })
+      }
+      if (call.ordinal === 2) return toolCall(call, "research_probe", {})
+      if (call.ordinal === 3) return toolCall(call, "handoff", {})
+      return assistant(call, "closeout complete")
+    })
+    const researchProbe: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "research_probe",
+      label: "Research probe",
+      description: "A research action forbidden during closeout.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        researchExecutions++
+        return { content: [{ type: "text", text: "research ran" }], details: {} }
+      },
+    }
+    const handoff: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "handoff",
+      label: "Handoff",
+      description: "Write the phase handoff.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        handoffs++
+        return { content: [{ type: "text", text: "handoff accepted" }], details: {} }
+      },
+    }
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "closeout-root",
+        objective: "research until the host closeout boundary",
+        deadlineAt: Date.now() + 180,
+        closeoutReserveMs: 100,
+        tools: [researchProbe],
+        gatewayTools: [handoff],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({ id: "closeout-root", termination: "completed", output: "closeout complete" })
+    expect(startedEvents(events)).toHaveLength(1)
+    expect(closeoutEvents(events)).toHaveLength(1)
+    expect(closeoutEvents(events)[0]).toMatchObject({ state: "entered", reserveMs: 100 })
+    expect(userTexts(provider.calls[1]!).join("\n")).toContain("HOST-OWNED PHASE CLOSEOUT")
+    expect(researchExecutions).toBe(0)
+    expect(handoffs).toBe(1)
+  })
+
+  test("reserves child closeout time for its durable output without closing the phase", async () => {
+    const workarea = await temporaryWorkarea()
+    const outputArtifact = "raw/delegations/auth.md"
+    let shellExecutions = 0
+    const blockedShell: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "shell",
+      label: "Network-capable shell",
+      description: "Must not execute after the child enters closeout.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        shellExecutions++
+        return { content: [{ type: "text", text: "unexpected shell execution" }], details: {} }
+      },
+    }
+    const writeOutput: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "workarea_write_auth",
+      label: "Write delegated auth evidence",
+      description: "Write the bounded delegated auth result inside the test workarea.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        const destination = path.join(workarea, outputArtifact)
+        await mkdir(path.dirname(destination), { recursive: true })
+        await writeFile(destination, "auth closeout complete\n")
+        return { content: [{ type: "text", text: "durable output written" }], details: {} }
+      },
+    }
+    const provider = new InMemoryProvider(async (call) => {
+      const role = runRole(call)
+      const results = toolResultCount(call)
+      if (role === "root") {
+        if (results === 0)
+          return toolCall(call, "delegate_task", {
+            task: "verify one bounded authentication control",
+            expected_result: "persist the auth verdict",
+            output_artifact: outputArtifact,
+          })
+        return assistant(call, "root continued after child closeout")
+      }
+      const closing = userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT"))
+      if (!closing) {
+        await new Promise<void>((resolve) => {
+          if (call.signal?.aborted) resolve()
+          else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+        })
+        return assistant(call, [], { stopReason: "aborted" })
+      }
+      if (results === 0) return toolCall(call, "shell", {})
+      if (results === 1) return toolCall(call, "workarea_write_auth", {})
+      return assistant(call, "child reconciled its durable output")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "child-closeout-root",
+        objective: "retain phase ownership while the child closes out",
+        tools: [blockedShell, writeOutput],
+        workarea,
+        deadlineAt: Date.now() + 2_000,
+        closeoutReserveMs: 100,
+        childMaxRuntimeMs: 180,
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+
+    expect(result).toMatchObject({ termination: "completed", output: "root continued after child closeout" })
+    expect(shellExecutions).toBe(0)
+    expect(closeoutEvents(events)).toHaveLength(0)
+    expect(
+      activityEvents(events).some(
+        (event) => event.runID !== "child-closeout-root" && event.activity.kind === "status" &&
+          event.activity.text.startsWith("AgentRun mode: closeout"),
+      ),
+    ).toBeTrue()
+    expect(await readFile(path.join(workarea, outputArtifact), "utf8")).toBe("auth closeout complete\n")
+    const childCloseout = provider.calls.find(
+      (call) => runRole(call) === "subagent" &&
+        userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT")),
+    )
+    expect(userTexts(childCloseout!).join("\n")).toContain(outputArtifact)
+  })
+
   test("enforces a cumulative output-token budget across provider turns", async () => {
     const provider = new InMemoryProvider((call) => assistant(call, "bounded output"))
     const runtime = subsystem(provider)
@@ -2008,19 +2885,24 @@ describe("Pi AgentRun steering and cancellation", () => {
       await providerGate
       return assistant(call, "completed after host approval")
     })
-    const approval = SubsystemApprovalState.create()
+    const deadlineAt = Date.now() + 35
+    const budgetClock = SubsystemPhaseBudgetClock.create({
+      deadlineAt,
+      retryCompensationCapMs: 30_000,
+    })
     const runtime = subsystem(provider)
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "paused-budget-root",
         objective: "wait for one host approval without consuming active budget",
-        deadlineAt: Date.now() + 35,
-        budgetPause: approval,
+        deadlineAt,
+        budgetClock,
       }),
     )
     await provider.waitForCalls(1)
     let releaseApproval = () => {}
-    const pendingApproval = approval.wait(
+    const pendingApproval = budgetClock.wait(
+      "approval",
       () =>
         new Promise<void>((resolve) => {
           releaseApproval = resolve
@@ -2037,7 +2919,8 @@ describe("Pi AgentRun steering and cancellation", () => {
       termination: "completed",
       output: "completed after host approval",
     })
-    expect(approval.pausedMs()).toBeGreaterThanOrEqual(60)
+    expect(budgetClock.pausedMs("approval")).toBeGreaterThanOrEqual(60)
+    budgetClock.close()
   })
 
   test("queues steering as user input without changing the immutable system message", async () => {

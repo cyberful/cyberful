@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Agent Security Auditor"
-  short_description: "Prompt tool memory and RAG boundary auditing"
-  default_prompt: "Use $audit-ai-agent-security to test AI agent instruction data tool memory and retrieval trust boundaries."
+  short_description: "Map and test AI capability escalation paths"
+  default_prompt: "Use $audit-ai-agent-security to map this AI surface and test applicable prompt-injection, tool, retrieval, parser, egress, memory, and execution chains with safe canaries."

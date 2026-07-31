@@ -17,16 +17,6 @@ import type { FooterOutput, FooterPatch, FooterView, StreamCommit, StreamMode } 
 import { toolDisplaySummary } from "../tool-display"
 import { isRecord } from "@/util/record"
 
-type Tokens = {
-  input?: number
-  output?: number
-  reasoning?: number
-  cache?: {
-    read?: number
-    write?: number
-  }
-}
-
 type PartKind = "assistant" | "reasoning" | "user"
 type MessageRole = "assistant" | "user"
 type SessionCommit = StreamCommit
@@ -95,25 +85,6 @@ export function createSessionData(
     assistantText: new Set(),
     echo: new Map(),
   }
-}
-
-function modelKey(subsystem: string, model: string): string {
-  return `${subsystem}/${model}`
-}
-
-function formatUsage(tokens: Tokens | undefined, limit: number | undefined): string | undefined {
-  const total =
-    (tokens?.input ?? 0) +
-    (tokens?.output ?? 0) +
-    (tokens?.reasoning ?? 0) +
-    (tokens?.cache?.read ?? 0) +
-    (tokens?.cache?.write ?? 0)
-
-  if (total <= 0) {
-    return undefined
-  }
-
-  return limit && limit > 0 ? `${Locale.number(total)} (${Math.round((total / limit) * 100)}%)` : Locale.number(total)
 }
 
 export function formatError(error: {
@@ -763,14 +734,6 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
     if (!data.announced) {
       data.announced = true
       next = { status: "assistant responding" }
-    }
-
-    const usage = formatUsage(info.tokens, input.limits[modelKey(info.subsystemID, info.modelID)])
-    if (usage) {
-      next = {
-        ...next,
-        usage,
-      }
     }
 
     if (typeof info.id === "string" && info.error && !isAbort(info.error) && !data.ids.has(msgErr(info.id))) {

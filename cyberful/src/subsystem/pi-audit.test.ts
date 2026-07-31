@@ -68,4 +68,15 @@ describe("Pi audit redaction", () => {
       "access=[REDACTED] refresh:[REDACTED]",
     )
   })
+
+  test("always redacts browser input values even when the generic key is not secret-shaped", () => {
+    expect(PiAudit.redactToolInput("browser_fill", { selector: "#password", value: "operator-supplied" })).toEqual({
+      selector: "#password",
+      value: "[REDACTED]",
+    })
+    expect(PiAudit.redactToolInput("browser_click", { selector: "#continue", value: "visible label" })).toEqual({
+      selector: "#continue",
+      value: "visible label",
+    })
+  })
 })

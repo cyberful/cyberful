@@ -126,7 +126,9 @@ class OutputSanitizerTest(unittest.TestCase):
             result = cyberful_os_mcp.handle_shell({"command": "true"})
 
         self.assertFalse(result["isError"])
-        self.assertNotIn("_meta", result)
+        observation = result["_meta"][cyberful_os_mcp.EGRESS_META_KEY]
+        self.assertEqual(observation["observability"], "degraded")
+        self.assertEqual(observation["route"], "cyberful-os/docker-direct")
 
     def test_declared_path_family_keeps_redaction_sentinels(self) -> None:
         self.assertEqual(cyberful_os_mcp._redacted_path_family("/v1/items/:id"), "/v1/items/:id")

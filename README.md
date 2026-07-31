@@ -91,14 +91,28 @@ brief → recon → exploit → hacker → verify → report
 
 Brief fixes the authorization boundary. When existing browser accounts were
 supplied, it first verifies each target session, distinct identity, and ZAP
-routing; failed profiles remain behind an **OK, retry** question and prevent a
-final `MISSION.md`. It records passively observed application dependencies for
-downstream reasoning without treating them as direct testing targets or blocking Recon. Recon maps the target,
+routing. If stored access is sufficient, Brief completes the normal login
+autonomously through host-resolved variable references; it asks **OK, retry**
+only for a human-only challenge or access, profile, or proxy failure. Broken
+profiles prevent a final `MISSION.md`. It records passively observed application dependencies for
+downstream reasoning without treating them as direct testing targets or blocking Recon.
+Pentest and Bug Bounty Brief write the same prerequisite matrix with separate
+readiness and scope states. The matrix is an authorization floor, not a finite
+test list: later phases add new surfaces and hypotheses dynamically, while
+`UNRESOLVED` can suspend only one evidenced action/asset pair. Recon maps the target,
 separates concrete anomalies and target-specific seams from retained coverage ideas, and records probability,
 impact, positive evidence, contrary evidence, and discriminating tests independently. Exploit performs
 systematic, reproducible validation. Hacker investigates unconventional chains and
 assumptions. Verify independently retests claims. Report produces the
-client-facing PDF.
+client-facing PDF, with a finding-specific, evidence-backed, secret-safe proof of
+concept for every confirmed issue. Tagged request and code blocks are syntax
+coloured and line-numbered for practical reproduction.
+
+Brief also installs the engagement's aggregate HTTP rate limit in its live ZAP
+runtime before committing the non-secret engagement policy. A failed
+installation leaves no new policy behind, blocks handoff, and returns a
+sanitized non-retryable host diagnostic instead of sending the agent into an
+operator-approval loop.
 
 The workflow can use cyberful-os, the isolated browser, headless OWASP ZAP, and
 a persistent headless Ghidra project during Recon through Verify.
@@ -121,17 +135,19 @@ harbor, eligible assets and vulnerability classes, prohibited testing, data
 handling, and disclosure rules in the compatible `MISSION.md` contract.
 
 Its three research phases reserve part of their reasoning budget for
-target-specific unknown-unknown exploration. A host-owned novelty ledger counts
-semantic root-cause families rather than endpoint variations, detects local
-convergence, and requires a final contrarian synthesis. Exploit and Hacker also
-hand off a structured verdict inventory that distinguishes positive-evidence
-`SUSPECTED`, tested-but-ambiguous `INCONCLUSIVE`, and never-ran `UNTESTABLE`.
+target-specific unknown-unknown exploration. One host-owned hypothesis registry
+tracks stable questions, owners, tests, evidence, phase transfers, finding
+links, and final dispositions. The same registry serves Pentest and Code Audit;
+Bug Bounty additionally requires a qualitative contrarian synthesis.
 
-The Bug Bounty ceilings are deliberately long: 30 minutes for Brief, 240 for
-Recon, 360 each for Exploit and Hacker, 180 for Verify, and 90 for Report.
+Bug Bounty uses 30 minutes for Brief, 60 for Recon, 120 each for Exploit and
+Hacker, 180 for Verify, and 90 for Report. Pentest uses the same 60/120/120
+research budgets. Provider wait can extend each research phase by at most one
+shared 15-minute pool; explicit human approval wait is tracked separately.
 Novelty remains qualitative: convergence triggers a contrarian pivot, not a
 quota, while browser surface coverage steers the phases toward unvisited real
-journeys without making click or route counts into handoff gates.
+journeys. Every `READY` and `IN_SCOPE` profile must reach its origin and perform
+one meaningful action, without arbitrary click or route quotas.
 
 Bug Bounty can also import up to eight approved HTTPS repositories at exact
 commits during Brief or Recon, including recursive submodules at their Gitlink
@@ -226,10 +242,18 @@ complete fallback `AgentRun` trees. The original root alone may request the
 exact successor through `handoff`. The host validates and seals the artifact,
 shuts down the current owner and gateway, and only then starts the next phase.
 
-If a phase exhausts its active-execution budget, Cyberful advances in degraded mode
-only when the required partial artifact can be sealed and cleanup succeeds.
+Each sequential phase reserves its final three to five minutes for a host-owned
+closeout in the same root AgentRun: children and research stop, while local
+evidence, deliverable/ledger reconciliation, cleanup, and handoff remain.
+Each child independently reserves that same interval before its smaller child
+deadline so it can reconcile its required output artifact without changing the
+root phase mode; root closeout still cancels every remaining child.
+If the final deadline expires, Cyberful advances a research phase in degraded
+mode only when the required partial artifact can be sealed and cleanup succeeds.
+Brief never advances from a partial `MISSION.md` without explicit handoff.
 Missing artifacts, invalid handoffs, failed integrity gates, and incomplete
-cleanup halt the chain. Blocking human questions pause every AgentRun budget
+cleanup halt the chain. Blocking human questions and complete provider retry
+cycles pause the shared phase budget
 timer and leave the requesting tool invocation waiting until answered,
 explicitly rejected, timed out, or cancelled; no Pi process is suspended.
 Authorities that differ by host, method, identity, credential, effect, risk, or
@@ -237,6 +261,11 @@ traffic bound use separate
 questions, so one answer cannot authorize or reject unrelated work. Root and
 child requests share this contract, and Cyberful attributes a decline to
 the operator only when its human selector attests that decision.
+
+After same-turn transient retry is exhausted, one retryable provider failure
+can restart the phase automatically with a fresh owner and remaining budget.
+Cyberful proves the failed gateway closed first, retains attempt-specific
+diagnostics, and uses the configured fallback route when available.
 
 Durable context lives in the workarea, transcripts, and Code Graph—not hidden
 conversation state. Repository instructions, documentation, comments, web
@@ -247,6 +276,13 @@ subagent runs may request a bounded fallback task, and a provider-structured
 security-policy block can trigger it automatically. Fallback runs are complete:
 they keep the phase's persona, tools, skills, authorization, and ability to
 delegate, while their full descendant tree remains on the fallback provider.
+Temporarily saturated subagent requests wait in a cancellable admission queue;
+`delegation_status` exposes current capacity. The default global limit is five:
+Recon admits up to three direct subagents, while Exploit and Hacker admit up to
+five in both Pentest and Bug Bounty Program workflows.
+Each delegation has a durable output artifact and a 30-minute default child
+deadline bounded by the remaining phase budget. The configured closeout reserve
+is part of that deadline rather than an extension to it.
 
 All three workflows persist supported findings and their per-run history in
 `raw/findings/registry.json`. The TUI presents that live registry in an optional
@@ -321,16 +357,39 @@ precedence over build defaults.
 
 Agent providers, models, delegation, fallback, and trusted instruction roots
 are configured in `settings.yaml`. Cyberful creates a secret-free default file
-on first launch. See [Agent providers and fallback](docs/user-guide/settings.md).
+on first launch. Reasoning effort defaults to `ultra`; older settings files gain
+the explicit default automatically, and run state records both requested and
+effective effort. See [Agent providers and fallback](docs/user-guide/settings.md).
 Transient `unavailable` provider failures, including abnormal Codex WebSocket
 closure `1006`, retry the same turn with bounded jitter while preserving
-completed tool results. Large MCP catalogs remain fully available through
+completed tool results. Retry backoff and response wait suspend active phase
+time, but suspension ends before tools returned by the retry execute; each
+attempt is capped at ten minutes and the entire phase shares at most 15 minutes
+of default extension across root, children, fallback, retry, and recovery.
+Runtime state keeps full retry wait separate from the capped compensation
+applied to the deadline. Large MCP catalogs remain fully available through
 per-run `tool_search` loading, and long browser pages can be read with
 selector-scoped, offset-paginated snapshots instead of sending one oversized
-payload. Long AgentRuns compact only their provider projection:
-complete historical tool results remain owner-only workarea artifacts, while
-emergency `context_length_exceeded` recovery resumes the same run without
-executing a completed tool twice.
+payload. Long AgentRuns rotate their active Pi history at 75% of a configurable
+operational context window and target 35% after a validated, tool-free semantic
+checkpoint. Complete historical tool results remain owner-only workarea
+artifacts; the original transcript and durable hypothesis/finding registries
+remain authoritative. Built-in model catalog limits cannot be enlarged by
+settings. GPT-5.6 Sol, GLM-5.2, and Kimi K3 default to a 256K working window,
+and emergency `context_length_exceeded` recovery learns a lower session/route
+bound before retrying once without executing a completed tool twice.
+
+Provider calls are reconciled locally in
+`raw/operations/provider-usage.jsonl`, split between root and delegated
+AgentRuns without adding reasoning twice. The TUI shows compact `R>`/`S>`
+input, cached, and generated totals plus a live count of active hypotheses.
+Sanitized gateway, ZAP, browser, and MCP failures are retained as bounded,
+deduplicated V2 records in `raw/operations/runtime-diagnostics.jsonl` without
+placing bodies, stack traces, or details into model context. Successful tool
+output never becomes a connection warning. Routine gateway `stdio` lifecycle
+records and timestamp-prefixed `TRACE`/`DEBUG`/`INFO` logs remain
+informational. Actionable notices distinguish recovered retries, non-blocking
+tool failures, degraded observability, and terminal lifecycle failures.
 
 Phase transcripts are appended owner-only while a phase runs. Terminal outcomes
 distinguish success, warning, blocked, and failed, with structured primary
@@ -338,6 +397,11 @@ failures for provider, contract, and lifecycle errors. The TUI receives at most
 12 KiB of a large tool result until its SHA-256-bound workarea artifact is
 expanded, and batches live activity once per frame without reducing the result
 available to the model or any tool's authority.
+
+Normal session closure removes exact Expert container names, performs three
+bounded session/run-owner Docker sweeps, and records `closed` only after a final
+empty inventory. Survivors or an unavailable inventory are retained as
+`closed_with_cleanup_errors` instead of being hidden by a closed session.
 
 Workareas live under `work/<name>/`; session transcripts live under
 `logs/session-logs/`. Imported repositories, authoritative snapshots, and

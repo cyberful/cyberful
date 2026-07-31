@@ -8,6 +8,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,6 +21,18 @@ SPEC.loader.exec_module(cyberful_os_mcp)
 
 
 class NoTelemetryEnvironmentTest(unittest.TestCase):
+    def test_host_owned_proxy_becomes_standard_container_proxy_environment(self) -> None:
+        with mock.patch.dict(
+            cyberful_os_mcp.os.environ,
+            {"CYBERFUL_OS_HTTP_PROXY": "http://host.docker.internal:49152/"},
+            clear=False,
+        ):
+            inherited = cyberful_os_mcp.inherited_container_env(None)
+
+        self.assertEqual(inherited["HTTP_PROXY"], "http://host.docker.internal:49152/")
+        self.assertEqual(inherited["HTTPS_PROXY"], inherited["HTTP_PROXY"])
+        self.assertEqual(inherited["NO_PROXY"], "127.0.0.1,localhost")
+
     def test_tool_environment_cannot_reenable_background_traffic(self) -> None:
         requested = {
             "AWS_PROFILE": "engagement",

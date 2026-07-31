@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -14,6 +14,7 @@ import { cyberZapBridgeImage } from "@/dependency/config"
 import { run } from "@/util/process"
 import { startEngagement, type EngagementRuntime } from "./runtime"
 import { SubsystemGateway } from "../gateway/config"
+import { EngagementPolicyStore } from "../gateway/engagement-policy"
 
 const runtimes: EngagementRuntime[] = []
 const clients: Client[] = []
@@ -387,6 +388,36 @@ afterAll(async () => {
 }, 30_000)
 
 describe("real headless ZAP containers", () => {
+  test("installs the persisted aggregate rate limit through the local ZAP API authority", async () => {
+    const policyWorkarea = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-policy-integration-")),
+    )
+    let runtime: EngagementRuntime | undefined
+    try {
+      const store = new EngagementPolicyStore(policyWorkarea)
+      await store.commit(
+        store.prepare({
+          action: "set",
+          profiles: [],
+          authorized_http_hosts: ["app.example.test", "*.api.example.test"],
+          global_http_rps: 4,
+        }),
+      )
+      runtime = await startEngagement({ sessionID: "integration-rate-limit", workarea: policyWorkarea })
+      expect(runtime.degraded).toBe(false)
+      const endpoint = new URL("/JSON/network/view/getRateLimitRules/", runtime.env.CYBER_ZAP_PROXY_URL)
+      endpoint.searchParams.set("apikey", runtime.env.CYBER_ZAP_API_KEY)
+      const response = await fetch(endpoint, { headers: { Host: "zap" } })
+      expect(response.ok).toBe(true)
+      const body = await response.text()
+      expect(body).toContain("Cyberful engagement global HTTP budget")
+      expect(body).toContain("4")
+    } finally {
+      await runtime?.stop()
+      await rm(policyWorkarea, { recursive: true, force: true })
+    }
+  }, 180_000)
+
   test("authenticate API/MCP and expose the complete hybrid surface on loopback only", async () => {
     const runtime = await startEngagement({ sessionID: "integration-surface", workarea })
     runtimes.push(runtime)

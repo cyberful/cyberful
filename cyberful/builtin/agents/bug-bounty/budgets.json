@@ -1,11 +1,19 @@
 {
   "$comment": "Active-execution ceilings plus a qualitative contrarian pass for Bug Bounty research phases.",
   "brief": 30,
-  "recon": 240,
-  "exploit": 360,
-  "hacker": 360,
-  "verify": 180,
-  "report": 90,
+  "recon": 60,
+  "exploit": 120,
+  "hacker": 120,
+  "verify": 45,
+  "report": 30,
+  "$closeout": {
+    "brief": 5,
+    "recon": 5,
+    "exploit": 5,
+    "hacker": 5,
+    "verify": 5,
+    "report": 5
+  },
   "$novelty": {
     "recon": { "required": true },
     "exploit": { "required": true },

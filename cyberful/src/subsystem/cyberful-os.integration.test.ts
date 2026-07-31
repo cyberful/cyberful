@@ -176,7 +176,7 @@ test("the built image exposes every required capability through cyberful-os and 
       return tool.installed === false ? [] : [name]
     })
     expect(exposed.toSorted()).toEqual(
-      ["variable", "test_object", "egress_observation", ...installedInventoryNames].toSorted(),
+      ["variable", "test_object", "egress_observation", "hypothesis", ...installedInventoryNames].toSorted(),
     )
     expect(exposed).not.toContain("jeb")
 

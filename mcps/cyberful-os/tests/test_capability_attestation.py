@@ -133,6 +133,8 @@ class CapabilityReportTest(unittest.TestCase):
         self.assertIn("msfconsole -q -x 'version; exit'", dockerfile[verify_at:workdir_at])
         self.assertIn("nuclei -version", dockerfile[verify_at:workdir_at])
         for smoke in (
+            "rg --version",
+            "import websocket",
             "semgrep --version",
             "syft version",
             "grype version",

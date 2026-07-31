@@ -31,6 +31,7 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
       marker_attested: true,
       egress_host: "api.example.test",
       egress_method: "POST",
+      egress_http_status: 403,
       egress_path_family: "/v1/:id",
       egress_response_bytes: 512,
       egress_attempts: 1,
@@ -53,14 +54,16 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     const csv = await readFile(path.join(root, "raw", "operations", "tool-usage.csv"), "utf8")
     expect(csv).toContain("time_iso,phase,agent,tool,duration_ms,outcome")
     expect(csv).toContain("exploit,exploit,nuclei,420,ok,5,900,true")
-    expect(csv).toContain("api.example.test,POST,/v1/:id")
+    expect(csv).toContain("api.example.test,POST,403,/v1/:id")
     expect(csv).toContain("512,1,0,3000,cyberful-os/docker-direct,observed,false")
     expect(csv).not.toContain("decision")
     expect(csv).not.toContain("reason_code")
     expect(csv).not.toContain("rationale")
-    const [header, ok, failed] = csv.trim().split("\n")
-    expect([header, ok, failed]).toHaveLength(3)
+    const [header, ...rows] = csv.trim().split("\n")
+    expect([header, ...rows]).toHaveLength(3)
     const columns = header!.split(",")
+    const failed = rows.find((row) => row.split(",")[columns.indexOf("tool")] === "browser_navigate")
+    expect(failed).toBeDefined()
     const failedValues = failed!.split(",")
     expect(failedValues[columns.indexOf("error_class")]).toBe("tool_reported_error")
     expect(failedValues[columns.indexOf("error_code")]).toBe("ECONNRESET")

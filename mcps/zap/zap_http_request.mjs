@@ -1,7 +1,8 @@
 // ── Raw HTTP Request Destination Boundary ───────────────────────────
-// Validates raw request lines and preserves absolute HTTPS destinations before
-// ZAP sees them. Origin-form requests require an explicit same-origin target
-// because ZAP cannot safely infer their scheme from the request bytes alone.
+// Validates raw request lines, preserves absolute HTTPS destinations, and
+// projects the recorded application status separately from bridge health.
+// Origin-form requests require an explicit same-origin target because ZAP
+// cannot safely infer their scheme from the request bytes alone.
 // → mcps/zap/zap_bridge.mjs — exposes this normalized convenience operation.
 // ────────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,13 @@ export function recordedRequestTarget(result) {
   if (!target || !/^https?:\/\//i.test(target))
     throw new Error("ZAP sendRequest returned an ambiguous recorded request target")
   return canonicalUrl(absoluteHttpUrl(target, "recorded request target"))
+}
+
+export function recordedResponseStatus(result) {
+  const header = result?.sendRequest?.[0]?.responseHeader
+  if (typeof header !== "string") return undefined
+  const status = header.split(/\r?\n/, 1)[0]?.match(/^HTTP\/1\.[01]\s+(\d{3})\b/)?.[1]
+  return status ? Number(status) : undefined
 }
 
 function absoluteHttpUrl(value, label) {

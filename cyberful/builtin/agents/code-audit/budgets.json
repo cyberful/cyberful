@@ -6,5 +6,14 @@
   "hunt": 90,
   "attack": 90,
   "verify": 75,
-  "report": 45
+  "report": 45,
+  "$closeout": {
+    "scope": 5,
+    "index": 5,
+    "trace": 5,
+    "hunt": 5,
+    "attack": 5,
+    "verify": 5,
+    "report": 5
+  }
 }

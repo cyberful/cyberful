@@ -15,6 +15,8 @@ import type {
   FormatterStatus,
   SessionStatus,
   FindingRegistryView,
+  SessionHypothesisRegistryView,
+  SessionProviderUsageView,
   EventSessionNextSubsystemPhaseActivity,
 } from "@/server/client"
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -72,6 +74,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       finding: {
         [sessionID: string]: FindingRegistryView | undefined
       }
+      hypothesis: {
+        [sessionID: string]: SessionHypothesisRegistryView | undefined
+      }
+      provider_usage: {
+        [sessionID: string]: SessionProviderUsageView | undefined
+      }
       message: {
         [sessionID: string]: Message[]
       }
@@ -81,9 +89,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       expert_phase: {
         [sessionID: string]: ExpertPhaseEntry[]
       }
-      expert_generated_tokens: {
-        [sessionID: string]: number
-      }
       // ── Activity Can Recover A Missing Phase Start ───────────────
       // This entry drives both the phase header and its generating or tool spinner.
       // Start creates it and end clears it, but the first progress, text, or tool
@@ -92,7 +97,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       // current user-facing activity label.
       // ─────────────────────────────────────────────────────────────────
       expert_phase_running: {
-        [sessionID: string]: { phase: string; tokens?: number; lastKind?: string } | undefined
+        [sessionID: string]: { phase: string; lastKind?: string } | undefined
       }
       part: {
         [messageID: string]: Part[]
@@ -108,10 +113,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_status: {},
       todo: {},
       finding: {},
+      hypothesis: {},
+      provider_usage: {},
       message: {},
       skill: {},
       expert_phase: {},
-      expert_generated_tokens: {},
       expert_phase_running: {},
       part: {},
       formatter: [],
@@ -123,6 +129,97 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const kv = useKV()
 
     const fullSyncedSessions = new Set<string>()
+    type UsageTotals = {
+      input: number
+      cacheRead: number
+      cacheWrite: number
+      generated: number
+      reasoning: number
+    }
+    type UsageScope = {
+      runID: string
+      parentRunID?: string
+      runKind: "root" | "subagent" | "fallback"
+      group: "root" | "subagents"
+      totals: UsageTotals
+    }
+    const providerUsageScopes = new Map<string, Map<string, UsageScope>>()
+    const usageNumber = (value: unknown) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? Math.max(0, Math.floor(value))
+        : 0
+    const emptyUsage = (): UsageTotals => ({
+      input: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      generated: 0,
+      reasoning: 0,
+    })
+    const usageView = (sessionID: string): SessionProviderUsageView => {
+      const scopes = [...(providerUsageScopes.get(sessionID)?.values() ?? [])]
+      const result = { root: emptyUsage(), subagents: emptyUsage() }
+      for (const scope of scopes) {
+        const target = result[scope.group]
+        target.input += scope.totals.input
+        target.cacheRead += scope.totals.cacheRead
+        target.cacheWrite += scope.totals.cacheWrite
+        target.generated += scope.totals.generated
+        target.reasoning += scope.totals.reasoning
+      }
+      return { ...result, scopes }
+    }
+    const hydrateProviderUsage = (sessionID: string, view: SessionProviderUsageView | undefined) => {
+      const scopes = new Map<string, UsageScope>()
+      for (const scope of view?.scopes ?? [])
+        scopes.set(scope.runID, {
+          runID: scope.runID,
+          ...(scope.parentRunID ? { parentRunID: scope.parentRunID } : {}),
+          runKind: scope.runKind,
+          group: scope.group,
+          totals: {
+            input: usageNumber(scope.totals.input),
+            cacheRead: usageNumber(scope.totals.cacheRead),
+            cacheWrite: usageNumber(scope.totals.cacheWrite),
+            generated: usageNumber(scope.totals.generated),
+            reasoning: usageNumber(scope.totals.reasoning),
+          },
+        })
+      providerUsageScopes.set(sessionID, scopes)
+      return usageView(sessionID)
+    }
+    const observeProviderUsage = (
+      sessionID: string,
+      activity: EventSessionNextSubsystemPhaseActivity["properties"],
+    ) => {
+      const usage = activity.usage
+      if (!usage) return
+      const scopes = providerUsageScopes.get(sessionID) ?? new Map<string, UsageScope>()
+      const previous = scopes.get(usage.scopeID)
+      const actor = phaseActivityActor(activity.actor)
+      const parentGroup = actor?.parentID ? scopes.get(actor.parentID)?.group : undefined
+      const runKind = actor?.role ?? previous?.runKind ?? "root"
+      const group =
+        runKind === "root"
+          ? "root"
+          : runKind === "subagent"
+            ? "subagents"
+            : parentGroup ?? previous?.group ?? "root"
+      scopes.set(usage.scopeID, {
+        runID: usage.scopeID,
+        ...(actor?.parentID ? { parentRunID: actor.parentID } : {}),
+        runKind,
+        group,
+        totals: {
+          input: Math.max(previous?.totals.input ?? 0, usageNumber(usage.inputTokens)),
+          cacheRead: Math.max(previous?.totals.cacheRead ?? 0, usageNumber(usage.cacheReadTokens)),
+          cacheWrite: Math.max(previous?.totals.cacheWrite ?? 0, usageNumber(usage.cacheWriteTokens)),
+          generated: Math.max(previous?.totals.generated ?? 0, usageNumber(usage.generatedTokens)),
+          reasoning: Math.max(previous?.totals.reasoning ?? 0, usageNumber(usage.reasoningTokens)),
+        },
+      })
+      providerUsageScopes.set(sessionID, scopes)
+      setStore("provider_usage", sessionID, reconcile(usageView(sessionID)))
+    }
 
     function sessionListQuery(): { scope?: "project"; path?: string } {
       if (!kv.get("session_directory_filter_enabled", true)) return { scope: "project" }
@@ -222,6 +319,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (response.data) setStore("finding", sessionID, reconcile(response.data))
     }
 
+    async function refreshHypotheses(sessionID: string, signal?: AbortSignal) {
+      const response = await sdk.client.session.hypotheses({ sessionID }, { signal })
+      signal?.throwIfAborted()
+      if (response.data) setStore("hypothesis", sessionID, reconcile(response.data))
+    }
+
     // ── Bursty Phase Activity Commits Once Per Frame ──────────────
     // Tool runtimes can emit hundreds of lifecycle, progress, and result events
     // in one scheduler slice. Preserve their source order in a per-session queue,
@@ -230,13 +333,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     // call/result and lifecycle ordering remains exact.
     // ─────────────────────────────────────────────────────────────────
     function flushPhaseActivities(sessionID: string, frames: readonly EventSessionNextSubsystemPhaseActivity[]) {
-      let tokens = store.expert_generated_tokens[sessionID] ?? 0
       let running = store.expert_phase_running[sessionID]
       let feed = store.expert_phase[sessionID] ?? []
       for (const frame of frames) {
         const activity = frame.properties
         if (activity.kind === "start") {
-          running = { phase: activity.phase, tokens }
+          running = { phase: activity.phase }
           continue
         }
         if (activity.kind === "end") {
@@ -244,16 +346,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           continue
         }
         if (activity.kind === "progress") {
-          tokens = Math.max(tokens, Number(activity.text) || 0)
-          running = running
-            ? { ...running, tokens: Math.max(running.tokens ?? 0, tokens) }
-            : { phase: activity.phase, tokens }
+          observeProviderUsage(sessionID, activity)
+          running = running ?? { phase: activity.phase }
           continue
         }
         if (activity.kind !== "status")
           running = running
             ? { ...running, phase: activity.phase, lastKind: activity.kind }
-            : { phase: activity.phase, tokens, lastKind: activity.kind }
+            : { phase: activity.phase, lastKind: activity.kind }
         feed = foldExpertActivity(feed, {
           id: frame.id,
           sessionID,
@@ -281,7 +381,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (feed.length > EXPERT_PHASE_HISTORY_CAP) feed = feed.slice(feed.length - EXPERT_PHASE_HISTORY_CAP)
       setStore(
         produce((draft) => {
-          draft.expert_generated_tokens[sessionID] = tokens
           draft.expert_phase_running[sessionID] = running
           draft.expert_phase[sessionID] = feed
         }),
@@ -323,6 +422,33 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
         state.running = false
         findingRefreshes.delete(sessionID)
+      })()
+    }
+
+    const hypothesisRefreshes = new Map<string, { running: boolean; pendingRevision?: number }>()
+
+    function queueHypothesisRefresh(sessionID: string, revision: number) {
+      const state = hypothesisRefreshes.get(sessionID) ?? { running: false }
+      state.pendingRevision = Math.max(state.pendingRevision ?? revision, revision)
+      hypothesisRefreshes.set(sessionID, state)
+      if (state.running) return
+      state.running = true
+      void (async () => {
+        while (state.pendingRevision !== undefined) {
+          const current = state.pendingRevision
+          state.pendingRevision = undefined
+          try {
+            await refreshHypotheses(sessionID)
+          } catch (error) {
+            Log.Default.warn("hypothesis registry refresh failed", {
+              sessionID,
+              revision: current,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+        state.running = false
+        hypothesisRefreshes.delete(sessionID)
       })()
     }
 
@@ -375,6 +501,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "finding.registry.updated":
           queueFindingRefresh(event.properties.sessionID, finiteEventNumber(event.properties.revision) ?? 0)
+          break
+
+        case "hypothesis.registry.updated":
+          queueHypothesisRefresh(event.properties.sessionID, finiteEventNumber(event.properties.revision) ?? 0)
           break
 
         case "session.deleted": {
@@ -695,11 +825,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         // ─────────────────────────────────────────────────────────────────
         async sync(sessionID: string, options: { signal?: AbortSignal } = {}) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo, findings] = await Promise.all([
+          const [session, messages, todo, findings, hypotheses, providerUsage] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true, signal: options.signal }),
             sdk.client.session.messages({ sessionID, limit: 100 }, { signal: options.signal }),
             sdk.client.session.todo({ sessionID }, { signal: options.signal }),
             sdk.client.session.findings({ sessionID }, { signal: options.signal }),
+            sdk.client.session.hypotheses({ sessionID }, { signal: options.signal }),
+            sdk.client.session.providerUsage({ sessionID }, { signal: options.signal }),
           ])
           options.signal?.throwIfAborted()
           const sessionData = session.data
@@ -711,6 +843,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               if (!match.found) draft.session.splice(match.index, 0, sessionData)
               draft.todo[sessionID] = todo.data ?? []
               draft.finding[sessionID] = findings.data
+              draft.hypothesis[sessionID] = hypotheses.data
+              draft.provider_usage[sessionID] = hydrateProviderUsage(sessionID, providerUsage.data)
               const infos: (typeof draft.message)[string] = []
               const skillEntries: SkillFeedEntry[] = []
               for (const message of messages.data ?? []) {

@@ -9,6 +9,7 @@
 
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -22,8 +23,15 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
-import { apiParameters, operationKey } from "./zap_policy.mjs"
-import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
+import {
+  apiOperationContract,
+  operationKey,
+  validatedApiParameters,
+  ZapApiContractError,
+  zapApiResponseError,
+} from "./zap_policy.mjs"
+import { normalizedHttpRequest, recordedRequestTarget, recordedResponseStatus } from "./zap_http_request.mjs"
+import { replayRequest } from "./zap_history_replay.mjs"
 import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
 import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
@@ -60,10 +68,11 @@ function boundedPositiveInt(value, fallback, maximum, name) {
   return parsed
 }
 
-function text(value, isError = false) {
+function text(value, isError = false, metadata = undefined) {
   return {
     content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
     isError,
+    ...(metadata ? { _meta: metadata } : {}),
   }
 }
 
@@ -165,17 +174,23 @@ async function hostApiFetch(component, type, operation, input = {}) {
 
 async function apiFetchOperation(component, type, operation, input, enforceCatalog, key) {
   if (enforceCatalog && !apiCatalog.has(key))
-    throw new Error(`operation is not present in this ZAP API catalog: ${key}`)
+    throw new ZapApiContractError(
+      "ZAP_OPERATION_UNAVAILABLE",
+      key,
+      `Operation is not present in this ZAP API catalog: ${key}`,
+      Array.from(apiCatalog.keys()).filter((candidate) => candidate.startsWith(`${component}:${type}:`)),
+    )
+  const parameters = validatedApiParameters(key, input)
 
   const response = await zapFetch(
-    apiUrl(component, type, operation, input),
+    apiUrl(component, type, operation, parameters),
     {
       headers: { Accept: type === "other" ? "*/*" : "application/json" },
     },
     `ZAP API ${key}`,
   )
   if (!response.ok)
-    throw new Error(`ZAP API ${key} returned HTTP ${response.status}: ${await responseSnippet(response)}`)
+    throw zapApiResponseError(key, response.status, await responseSnippet(response))
   return boundedResponse(response, key)
 }
 
@@ -183,7 +198,7 @@ function apiUrl(component, type, operation, input) {
   const format = type === "other" ? "OTHER" : "JSON"
   const url = new URL(`/${format}/${encodeURIComponent(component)}/${type}/${encodeURIComponent(operation)}/`, API_URL)
   url.searchParams.set("apikey", API_KEY)
-  Object.entries(apiParameters(input)).forEach(([name, value]) => url.searchParams.set(name, value))
+  Object.entries(input).forEach(([name, value]) => url.searchParams.set(name, value))
   return url
 }
 
@@ -248,9 +263,23 @@ async function fetchApiUi(pathname) {
 async function nativeTool(name, args) {
   if (name === "zap_api_catalog") {
     return text(
-      Array.from(apiCatalog.values()).filter(
-        (item) => (!args.component || item.component === args.component) && (!args.type || item.type === args.type),
-      ),
+      Array.from(apiCatalog.entries())
+        .filter(
+          ([, item]) =>
+            (!args.component || item.component === args.component) && (!args.type || item.type === args.type),
+        )
+        .map(([key, item]) => {
+          const contract = apiOperationContract(key)
+          return {
+            ...item,
+            ...(contract
+              ? {
+                  requiredParameters: contract.required,
+                  optionalParameters: contract.optional,
+                }
+              : {}),
+          }
+        }),
     )
   }
   if (name === "zap_api_call") return text(await apiFetch(args.component, args.type, args.operation, args.parameters))
@@ -261,15 +290,32 @@ async function nativeTool(name, args) {
       followRedirects: args.follow_redirects === true,
     })
     const recordedUrl = recordedRequestTarget(result)
-    return text({
-      ...result,
-      cyberful_request_target: {
-        target_url: request.targetUrl,
-        scheme: request.scheme,
-        normalized_origin_form: request.normalizedOriginForm,
-        recorded_url: recordedUrl,
+    const destination = new URL(recordedUrl)
+    const status = recordedResponseStatus(result)
+    return text(
+      {
+        ...result,
+        cyberful_request_target: {
+          target_url: request.targetUrl,
+          scheme: request.scheme,
+          normalized_origin_form: request.normalizedOriginForm,
+          recorded_url: recordedUrl,
+        },
       },
-    })
+      false,
+      {
+        "cyberful.dev/egress": {
+          version: 1,
+          route: "zap",
+          observability: status === undefined ? "degraded" : "observed",
+          host: destination.host,
+          method: request.request.split(/\s+/, 1)[0],
+          path_family: destination.pathname,
+          ...(status === undefined ? {} : { status }),
+          attempts: 1,
+        },
+      },
+    )
   }
   if (name === "zap_generate_workarea_report") {
     const reportPath = engagementReportPath(args.file_path, WORKAREA)
@@ -320,6 +366,28 @@ async function nativeTool(name, args) {
           })
         : value,
     )
+  }
+  if (name === "zap_history_replay") {
+    const source = await hostApiJson("core", "view", "message", { id: args.id })
+    const message = source?.message ?? source
+    const replay = replayRequest(message, args)
+    const result = await hostApiFetch("core", "action", "sendRequest", {
+      request: replay.request,
+      followRedirects: args.follow_redirects === true,
+    })
+    const sent = result?.sendRequest?.[0]
+    if (!sent) throw new Error("ZAP sendRequest returned no replay message")
+    const metadata = messageMetadata(sent)
+    const target = new URL(replay.targetUrl)
+    return text({
+      source_id: args.id,
+      replay_id: metadata.id,
+      target: `${target.origin}${target.pathname}`,
+      mutation_summary: replay.mutationSummary,
+      response: metadata,
+      response_sha256: createHash("sha256").update(typeof sent.responseBody === "string" ? sent.responseBody : "").digest("hex"),
+      cyberful_projection: "metadata",
+    })
   }
   if (name === "zap_websocket_history") {
     return text(
@@ -406,6 +474,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments || {}
     return await nativeTool(request.params.name, args)
   } catch (error) {
+    if (error instanceof ZapApiContractError)
+      return text(
+        {
+          error: {
+            code: error.code,
+            path: error.path,
+            expected: "an operation and parameters supported by the installed ZAP catalog",
+            receivedType: "invalid",
+            retryable: true,
+            hint: error.message,
+            ...(error.alternatives.length > 0 ? { alternatives: error.alternatives } : {}),
+          },
+        },
+        true,
+      )
     return text({ error: message(error) }, true)
   }
 })

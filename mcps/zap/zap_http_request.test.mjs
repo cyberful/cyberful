@@ -1,11 +1,11 @@
 // ── Raw ZAP Request Routing Contract ────────────────────────────────
 // Verifies absolute HTTPS requests retain their destination, origin-form input
-// requires an explicit target, and recorded metadata reports the effective URL.
+// requires an explicit target, and recorded metadata reports URL and HTTP status.
 // → mcps/zap/zap_http_request.mjs — validates and normalizes raw requests.
 // ────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { normalizedHttpRequest, recordedRequestTarget } from "./zap_http_request.mjs"
+import { normalizedHttpRequest, recordedRequestTarget, recordedResponseStatus } from "./zap_http_request.mjs"
 
 describe("ZAP raw HTTP request destination", () => {
   test("preserves an unambiguous absolute HTTPS request", () => {
@@ -69,5 +69,14 @@ describe("ZAP raw HTTP request destination", () => {
     expect(() =>
       recordedRequestTarget({ sendRequest: [{ requestHeader: "GET /a HTTP/1.1\r\nHost: example.com" }] }),
     ).toThrow("ambiguous")
+  })
+
+  test("separates a recorded HTTP denial from bridge health", () => {
+    expect(
+      recordedResponseStatus({
+        sendRequest: [{ responseHeader: "HTTP/1.1 403 Forbidden\r\nContent-Length: 0" }],
+      }),
+    ).toBe(403)
+    expect(recordedResponseStatus({ sendRequest: [{}] })).toBeUndefined()
   })
 })
