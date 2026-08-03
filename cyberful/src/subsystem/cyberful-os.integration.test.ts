@@ -78,6 +78,22 @@ async function removeContainer(name: string) {
   }
 }
 
+async function clearContainerWorkarea(name: string) {
+  const proc = Bun.spawn(["docker", "exec", name, "find", "/workspace", "-mindepth", "1", "-delete"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "pipe",
+  })
+  const timeout = setTimeout(() => proc.kill(), 10_000)
+  try {
+    const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+    if (exitCode !== 0)
+      throw new Error(`Docker could not clear live-test workarea through '${name}' (exit ${exitCode}): ${stderr.trim()}`)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 // ── Live Resources Preserve Primary And Cleanup Failures ───────────
 // This integration owns a client, gateway, database, container, process cwd,
 // environment overrides, and temporary workarea. Setup can fail after any one
@@ -241,6 +257,7 @@ test("the built image exposes every required capability through cyberful-os and 
     await attempt(activeClient ? () => activeClient.close() : undefined)
     await attempt(activeGateway ? () => activeGateway.closeGateway() : undefined)
     await attempt(closeDatabase)
+    await attempt(activeRuntime ? () => clearContainerWorkarea(container) : undefined)
     await attempt(activeRuntime ? () => activeRuntime.stop() : undefined)
     await attempt(() => removeContainer(container))
     await attempt(() => process.chdir(previousCwd))
