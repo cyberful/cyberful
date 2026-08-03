@@ -14,6 +14,8 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { FindingRegistry } from "@/finding/registry"
+import { readHypothesisRegistryView } from "@/subsystem/gateway/hypothesis-registry"
+import { readProviderUsageView } from "@/subsystem/provider-usage"
 import { InstanceState } from "@/effect/instance-state"
 import { readWorkareaFileChunk, workareaAbsolutePath } from "@/workarea"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -78,7 +80,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const sessionWorkarea = Effect.fn("SessionHttpApi.sessionWorkarea")(function* (sessionID: SessionID) {
-      yield* requireSession(sessionID)
+      const info = yield* requireSession(sessionID)
       const history = yield* SessionError.mapStorageNotFound(session.messages({ sessionID }))
       const workarea = history.findLast(
         (item): item is MessageV2.WithParts & { info: MessageV2.User } =>
@@ -86,7 +88,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )?.info.metadata?.workarea
       if (typeof workarea !== "string") return yield* new HttpApiError.BadRequest({})
       const instance = yield* InstanceState.context
-      return { root: workareaAbsolutePath(instance.directory, workarea), name: workarea }
+      return {
+        root: workareaAbsolutePath(instance.directory, workarea),
+        name: workarea,
+        workflow: info.workflow,
+      }
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -107,6 +113,24 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const workarea = yield* sessionWorkarea(ctx.params.sessionID)
       const store = new FindingRegistry.Store(workarea.root, { workarea: workarea.name })
       return yield* Effect.promise(() => store.view(ctx.params.sessionID))
+    })
+
+    const hypotheses = Effect.fn("SessionHttpApi.hypotheses")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const workarea = yield* sessionWorkarea(ctx.params.sessionID)
+      const workflow = workarea.workflow
+      if (!workflow) return yield* new HttpApiError.BadRequest({})
+      return yield* Effect.promise(() =>
+        readHypothesisRegistryView(workarea.root, workflow),
+      )
+    })
+
+    const providerUsage = Effect.fn("SessionHttpApi.providerUsage")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const workarea = yield* sessionWorkarea(ctx.params.sessionID)
+      return yield* Effect.promise(() => readProviderUsageView(workarea.root, ctx.params.sessionID))
     })
 
     const toolArtifact = Effect.fn("SessionHttpApi.toolArtifact")(function* (ctx: {
@@ -376,6 +400,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("children", children)
       .handle("todo", todo)
       .handle("findings", findings)
+      .handle("hypotheses", hypotheses)
+      .handle("providerUsage", providerUsage)
       .handle("toolArtifact", toolArtifact)
       .handle("diff", diff)
       .handle("messages", messages)

@@ -221,8 +221,6 @@ function renderBaseInstructions(input: {
 function runOverlay(input: CompileInput): string {
   if (input.handoffOwner && input.role !== "root")
     throw new Error("only the original root AgentRun may own the phase handoff")
-  if (input.role === "root" && input.providerRoute !== "main")
-    throw new Error("the original root AgentRun must use the main provider route")
   if (input.role === "fallback" && input.providerRoute !== "fallback")
     throw new Error("a fallback AgentRun must use the fallback provider route")
 

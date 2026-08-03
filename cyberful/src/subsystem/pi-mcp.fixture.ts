@@ -1,6 +1,7 @@
 // ── Pi MCP Bridge Test Gateway ───────────────────────────────────
 // Provides a real stdio MCP peer for exercising Pi gateway discovery, calls,
-// host elicitation, mixed content, pagination, and lifecycle cleanup.
+// host elicitation, mixed content, stderr classification, pagination, and
+// lifecycle cleanup.
 // → cyberful/src/subsystem/pi-mcp.test.ts — owns the observable bridge scenarios.
 // ─────────────────────────────────────────────────────────────────
 
@@ -140,4 +141,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
   }
 })
 
+const stderrLine = process.env.CYBERFUL_TEST_STDERR_LINE
+if (stderrLine) process.stderr.write(`${stderrLine}\n`)
 await server.connect(new StdioServerTransport())

@@ -64,7 +64,7 @@ MAX_ENV_VALUE_BYTES = 32 * 1024
 DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
-PASSTHROUGH_ENV_KEYS = ()
+PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY",)
 NO_TELEMETRY_ENV = {
     "DISABLE_UPDATE_CHECK": "true",
     "DO_NOT_TRACK": "1",
@@ -351,6 +351,16 @@ def docker_environment() -> dict[str, str]:
 
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     next_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
+    proxy = next_env.pop("CYBERFUL_OS_HTTP_PROXY", None)
+    if proxy:
+        next_env.update({
+            "HTTP_PROXY": proxy,
+            "HTTPS_PROXY": proxy,
+            "http_proxy": proxy,
+            "https_proxy": proxy,
+            "NO_PROXY": "127.0.0.1,localhost",
+            "no_proxy": "127.0.0.1,localhost",
+        })
     if extra_env:
         next_env.update(normalize_extra_env(extra_env) or {})
     next_env.update(NO_TELEMETRY_ENV)
@@ -1174,8 +1184,16 @@ def handle_shell(args: dict[str, Any]) -> dict[str, Any]:
     # ───────────────────────────────────────────────────────────────────
     try:
         result["_meta"] = {EGRESS_META_KEY: _shell_egress_metadata(command, args.get("egress"), to)}
-    except (TypeError, ValueError) as exc:
-        eprint(f"shell egress observation degraded: {type(exc).__name__}")
+    except (TypeError, ValueError):
+        result["_meta"] = {
+            EGRESS_META_KEY: {
+                "version": 1,
+                "route": "cyberful-os/docker-direct",
+                "observability": "degraded",
+                "deadline_ms": to * 1000,
+                "destination_changed": False,
+            }
+        }
     return result
 
 
@@ -1855,6 +1873,59 @@ def handle_tool_inventory(args: dict[str, Any]) -> dict[str, Any]:
     return tool_result(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+# ── HTTP Responses Are Evidence, Not Process Failures ────────────────
+# A completed HTTP exchange remains useful when the application returns a
+# denial or server error. The embedded client therefore keeps status and
+# headers even if streaming the body later degrades, while transport failures
+# before a response still retain the ordinary non-zero tool result. Trusted
+# egress metadata carries the application status separately from tool health.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _requests_egress_metadata(
+    args: dict[str, Any], stdout: str, timeout_seconds: int
+) -> dict[str, Any] | None:
+    try:
+        response = json.loads(stdout)
+        if not isinstance(response, dict):
+            return None
+        status = response.get("status_code")
+        response_url = response.get("url")
+        if not isinstance(status, int) or not 100 <= status <= 599 or not isinstance(response_url, str):
+            return None
+        parsed = urllib.parse.urlsplit(response_url)
+        host = _safe_egress_host(parsed.netloc.rsplit("@", 1)[-1])
+        if not host or parsed.scheme not in {"http", "https"}:
+            return None
+        requested_url = args.get("url")
+        requested_host = (
+            _safe_egress_host(urllib.parse.urlsplit(requested_url).netloc.rsplit("@", 1)[-1])
+            if isinstance(requested_url, str)
+            else None
+        )
+        requested_method = args.get("method", "GET")
+        method = requested_method.strip().upper() if isinstance(requested_method, str) else "GET"
+        if re.fullmatch(r"[A-Z]{2,20}", method) is None:
+            method = "GET"
+        redirects = response.get("redirects", 0)
+        request_timeout = args.get("request_timeout", timeout_seconds)
+        return {
+            "version": 1,
+            "route": "cyberful-os/docker-direct",
+            "observability": "observed",
+            "host": host,
+            "method": method,
+            "status": status,
+            "path_family": _redacted_path_family(parsed.path),
+            "attempts": 1,
+            "redirects": redirects if isinstance(redirects, int) and redirects >= 0 else 0,
+            "deadline_ms": int(request_timeout) * 1000,
+            "destination_changed": requested_host is not None and requested_host != host,
+        }
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
 def handle_requests_tool(args: dict[str, Any]) -> dict[str, Any]:
     url = args.get("url")
     if not isinstance(url, str) or not url:
@@ -1890,40 +1961,51 @@ with requests.request(
     body_parts = []
     retained_chars = 0
     body_truncated = False
-    for chunk in response.iter_content(chunk_size=16384, decode_unicode=False):
-        if not chunk:
-            continue
-        decoded = decoder.decode(chunk)
-        remaining = max_body_chars - retained_chars
-        if len(decoded) > remaining:
-            body_parts.append(decoded[:max(0, remaining)])
-            body_truncated = True
-            break
-        body_parts.append(decoded)
-        retained_chars += len(decoded)
-    if not body_truncated:
-        tail = decoder.decode(b"", final=True)
-        remaining = max_body_chars - retained_chars
-        if len(tail) > remaining:
-            body_parts.append(tail[:max(0, remaining)])
-            body_truncated = True
-        else:
-            body_parts.append(tail)
+    body_error = None
+    try:
+        for chunk in response.iter_content(chunk_size=16384, decode_unicode=False):
+            if not chunk:
+                continue
+            decoded = decoder.decode(chunk)
+            remaining = max_body_chars - retained_chars
+            if len(decoded) > remaining:
+                body_parts.append(decoded[:max(0, remaining)])
+                body_truncated = True
+                break
+            body_parts.append(decoded)
+            retained_chars += len(decoded)
+        if not body_truncated:
+            tail = decoder.decode(b"", final=True)
+            remaining = max_body_chars - retained_chars
+            if len(tail) > remaining:
+                body_parts.append(tail[:max(0, remaining)])
+                body_truncated = True
+            else:
+                body_parts.append(tail)
+    except (requests.exceptions.RequestException, UnicodeError) as exc:
+        body_error = type(exc).__name__
     result = {
-        "url": response.url,
+        "url": str(response.url),
         "status_code": response.status_code,
-        "reason": response.reason,
+        "reason": str(response.reason),
         "headers": dict(response.headers),
         "elapsed_seconds": response.elapsed.total_seconds(),
         "encoding": encoding,
+        "redirects": len(response.history),
+        "body_complete": body_error is None and not body_truncated,
         "body_truncated": body_truncated,
+        "body_error": body_error,
         "body": "".join(body_parts),
     }
 print(json.dumps(result, indent=2, sort_keys=True))
 """
     to, mo, cwd, env_map = safe_container_args(args)
     r = run_argv_in_container(["python3", "-c", script], cwd=cwd, timeout_seconds=to, max_output_bytes=mo, extra_env=env_map, stdin=payload)
-    return result_from_run(r)
+    result = result_from_run(r)
+    metadata = _requests_egress_metadata(args, r.stdout, to) if r.exit_code == 0 and not r.timed_out else None
+    if metadata:
+        result["_meta"] = {EGRESS_META_KEY: metadata}
+    return result
 
 
 def handle_bs4_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -2435,6 +2517,24 @@ def _exposed_tool_registry() -> list[ToolEntry]:
 
 
 def tool_result_from_exception(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ValueError):
+        return tool_result(
+            json.dumps(
+                {
+                    "error": {
+                        "code": "INVALID_TOOL_ARGUMENTS",
+                        "path": "arguments",
+                        "expected": "input matching the advertised tool schema",
+                        "receivedType": "invalid",
+                        "retryable": True,
+                        "hint": str(exc),
+                    }
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            is_error=True,
+        )
     return {
         "content": [{"type": "text", "text": f"error: {type(exc).__name__}: {exc}\n"}],
         "isError": True,

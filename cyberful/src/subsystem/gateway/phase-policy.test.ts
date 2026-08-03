@@ -16,6 +16,7 @@ describe("gateway phase policy", () => {
       evmLab: false,
       evmEvidence: false,
       liveTargetResearch: false,
+      hypothesisResearch: true,
     })
     expect(gatewayPhasePolicy({ workflow: "code-audit", phase: "attack" })).toMatchObject({
       active: true,
@@ -57,5 +58,12 @@ describe("gateway phase policy", () => {
     expect(gatewayPhasePolicy({ workflow: "code-audit", phase: "scope" }).allows("ghidra")).toBe(false)
     expect(gatewayPhasePolicy({ workflow: "code-audit", phase: "index" }).allows("ghidra")).toBe(true)
     expect(gatewayPhasePolicy({ workflow: "code-audit", phase: "report" }).allows("ghidra")).toBe(false)
+  })
+
+  test("keeps Brief preflight-only while publishing its durable hypothesis ledger", () => {
+    const brief = gatewayPhasePolicy({ workflow: "bug-bounty", phase: "brief" })
+    expect(brief.hypothesisResearch).toBe(true)
+    expect(brief.allows("browser")).toBe(true)
+    expect(brief.allows("zap")).toBe(false)
   })
 })

@@ -10,6 +10,8 @@ export type GatewayPhasePolicy = {
   phase?: string
   active: boolean
   liveTargetResearch: boolean
+  hypothesisResearch: boolean
+  hypothesisReadOnly: boolean
   sourceImport: boolean
   auditDiff: boolean
   auditLab: boolean
@@ -48,12 +50,23 @@ export function gatewayPhasePolicy(input?: { workflow?: string; phase?: string }
     (workflow === "pentest" || workflow === "bug-bounty") &&
     phase !== undefined &&
     ["recon", "exploit", "hacker", "verify"].includes(phase)
+  const hypothesisResearch =
+    active &&
+    phase !== undefined &&
+    phase !== "report" &&
+    (workflow === "pentest" || workflow === "bug-bounty" || workflow === "code-audit")
+  const hypothesisReadOnly =
+    active &&
+    phase === "report" &&
+    (workflow === "pentest" || workflow === "bug-bounty" || workflow === "code-audit")
 
   return {
     workflow,
     phase,
     active,
     liveTargetResearch,
+    hypothesisResearch,
+    hypothesisReadOnly,
     sourceImport:
       active &&
       ((workflow === "code-audit" && phase === "scope") ||

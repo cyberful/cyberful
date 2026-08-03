@@ -311,6 +311,7 @@ describe("Pi ordinary provider failures", () => {
       [{ message: { stopReason: "error", diagnostics: [{ error: { code: 1006 } }] } }, "unavailable", true],
       [{ upstream: { error: { code: "invalid_response" } } }, "malformed_output", false],
       [{ upstream: { error: { code: "usage_limit_reached" } } }, "capacity", false],
+      [{ upstream: { error: { code: "active_tail_too_large" } } }, "capacity", true],
       [{ message: { stopReason: "error", diagnostics: [{ error: { code: "oauth" } }] } }, "authentication", false],
     ] as const
 
@@ -320,6 +321,23 @@ describe("Pi ordinary provider failures", () => {
       expect(failure?.retryable).toBe(retryable)
       expect(PiSecurity.isSecurityPolicyBlock(failure)).toBeFalse()
     }
+  })
+
+  test("maps OpenAI Codex provider code 23 to a retryable timeout only on that adapter", () => {
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-codex",
+        provider: "openai-codex",
+        message: { stopReason: "error", diagnostics: [{ error: { code: 23 } }] },
+      }),
+    ).toMatchObject({ kind: "timeout", providerCode: "23", retryable: true })
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-responses",
+        provider: "compatible",
+        message: { stopReason: "error", diagnostics: [{ error: { code: 23 } }] },
+      }),
+    ).toMatchObject({ kind: "unknown", providerCode: "23", retryable: false })
   })
 
   test("returns no failure for successful terminal observations", () => {

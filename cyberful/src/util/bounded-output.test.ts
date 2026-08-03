@@ -1,11 +1,26 @@
-// ── Bounded Process Output Tail Tests ────────────────────────────
-// Verifies that routine process output stays intact while overflow retains only
-// the final byte window and reports exactly how much content was discarded.
+// ── Bounded Process Output Tests ─────────────────────────────────
+// Verifies bounded prefix and tail retention, including truncation across
+// multiple chunks while streams continue draining discarded process output.
 // → cyberful/src/util/bounded-output.ts — owns the retention primitive under test.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { BoundedByteTail } from "./bounded-output"
+import { BoundedByteTail, readBoundedPrefix } from "./bounded-output"
+
+test("bounded prefix drains the stream and retains only its first bytes", async () => {
+  let drained = false
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("abcd"))
+      controller.enqueue(new TextEncoder().encode("efgh"))
+      drained = true
+      controller.close()
+    },
+  })
+
+  expect(await readBoundedPrefix(stream, 6)).toEqual({ text: "abcdef", truncated: true })
+  expect(drained).toBe(true)
+})
 
 describe("bounded process output tail", () => {
   test("keeps routine output unchanged", () => {

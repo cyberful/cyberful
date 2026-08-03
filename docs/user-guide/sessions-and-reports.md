@@ -116,6 +116,12 @@ normalized kind, status and code when available, plus a bounded,
 credential-redacted operator diagnostic; raw provider diagnostics are not
 persisted.
 
+Provider usage is append-only at `raw/operations/provider-usage.jsonl`, one
+entry per provider call with run ancestry and disjoint token fields. Sanitized
+gateway, MCP, ZAP, and browser lifecycle failures are separately retained at
+`raw/operations/runtime-diagnostics.jsonl`; neither artifact is inserted into
+model context automatically.
+
 Large results sent to the terminal are a display concern only. Cyberful keeps
 the model and transcript result unchanged, stores one redacted copy under
 `raw/tool-results/` with its byte size and SHA-256, and sends at most 12 KiB to
@@ -143,6 +149,19 @@ PDFs include the executive summary, scope and limitations, reproducible
 findings, evidence references, severity, and remediation guidance. Code Audit
 control mappings are evidence about the examined implementation, not
 certification or an accredited attestation.
+
+Every confirmed Pentest finding includes its own evidence-backed proof of
+concept. The report states prerequisites, uses redacted placeholders instead of
+live secrets, shows an authoritative expected result plus an applicable control,
+and calls out restoration for mutations. Explicitly tagged request and code
+blocks are rendered in a dark panel with syntax colouring and line numbers; long
+request lines are reduced only as needed to stay inside the panel.
+
+The generated contents measures every section title and adds a consistent gap
+after its wrapped text, so long entries remain legible without colliding.
+Introductory audit-use notes stay compact, section headings use stable point
+spacing, and every severity-led finding begins after a short, faint divider
+with balanced vertical spacing before its severity badge.
 
 Bug Bounty Program produces Markdown instead of a consolidated PDF. Its
 `BUG_BOUNTY_REPORT.md` index links one portable report per submission-ready

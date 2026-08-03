@@ -16,11 +16,11 @@ import { isRecord } from "@/util/record"
 
 const PHASES = [
   ["brief", "MISSION.md", 30],
-  ["recon", "RECON.md", 240],
-  ["exploit", "EXPLOIT.md", 360],
-  ["hacker", "HACKER.md", 360],
-  ["verify", "BUG_BOUNTY_VERIFY.md", 180],
-  ["report", "BUG_BOUNTY_REPORT.md", 90],
+  ["recon", "RECON.md", 60],
+  ["exploit", "EXPLOIT.md", 120],
+  ["hacker", "HACKER.md", 120],
+  ["verify", "BUG_BOUNTY_VERIFY.md", 45],
+  ["report", "BUG_BOUNTY_REPORT.md", 30],
 ] as const
 
 describe("built-in Bug Bounty Program workflow", () => {
@@ -76,7 +76,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     )
   })
 
-  test("packages long Bug Bounty budgets, artifacts, successors, and delegation limits", () => {
+  test("packages bounded Bug Bounty budgets, artifacts, successors, and delegation limits", () => {
     const budgets: unknown = JSON.parse(fs.readFileSync(SubsystemPhase.budgetsPath(home), "utf8"))
     if (!isRecord(budgets)) throw new Error("Bug Bounty budgets must be an object")
 
@@ -101,7 +101,7 @@ describe("built-in Bug Bounty Program workflow", () => {
           ).subagents,
         ]),
       ),
-    ).toEqual({ brief: 0, recon: 3, exploit: 3, hacker: 3, verify: 0, report: 0 })
+    ).toEqual({ brief: 0, recon: 3, exploit: 5, hacker: 5, verify: 0, report: 0 })
   })
 
   test("research personas diversify qualitatively, execute directly, and preserve honest verdicts", () => {
@@ -118,7 +118,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(exploit).toMatch(/prerequisite-resolution pass[\s\S]*call\s+`question`/i)
     expect(hacker).toMatch(/semantic pivots over endpoint or payload variants/i)
     expect(hacker).toMatch(/resolve safe prerequisites[\s\S]*call\s+`question`/i)
-    for (const persona of [recon, exploit, hacker]) expect(persona).toMatch(/novelty/i)
+    for (const persona of [recon, exploit, hacker]) expect(persona).toMatch(/hypothesis/i)
   })
 
   test("brief records program policy without inventing missing rules", () => {
@@ -133,27 +133,41 @@ describe("built-in Bug Bounty Program workflow", () => {
     ]) {
       expect(brief).toContain(anchor)
     }
-    expect(brief).toContain("`POLICY_UNKNOWN`")
+    expect(brief).toContain("`UNRESOLVED`")
     expect(brief).toMatch(/Do not infer authorization or a restriction/i)
+    expect(brief).toMatch(/one exact action and asset/i)
+    expect(brief).toMatch(/resolution\s+attempt/i)
     expect(brief).not.toContain("MISSION GUARDRAIL")
     expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
   })
 
-  test("brief records supplied access without preflighting target accounts", () => {
+  test("brief preflights supplied access and records one bounded prerequisite matrix", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
 
     expect(brief).toContain("provided identities")
     expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
-    for (const obsoletePreflightInstruction of [
+    for (const preflightInstruction of [
       "Account, proxy, and application preflight",
       "`browser_status`",
       "`proxy.mode=zap`",
       "`browser_network_log`",
       "`OK, retry`",
-      "completed preflight",
+      "Prerequisite matrix",
+      "`READY`",
+      "`BLOCKED`",
+      "`IN_SCOPE`",
+      "`OUT_OF_SCOPE`",
+      "`UNRESOLVED`",
     ]) {
-      expect(brief).not.toContain(obsoletePreflightInstruction)
+      expect(brief).toContain(preflightInstruction)
     }
+    expect(brief).toMatch(/complete the normal login autonomously/i)
+    expect(brief).toMatch(/pass only\s+`\{\{var:name\}\}` references to browser input tools/i)
+    expect(brief).toMatch(/Ask the human only after autonomous login cannot continue/i)
+    expect(brief).not.toMatch(/Never enter credentials/i)
+    expect(brief).toMatch(/not an exhaustive vulnerability checklist/i)
+    expect(brief).not.toContain("`NOT_PROVIDED`")
+    expect(brief).not.toContain("`POLICY_UNKNOWN`")
   })
 
   test("verify gates readiness and report emits only portable ready submissions", () => {

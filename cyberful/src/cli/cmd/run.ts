@@ -1,7 +1,6 @@
 // ── Run Command Orchestration ────────────────────────────────────
-// Executes one-shot prompts, local interactive sessions, or attached sessions;
-//   it also owns command dispatch, resumption, forking, and streamed output.
-// → cyberful/src/cli/cmd/run/runtime.ts — hosts the direct interactive runtime.
+// Executes one-shot prompts against a local or attached control plane, owning
+// command dispatch, session resumption, forking, and streamed output.
 // ─────────────────────────────────────────────────────────────────
 
 import type { Argv } from "yargs"
@@ -19,12 +18,9 @@ import { createLocalControlPlaneClient } from "@/server/client/local"
 import { Agent } from "@/agent/agent"
 import { InstanceRef } from "@/effect/instance-ref"
 import { FormatError, FormatUnknownError } from "../error"
-import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { ensureWorkarea, requireWorkarea, setLastWorkarea, workareaSystemPrompt } from "@/workarea"
-import { DockerPreflight } from "@/dependency/docker-preflight"
 import * as Log from "@/util/log"
 
-const runtimeTask = import("./run/runtime")
 const log = Log.create({ service: "cli.run" })
 
 function resolveRunInput(value?: string, piped?: string): string | undefined {
@@ -54,7 +50,6 @@ type Inline = {
 
 type SessionInfo = {
   id: string
-  title?: string
   directory?: string
 }
 
@@ -198,92 +193,23 @@ export const RunCommand = effectCmd({
         type: "boolean",
         describe: "show thinking blocks",
       })
-      .option("replay", {
-        type: "boolean",
-        default: false,
-        describe: "replay visible session history on interactive resume",
-      })
-      .option("replay-limit", {
-        type: "number",
-        describe: "cap visible interactive replay to the newest N messages",
-      })
-      .option("interactive", {
-        alias: ["i"],
-        type: "boolean",
-        describe: "run in direct interactive split-footer mode",
-        default: false,
-      })
       .option("workarea", {
         type: "string",
         describe: "store engagement artifacts under work/<workarea>/",
-      })
-      .option("demo", {
-        type: "boolean",
-        default: false,
-        describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
       }),
   handler: Effect.fn("Cli.run")(function* (args) {
     const agentSvc = yield* Agent.Service
     const localInstance = yield* InstanceRef
     yield* Effect.promise(async () => {
-      const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
-      const thinking = args.interactive ? (args.thinking ?? true) : (args.thinking ?? false)
+      const thinking = args.thinking ?? false
       const die = (message: string): never => {
         UI.error(message)
         process.exit(1)
-      }
-      const dieInteractive = (error: unknown): never => {
-        if (error instanceof Error && error.message === INTERACTIVE_INPUT_ERROR) {
-          die(error.message)
-        }
-
-        throw error
       }
 
       let message = [...args.message, ...(args["--"] || [])]
         .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
         .join(" ")
-
-      if (args.interactive && args.command) {
-        die("--interactive cannot be used with --command")
-      }
-
-      if (args.demo && !args.interactive) {
-        die("--demo requires --interactive")
-      }
-
-      if (args.interactive && args.format === "json") {
-        die("--interactive cannot be used with --format json")
-      }
-
-      if (args.replay && !args.interactive) {
-        die("--replay requires --interactive")
-      }
-
-      if (args["replay-limit"] !== undefined && !args.interactive) {
-        die("--replay-limit requires --interactive")
-      }
-
-      if (
-        args["replay-limit"] !== undefined &&
-        (!Number.isInteger(args["replay-limit"]) || args["replay-limit"] <= 0)
-      ) {
-        die("--replay-limit must be a positive integer")
-      }
-
-      if (args.interactive && !process.stdout.isTTY) {
-        die("--interactive requires a TTY stdout")
-      }
-
-      if (args.interactive) {
-        try {
-          resolveInteractiveStdin().cleanup?.()
-        } catch (error) {
-          dieInteractive(error)
-        }
-      }
-
-      const replay = args.replay || args["replay-limit"] !== undefined
 
       const root = Filesystem.resolve(process.env.PWD ?? process.cwd())
       const directory = (() => {
@@ -352,9 +278,8 @@ export const RunCommand = effectCmd({
 
       const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
       message = resolveRunInput(message, piped) ?? ""
-      const initialInput = resolveRunInput(rawMessage, piped)
 
-      if (message.trim().length === 0 && !args.command && !args.interactive) {
+      if (message.trim().length === 0 && !args.command) {
         UI.error("You must provide a message or a command")
         process.exit(1)
       }
@@ -397,14 +322,12 @@ export const RunCommand = effectCmd({
 
             return {
               id,
-              title: forked.data?.title ?? current.data.title,
               directory: forked.data?.directory ?? current.data.directory,
             }
           }
 
           return {
             id: current.data.id,
-            title: current.data.title,
             directory: current.data.directory,
           }
         }
@@ -422,7 +345,6 @@ export const RunCommand = effectCmd({
 
           return {
             id,
-            title: forked.data?.title ?? base.title,
             directory: forked.data?.directory ?? base.directory,
           }
         }
@@ -430,7 +352,6 @@ export const RunCommand = effectCmd({
         if (base) {
           return {
             id: base.id,
-            title: base.title,
             directory: base.directory,
           }
         }
@@ -446,28 +367,7 @@ export const RunCommand = effectCmd({
 
         return {
           id,
-          title: result.data?.title ?? name,
           directory: result.data?.directory,
-        }
-      }
-
-      async function createFreshSession(
-        sdk: ControlPlaneClient,
-        input: { agent: string | undefined },
-      ): Promise<SessionInfo> {
-        await DockerPreflight.requireDockerDaemon()
-        const result = await sdk.session.create({
-          title: args.title !== undefined && args.title !== "" ? args.title : undefined,
-          agent: input.agent,
-        })
-        const id = result.data?.id
-        if (!id) {
-          throw new Error("Failed to create session")
-        }
-
-        return {
-          id,
-          title: result.data?.title,
         }
       }
 
@@ -710,127 +610,77 @@ export const RunCommand = effectCmd({
         // Validate agent if specified
         const agent = await pickAgent(client)
 
-        if (!args.interactive) {
-          const events = await client.event.subscribe()
-          const operationAbort = new AbortController()
-          let streamCloseTask: Promise<void> | undefined
-          const closeEvents = () => {
-            streamCloseTask ??= events.stream.return().then(() => undefined)
-            return streamCloseTask
-          }
-
-          // ── One-Shot Runs Own Both Tasks ───────────────────────
-          // A prompt or command produces its user-visible output on the subscribed
-          // event stream while its HTTP request remains active. Both tasks must be
-          // joined: a stream failure aborts the request, and a request failure closes
-          // the stream. Normal completion waits for the session's idle event before
-          // returning, so output cannot continue after command ownership ends.
-          // ─────────────────────────────────────────────────────────────────
-          const eventTask = loop(events).catch((error) => {
-            operationAbort.abort(error)
-            throw error
-          })
-          const operation = args.command
-            ? client.session.command(
-                {
-                  sessionID,
-                  agent,
-                  command: args.command,
-                  arguments: message,
-                  system: workareaSystem,
-                  workarea,
-                },
-                { signal: operationAbort.signal },
-              )
-            : client.session.prompt(
-                {
-                  sessionID,
-                  agent,
-                  system: workareaSystem,
-                  workarea,
-                  parts: [...files, { type: "text", text: message }],
-                },
-                { signal: operationAbort.signal },
-              )
-          const operationTask = operation.then(
-            async (result) => {
-              if (result.error) {
-                await closeEvents().catch((error) =>
-                  log.debug("failed to close event stream after request error", { error }),
-                )
-              }
-              return result
-            },
-            async (error) => {
-              await closeEvents().catch((closeError) =>
-                log.debug("failed to close event stream after request failure", { error: closeError }),
-              )
-              throw error
-            },
-          )
-
-          try {
-            const [result, streamError] = await Promise.all([operationTask, eventTask])
-            if (result.error) {
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-              process.exitCode = 1
-            }
-            if (streamError) process.exitCode = 1
-          } finally {
-            operationAbort.abort(new Error("non-interactive run complete"))
-            await closeEvents().catch((error) => log.debug("failed to close non-interactive event stream", { error }))
-            await Promise.allSettled([operationTask, eventTask])
-          }
-          return
+        const events = await client.event.subscribe()
+        const operationAbort = new AbortController()
+        let streamCloseTask: Promise<void> | undefined
+        const closeEvents = () => {
+          streamCloseTask ??= events.stream.return().then(() => undefined)
+          return streamCloseTask
         }
 
-        const { runInteractiveWorkflow } = await runtimeTask
+        // ── One-Shot Runs Own Both Tasks ───────────────────────
+        // A prompt or command produces its user-visible output on the subscribed
+        // event stream while its HTTP request remains active. Both tasks must be
+        // joined: a stream failure aborts the request, and a request failure closes
+        // the stream. Normal completion waits for the session's idle event before
+        // returning, so output cannot continue after command ownership ends.
+        // ─────────────────────────────────────────────────────────────────
+        const eventTask = loop(events).catch((error) => {
+          operationAbort.abort(error)
+          throw error
+        })
+        const operation = args.command
+          ? client.session.command(
+              {
+                sessionID,
+                agent,
+                command: args.command,
+                arguments: message,
+                system: workareaSystem,
+                workarea,
+              },
+              { signal: operationAbort.signal },
+            )
+          : client.session.prompt(
+              {
+                sessionID,
+                agent,
+                system: workareaSystem,
+                workarea,
+                parts: [...files, { type: "text", text: message }],
+              },
+              { signal: operationAbort.signal },
+            )
+        const operationTask = operation.then(
+          async (result) => {
+            if (result.error) {
+              await closeEvents().catch((error) =>
+                log.debug("failed to close event stream after request error", { error }),
+              )
+            }
+            return result
+          },
+          async (error) => {
+            await closeEvents().catch((closeError) =>
+              log.debug("failed to close event stream after request failure", { error: closeError }),
+            )
+            throw error
+          },
+        )
+
         try {
-          await runInteractiveWorkflow({
-            sdk: client,
-            directory: cwd,
-            sessionID,
-            sessionTitle: sess.title,
-            resume: Boolean(args.session || args.continue) && !args.fork,
-            replay,
-            replayLimit: args["replay-limit"],
-            agent,
-            system: workareaSystem,
-            workarea,
-            files,
-            initialInput,
-            createSession: createFreshSession,
-            thinking,
-            demo: args.demo,
-          })
-        } catch (error) {
-          dieInteractive(error)
+          const [result, streamError] = await Promise.all([operationTask, eventTask])
+          if (result.error) {
+            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+            process.exitCode = 1
+          }
+          if (streamError) process.exitCode = 1
+        } finally {
+          operationAbort.abort(new Error("non-interactive run complete"))
+          await closeEvents().catch((error) => log.debug("failed to close non-interactive event stream", { error }))
+          await Promise.allSettled([operationTask, eventTask])
         }
         return
-      }
-
-      if (args.interactive && !args.attach && !args.session && !args.continue) {
-        const { runInteractiveLocalMode } = await runtimeTask
-
-        try {
-          return await runInteractiveLocalMode({
-            directory: directory ?? root,
-            resolveAgent: localAgent,
-            session,
-            createSession: createFreshSession,
-            agent: args.agent,
-            system: workareaSystem,
-            workarea,
-            replay,
-            replayLimit: args["replay-limit"],
-            files,
-            initialInput,
-            thinking,
-            demo: args.demo,
-          })
-        } catch (error) {
-          dieInteractive(error)
-        }
       }
 
       if (args.attach) {

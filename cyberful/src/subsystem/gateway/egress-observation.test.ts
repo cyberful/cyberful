@@ -19,6 +19,7 @@ describe("passive egress observation", () => {
       egress_host: "api.example.test",
       egress_path_family: "/v1/accounts/:id",
       egress_method: "POST",
+      egress_http_status: undefined,
       egress_deadline_ms: undefined,
       egress_route: "zap",
       egress_observability: "inferred",
@@ -30,6 +31,7 @@ describe("passive egress observation", () => {
       egress_host: undefined,
       egress_path_family: undefined,
       egress_method: undefined,
+      egress_http_status: undefined,
       egress_deadline_ms: undefined,
       egress_route: "cyberful-os/docker-direct",
       egress_observability: "degraded",
@@ -44,12 +46,17 @@ describe("passive egress observation", () => {
           "cyberful.dev/egress": {
             host: "api.example.test",
             path_family: "/v1/accounts/:id",
+            status: 403,
             route: "cyberful-os/docker-direct",
             observability: "observed",
           },
         },
       }),
-    ).toMatchObject({ egress_path_family: "/v1/accounts/:id", egress_observability: "observed" })
+    ).toMatchObject({
+      egress_path_family: "/v1/accounts/:id",
+      egress_http_status: 403,
+      egress_observability: "observed",
+    })
   })
 
   test("collapses personal and opaque path segments instead of persisting them", () => {

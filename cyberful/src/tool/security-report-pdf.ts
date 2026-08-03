@@ -10,6 +10,7 @@ import path from "node:path"
 import PDFDocument from "pdfkit"
 import { marked, type Tokens } from "marked"
 import { all, createLowlight } from "lowlight"
+import { contains as isContained } from "@/util/filesystem"
 
 // ── Bundled Fonts Make Rendering Reproducible ───────────────────
 // Bun resolves these assets from source and from the compiled application bundle.
@@ -93,7 +94,15 @@ const FONT = {
 }
 
 const LINE_GAP = 2
-const TOC_PER_PAGE = 28
+const TOC_FONT_SIZE = 11
+const TOC_ROW_GAP = 9
+const FINDING_RULE_GAP = 18
+const FINDING_RULE_WIDTH = 72
+const SEVERITY_BADGE_HEIGHT = 18
+const SEVERITY_BADGE_BOTTOM_GAP = 10
+const CODE_FONT_SIZE = 8
+const CODE_MIN_FONT_SIZE = 6.5
+const CODE_LINE_GAP = 2
 
 const codeBg = "#0b0c0e"
 const codeColors: Record<string, string> = {
@@ -213,11 +222,6 @@ function resolveReportPath(workareaCwd: string, relativePath: string, field: str
   return resolved
 }
 
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
-}
-
 async function requireContainedSource(workareaCwd: string, sourcePath: string) {
   const sourceInfo = await lstat(sourcePath)
   if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error("sourcePath must be a regular Markdown file")
@@ -309,15 +313,19 @@ async function renderPdf(markdown: string, title: string, dateLabel: string, met
   })
 
   // ── Buffered Front Matter Keeps Page References Stable ────────
-  // The renderer counts H2 entries before reserving the required TOC pages.
-  // Content rendering then records each heading's final content-relative page.
-  // The reserved pages are filled only after every destination is known.
-  // A post-pass stamps headers and footers without triggering recursive pagination.
-  // TOC_PER_PAGE must remain shared by reservation and rendering calculations.
+  // The renderer measures every H2 with the exact font and width used by the TOC,
+  // then reserves the resulting page layout before content pagination begins.
+  // Content rendering records each heading's final content-relative page, and the
+  // reserved positions are filled only after every destination is known. A post-pass
+  // stamps headers and footers without triggering recursive pagination. Keeping the
+  // measured layout immutable prevents wrapped titles from changing page references.
   // ─────────────────────────────────────────────────────────────────
   const blocks = normalizeBlocks(marked.lexer(markdown))
-  const tocCount = blocks.filter((b) => b.type === "heading" && b.depth === 2).length
-  const tocPages = tocCount ? Math.ceil(tocCount / TOC_PER_PAGE) : 0
+  const tocHeadings = blocks.filter(
+    (block): block is Extract<Block, { type: "heading" }> => block.type === "heading" && block.depth === 2,
+  )
+  const tocLayout = layoutToc(document, tocHeadings)
+  const tocPages = tocLayout.length
 
   drawCover(document, title, dateLabel, meta)
   for (let i = 0; i < tocPages; i += 1) document.addPage()
@@ -329,7 +337,7 @@ async function renderPdf(markdown: string, title: string, dateLabel: string, met
     located.push({ text, page: document.bufferedPageRange().count - 1 - tocPages })
   }
   renderBlocks(document, blocks, onH2)
-  if (tocPages) fillToc(document, located)
+  if (tocPages) fillToc(document, located, tocLayout)
 
   const range = document.bufferedPageRange()
   for (let index = range.start + 1; index < range.start + range.count; index += 1) {
@@ -382,15 +390,41 @@ function cleanText(input: string) {
 // ── Finding Headings Stay Coupled To Their Navigation Target ────
 // Every H2 reserves room before its named destination is registered.
 // An adjacent severity paragraph moves above the title and becomes a visual badge.
-// The title and badge therefore cannot orphan across a page boundary.
-// Non-adjacent severity paragraphs retain their original document position.
-// The callback records the final page used by the table of contents.
+// Each such H2 starts behind a faint rule with equal whitespace on both sides.
+// The complete rule, badge, and title are reserved together so they cannot orphan.
+// Non-adjacent severity paragraphs retain their original document position, while
+// the callback records the final page used by the table of contents.
 // ─────────────────────────────────────────────────────────────────
 function renderBlocks(document: PDFKit.PDFDocument, blocks: Block[], locate?: (text: string) => void) {
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]
     const next = blocks[index + 1]
     const severity = block.type === "heading" && next?.type === "paragraph" ? severityIn(next.text) : undefined
+    if (severity && block.type === "heading" && block.depth === 2) {
+      document.font(FONT.headingBold).fontSize(18)
+      const headingHeight = document.heightOfString(block.text, {
+        width: page.width - page.margin * 2,
+        lineGap: LINE_GAP,
+      })
+      ensureSpace(
+        document,
+        headingHeight + FINDING_RULE_GAP * 2 + SEVERITY_BADGE_HEIGHT + SEVERITY_BADGE_BOTTOM_GAP + 10,
+      )
+      locate?.(block.text)
+      const ruleY = document.y + FINDING_RULE_GAP
+      document
+        .moveTo(page.margin, ruleY)
+        .lineTo(page.margin + FINDING_RULE_WIDTH, ruleY)
+        .strokeColor(colors.faint)
+        .lineWidth(1.2)
+        .stroke()
+      document.lineWidth(1)
+      document.y = ruleY + FINDING_RULE_GAP
+      renderBadge(document, severity)
+      renderHeading(document, block, { bold: true, tightTop: true })
+      index += 1
+      continue
+    }
     if (block.type === "heading" && block.depth === 2) {
       ensureSpace(document, 72)
       locate?.(block.text)
@@ -501,36 +535,61 @@ function drawShell(document: PDFKit.PDFDocument, title: string, dateLabel: strin
   document.text("CONFIDENTIAL", page.margin, page.height - 28, { characterSpacing: 1.5, lineBreak: false })
 }
 
-function fillToc(document: PDFKit.PDFDocument, entries: { text: string; page: number }[]) {
+type TocPosition = { index: number; y: number; height: number }
+
+function tocStartY(pageIndex: number) {
+  return page.margin + 18 + (pageIndex === 0 ? 42 : 0)
+}
+
+function layoutToc(document: PDFKit.PDFDocument, entries: readonly { text: string }[]): TocPosition[][] {
   const contentWidth = page.width - page.margin * 2
   const pageNumWidth = 34
-  const rowHeight = 22
-  const pages = Math.ceil(entries.length / TOC_PER_PAGE)
-  for (let p = 0; p < pages; p += 1) {
-    document.switchToPage(1 + p)
-    let y = page.margin + 18
-    if (p === 0) {
-      document.font(FONT.heading).fontSize(22).fillColor(colors.heading)
-      document.text("Contents", page.margin, y, { lineBreak: false })
-      y += 42
+  const titleWidth = contentWidth - pageNumWidth - 10
+  const bottom = page.height - page.margin - page.footer
+  const pages: TocPosition[][] = []
+  let positions: TocPosition[] = []
+  let pageIndex = 0
+  let y = tocStartY(pageIndex)
+  document.font(FONT.body).fontSize(TOC_FONT_SIZE)
+  entries.forEach((entry, index) => {
+    const height = document.heightOfString(entry.text, { width: titleWidth, lineGap: LINE_GAP }) + TOC_ROW_GAP
+    if (positions.length && y + height > bottom) {
+      pages.push(positions)
+      positions = []
+      pageIndex += 1
+      y = tocStartY(pageIndex)
     }
-    entries.slice(p * TOC_PER_PAGE, (p + 1) * TOC_PER_PAGE).forEach((entry, k) => {
-      document.font(FONT.body).fontSize(11).fillColor(colors.ink)
-      document.text(entry.text, page.margin, y, {
-        width: contentWidth - pageNumWidth - 10,
-        ellipsis: true,
-        lineBreak: false,
-      })
+    positions.push({ index, y, height })
+    y += height
+  })
+  if (positions.length) pages.push(positions)
+  return pages
+}
+
+function fillToc(document: PDFKit.PDFDocument, entries: { text: string; page: number }[], layout: TocPosition[][]) {
+  const contentWidth = page.width - page.margin * 2
+  const pageNumWidth = 34
+  layout.forEach((positions, pageIndex) => {
+    const titleWidth = contentWidth - pageNumWidth - 10
+    document.switchToPage(1 + pageIndex)
+    if (pageIndex === 0) {
+      document.font(FONT.heading).fontSize(22).fillColor(colors.heading)
+      document.text("Contents", page.margin, page.margin + 18, { lineBreak: false })
+    }
+    positions.forEach((position) => {
+      const entry = entries[position.index]
+      if (!entry) throw new Error(`Missing TOC entry at index ${position.index}`)
+      document.font(FONT.body).fontSize(TOC_FONT_SIZE).fillColor(colors.ink)
+      document.text(entry.text, page.margin, position.y, { width: titleWidth, lineGap: LINE_GAP })
       document.fillColor(colors.muted)
-      document.text(String(entry.page), page.width - page.margin - pageNumWidth, y, {
+      document.text(String(entry.page), page.width - page.margin - pageNumWidth, position.y, {
         width: pageNumWidth,
         align: "right",
         lineBreak: false,
       })
-      document.goTo(page.margin, y - 4, contentWidth, rowHeight, `toc-${p * TOC_PER_PAGE + k}`)
-      y += rowHeight
+      document.goTo(page.margin, position.y - TOC_ROW_GAP / 2, contentWidth, position.height, `toc-${position.index}`)
     })
-  }
+  })
 }
 
 function ensureSpace(document: PDFKit.PDFDocument, height: number) {
@@ -545,19 +604,23 @@ function renderHeading(
 ) {
   const sans = block.depth >= 3
   const size = block.depth === 1 ? 22 : block.depth === 2 ? 18 : block.depth === 3 ? 13 : 11
-  ensureSpace(document, size + 22)
-  if (!opts.tightTop) document.moveDown(block.depth === 1 ? 0.6 : 0.4)
   const serif = opts.bold ? FONT.headingBold : FONT.heading
   document
     .font(sans ? FONT.bodyBold : serif)
     .fontSize(size)
     .fillColor(colors.heading)
-  document.text(block.text, page.margin, document.y, {
-    width: page.width - page.margin * 2,
+  const topGap = opts.tightTop ? 0 : block.depth === 1 ? 12 : block.depth === 2 ? 18 : block.depth === 3 ? 14 : 10
+  const bottomGap = block.depth === 1 ? 18 : block.depth === 2 ? 10 : block.depth === 3 ? 8 : 6
+  const width = page.width - page.margin * 2
+  const height = document.heightOfString(block.text, { width, lineGap: LINE_GAP })
+  ensureSpace(document, topGap + height + bottomGap)
+  const startY = document.y + topGap
+  document.text(block.text, page.margin, startY, {
+    width,
     lineGap: LINE_GAP,
     align: block.depth === 1 ? "center" : "left",
   })
-  document.moveDown(block.depth === 1 ? 0.9 : 0.35)
+  document.y = startY + height + bottomGap
 }
 
 function renderParagraph(document: PDFKit.PDFDocument, text: string) {
@@ -576,30 +639,31 @@ function renderParagraph(document: PDFKit.PDFDocument, text: string) {
 function renderBadge(document: PDFKit.PDFDocument, severity: string) {
   const sev = severityColors[severity.toLowerCase()] ?? { bg: colors.accent, fg: "#ffffff" }
   const label = `Severity: ${severity.toUpperCase()}`
-  const boxHeight = 18
   document.font(FONT.bodyBold).fontSize(8.5)
   const width = document.widthOfString(label) + 18
   const startY = document.y
-  document.roundedRect(page.margin, startY, width, boxHeight, 4).fill(sev.bg)
-  const textY = startY + (boxHeight - document.currentLineHeight()) / 2 + 0.5
+  document.roundedRect(page.margin, startY, width, SEVERITY_BADGE_HEIGHT, 4).fill(sev.bg)
+  const textY = startY + (SEVERITY_BADGE_HEIGHT - document.currentLineHeight()) / 2 + 0.5
   document.fillColor(sev.fg).text(label, page.margin + 9, textY, { lineBreak: false })
-  document.y = startY + boxHeight + 10
+  document.y = startY + SEVERITY_BADGE_HEIGHT + SEVERITY_BADGE_BOTTOM_GAP
 }
 
 function renderQuote(document: PDFKit.PDFDocument, text: string) {
-  const height = Math.max(28, document.heightOfString(text, { width: page.width - page.margin * 2 - 20 }) + 8)
-  ensureSpace(document, height + 8)
-  const startY = document.y
-  document.rect(page.margin, startY, 3, height).fill(colors.accent)
+  const contentWidth = page.width - page.margin * 2
   document.font(FONT.italic).fontSize(9).fillColor(colors.muted)
-  document.text(text, page.margin + 14, startY + 4, { width: page.width - page.margin * 2 - 20, lineGap: LINE_GAP })
-  document.y = startY + height + 8
+  const height = document.heightOfString(text, { width: contentWidth, lineGap: LINE_GAP })
+  ensureSpace(document, height + 6)
+  const startY = document.y
+  document.text(text, page.margin, startY, { width: contentWidth, lineGap: LINE_GAP })
+  document.y = startY + height + 6
 }
 
 function renderCode(document: PDFKit.PDFDocument, block: Extract<Block, { type: "code" }>) {
   const pad = 10
   const labelHeight = block.lang ? 12 : 0
-  document.font(FONT.mono).fontSize(8)
+  const lines = splitIntoLines(highlightRuns(block.text.replace(/\n+$/, ""), block.lang))
+  const codeFontSize = fitCodeFontSize(document, lines, pad)
+  document.font(FONT.mono).fontSize(codeFontSize)
 
   // ── Oversized Code Blocks Degrade Visibly ─────────────────────
   // PDFKit continued text cannot preserve highlighted runs across embedded newlines.
@@ -608,8 +672,7 @@ function renderCode(document: PDFKit.PDFDocument, block: Extract<Block, { type: 
   // When the panel reaches one page, an explicit omission row replaces hidden lines.
   // The complete evidence remains available in the Markdown report beside the PDF.
   // ─────────────────────────────────────────────────────────────────
-  const lineHeight = document.currentLineHeight() + 2
-  const lines = splitIntoLines(highlightRuns(block.text.replace(/\n+$/, ""), block.lang))
+  const lineHeight = document.currentLineHeight() + CODE_LINE_GAP
   const maxBox = page.height - page.margin * 2 - page.footer - 18
   const boxHeight = Math.min(lines.length * lineHeight + pad * 2 + labelHeight, maxBox)
   ensureSpace(document, boxHeight + 8)
@@ -619,7 +682,7 @@ function renderCode(document: PDFKit.PDFDocument, block: Extract<Block, { type: 
     document.font(FONT.mono).fontSize(6.5).fillColor(codeColors["hljs-comment"])
     document.text(block.lang.toUpperCase(), page.margin + pad, startY + pad, { lineBreak: false })
   }
-  document.font(FONT.mono).fontSize(8)
+  document.font(FONT.mono).fontSize(codeFontSize)
   const top = startY + pad + labelHeight
   const maxLines = Math.floor((boxHeight - pad * 2 - labelHeight) / lineHeight)
   const visibleSourceLines = lines.length > maxLines ? Math.max(0, maxLines - 1) : lines.length
@@ -646,7 +709,7 @@ function renderCode(document: PDFKit.PDFDocument, block: Extract<Block, { type: 
   document.lineWidth(1)
   shown.forEach((segments, row) => {
     const y = top + row * lineHeight
-    document.font(FONT.mono).fontSize(8).fillColor("#565e69")
+    document.font(FONT.mono).fontSize(codeFontSize).fillColor("#565e69")
     const lineNumber = row < visibleSourceLines ? String(row + 1) : "…"
     document.text(lineNumber, numberX, y, { width: numberWidth, align: "right", lineBreak: false })
     segments.forEach((segment, index) => {
@@ -660,6 +723,34 @@ function renderCode(document: PDFKit.PDFDocument, block: Extract<Block, { type: 
 }
 
 type Segment = { text: string; color: string }
+
+// ── Reproduction Snippets Remain Inside The Code Panel ─────────
+// PoCs often contain UUID placeholders and complete request paths that cannot wrap
+// without changing their copy-paste meaning. The renderer preserves every logical
+// line and gently reduces only its presentation size when the longest line exceeds
+// the available gutter-aware width. The floor keeps code legible; the report persona
+// separately caps authored lines so this fallback remains exceptional.
+// ─────────────────────────────────────────────────────────────────
+function fitCodeFontSize(document: PDFKit.PDFDocument, lines: Segment[][], pad: number) {
+  let fontSize = CODE_FONT_SIZE
+  for (let pass = 0; pass < 2; pass += 1) {
+    document.font(FONT.mono).fontSize(fontSize)
+    const numberWidth = document.widthOfString(String(Math.max(1, lines.length)))
+    const gutterWidth = 4 + numberWidth + 8
+    const availableWidth = page.width - page.margin * 2 - pad * 2 - gutterWidth
+    const longestLine = lines.reduce(
+      (longest, line) =>
+        Math.max(
+          longest,
+          line.reduce((width, segment) => width + document.widthOfString(segment.text), 0),
+        ),
+      0,
+    )
+    if (longestLine <= availableWidth || longestLine === 0) break
+    fontSize = Math.max(CODE_MIN_FONT_SIZE, fontSize * (availableWidth / longestLine))
+  }
+  return Math.min(CODE_FONT_SIZE, fontSize)
+}
 
 function splitIntoLines(runs: Segment[]): Segment[][] {
   const lines: Segment[][] = [[]]

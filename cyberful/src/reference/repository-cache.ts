@@ -15,11 +15,8 @@ import {
   repositoryCachePath,
   sameRepositoryReference,
   parseRepositoryReference,
-  parseRemoteRepositoryReference,
   validateRepositoryBranch,
   InvalidRepositoryBranchError,
-  InvalidRepositoryReferenceError,
-  UnsupportedLocalRepositoryError,
   type RemoteReference,
 } from "@/util/repository"
 
@@ -130,33 +127,6 @@ function resetTarget(input: {
   }
   return "HEAD"
 }
-
-export function isError(error: unknown): error is Error {
-  return (
-    error instanceof InvalidRepositoryError ||
-    error instanceof InvalidBranchError ||
-    error instanceof CloneFailedError ||
-    error instanceof FetchFailedError ||
-    error instanceof CheckoutFailedError ||
-    error instanceof ResetFailedError ||
-    error instanceof LockFailedError ||
-    error instanceof CacheOperationError
-  )
-}
-
-export const parseRemoteReference = Effect.fn("RepositoryCache.parseRemoteReference")(function* (repository: string) {
-  try {
-    return parseRemoteRepositoryReference(repository)
-  } catch (error) {
-    if (error instanceof InvalidRepositoryReferenceError || error instanceof UnsupportedLocalRepositoryError) {
-      return yield* new InvalidRepositoryError({ repository: error.repository, message: error.message })
-    }
-    return yield* new InvalidRepositoryError({
-      repository,
-      message: errorMessage(error),
-    })
-  }
-})
 
 export const validateBranch = Effect.fn("RepositoryCache.validateBranch")(function* (branch: string) {
   try {

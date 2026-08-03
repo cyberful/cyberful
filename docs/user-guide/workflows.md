@@ -27,15 +27,29 @@ and seals the artifact, shuts down the owner and gateway, and only then starts
 the next phase. Delegated and fallback runs can perform complete operational
 tasks but cannot advance the phase.
 
-An active-execution budget applies to active work. If it expires, Cyberful advances in
-degraded mode only when the required partial artifact exists, can be sealed,
-and every phase-owned process has stopped. Invalid handoffs, missing artifacts,
-failed integrity gates, and incomplete cleanup halt the chain.
+An active-execution budget applies to active work. The final three to five
+minutes are a host-enforced closeout: the same root stops researching, children
+are cancelled, research tools are blocked, and only local evidence,
+deliverable/ledger reconciliation, cleanup, and handoff remain. If the final
+deadline expires, Cyberful advances a research phase in degraded mode only when
+the partial artifact exists, can be sealed, and every phase-owned process has
+stopped. Brief never advances from a partial `MISSION.md` without an explicit
+handoff. Invalid handoffs, missing artifacts, failed integrity gates, and
+incomplete cleanup halt the chain.
 
-Blocking questions pause all subscribed AgentRun budget timers and leave the
-requesting tool call waiting; they do not suspend a Pi process. The workarea,
+Blocking questions and complete provider-retry cycles pause the shared phase
+budget clock and leave the requesting tool call waiting; they do not suspend a
+Pi process. Retry suspension ends when the provider response arrives, before
+executing any returned tools. The workarea,
 sealed artifacts, Code Graph, and evidence are the durable memory; model
 conversation state does not cross phase boundaries.
+
+Within one long AgentRun, deterministic context projection preserves complete
+tool evidence as local artifacts. If that is insufficient, the same model can
+write a validated semantic checkpoint containing structured continuity plus
+free-form working notes. This changes only the next provider payload: it never
+deletes the audit transcript or supersedes the hypothesis and finding
+registries.
 
 Root, subagent, and fallback actors are all complete Pi `AgentRun` instances
 with the same phase authority, tools, skills, and evidence contract. Provider
@@ -47,28 +61,55 @@ target objects. The model records intent before creation and ends each object as
 `not_created`, `cleaned`, or `residual`; only a forgotten intermediate state
 blocks handoff. A residual object is visible but is not itself an approval gate.
 
-Exploit and Hacker handoffs carry one mutually exclusive verdict per hypothesis:
-`CONFIRMED`, `DISPROVED`, `SUSPECTED`, `INCONCLUSIVE`, or `UNTESTABLE`.
+At terminal session closure, Cyberful removes the exact Expert container names
+and rechecks Docker by immutable session and run-owner labels in three bounded
+passes. `raw/operations/run-state.json` records `closed` only after the final
+inventory proves absence; survivors or an unavailable inventory produce
+`closed_with_cleanup_errors` and a lifecycle failure.
+
+The host keeps findings and hypotheses as separate authorities. At Exploit and
+Hacker handoff it takes a coherent snapshot of both registries and validates
+only positive links: a `CONFIRMED` or `SUSPECTED` hypothesis must link a
+current-run finding in the same state. A finding does not need a matching
+positive hypothesis, so a confirmed observation can coexist with a disproved
+narrower bypass or impact hypothesis.
+
+Each hypothesis in `raw/hypotheses/registry.json` has one state:
+`OPEN`, `TESTING`, `QUEUED`, `CONFIRMED`, `DISPROVED`, `SUSPECTED`,
+`INCONCLUSIVE`, or `UNTESTABLE`.
 `SUSPECTED` requires affirmative target evidence. `INCONCLUSIVE` means a valid
 test ran but its oracle remained ambiguous. `UNTESTABLE` means the discriminating
 test never ran and therefore records a typed blocker plus an exact next step.
 This prevents missing access, tools, applicability, authority, or budget from
 inflating the suspected-finding count.
 
-`CONFIRMED` and `SUSPECTED` IDs must resolve to current-run findings. Negative-only
+Call `hypothesis update` with `state: TESTING` before a first discriminator or
+retest. Executed dispositions are rejected unless the current state is
+`TESTING`; `OPEN` may still move directly to `QUEUED` or `UNTESTABLE`, and a
+queued hypothesis enters `TESTING` through `reopen` in its named successor.
+
+`CONFIRMED` and `SUSPECTED` entries must link current-run findings. Negative-only
 outcomes can retain stable backlog IDs when they never met the positive-evidence
-threshold for entering the finding registry.
+threshold for entering the finding registry. Closed and queued hypotheses keep
+their stable IDs, evidence, and transition history across phases; Report reads
+the complete registry rather than a reconstructed subset.
 
 Before using `UNTESTABLE` for a credible, high-value path, Exploit and Hacker
 actively seek safe prerequisites in existing evidence, ordinary product flows,
 and authoritative first-party material. They create reversible tester-owned
-state within existing authority and ask one exact blocking question only when a
-human fact, login, decision, or additional authority unlocks the discriminator.
+state within existing authority and use authenticated profiles plus saved
+session-variable access to complete ordinary login flows autonomously. They ask
+one exact blocking question only when a concrete human fact, human-only
+authentication action, decision, or additional authority unlocks the
+discriminator.
 
 Exploit and Hacker subagents inherit the phase's complete execution authority
 and retain ownership of each task through its verdict. They may start passively,
 but run safe in-scope discriminators themselves; task partitioning and shared-
 resource contention are not `UNTESTABLE` blockers.
+Each child reserves the configured closeout interval before its own deadline,
+uses that time only for local evidence and its required `output_artifact`, and
+does not change the root phase mode while closing out.
 
 ## Pentest
 
@@ -99,6 +140,24 @@ itself require a human decision. Persistent code or retained reusable access,
 value-moving, disruptive, cross-scope, or uncontrolled-user actions still do.
 Tool availability never expands the mission.
 
+For explicitly supplied browser accounts, Brief also completes the normal login
+autonomously when stored access is sufficient. Browser inputs reference session
+variables as `{{var:name}}`; the host resolves their values after the model
+boundary and redacts them from returned evidence. Brief asks the operator only
+when a human-only challenge, missing second factor, rejected or locked access,
+unavailable profile, or degraded proxy prevents readiness.
+
+Brief creates a useful initial `MISSION.md` before navigation, then atomically
+replaces that same file after policy acquisition, every account/profile check,
+engagement-policy installation, and each material ambiguity resolution. Each
+hash change creates a semantic checkpoint. Its tool surface is preflight-only:
+policy/source reads and approved imports, session variables, engagement policy,
+ordinary browser login/snapshot actions and passive network log, local
+attachment/mission operations, hypotheses, and handoff. ZAP API/history/replay,
+direct request tools, scanners, labs, Ghidra, page evaluation, cookie access,
+and response-body extraction are not published in Brief; the browser still
+uses ZAP as its host-owned proxy.
+
 The terminal result is `reports/security-report.pdf`.
 
 `RECON.md` does not equate a sensitive feature or familiar architecture pattern with a vulnerability. Each
@@ -126,27 +185,66 @@ boundary and the supplied program policy.
 | **Report**  | Create one portable Markdown submission per ready finding and a navigation index    | `BUG_BOUNTY_REPORT.md` |
 
 Supply the official policy as text, an attachment, or an exact public URL. Brief
-may read that explicitly supplied public policy page and records declared browser
-profiles, accounts, and other access in `MISSION.md` without opening the target or
-gating the handoff on session readiness. Recon consumes that access context and
-owns login, authenticated target navigation, profile comparison, and observed
-application-dependency mapping within the recorded policy.
+may read that page and performs the same bounded readiness preflight as Pentest
+for explicitly supplied profiles: ZAP routing, one normal authenticated entry,
+autonomous login from stored access when required, distinct visible identities,
+and passive dependency mapping. `MISSION.md`
+contains a prerequisite matrix whose readiness is `READY` or `BLOCKED` and
+whose scope is `IN_SCOPE`, `OUT_OF_SCOPE`, or action-specific `UNRESOLVED`.
+Broken promised access blocks Recon; one unresolved action does not block
+independent in-scope research.
 
-Bug Bounty uses longer active-execution ceilings suited to sustained research: Brief
-30 minutes, Recon 240, Exploit 360, Hacker 360, Verify 180, and Report 90.
-Recon, Exploit, and Hacker receive a qualitative novelty contract. The ledger
+Bug Bounty uses bounded research ceilings: Brief 30 minutes, Recon 60, Exploit
+120, Hacker 120, Verify 180, and Report 90. Pentest uses the same 60/120/120
+budgets for Recon, Exploit, and Hacker.
+Every Bug Bounty phase reserves the final five minutes for closeout. Pentest
+reserves three minutes in Brief and five in every later phase; every Code Audit
+phase reserves five. Provider retry and response waits may extend one research
+phase by at most 15 minutes in total, so the autonomous hard ceilings are
+75/135/135 minutes for Recon/Exploit/Hacker. Explicit human approval wait is
+recorded separately and excluded.
+Recon, Exploit, and Hacker receive a qualitative novelty contract through the
+shared `hypothesis` registry. Its synthesis
 treats endpoint, payload-spelling, or version variations of one mechanism as
 convergence and emits one runtime signal when the search narrows. Each phase
 then performs a contrarian pivot and writes a synthesis of semantically distinct
 avenues, or explains with target-specific evidence why further diversification
 is exhausted. There are no numeric quotas or minimum route, click, hypothesis,
 or family counts that block handoff.
+An exhausted synthesis with no `OPEN` or `TESTING` hypotheses enters closeout
+early. A diversified synthesis continues only through its recorded
+discriminators.
 
 Recon prioritizes real authenticated journeys and broad route/action coverage.
 Redacted browser metadata produces an append-only surface map; Exploit and
 Hacker consume its unexplored and failed areas when choosing pivots. Additional
 routes of the same mechanism improve coverage but do not count as new causal
 creativity.
+
+The matrix is a readiness and authorization floor, never a finite test list.
+New surfaces and target-specific hypotheses discovered by Recon, Exploit, or
+Hacker are added dynamically to the hypothesis registry and tested when
+authorized. `UNRESOLVED` is valid only for one exact action and asset after the
+phase records authoritative sources, the missing or contradictory rule, and a
+real resolution attempt. The next research phase revisits it before using scope
+ambiguity as a blocker.
+
+Brief also writes `raw/policy/engagement.json`, a non-secret projection of
+profile readiness, authorized HTTP hosts, and the aggregate HTTP RPS limit.
+Each fresh ZAP runtime installs one shared Network rule before traffic. If a
+numeric limit exists, ZAP startup and browser proxying fail closed.
+The gateway commits this file only after the Brief's current ZAP runtime accepts
+the policy, and Brief handoff is refused until that succeeds in the current
+phase. A host-side installation failure is reported once as a non-retryable
+technical blocker; it is not turned into a generic approval or a request to
+restore ZAP.
+
+Code Audit uses the same hypothesis lifecycle from Scope onward without
+enabling target traffic. Scope and Index persist architectural questions before
+handoff; Trace links Code Graph paths, Hunt promotes only positively supported
+candidates to `code_finding`, Attack updates them from lab evidence, and Verify
+reconciles finding and hypothesis dispositions. Code Graph and the finding
+registry remain their respective authorities.
 
 ### Smart-contract source and EVM lab
 

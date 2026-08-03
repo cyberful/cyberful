@@ -21,6 +21,8 @@ describe("SubsystemContainer reaping", () => {
       reaped.push(name)
     })
     SubsystemContainer.setOwnedContainerListerForTests(async () => [])
+    SubsystemContainer.setSessionContainerListerForTests(async () => [])
+    SubsystemContainer.setCleanupDelayForTests(async () => {})
   })
 
   afterEach(() => SubsystemContainer.resetTestDoubles())
@@ -168,6 +170,77 @@ describe("SubsystemContainer reaping", () => {
 
     expect(reaped).toEqual([name, name])
     expect(SubsystemContainer.liveCount()).toBe(0)
+  })
+
+  test("session cleanup rechecks exact names and immutable labels before declaring closure", async () => {
+    let listings = 0
+    SubsystemContainer.setSessionContainerListerForTests(async (sessionID, runID) => {
+      expect(sessionID).toBe("ses-alpha")
+      expect(runID).toBe("run-alpha")
+      listings += 1
+      return listings === 1 ? ["late-container-id"] : []
+    })
+    SubsystemContainer.remember("cyberful-os-expert-alpha")
+
+    const result = await SubsystemContainer.removeSession(
+      "ses-alpha",
+      ["cyberful-os-expert-alpha"],
+      "run-alpha",
+    )
+
+    expect(result.remaining).toEqual([])
+    expect(result.removed).toEqual(["cyberful-os-expert-alpha", "late-container-id"])
+    expect(listings).toBe(4)
+    expect(SubsystemContainer.liveCount()).toBe(0)
+  })
+
+  test("session cleanup preserves ownership and reports a labelled survivor", async () => {
+    SubsystemContainer.setSessionContainerListerForTests(async () => ["late-container-id"])
+    SubsystemContainer.remember("cyberful-os-expert-alpha")
+
+    let failure: unknown
+    try {
+      await SubsystemContainer.removeSession(
+        "ses-alpha",
+        ["cyberful-os-expert-alpha"],
+        "run-alpha",
+      )
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(SubsystemContainer.SessionContainerCleanupError)
+    expect(failure).toMatchObject({
+      removed: ["cyberful-os-expert-alpha", "late-container-id"],
+      remaining: ["late-container-id"],
+    })
+    expect(SubsystemContainer.liveCount()).toBe(1)
+  })
+
+  test("session cleanup still reaps exact names when Docker label discovery fails", async () => {
+    SubsystemContainer.setSessionContainerListerForTests(async () => {
+      throw new Error("Docker inventory unavailable")
+    })
+    SubsystemContainer.remember("cyberful-os-expert-alpha")
+
+    let failure: unknown
+    try {
+      await SubsystemContainer.removeSession(
+        "ses-alpha",
+        ["cyberful-os-expert-alpha"],
+        "run-alpha",
+      )
+    } catch (error) {
+      failure = error
+    }
+
+    expect(reaped).toEqual([
+      "cyberful-os-expert-alpha",
+      "cyberful-os-expert-alpha",
+      "cyberful-os-expert-alpha",
+    ])
+    expect(failure).toBeInstanceOf(SubsystemContainer.SessionContainerCleanupError)
+    expect(SubsystemContainer.liveCount()).toBe(1)
   })
 
   test("derives scoped Docker filters from a non-reversible run token", () => {

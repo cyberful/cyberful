@@ -39,6 +39,14 @@ export interface AdvanceDeps {
 
 export interface AdvanceOutcome {
   ranPhases: string[]
+  phaseAttempts: ReadonlyArray<{
+    readonly phase: string
+    readonly attempt: number
+    readonly provider?: string
+    readonly providerAffinity?: "main" | "fallback"
+    readonly termination: RunTermination
+    readonly recovered: boolean
+  }>
   handedTo?: string
   // Set when a phase failed its deliverable/process/handoff gate. No successor was started.
   haltedAt?: string
@@ -106,41 +114,119 @@ function phaseOutcome(result: PhaseResult): "blocked" | "failed" {
   return result.phaseFailure ? "failed" : interruptedOutcome(result.termination)
 }
 
+function attemptTranscript(filePath: string, attempt: number) {
+  if (attempt === 1) return filePath
+  return filePath.endsWith(".jsonl")
+    ? `${filePath.slice(0, -".jsonl".length)}.attempt-${attempt}.jsonl`
+    : `${filePath}.attempt-${attempt}`
+}
+
+function recoveryObjective(phase: string, objective: string, result: PhaseResult) {
+  const failure = result.subsystemFailure
+  return [
+    objective,
+    "",
+    `Host recovery attempt for the ${phase} phase after a retryable provider failure.`,
+    `Previous termination: ${result.termination}; provider failure: ${failure?.kind ?? "unknown"}${failure?.providerCode ? ` (${failure.providerCode})` : ""}.`,
+    "Continue from the existing workarea, phase checkpoint, hypothesis registry, surface coverage, and tool-usage artifacts.",
+    "Before new target activity, list the current hypothesis registry and reconcile every OPEN, TESTING, QUEUED, and terminal entry.",
+    "Reconcile completed calls before acting. Do not repeat an operation that may already have produced a target-side effect.",
+    "Complete the original deliverable and handoff contract with the remaining phase budget.",
+  ].join("\n")
+}
+
 export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input: AdvanceInput, deps: AdvanceDeps) {
   let phase = input.startPhase
   let objective = input.objective
   let lastSummary = ""
   let degraded = input.degraded === true
   const ranPhases: string[] = []
+  const phaseAttempts: AdvanceOutcome["phaseAttempts"][number][] = []
   let acceptedHandoff = false
 
   while (SubsystemPhase.isExpertPhase(input.workflow, phase)) {
-    const result = yield* Effect.promise((abort) =>
-      deps
-        .runPhase({
-          phase,
-          workflow: input.workflow,
-          sessionID: input.sessionID,
-          workareaCwd: input.workareaCwd,
-          sourceRoot: input.sourceRoot,
-          home: input.home,
-          settingsDirectory: input.settingsDirectory,
-          objective,
-          timeoutMs: input.timeoutMs,
-          abort,
-          env: input.env,
-          handoff: { successor: SubsystemPhase.nextAfterExpertPhase(input.workflow, phase) },
-          transcriptPath: SessionReportLog.expertTranscriptFile(
-            { directory: input.path.cwd, worktree: input.path.root },
-            input.sessionID,
-            phase,
-            input.workflow,
-          ),
-        })
-        .catch((error) => rejectedPhase(phase, input, error)),
+    const baseTranscript = SessionReportLog.expertTranscriptFile(
+      { directory: input.path.cwd, worktree: input.path.root },
+      input.sessionID,
+      phase,
+      input.workflow,
     )
+    const attempted = yield* Effect.promise(async (abort) => {
+      let attempt = 1
+      let route: "main" | "fallback" = "main"
+      let attemptObjective = objective
+      let remainingTimeoutMs = input.timeoutMs
+      let budgetCarry: NonNullable<PhaseSpec["budgetCarry"]> = {
+        approvalWaitMs: 0,
+        retryWaitMs: 0,
+        phaseExtensionMs: 0,
+      }
+      const results: PhaseResult[] = []
+      while (true) {
+        const result: PhaseResult = await deps
+          .runPhase({
+            phase,
+            workflow: input.workflow,
+            sessionID: input.sessionID,
+            workareaCwd: input.workareaCwd,
+            sourceRoot: input.sourceRoot,
+            home: input.home,
+            settingsDirectory: input.settingsDirectory,
+            objective: attemptObjective,
+            timeoutMs: remainingTimeoutMs,
+            attempt,
+            providerRoute: route,
+            budgetCarry,
+            abort,
+            env: input.env,
+            handoff: { successor: SubsystemPhase.nextAfterExpertPhase(input.workflow, phase) },
+            transcriptPath: attemptTranscript(baseTranscript, attempt),
+          })
+          .catch((error) => rejectedPhase(phase, input, error))
+        results.push(result)
+        const policy: PhaseResult["recoveryPolicy"] = result.recoveryPolicy
+        const elapsedBudgetMs = Math.max(0, result.durationMs)
+        const availableBudgetMs = attempt === 1 ? result.limitMs : remainingTimeoutMs
+        remainingTimeoutMs = Math.max(0, availableBudgetMs - elapsedBudgetMs)
+        budgetCarry = {
+          approvalWaitMs: Math.max(budgetCarry.approvalWaitMs, result.approvalWaitMs ?? 0),
+          retryWaitMs: Math.max(budgetCarry.retryWaitMs, result.retryWaitMs ?? 0),
+          phaseExtensionMs: Math.max(budgetCarry.phaseExtensionMs, result.retryCompensationMs ?? 0),
+        }
+        const retryableProviderFailure =
+          result.phaseFailure?.source === "provider" && result.subsystemFailure?.retryable === true
+        if (
+          result.ok ||
+          !retryableProviderFailure ||
+          !policy?.enabled ||
+          attempt > policy.maxRestarts ||
+          remainingTimeoutMs <= 0 ||
+          abort.aborted
+        )
+          return { result, results }
+        attemptObjective = recoveryObjective(phase, objective, result)
+        route =
+          result.subsystemFailure?.providerCode === "active_tail_too_large"
+            ? "main"
+            : policy.useFallbackProvider && policy.fallbackConfigured
+              ? "fallback"
+              : "main"
+        attempt++
+      }
+    })
+    const result = attempted.result
+    attempted.results.forEach((attemptResult, index) => {
+      phaseAttempts.push({
+        phase,
+        attempt: index + 1,
+        provider: attemptResult.agentRun?.provider,
+        providerAffinity: attemptResult.agentRun?.providerAffinity,
+        termination: attemptResult.termination,
+        recovered: index < attempted.results.length - 1,
+      })
+    })
     ranPhases.push(phase)
-    degraded ||= !result.ok || result.warnings.length > 0
+    degraded ||= attempted.results.length > 1 || !result.ok || result.warnings.length > 0
     lastSummary =
       capSummary(result.summary.trim()) ||
       (result.subsystemFailure
@@ -163,6 +249,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
     if (!acceptedHandoff)
       return {
         ranPhases,
+        phaseAttempts,
         haltedAt: phase,
         terminal: false,
         outcome: phaseOutcome(result),
@@ -174,6 +261,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
     if (!next)
       return {
         ranPhases,
+        phaseAttempts,
         terminal: true,
         outcome: degraded ? "warning" : "success",
         summary: lastSummary,
@@ -183,6 +271,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
     if (!SubsystemPhase.isExpertPhase(input.workflow, next)) {
       return {
         ranPhases,
+        phaseAttempts,
         haltedAt: phase,
         terminal: false,
         outcome: "failed",
@@ -211,6 +300,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
 
   return {
     ranPhases,
+    phaseAttempts,
     handedTo: phase,
     terminal: false,
     outcome: degraded ? "warning" : "success",

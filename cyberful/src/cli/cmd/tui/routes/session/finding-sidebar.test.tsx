@@ -7,6 +7,7 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { FindingRegistryView } from "@/server/client"
 import {
+  activeHypothesisLabel,
   findingDialogHeight,
   findingGroups,
   findingSeverityTone,
@@ -85,6 +86,12 @@ test("findings are grouped globally by descending severity", () => {
   expect(["error", "warning", "accent", "info", "textMuted"]).toEqual(
     (["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] as const).map(findingSeverityTone),
   )
+})
+
+test("active hypothesis copy is absent at zero and handles singular and plural", () => {
+  expect(activeHypothesisLabel(0)).toBeUndefined()
+  expect(activeHypothesisLabel(1)).toBe("(i) 1 active hypothesis")
+  expect(activeHypothesisLabel(12)).toBe("(i) 12 active hypotheses")
 })
 
 test("OpenTUI renders the feed at 2/3 and the divider-owned sidebar at 1/3", async () => {

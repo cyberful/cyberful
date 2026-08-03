@@ -24,14 +24,13 @@ import { useSync, type SkillFeedEntry, type ExpertPhaseEntry } from "@tui/contex
 import { SubsystemPhase } from "@/subsystem/phase"
 import {
   continuesExpertPhaseTurn,
-  expertActorCardLabel,
+  expertActorIdentityText,
   expertActorStateText,
-  expertActorTextLabel,
   expertPhaseDuration,
   expertPhaseLabel,
   isExpertSemanticProgress,
 } from "@tui/context/expert-feed"
-import type { PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
+import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
 import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
 import { SHELL_TOOL_ICON, ToolDisplayLabel, toolDisplayDetails, toolDisplayText } from "@tui/component/tool-label"
@@ -264,6 +263,7 @@ export function Session() {
   const [diffWrapMode] = kv.signal("diff_wrap_mode", "word")
   const showTimestamps = createMemo(() => timestamps() === "show")
   const findings = createMemo(() => sync.data.finding[route.sessionID])
+  const hypotheses = createMemo(() => sync.data.hypothesis[route.sessionID])
   const findingCount = createMemo(() => findings()?.registry.findings.length ?? 0)
   const [findingsOpen, setFindingsOpen] = createSignal(false)
   const splitWidths = createMemo(() => findingSplitWidths(dimensions().width, findingsOpen()))
@@ -1301,7 +1301,7 @@ export function Session() {
             <Toast />
           </box>
           <Show when={findingsOpen()}>
-            <FindingSidebar width={findingsWidth()} view={findings()} onOpen={openFinding} />
+            <FindingSidebar width={findingsWidth()} view={findings()} hypotheses={hypotheses()} onOpen={openFinding} />
           </Show>
         </box>
       </context.Provider>
@@ -1330,7 +1330,26 @@ function ExpertPhaseRow(props: {
     props.workflow ? SubsystemPhase.phaseOwner(props.workflow, props.entry.phase) === "expert" : false
   const markerColor = () => (isExpert() ? theme.info : theme.textMuted)
   const actorLabel = () => props.entry.actor?.label
-  const actorLabelColor = () => tint(theme.textMuted, theme.text, 0.12)
+  const actorLabelColor = () => tint(theme.textMuted, theme.text, 0.35)
+  const ActorTag = (tag: { readonly actor?: PhaseActivityActor; readonly arrow?: boolean }) => {
+    const identity = () => expertActorIdentityText(tag.actor)
+    return (
+      <>
+        <Show when={identity()} fallback={<span style={{ fg: actorLabelColor() }}>{tag.actor?.label}</span>}>
+          {(value) => (
+            <>
+              <span style={{ fg: theme.textMuted }}>{"@{"}</span>
+              <span style={{ fg: actorLabelColor() }}>{value()}</span>
+              <span style={{ fg: theme.textMuted }}>{"}"}</span>
+            </>
+          )}
+        </Show>
+        <Show when={tag.arrow}>
+          <span style={{ fg: theme.textMuted }}>{" → "}</span>
+        </Show>
+      </>
+    )
+  }
   const actorStateColor = (state: PhaseActivityActorState) => {
     if (state === "completed") return theme.success
     if (state === "interrupted") return theme.warning
@@ -1355,6 +1374,8 @@ function ExpertPhaseRow(props: {
   )
   const semanticProgress = createMemo(() => isExpertSemanticProgress(props.entry.text))
   const contextCompaction = createMemo(() => props.entry.contextCompaction)
+  const providerRetry = createMemo(() => props.entry.providerRetry)
+  const runtimeDiagnostic = createMemo(() => props.entry.runtimeDiagnostic)
   // Synthetic ToolPart props let a phase-feed tool render through the same GenericTool as session tools.
   const toolPart = createMemo<ToolPart>(() => {
     const e = props.entry
@@ -1423,7 +1444,7 @@ function ExpertPhaseRow(props: {
             <box marginTop={1} paddingLeft={3} flexShrink={0}>
               <text wrapMode="none" truncate>
                 <span style={{ fg: actorStateColor(state()) }}>{`${actorStateIcon(state())} `}</span>
-                <span style={{ fg: actorLabelColor() }}>{actorLabel()}</span>
+                <ActorTag actor={props.entry.actor} />
                 <span style={{ fg: theme.textMuted }}>{` · ${expertActorStateText(state())}`}</span>
               </text>
             </box>
@@ -1435,9 +1456,9 @@ function ExpertPhaseRow(props: {
               Identical card = identical read across an Expert phase and an Agent turn. */}
           <box paddingLeft={3} flexDirection="column" flexShrink={0}>
             <Show when={actorLabel()}>
-              {(label) => (
+              {(_label) => (
                 <text marginTop={2} wrapMode="none" truncate>
-                  <span style={{ fg: actorLabelColor() }}>{expertActorCardLabel(label())}</span>
+                  <ActorTag actor={props.entry.actor} />
                 </text>
               )}
             </Show>
@@ -1461,9 +1482,9 @@ function ExpertPhaseRow(props: {
             }}
           >
             <Show when={actorLabel()}>
-              {(label) => (
+              {(_label) => (
                 <text marginTop={2} wrapMode="none" truncate>
-                  <span style={{ fg: actorLabelColor() }}>{expertActorCardLabel(label())}</span>
+                  <ActorTag actor={props.entry.actor} />
                 </text>
               )}
             </Show>
@@ -1502,13 +1523,36 @@ function ExpertPhaseRow(props: {
         </Match>
         <Match when={props.entry.kind === "status"}>
           {/* Host-authored terminal telemetry remains raw when it is not the final phase status. Semantic
-              progress stays compact and muted; warning telemetry retains the stronger separation and tone. */}
+              progress and recoverable runtime diagnostics stay compact and muted; only terminal phase
+              outcomes and retry failures retain stronger separation and tone. */}
           <Show
             when={props.entry.phaseStatus?.ok ? props.entry.phaseStatus : undefined}
             fallback={
               <box
-                marginTop={semanticProgress() || contextCompaction() ? 1 : 2}
-                marginBottom={semanticProgress() || contextCompaction() ? 1 : 2}
+                marginTop={
+                  providerRetry()
+                    ? providerRetry()?.state === "scheduled"
+                      ? 1
+                      : 0
+                    : runtimeDiagnostic()
+                      ? 0
+                      : semanticProgress() || contextCompaction()
+                        ? 1
+                        : 2
+                }
+                marginBottom={
+                  providerRetry()
+                    ? providerRetry()?.state === "succeeded" ||
+                      providerRetry()?.state === "exhausted" ||
+                      providerRetry()?.state === "cancelled"
+                      ? 1
+                      : 0
+                    : runtimeDiagnostic()
+                      ? 0
+                      : semanticProgress() || contextCompaction()
+                        ? 1
+                        : 2
+                }
                 paddingLeft={3}
                 flexShrink={0}
               >
@@ -1518,12 +1562,22 @@ function ExpertPhaseRow(props: {
                       fg: contextCompaction()
                         ? contextCompaction()?.state === "failed"
                           ? theme.warning
-                          : theme.info
-                        : semanticProgress()
-                          ? theme.textMuted
-                          : props.entry.phaseStatus
-                            ? theme.error
-                            : theme.warning,
+                          : contextCompaction()?.state === "noop"
+                            ? theme.textMuted
+                            : theme.info
+                        : providerRetry()
+                          ? providerRetry()?.state === "succeeded"
+                            ? theme.success
+                            : providerRetry()?.state === "exhausted" || providerRetry()?.state === "cancelled"
+                              ? theme.error
+                              : theme.warning
+                          : runtimeDiagnostic()
+                            ? theme.textMuted
+                            : semanticProgress()
+                              ? theme.textMuted
+                              : props.entry.phaseStatus
+                                ? theme.error
+                                : theme.warning,
                     }}
                   >
                     {props.entry.text}
@@ -1578,9 +1632,7 @@ function ExpertPhaseRow(props: {
           {/* Root prose stays plain; delegated prose carries the same actor label as its tool rows. */}
           <box marginTop={actorLabel() ? 1 : 0} paddingLeft={3} flexShrink={0}>
             <text wrapMode="word">
-              <Show when={actorLabel()}>
-                {(label) => <span style={{ fg: actorLabelColor() }}>{expertActorTextLabel(label())}</span>}
-              </Show>
+              <Show when={actorLabel()}>{(_label) => <ActorTag actor={props.entry.actor} arrow />}</Show>
               <span style={{ fg: theme.text }}>{props.entry.text}</span>
             </text>
           </box>

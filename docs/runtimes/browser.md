@@ -95,12 +95,20 @@ the human can choose:
 Cyberful never solves the challenge, injects a bypass token, or interprets
 ordinary session steering as one of these decisions.
 
+Browser gateway startup, connection, tool, timeout, and incomplete-shutdown
+errors are retained in the same bounded
+`raw/operations/runtime-diagnostics.jsonl` used by other runtime components.
+The TUI exposes only component, class, and artifact path; sanitized detail is
+kept out of agent context.
+
 Every browser result carries a redacted `_meta["cyberful.dev/browser-action"]`
 envelope with profile, page ID, origin, path family, action family, page
 transition, outcome, and status when available. It excludes selectors, entered
 text, cookies, request bodies, and query values. The gateway stores these events
 locally in `raw/operations/surface-coverage.jsonl` and publishes a per-phase
-summary of exercised and unexercised surface.
+version 2 summary. Browser and egress envelopes from the same call are both
+retained; the summary groups methods, HTTP statuses, and outcomes per route and
+lists a route under `failed_only` only when it has no successful observation.
 
 The phase gateway also resolves and records the effective browser identity on
 every browser call. Omitting `browser_profile` means profile `1`, and both that

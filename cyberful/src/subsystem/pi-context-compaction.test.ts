@@ -73,16 +73,14 @@ function toolResult(callID: string, toolName: string, text: string, timestamp: n
 }
 
 describe("Pi AgentRun context compaction", () => {
-  test("reserves output capacity and a safety margin before the configured ratio", () => {
-    const policy = { enabled: true, trigger_percentage: 68 }
+  test("triggers at 75 percent and targets 35 percent of the operational window", () => {
+    const policy = { enabled: true, trigger_percentage: 75, target_percentage: 35 }
     expect(
       contextCompactionNeed({
         mode: "proactive",
         policy,
-        contextWindow: 272_000,
-        maxOutputTokens: 128_000,
-        estimatedTokens: 120_000,
-        hasToolResults: true,
+        operationalContextWindow: 256_000,
+        estimatedTokens: 191_999,
       }),
     ).toBeUndefined()
 
@@ -90,14 +88,13 @@ describe("Pi AgentRun context compaction", () => {
       contextCompactionNeed({
         mode: "proactive",
         policy,
-        contextWindow: 272_000,
-        maxOutputTokens: 128_000,
-        estimatedTokens: 140_000,
-        hasToolResults: true,
+        operationalContextWindow: 256_000,
+        estimatedTokens: 192_000,
       }),
     ).toMatchObject({
-      estimatedTokensBefore: 140_000,
-      triggerTokens: 130_400,
+      estimatedTokensBefore: 192_000,
+      triggerTokens: 192_000,
+      targetTokens: 89_600,
     })
   })
 
@@ -124,11 +121,9 @@ describe("Pi AgentRun context compaction", () => {
     })
     const need = contextCompactionNeed({
       mode: "emergency",
-      policy: { enabled: true, trigger_percentage: 68 },
-      contextWindow: 272_000,
-      maxOutputTokens: 128_000,
+      policy: { enabled: true, trigger_percentage: 75, target_percentage: 35 },
+      operationalContextWindow: 256_000,
       estimatedTokens,
-      hasToolResults: true,
     })
     if (!need) throw new Error("Emergency compaction should be available for a transcript with tool results")
 
@@ -181,6 +176,40 @@ describe("Pi AgentRun context compaction", () => {
     if (reusedResult.role !== "toolResult") throw new Error("Saved projection was not reused")
     expect(textFromToolResult(reusedResult)).toContain(relativePath)
     expect(projections.size).toBe(1)
+  })
+
+  test("reports exhausted candidates as a no-op instead of a persistence failure", async () => {
+    const workarea = await temporaryWorkarea()
+    const messages: AgentMessage[] = [
+      user("Keep this bounded context.", 1),
+      assistant(2, [{ type: "toolCall", id: "small-call", name: "probe", arguments: {} }]),
+      toolResult("small-call", "probe", "small result", 3),
+    ]
+
+    const result = await compactAgentContext({
+      need: {
+        mode: "proactive",
+        estimatedTokensBefore: 10_000,
+        triggerTokens: 9_000,
+        targetTokens: 6_000,
+      },
+      messages,
+      systemPrompt: "Immutable Cyberful scope.",
+      tools: [],
+      workarea,
+      runID: "run-noop-test",
+      artifacts: new Map(),
+      projections: new Map(),
+    })
+
+    expect(result).toMatchObject({
+      outcome: "noop",
+      reason: "no_candidates",
+      toolResultsVirtualized: 0,
+      artifactsPreserved: 0,
+      persistenceFailures: 0,
+    })
+    expect(result.messages).toEqual(messages)
   })
 })
 

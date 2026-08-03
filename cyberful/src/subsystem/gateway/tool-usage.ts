@@ -21,6 +21,7 @@ const COLUMNS = [
   "egress_blocked",
   "egress_host",
   "egress_method",
+  "egress_http_status",
   "egress_path_family",
   "egress_request_bytes",
   "egress_response_bytes",
@@ -49,6 +50,7 @@ export interface ToolUsageEvent {
   egress_blocked?: boolean
   egress_host?: string
   egress_method?: string
+  egress_http_status?: number
   egress_path_family?: string
   egress_request_bytes?: number
   egress_response_bytes?: number

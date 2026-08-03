@@ -1,7 +1,7 @@
-// ── Pi AgentRun Context Compaction ──────────────────────────────
-// Projects long-lived Pi transcripts into bounded provider context while
-//   preserving complete tool results as owner-only workarea artifacts.
-// → cyberful/src/subsystem/pi-agent.ts — installs the projection on every AgentRun.
+// ── Pi AgentRun Context Rotation Support ────────────────────────
+// Estimates the complete provider input and archives bulky tool results before
+//   the semantic checkpoint replaces the active in-memory history.
+// → cyberful/src/subsystem/pi-agent.ts — owns safe-boundary rotation and installation.
 // → cyberful/src/workarea.ts — owns symlink-safe artifact persistence.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
@@ -16,14 +16,12 @@ import type { ToolResultMessage } from "@earendil-works/pi-ai"
 import type { Settings } from "@/config/settings"
 import { replaceWorkareaFile } from "@/workarea"
 
-const MIN_SAFETY_MARGIN_TOKENS = 8_192
-const MAX_SAFETY_MARGIN_TOKENS = 32_768
-const SAFETY_MARGIN_RATIO = 0.05
 const PROACTIVE_RECENT_RESULTS = 6
 const EMERGENCY_RECENT_RESULTS = 2
 const PROACTIVE_EXCERPT_CHARS = 2_400
 const EMERGENCY_EXCERPT_CHARS = 800
 const ARTIFACT_ROOT = "raw/context-tool-results"
+export const EAGER_VIRTUALIZATION_BYTES = 64 * 1024
 const SEMANTIC_TOOL_RESULTS = new Set([
   "delegate_task",
   "finding",
@@ -35,6 +33,13 @@ const SEMANTIC_TOOL_RESULTS = new Set([
 ])
 
 export type ContextCompactionMode = "proactive" | "emergency"
+export type ContextCompactionOutcome = "completed" | "noop" | "failed" | "aborted"
+export type ContextCompactionReason =
+  | "virtualized"
+  | "reused"
+  | "no_candidates"
+  | "persistence_error"
+  | "aborted"
 
 export interface ContextArtifactReference {
   readonly path: string
@@ -57,10 +62,12 @@ export interface ContextCompactionNeed {
 
 export interface ContextCompactionResult {
   readonly messages: AgentMessage[]
+  readonly outcome: ContextCompactionOutcome
+  readonly reason: ContextCompactionReason
   readonly estimatedTokensBefore: number
   readonly estimatedTokensAfter: number
   readonly triggerTokens: number
-  readonly messagesRemoved: 0
+  readonly messagesRemoved: number
   readonly toolResultsVirtualized: number
   readonly artifactsPreserved: number
   readonly persistenceFailures: number
@@ -212,25 +219,23 @@ export function estimateAgentContextTokens(input: {
 
 export function contextCompactionNeed(input: {
   readonly mode: ContextCompactionMode
-  readonly policy: Settings.CompactionPolicy
-  readonly contextWindow: number
-  readonly maxOutputTokens: number
+  readonly policy: Pick<
+    Settings.CompactionPolicy,
+    "enabled" | "trigger_percentage" | "target_percentage"
+  >
+  readonly operationalContextWindow: number
   readonly estimatedTokens: number
-  readonly hasToolResults: boolean
 }): ContextCompactionNeed | undefined {
-  if (!input.policy.enabled || !input.hasToolResults) return
-  const ratioLimit = Math.floor((input.contextWindow * input.policy.trigger_percentage) / 100)
-  const safetyMargin = Math.max(
-    MIN_SAFETY_MARGIN_TOKENS,
-    Math.min(MAX_SAFETY_MARGIN_TOKENS, Math.floor(input.contextWindow * SAFETY_MARGIN_RATIO)),
+  if (!input.policy.enabled) return
+  const triggerTokens = Math.max(
+    1,
+    Math.floor((input.operationalContextWindow * input.policy.trigger_percentage) / 100),
   )
-  const outputAwareLimit = input.contextWindow - input.maxOutputTokens - safetyMargin
-  const triggerTokens = Math.max(1, Math.min(ratioLimit, outputAwareLimit > 0 ? outputAwareLimit : ratioLimit))
-  if (input.mode === "proactive" && input.estimatedTokens <= triggerTokens) return
-  const targetTokens =
-    input.mode === "emergency"
-      ? Math.max(1, Math.min(Math.floor(triggerTokens * 0.6), Math.floor(input.contextWindow * 0.45)))
-      : Math.max(1, Math.floor(triggerTokens * 0.72))
+  if (input.mode === "proactive" && input.estimatedTokens < triggerTokens) return
+  const targetTokens = Math.max(
+    1,
+    Math.floor((input.operationalContextWindow * input.policy.target_percentage) / 100),
+  )
   return {
     mode: input.mode,
     estimatedTokensBefore: input.estimatedTokens,
@@ -243,6 +248,8 @@ function candidates(input: {
   readonly messages: readonly AgentMessage[]
   readonly runID: string
   readonly mode: ContextCompactionMode
+  readonly minimumBytes?: number
+  readonly excludeLatestToolResult?: boolean
 }): Candidate[] {
   const toolResults = input.messages.flatMap((message, index) =>
     message.role === "toolResult" ? [{ index, message }] : [],
@@ -260,6 +267,8 @@ function candidates(input: {
         sha256,
       }
       const bytes = Buffer.byteLength(full)
+      if (input.minimumBytes !== undefined && bytes <= input.minimumBytes) return []
+      if (input.excludeLatestToolResult && position === toolResults.length - 1) return []
       const projected = virtualizedMessage(message, artifact, bytes, excerptChars)
       const savings = estimateTokens(message) - estimateTokens(projected)
       if (savings <= 0) return []
@@ -294,6 +303,21 @@ function candidates(input: {
     )
 }
 
+export function hasLargeHistoricalToolResult(
+  messages: readonly AgentMessage[],
+  projections: ReadonlyMap<string, ContextProjectionEntry>,
+  threshold = EAGER_VIRTUALIZATION_BYTES,
+) {
+  const results = messages.filter((message): message is ToolResultMessage => message.role === "toolResult")
+  return results
+    .slice(0, -1)
+    .some(
+      (message) =>
+        !projections.has(message.toolCallId) &&
+        Buffer.byteLength(artifactJson({ runID: "size-probe", message })) > threshold,
+    )
+}
+
 // ── Provider Projection Never Becomes The Evidence Store ────────
 // The Agent owns an unmodified transcript so tool execution, auditing, and
 // recovery always retain the original result. Only a provider-bound copy is
@@ -315,12 +339,18 @@ export async function compactAgentContext(input: {
   readonly artifacts: Map<string, ContextArtifactReference>
   readonly projections: Map<string, ContextProjectionEntry>
   readonly signal?: AbortSignal
+  readonly minimumBytes?: number
+  readonly excludeLatestToolResult?: boolean
 }): Promise<ContextCompactionResult> {
   const projected = projectAgentContext(input.messages, input.projections, input.need.mode)
   const available = candidates({
     messages: input.messages,
     runID: input.runID,
     mode: input.need.mode,
+    ...(input.minimumBytes === undefined ? {} : { minimumBytes: input.minimumBytes }),
+    ...(input.excludeLatestToolResult === undefined
+      ? {}
+      : { excludeLatestToolResult: input.excludeLatestToolResult }),
   }).filter((candidate) => !input.projections.has(candidate.toolCallID))
   const selected: Candidate[] = []
   let estimated = input.need.estimatedTokensBefore
@@ -342,6 +372,8 @@ export async function compactAgentContext(input: {
   if (selected.length === 0 && !input.signal?.aborted && reused.length > 0)
     return {
       messages: projected,
+      outcome: "completed",
+      reason: "reused",
       estimatedTokensBefore: input.need.estimatedTokensBefore,
       estimatedTokensAfter: input.need.estimatedTokensBefore,
       triggerTokens: input.need.triggerTokens,
@@ -351,16 +383,32 @@ export async function compactAgentContext(input: {
       persistenceFailures: 0,
     }
 
-  if (input.signal?.aborted || selected.length === 0)
+  if (input.signal?.aborted)
     return {
       messages: projected,
+      outcome: "aborted",
+      reason: "aborted",
       estimatedTokensBefore: input.need.estimatedTokensBefore,
       estimatedTokensAfter: input.need.estimatedTokensBefore,
       triggerTokens: input.need.triggerTokens,
       messagesRemoved: 0,
       toolResultsVirtualized: 0,
       artifactsPreserved: 0,
-      persistenceFailures: selected.length === 0 ? 1 : selected.length,
+      persistenceFailures: 0,
+    }
+
+  if (selected.length === 0)
+    return {
+      messages: projected,
+      outcome: "noop",
+      reason: "no_candidates",
+      estimatedTokensBefore: input.need.estimatedTokensBefore,
+      estimatedTokensAfter: input.need.estimatedTokensBefore,
+      triggerTokens: input.need.triggerTokens,
+      messagesRemoved: 0,
+      toolResultsVirtualized: 0,
+      artifactsPreserved: 0,
+      persistenceFailures: 0,
     }
 
   const persisted = await Promise.allSettled(
@@ -384,6 +432,8 @@ export async function compactAgentContext(input: {
 
   return {
     messages: projected,
+    outcome: persisted.length === successful.length ? "completed" : "failed",
+    reason: persisted.length === successful.length ? "virtualized" : "persistence_error",
     estimatedTokensBefore: input.need.estimatedTokensBefore,
     estimatedTokensAfter,
     triggerTokens: input.need.triggerTokens,

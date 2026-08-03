@@ -72,6 +72,12 @@ agent:
       model: glm-5.2
       auth:
         type: subscription
+    moonshot:
+      adapter: moonshotai
+      model: kimi-k3
+      auth:
+        type: environment
+        variable: MOONSHOT_API_KEY
 instructions:
   persona_roots: []
   skill_roots: []
@@ -89,7 +95,45 @@ describe("Pi provider registry", () => {
       provider: "flagship",
       id: "gpt-5.6-sol",
       api: "openai-codex-responses",
+      contextWindow: 272_000,
+      maxTokens: 128_000,
     })
+    expect(registry.contextCapacity("flagship")).toMatchObject({
+      catalogContextWindow: 272_000,
+      trustedRouteWindow: 272_000,
+      operationalContextWindow: 256_000,
+      source: "catalog_default",
+      warnings: [],
+    })
+  })
+
+  test("allows builtin limits to restrict but never enlarge the catalog", () => {
+    const configured = Settings.parse(
+      Settings.DEFAULT_YAML
+        .replace(
+          "      operational_context_window: 256000",
+          [
+            "      context_window: 900000",
+            "      operational_context_window: 300000",
+            "      max_output_tokens: 64000",
+          ].join("\n"),
+        ),
+    )
+    const registry = createPiModels(configured.agent, new InMemoryCredentialStore())
+
+    expect(registry.model("openai-codex")).toMatchObject({
+      contextWindow: 272_000,
+      maxTokens: 64_000,
+    })
+    expect(registry.contextCapacity("openai-codex")).toMatchObject({
+      catalogContextWindow: 272_000,
+      configuredContextWindow: 900_000,
+      trustedRouteWindow: 272_000,
+      configuredOperationalContextWindow: 300_000,
+      operationalContextWindow: 272_000,
+      source: "configured_operational_clamped",
+    })
+    expect(registry.contextCapacity("openai-codex").warnings).toHaveLength(2)
   })
 
   test("uses settings keys for Kimi and Z.AI subscription credentials", () => {
@@ -102,6 +146,7 @@ describe("Pi provider registry", () => {
       id: "k3",
       api: "anthropic-messages",
     })
+    expect(registry.contextCapacity("kimi").operationalContextWindow).toBe(256_000)
     expect(registry.adapter("zai-plan")).toBe("zai")
     expect(registry.loginType("zai-plan")).toBe("api_key")
     expect(registry.model("zai-plan")).toMatchObject({
@@ -109,6 +154,8 @@ describe("Pi provider registry", () => {
       id: "glm-5.2",
       api: "openai-completions",
     })
+    expect(registry.contextCapacity("zai-plan").operationalContextWindow).toBe(256_000)
+    expect(registry.contextCapacity("moonshot").operationalContextWindow).toBe(256_000)
   })
 
   test("persists subscription login under the configured settings key", async () => {
@@ -159,6 +206,47 @@ describe("Pi provider registry", () => {
         thinkingFormat: "zai",
         zaiToolStream: true,
       },
+    })
+  })
+
+  test("uses a smaller custom route limit instead of the 256K default", () => {
+    const configured = Settings.parse(`version: 1
+agent:
+  subsystem: pi
+  main_provider: small
+  subagents:
+    enabled: true
+    max_per_run: 1
+    max_concurrent: 1
+    max_depth: 1
+  fallback:
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+  providers:
+    small:
+      adapter: openai-completions
+      base_url: https://small.invalid/v1
+      model: small-model
+      context_window: 100000
+      max_output_tokens: 8192
+      auth:
+        type: environment
+        variable: SMALL_API_KEY
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false
+`)
+    const registry = createPiModels(configured.agent, new InMemoryCredentialStore())
+
+    expect(registry.contextCapacity("small")).toMatchObject({
+      catalogContextWindow: 100_000,
+      trustedRouteWindow: 100_000,
+      operationalContextWindow: 100_000,
+      source: "catalog_default",
     })
   })
 

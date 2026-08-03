@@ -13,6 +13,8 @@ import { lookup } from "node:dns/promises"
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import { constants as filesystemConstants } from "node:fs"
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm } from "node:fs/promises"
+import { readBoundedPrefix } from "@/util/bounded-output"
+import { contains as isContained } from "@/util/filesystem"
 
 const MAX_REFS = 8
 const MAX_ROOT_REPOSITORIES = 8
@@ -173,7 +175,11 @@ function safeRef(value: unknown, label: string) {
 }
 
 function safeRepository(value: unknown, url: URL) {
-  const derived = path.posix.basename(url.pathname).replace(/\.git$/i, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
+  const derived = path.posix
+    .basename(url.pathname)
+    .replace(/\.git$/i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
   const repository = value === undefined ? derived : value
   if (typeof repository !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(repository))
     throw new Error("source_import repository must be a lowercase stable alias")
@@ -246,34 +252,6 @@ export function parseSourceImportRequest(value: unknown): SourceImportRequest {
     additionalRefs: [...new Set(additionalRefs)],
     submodules: input.submodules === "none" ? "none" : "recursive",
   }
-}
-
-async function readBounded(stream: ReadableStream<Uint8Array> | null) {
-  if (!stream) return { text: "", truncated: false }
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let retained = 0
-  let truncated = false
-  while (true) {
-    const next = await reader.read()
-    if (next.done) break
-    const remaining = MAX_OUTPUT_BYTES - retained
-    if (remaining <= 0) {
-      truncated = true
-      continue
-    }
-    const chunk = next.value.byteLength <= remaining ? next.value : next.value.slice(0, remaining)
-    chunks.push(chunk)
-    retained += chunk.byteLength
-    truncated ||= chunk.byteLength !== next.value.byteLength
-  }
-  const bytes = new Uint8Array(retained)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return { text: new TextDecoder().decode(bytes), truncated }
 }
 
 const gitPolicy = [
@@ -353,19 +331,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
-}
-
 function safeSubmodulePath(value: unknown) {
   if (typeof value !== "string" || !value || value.length > 1_024 || path.isAbsolute(value) || value.includes("\0"))
     throw new Error("source import contains an unsafe submodule path")
   const normalized = path.normalize(value)
-  if (
-    normalized === "." ||
-    normalized.split(path.sep).some((segment) => segment === ".." || segment === ".git")
-  )
+  if (normalized === "." || normalized.split(path.sep).some((segment) => segment === ".." || segment === ".git"))
     throw new Error("source import contains an unsafe submodule path")
   return normalized.replaceAll(path.sep, "/")
 }
@@ -533,8 +503,8 @@ async function defaultRunGit(args: readonly string[], cwd: string): Promise<Comm
   try {
     const [exitCode, stdout, stderr] = await Promise.all([
       child.exited,
-      readBounded(child.stdout),
-      readBounded(child.stderr),
+      readBoundedPrefix(child.stdout, MAX_OUTPUT_BYTES),
+      readBoundedPrefix(child.stderr, MAX_OUTPUT_BYTES),
     ])
     return {
       exitCode,
@@ -587,8 +557,8 @@ async function verifyOfflineGitIdentity(repository: string, manifest: SourceImpo
     try {
       const [exitCode, stdout, stderr] = await Promise.all([
         child.exited,
-        readBounded(child.stdout),
-        readBounded(child.stderr),
+        readBoundedPrefix(child.stdout, MAX_OUTPUT_BYTES),
+        readBoundedPrefix(child.stderr, MAX_OUTPUT_BYTES),
       ])
       const result = {
         exitCode,
@@ -623,7 +593,8 @@ async function verifyOfflineGitIdentity(repository: string, manifest: SourceImpo
           if (metadata.isSymbolicLink()) throw new Error("source import submodule path contains a symlink")
         }
         const resolved = await realpath(candidate)
-        if (!isContained(canonicalRepository, resolved)) throw new Error("source import submodule resolves outside its root")
+        if (!isContained(canonicalRepository, resolved))
+          throw new Error("source import submodule resolves outside its root")
         if ((await resolveCommit("HEAD", resolved)) !== submodule.commit)
           throw new Error(`source import submodule '${submodule.path}' no longer matches its attested commit`)
       }
@@ -1137,9 +1108,10 @@ function resolveSubmoduleUrl(parentUrl: string, declared: string) {
     throw new Error("source import contains an invalid submodule URL")
   let resolved: URL
   try {
-    resolved = declared.startsWith("./") || declared.startsWith("../")
-      ? new URL(declared, `${parentUrl.replace(/\/+$/, "")}/`)
-      : new URL(declared)
+    resolved =
+      declared.startsWith("./") || declared.startsWith("../")
+        ? new URL(declared, `${parentUrl.replace(/\/+$/, "")}/`)
+        : new URL(declared)
   } catch {
     throw new Error("source import contains an invalid submodule URL")
   }
@@ -1238,12 +1210,16 @@ async function materializeSubmodules(input: {
         ),
         `Submodule '${relative}' commit fetch`,
       )
-      success(await input.runGit(["checkout", "--detach", "--force", commit], destination), `Submodule '${relative}' checkout`)
+      success(
+        await input.runGit(["checkout", "--detach", "--force", commit], destination),
+        `Submodule '${relative}' checkout`,
+      )
       const actual = success(
         await input.runGit(["rev-parse", "HEAD^{commit}"], destination),
         `Submodule '${relative}' identity`,
       ).toLowerCase()
-      if (actual !== commit) throw new Error(`source import submodule '${relative}' checkout does not match its Gitlink`)
+      if (actual !== commit)
+        throw new Error(`source import submodule '${relative}' checkout does not match its Gitlink`)
       await visit(destination, resolvedRequest.url, relative, depth + 1)
       imported.push({
         path: relative,
@@ -1297,13 +1273,7 @@ export async function handleSourceImport(args: Record<string, unknown>, hooks: S
   const storeMetadata = await lstat(canonicalStore)
   if (!storeMetadata.isDirectory() || storeMetadata.isSymbolicLink())
     throw new Error("source_import store must be a plain directory")
-  const relativeStore = path.relative(canonicalWorkarea, canonicalStore)
-  const relativeWorkarea = path.relative(canonicalStore, canonicalWorkarea)
-  const storeOverlapsWorkarea =
-    relativeStore === "" ||
-    (!relativeStore.startsWith(`..${path.sep}`) && relativeStore !== "..") ||
-    (!relativeWorkarea.startsWith(`..${path.sep}`) && relativeWorkarea !== "..")
-  if (storeOverlapsWorkarea)
+  if (isContained(canonicalWorkarea, canonicalStore) || isContained(canonicalStore, canonicalWorkarea))
     throw new Error("source_import store must be outside the model workarea")
   const importRoot = path.join(canonicalStore, "import")
   const importMetadata = await lstat(importRoot)
@@ -1337,7 +1307,7 @@ export async function handleSourceImport(args: Record<string, unknown>, hooks: S
     )
     const legacyPresent = Boolean(
       (await optionalMetadata(path.join(importRoot, "repository"))) ||
-      (await optionalMetadata(path.join(importRoot, "manifest.json"))),
+        (await optionalMetadata(path.join(importRoot, "manifest.json"))),
     )
     if (collectionEntries.length + (legacyPresent ? 1 : 0) >= MAX_ROOT_REPOSITORIES)
       throw new Error(`source import collection contains at most ${MAX_ROOT_REPOSITORIES} repositories`)
@@ -1346,13 +1316,18 @@ export async function handleSourceImport(args: Record<string, unknown>, hooks: S
       throw new Error(`source import collection contains at most ${MAX_ROOT_REPOSITORIES} repositories`)
   }
   if (!(await hooks.confirm(request))) return { imported: false, reason: "human-declined" }
-  const resolveHost = hooks.resolveHost ?? (async (host) => (await lookup(host, { all: true })).map((item) => item.address))
+  const resolveHost =
+    hooks.resolveHost ?? (async (host) => (await lookup(host, { all: true })).map((item) => item.address))
   const addresses = await resolveHost(request.host)
   if (addresses.length === 0 || addresses.some((address) => !publicNetworkAddress(address)))
     throw new Error("source_import hostname does not resolve exclusively to public network addresses")
-  const temporarySlot = collectionMode ? path.join(collectionRoot, `.${request.repository}-${randomUUID()}.tmp`) : undefined
+  const temporarySlot = collectionMode
+    ? path.join(collectionRoot, `.${request.repository}-${randomUUID()}.tmp`)
+    : undefined
   if (temporarySlot) await mkdir(temporarySlot, { mode: 0o700 })
-  const temporary = temporarySlot ? path.join(temporarySlot, "repository") : path.join(importRoot, `.repository-${randomUUID()}.tmp`)
+  const temporary = temporarySlot
+    ? path.join(temporarySlot, "repository")
+    : path.join(importRoot, `.repository-${randomUUID()}.tmp`)
   const runGit = hooks.runGit ?? defaultRunGit
   const localRefs: Record<string, string> = {}
   const sealedRefs: SealedSourceRef[] = []

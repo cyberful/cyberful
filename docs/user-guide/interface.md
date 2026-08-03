@@ -85,6 +85,12 @@ focus it and press `Enter`, to open the scrollable detail with evidence, gaps,
 next step, and observation history by run and phase. The sidebar is
 informational; it does not edit registry state.
 
+Below the Findings heading, a muted `(i) N active hypotheses` row appears when
+the workflow has unresolved `OPEN`, `QUEUED`, `TESTING`, or `SUSPECTED`
+hypotheses. `CONFIRMED`, `DISPROVED`, `INCONCLUSIVE`, and `UNTESTABLE` are not
+counted. The host hydrates this view on session open and refreshes by registry
+revision, so restarts and child-ownership recovery remain accurate.
+
 Use `Ctrl+X`, then `F`, choose **Toggle findings** in the command palette, type
 `/findings`, or click the **Findings N** composer indicator to show or hide it.
 Cyberful opens it automatically when the first finding arrives only if no
@@ -122,6 +128,18 @@ apparently idle started/completed rows. The card reports its linked child run,
 provider/model, elapsed time, latest activity, tool count, final state, and
 failure when present.
 
+Launch preflight prints each route's provider/model and reasoning effort. When
+the configured profile resolves to another provider-supported value it uses
+`requested → effective`, for example `ultra → max`. The structured run lifecycle
+and `raw/operations/run-state.json` retain both values.
+
+Context maintenance appears as one terminal timeline row. A successful memory
+replacement is **Context rotated with model checkpoint**; a safe result above
+the 35% target is marked partial, while summary, persistence, or irreducible-tail
+failures use warning color. Deterministic tool-result archival can independently
+report a muted no-op. Historical `context_compaction` transcript entries remain
+readable.
+
 Selecting a user or assistant message opens **Message Actions**. The dialog only
 offers **Copy**, which places the message's visible, non-synthetic text on the
 clipboard; it does not fork the session, revert history, or repopulate the
@@ -134,7 +152,24 @@ that no text was produced. Security fallback remains stricter than this display:
 only a provider-structured `security_policy_block` can start it automatically;
 the diagnostic text itself is never classification evidence.
 
+The prompt footer has one token indicator:
+`R> i:… c:… g:… | S> i:… c:… g:…`, where `R` is root work, `S` is all
+delegated work, `i` is non-cached input, `c` is cache-read input, and `g` is
+generated output with reasoning already included. It replaces the former
+single total and child token counters. The complete segment disappears on a
+narrow terminal rather than wrapping. Runtime ZAP/browser failures show only
+their component, error class, and local diagnostics artifact path. Normal
+gateway `stdio` start/close messages and explicit `TRACE`, `DEBUG`, or `INFO`
+logs remain silent in the interface. Actionable diagnostics use compact muted
+rows with no blank lines between them. Each row names the affected component
+and stage, includes a bounded sanitized explanation, links the local log, and
+states when an individual tool failure allows the run to continue. Orange and
+red phase styling is reserved for terminal outcomes and retry failures.
+
 Completion uses `success`, `warning`, `blocked`, or `failed`. Missing required
 deliverables, invalid handoffs, provider exhaustion, and unverified cleanup are
 failures—not “completed with warnings”. A warning indicates only a completed
-run with non-terminal degradation.
+run with non-terminal degradation. Session cleanup likewise records `closed`
+only after Docker absence is verified; `closed_with_cleanup_errors` keeps
+remaining resources and the lifecycle fault visible in
+`raw/operations/run-state.json`.

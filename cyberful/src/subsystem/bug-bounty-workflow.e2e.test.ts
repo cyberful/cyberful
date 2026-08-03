@@ -5,12 +5,12 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { expect, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { SessionID } from "@/session/schema"
-import { NoveltyLedger } from "./gateway/novelty-ledger"
+import { HypothesisRegistry } from "./gateway/hypothesis-registry"
 import { SurfaceCoverage } from "./gateway/surface-coverage"
 import { SubsystemOrchestrator } from "./orchestrator"
 import { SubsystemPhase } from "./phase"
@@ -65,23 +65,19 @@ function browserResult(action: string, family: string, route: string, profile = 
   }
 }
 
-function hypothesis(id: string, rootCause: string, sourceID?: string) {
+function hypothesis(id: string, rootCause: string) {
   return {
     id,
-    title: `${rootCause} boundary`,
+    owner: "phase-root",
+    description: `${rootCause} boundary`,
     root_cause: rootCause,
-    enforcement_owner: `${rootCause} service`,
-    protocol: rootCause === "workflow race" ? "websocket" : "https",
-    state_transition: `observe ${rootCause} before and after a target state change`,
-    attacker_capability: "ordinary authenticated tester",
-    oracle: `differential response for ${rootCause}`,
-    target_facts: [`Target exposes a ${rootCause} transition.`],
-    ...(sourceID ? { source_ref: { phase: "recon", kind: "coverage_backlog", id: sourceID } } : {}),
+    surface: `${rootCause} service`,
+    discriminator: `differential response for ${rootCause}`,
   }
 }
 
 test("local Bug Bounty path combines broad navigation, causal pivots, child usage, and complete handoff", async () => {
-  const workarea = await mkdtemp(path.join(os.tmpdir(), "cyberful-bounty-e2e-"))
+  const workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-bounty-e2e-")))
   try {
     const coverage = new SurfaceCoverage(workarea, "recon")
     await coverage.observe(browserResult("browser_navigate", "navigation", "/dashboard"))
@@ -91,19 +87,33 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
 
     const pivots = [
       ["recon", hypothesis("RC-1", "authorization graph")],
-      ["exploit", hypothesis("EX-1", "workflow race", "RC-COV-1")],
+      ["exploit", hypothesis("EX-1", "workflow race")],
       ["hacker", hypothesis("HK-1", "key custody seam")],
     ] as const
     for (const [phase, entry] of pivots) {
-      const ledger = new NoveltyLedger(workarea, phase, { required: true })
-      await ledger.record(entry)
-      await ledger.synthesize({
+      const registry = new HypothesisRegistry({
+        workarea,
+        workflow: "bug-bounty",
+        phase,
+        synthesisRequired: true,
+      })
+      await registry.handle({ action: "record", ...entry })
+      await registry.handle({ action: "update", id: entry.id, state: "TESTING" })
+      await registry.handle({
+        action: "update",
+        id: entry.id,
+        state: "DISPROVED",
+        evidence: [`${entry.id} exercised the ${entry.surface} discriminator.`],
+        reason: "The controlled differential did not reproduce.",
+      })
+      await registry.handle({
+        action: "synthesize",
         outcome: "diversified",
-        contrarian_summary: `${phase} pivoted to a target-specific causal boundary.`,
-        evidence: [`${entry.id} uses ${entry.protocol} and ${entry.enforcement_owner}.`],
+        summary: `${phase} pivoted to a target-specific causal boundary.`,
+        evidence: [`${entry.id} tests ${entry.root_cause} at ${entry.surface}.`],
         remaining_unknowns: [],
       })
-      expect(await ledger.handoffError()).toBeUndefined()
+      expect(await registry.handoffError()).toBeUndefined()
     }
 
     const usage = SubsystemUsage.createSessionCounter()

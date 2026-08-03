@@ -12,6 +12,8 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { FindingRegistry } from "@/finding/registry"
+import { SessionHypothesis } from "@/session/hypothesis"
+import { SessionProviderUsage } from "@/session/provider-usage"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
@@ -90,6 +92,8 @@ export const SessionPaths = {
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   findings: `${root}/:sessionID/findings`,
+  hypotheses: `${root}/:sessionID/hypotheses`,
+  providerUsage: `${root}/:sessionID/provider-usage`,
   toolArtifact: `${root}/:sessionID/tool-artifact`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
@@ -182,6 +186,32 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.findings",
             summary: "Get session findings",
             description: "Resolve the session workarea and return its authoritative cross-run finding registry.",
+          }),
+        ),
+        HttpApiEndpoint.get("hypotheses", SessionPaths.hypotheses, {
+          params: { sessionID: SessionID },
+          query: DirectoryRoutingQuery,
+          success: described(SessionHypothesis.View, "Active hypothesis registry view"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.hypotheses",
+            summary: "Get active session hypotheses",
+            description:
+              "Resolve the session workarea and return revisioned hypothesis counts for the current workflow.",
+          }),
+        ),
+        HttpApiEndpoint.get("providerUsage", SessionPaths.providerUsage, {
+          params: { sessionID: SessionID },
+          query: DirectoryRoutingQuery,
+          success: described(SessionProviderUsage.View, "Provider usage totals"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.providerUsage",
+            summary: "Get session provider usage",
+            description:
+              "Read the local per-call ledger and aggregate usage by root and delegated AgentRuns.",
           }),
         ),
         HttpApiEndpoint.get("toolArtifact", SessionPaths.toolArtifact, {

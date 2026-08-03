@@ -7,6 +7,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { contains as isContained } from "@/util/filesystem"
 import { listVerifiedSourceImports } from "./source-import"
 
 const MAX_FILES = 50_000
@@ -263,10 +264,7 @@ async function optionalEntry(target: string) {
   })
 }
 
-async function canonicalSourceStore(
-  workareaRoot: string,
-  environment: Readonly<Record<string, string | undefined>>,
-) {
+async function canonicalSourceStore(workareaRoot: string, environment: Readonly<Record<string, string | undefined>>) {
   const configured = environment.CYBERFUL_SOURCE_STORE_ROOT?.trim()
   if (!configured || !path.isAbsolute(configured)) throw new Error("host-owned source store is unavailable")
   const metadata = await lstat(configured)
@@ -359,12 +357,8 @@ export async function effectiveSourceRoot(
   workareaRoot: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ) {
-  return (await resolveEffectiveSource(configuredSourceRoot, workareaRoot, environment, { includeSnapshot: false })).root
-}
-
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+  return (await resolveEffectiveSource(configuredSourceRoot, workareaRoot, environment, { includeSnapshot: false }))
+    .root
 }
 
 function requestedRelativePath(value: unknown) {
@@ -458,9 +452,7 @@ export async function materializeSourceForAuditLab(
     throw new Error("audit lab destination is unsafe")
   if (!isContained(workareaRoot, await realpath(destination))) throw new Error("audit lab destination escapes workarea")
   const candidates = await candidateFiles(effective.root, relativePrefix)
-  const selected = candidates.filter(
-    (file) => !options.manifestsOnly || AUDIT_LAB_MANIFESTS.has(path.basename(file)),
-  )
+  const selected = candidates.filter((file) => !options.manifestsOnly || AUDIT_LAB_MANIFESTS.has(path.basename(file)))
   const digest = createHash("sha256")
   for (const source of selected) {
     const relative = path.relative(sourceBase, source)
@@ -468,7 +460,10 @@ export async function materializeSourceForAuditLab(
     const target = path.join(destination, relative)
     if (!isContained(destination, target)) throw new Error("audit lab file escapes its destination")
     let parent = destination
-    for (const segment of path.dirname(relative).split(path.sep).filter((item) => item && item !== ".")) {
+    for (const segment of path
+      .dirname(relative)
+      .split(path.sep)
+      .filter((item) => item && item !== ".")) {
       parent = path.join(parent, segment)
       const existing = await optionalEntry(parent)
       if (!existing) await mkdir(parent, { mode: 0o700 })
@@ -507,14 +502,15 @@ export async function materializeSourcesForEvmLab(destinationRoot: string, reque
   const sourceStoreRoot = await canonicalSourceStore(workareaRoot, process.env)
   const imports = await listVerifiedSourceImports(sourceStoreRoot)
   if (imports.length === 0) throw new Error("EVM lab source materialization requires an imported repository")
-  const selected = requested.length === 0
-    ? imports
-    : requested.map((repository) => {
-        if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(repository)) throw new Error("EVM repository selector is invalid")
-        const found = imports.find((candidate) => candidate.repository === repository)
-        if (!found) throw new Error(`source repository '${repository}' is not imported`)
-        return found
-      })
+  const selected =
+    requested.length === 0
+      ? imports
+      : requested.map((repository) => {
+          if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(repository)) throw new Error("EVM repository selector is invalid")
+          const found = imports.find((candidate) => candidate.repository === repository)
+          if (!found) throw new Error(`source repository '${repository}' is not imported`)
+          return found
+        })
   if (new Set(selected.map((entry) => entry.repository)).size !== selected.length)
     throw new Error("EVM repository selectors must be unique")
   await mkdir(destination, { recursive: true, mode: 0o700 })

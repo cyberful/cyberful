@@ -18,6 +18,7 @@ type Observation = Pick<
   ToolUsageEvent,
   | "egress_host"
   | "egress_method"
+  | "egress_http_status"
   | "egress_path_family"
   | "egress_request_bytes"
   | "egress_response_bytes"
@@ -31,6 +32,11 @@ type Observation = Pick<
 
 function boundedInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function httpStatus(value: unknown): number | undefined {
+  const status = boundedInteger(value)
+  return status !== undefined && status >= 100 && status <= 599 ? status : undefined
 }
 
 function safeMethod(value: unknown): string | undefined {
@@ -102,6 +108,7 @@ function fromMetadata(result: CallToolResult): Observation | undefined {
   return {
     ...hostAndPath,
     egress_method: safeMethod(value.method),
+    egress_http_status: httpStatus(value.status),
     egress_request_bytes: boundedInteger(value.request_bytes),
     egress_response_bytes: boundedInteger(value.response_bytes),
     egress_attempts: boundedInteger(value.attempts),
@@ -162,6 +169,7 @@ export function declared(args: Record<string, unknown>): Observation {
   return {
     ...endpoint,
     egress_method: safeMethod(args.method),
+    egress_http_status: httpStatus(args.http_status),
     egress_request_bytes: boundedInteger(args.request_bytes),
     egress_response_bytes: boundedInteger(args.response_bytes),
     egress_attempts: boundedInteger(args.attempts),
@@ -177,13 +185,14 @@ export function declared(args: Record<string, unknown>): Observation {
 export const EGRESS_OBSERVATION_TOOL_DEF = {
   name: "egress_observation",
   description:
-    "Append redacted metadata after a network-bearing shell PoC: host, method, path family, bytes, attempts, redirects, deadline and actual route. This is passive, local and fail-open; it never allows, blocks, rewrites, redirects, approves, or retries traffic, including when the destination changed.",
+    "Append redacted metadata after a network-bearing shell PoC: host, method, HTTP status, path family, bytes, attempts, redirects, deadline and actual route. This is passive, local and fail-open; it never allows, blocks, rewrites, redirects, approves, or retries traffic, including when the destination changed.",
   inputSchema: {
     type: "object" as const,
     additionalProperties: false,
     properties: {
       host: { type: "string", maxLength: 253 },
       method: { type: "string", maxLength: 20 },
+      http_status: { type: "integer", minimum: 100, maximum: 599 },
       path_family: { type: "string", maxLength: 180 },
       request_bytes: { type: "integer", minimum: 0 },
       response_bytes: { type: "integer", minimum: 0 },

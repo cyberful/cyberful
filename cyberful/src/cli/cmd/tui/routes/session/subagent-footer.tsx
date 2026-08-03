@@ -35,20 +35,6 @@ export function SubagentFooter() {
     return { label, index: index + 1, total: siblings.length }
   })
 
-  const usage = createMemo(() => {
-    const msg = messages()
-    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) return
-
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    if (tokens <= 0) return
-
-    return {
-      context: Locale.number(tokens),
-    }
-  })
-
   const stepInfo = createMemo(() => {
     const last = messages().findLast((item): item is AssistantMessage => item.role === "assistant")
     return last?.steps
@@ -84,13 +70,6 @@ export function SubagentFooter() {
               <text style={{ fg: theme.textMuted }}>
                 ({subagentInfo().index} of {subagentInfo().total})
               </text>
-            </Show>
-            <Show when={usage()}>
-              {(item) => (
-                <text fg={theme.textMuted} wrapMode="none">
-                  {item().context}
-                </text>
-              )}
             </Show>
             <Show when={stepInfo()}>
               {(item) => (

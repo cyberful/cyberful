@@ -116,6 +116,8 @@ import type {
   SessionForkResponses,
   SessionGetErrors,
   SessionGetResponses,
+  SessionHypothesesErrors,
+  SessionHypothesesResponses,
   SessionListErrors,
   SessionListResponses,
   SessionMessageErrors,
@@ -126,6 +128,8 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionProviderUsageErrors,
+  SessionProviderUsageResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShellErrors,
@@ -1577,6 +1581,70 @@ export class Session extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<SessionFindingsResponses, SessionFindingsErrors, ThrowOnError>({
       url: "/session/{sessionID}/findings",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get active session hypotheses
+   *
+   * Resolve the session workarea and return revisioned hypothesis counts for the current workflow.
+   */
+  public hypotheses<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionHypothesesResponses, SessionHypothesesErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionHypothesesResponses, SessionHypothesesErrors, ThrowOnError>({
+      url: "/session/{sessionID}/hypotheses",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session provider usage
+   *
+   * Read the local per-call ledger and aggregate usage by root and delegated AgentRuns.
+   */
+  public providerUsage<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionProviderUsageResponses, SessionProviderUsageErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionProviderUsageResponses,
+      SessionProviderUsageErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/provider-usage",
       ...options,
       ...params,
     })

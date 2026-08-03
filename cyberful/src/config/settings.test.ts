@@ -61,13 +61,25 @@ describe("Settings", () => {
 
     expect(settings.agent.subsystem).toBe("pi")
     expect(settings.agent.main_provider).toBe("openai-codex")
+    expect(settings.agent.reasoning_effort).toBe("ultra")
+    expect(Settings.reasoningEffort(settings)).toBe("ultra")
     expect(settings.agent.fallback_provider).toBeUndefined()
     expect(settings.agent.compaction).toEqual(Settings.DEFAULT_COMPACTION)
     expect(Settings.compactionPolicy(settings)).toEqual(Settings.DEFAULT_COMPACTION)
     expect(settings.agent.retry).toEqual(Settings.DEFAULT_RETRY)
     expect(Settings.retryPolicy(settings)).toEqual(Settings.DEFAULT_RETRY)
+    expect(Settings.subagentPolicy(settings)).toEqual({
+      provider: "openai-codex",
+      reasoning_effort: "high",
+      source: "configured",
+    })
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
     expect(settings.agent.fallback.automatic_security_block.enabled).toBe(false)
+    expect(Settings.phaseRecoveryPolicy(settings)).toEqual({
+      enabled: true,
+      max_restarts: 1,
+      use_fallback_provider: true,
+    })
     expect(settings.agent.providers["openai-codex"]).toMatchObject({
       adapter: "openai-codex",
       model: "gpt-5.6-sol",
@@ -78,7 +90,7 @@ describe("Settings", () => {
     if (process.platform !== "win32") expect((await stat(filePath)).mode & 0o777).toBe(0o600)
   })
 
-  test("loads idempotently without replacing an existing file", async () => {
+  test("adds the explicit ultra default once while preserving an existing file", async () => {
     const directory = await temporaryDirectory()
     const filePath = path.join(directory, "settings.yaml")
     const text = validSettings()
@@ -89,11 +101,31 @@ describe("Settings", () => {
 
     expect(first).toEqual(second)
     expect(first.agent.main_provider).toBe("main")
+    expect(first.agent.reasoning_effort).toBe("ultra")
+    expect(Settings.reasoningEffort(first)).toBe("ultra")
     expect(first.agent.compaction).toBeUndefined()
     expect(Settings.compactionPolicy(first)).toEqual(Settings.DEFAULT_COMPACTION)
     expect(first.agent.retry).toBeUndefined()
     expect(Settings.retryPolicy(first)).toEqual(Settings.DEFAULT_RETRY)
-    expect(await readFile(filePath, "utf8")).toBe(text)
+    expect(await readFile(filePath, "utf8")).toBe(
+      text.replace("  subsystem: pi\n", "  subsystem: pi\n  reasoning_effort: ultra\n"),
+    )
+  })
+
+  test("preserves a configured reasoning effort and rejects unknown levels", async () => {
+    const directory = await temporaryDirectory()
+    const filePath = path.join(directory, "settings.yaml")
+    const configured = validSettings().replace(
+      "  subsystem: pi\n",
+      "  subsystem: pi\n  reasoning_effort: xhigh\n",
+    )
+    await writeFile(filePath, configured)
+
+    expect(Settings.reasoningEffort(await Settings.load(directory))).toBe("xhigh")
+    expect(await readFile(filePath, "utf8")).toBe(configured)
+    expect(() =>
+      Settings.parse(configured.replace("reasoning_effort: xhigh", "reasoning_effort: extreme")),
+    ).toThrow(/agent\.reasoning_effort/)
   })
 
   test("accepts a bounded global retry policy and rejects invalid delays", () => {
@@ -105,6 +137,7 @@ describe("Settings", () => {
     max_retries: 5
     base_delay_ms: 500
     max_delay_ms: 2000
+    attempt_timeout_ms: 300000
   fallback:`,
       ),
     )
@@ -113,6 +146,8 @@ describe("Settings", () => {
       max_retries: 5,
       base_delay_ms: 500,
       max_delay_ms: 2_000,
+      attempt_timeout_ms: 300_000,
+      max_phase_extension_minutes: 15,
     })
 
     expect(() =>
@@ -141,6 +176,51 @@ describe("Settings", () => {
         ),
       ),
     ).toThrow(/agent\.retry\.max_retries/)
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  retry:
+    enabled: true
+    max_retries: 3
+    base_delay_ms: 1000
+    max_delay_ms: 15000
+    attempt_timeout_ms: 600001
+  fallback:`,
+        ),
+      ),
+    ).toThrow(/agent\.retry\.attempt_timeout_ms/)
+  })
+
+  test("resolves a dedicated subagent route and falls back explicitly for legacy settings", () => {
+    const dedicated = Settings.parse(
+      validSettings().replace(
+        "    enabled: true\n",
+        "    enabled: true\n    provider: main\n    reasoning_effort: medium\n",
+      ),
+    )
+    expect(Settings.subagentPolicy(dedicated)).toEqual({
+      provider: "main",
+      reasoning_effort: "medium",
+      source: "configured",
+    })
+
+    const legacy = Settings.parse(validSettings())
+    expect(Settings.subagentPolicy(legacy)).toMatchObject({
+      provider: "main",
+      reasoning_effort: "high",
+      source: "main-provider-fallback",
+      warning: expect.stringContaining("inherit"),
+    })
+
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "    enabled: true\n",
+          "    enabled: true\n    provider: missing\n",
+        ),
+      ),
+    ).toThrow(/subagents\.provider references unconfigured provider/)
   })
 
   test("accepts a conservative context compaction threshold and rejects unsafe percentages", () => {
@@ -155,7 +235,30 @@ describe("Settings", () => {
     )
     expect(Settings.compactionPolicy(configured)).toEqual({
       enabled: false,
+      model_summary: true,
+      target_percentage: 35,
       trigger_percentage: 70,
+      summarizer: {
+        provider: "inherit",
+        reasoning_effort: "medium",
+      },
+    })
+    const withSummarizer = Settings.parse(
+      validSettings().replace(
+        "  fallback:",
+        `  compaction:
+    enabled: true
+    trigger_percentage: 75
+    target_percentage: 35
+    summarizer:
+      provider: inherit
+      reasoning_effort: high
+  fallback:`,
+      ),
+    )
+    expect(Settings.compactionPolicy(withSummarizer).summarizer).toEqual({
+      provider: "inherit",
+      reasoning_effort: "high",
     })
 
     expect(() =>
@@ -169,6 +272,32 @@ describe("Settings", () => {
         ),
       ),
     ).toThrow(/agent\.compaction\.trigger_percentage/)
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  compaction:
+    enabled: true
+    trigger_percentage: 70
+    target_percentage: 70
+  fallback:`,
+        ),
+      ),
+    ).toThrow(/target_percentage must be lower/)
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "  fallback:",
+          `  compaction:
+    enabled: true
+    trigger_percentage: 75
+    target_percentage: 35
+    summarizer:
+      provider: missing
+  fallback:`,
+        ),
+      ),
+    ).toThrow(/summarizer\.provider references unconfigured provider/)
   })
 
   test("concurrent first loads share one complete default", async () => {
@@ -177,6 +306,9 @@ describe("Settings", () => {
     const settings = await Promise.all(Array.from({ length: 8 }, () => Settings.load(directory)))
 
     expect(settings.every((item) => item.agent.main_provider === "openai-codex")).toBe(true)
+    expect(settings.every((item) => item.agent.subagents.max_per_run === 5)).toBe(true)
+    expect(settings.every((item) => item.agent.subagents.max_concurrent === 5)).toBe(true)
+    expect(settings.every((item) => item.agent.subagents.timeout_minutes === 30)).toBe(true)
     expect(await readFile(path.join(directory, "settings.yaml"), "utf8")).toBe(Settings.DEFAULT_YAML)
   })
 

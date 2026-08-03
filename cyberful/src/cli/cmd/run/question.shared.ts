@@ -4,9 +4,11 @@
 //   requests require the explicit confirmation tab.
 // ─────────────────────────────────────────────────────────────────
 
-import type { QuestionInfo, QuestionRequest } from "@/server/client"
-import type { QuestionReject, QuestionReply } from "./types"
+import type { ControlPlaneClient, QuestionInfo, QuestionRequest } from "@/server/client"
 import { advanceRejectionConfirmation, questionInteractionReady } from "@/question/interaction"
+
+type QuestionReply = Parameters<ControlPlaneClient["question"]["reply"]>[0]
+type QuestionReject = Parameters<ControlPlaneClient["question"]["reject"]>[0]
 
 export type QuestionBodyState = {
   requestID: string

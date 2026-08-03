@@ -125,6 +125,17 @@ function registry(
       if (!model) throw new Error(`Missing test model for '${providerID}'`)
       return model
     },
+    contextCapacity(providerID) {
+      const model = models.getModel(providerID, `${providerID}-model`)
+      if (!model) throw new Error(`Missing test model for '${providerID}'`)
+      return {
+        catalogContextWindow: model.contextWindow,
+        trustedRouteWindow: model.contextWindow,
+        operationalContextWindow: Math.min(256_000, model.contextWindow),
+        source: "catalog_default",
+        warnings: [],
+      }
+    },
     adapter: () => "openai-completions",
     loginType: () => "api_key",
   }
@@ -147,13 +158,31 @@ describe("Pi provider preflight", () => {
           model: "main-model",
           route: "main",
           authenticated: true,
+          reasoningEffort: "ultra",
+          effectiveReasoningEffort: "off",
           authSource: "MAIN_API_KEY",
+          context: {
+            catalogContextWindow: 100_000,
+            trustedRouteWindow: 100_000,
+            operationalContextWindow: 100_000,
+            source: "catalog_default",
+            warnings: [],
+          },
         },
         {
           id: FALLBACK,
           model: "fallback-model",
           route: "fallback",
           authenticated: false,
+          reasoningEffort: "ultra",
+          effectiveReasoningEffort: "off",
+          context: {
+            catalogContextWindow: 100_000,
+            trustedRouteWindow: 100_000,
+            operationalContextWindow: 100_000,
+            source: "catalog_default",
+            warnings: [],
+          },
         },
       ])
       expect(status.errors).toEqual(["Provider 'fallback' has no configured environment"])
@@ -197,7 +226,16 @@ describe("Pi provider preflight", () => {
           model: "fallback-model",
           route: "fallback",
           authenticated: true,
+          reasoningEffort: "ultra",
+          effectiveReasoningEffort: "off",
           authSource: "FALLBACK_API_KEY",
+          context: {
+            catalogContextWindow: 100_000,
+            trustedRouteWindow: 100_000,
+            operationalContextWindow: 100_000,
+            source: "catalog_default",
+            warnings: [],
+          },
         },
       ])
       expect(status.errors).toEqual(["API key auth failed for provider main"])

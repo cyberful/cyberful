@@ -8,6 +8,8 @@
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises"
+import { readBoundedPrefix } from "@/util/bounded-output"
+import { contains as isContained } from "@/util/filesystem"
 import { replaceWorkareaFile } from "@/workarea"
 import { effectiveSourceRoot } from "./source-tools"
 
@@ -138,39 +140,6 @@ function contextFor(sessionID: string): GitContext | undefined {
   }
 }
 
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
-}
-
-async function readBounded(stream: ReadableStream<Uint8Array> | null, limit: number) {
-  if (!stream) return { text: "", truncated: false }
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let retained = 0
-  let truncated = false
-  while (true) {
-    const next = await reader.read()
-    if (next.done) break
-    if (retained >= limit) {
-      truncated = true
-      continue
-    }
-    const remaining = limit - retained
-    const chunk = next.value.byteLength <= remaining ? next.value : next.value.slice(0, remaining)
-    chunks.push(chunk)
-    retained += chunk.byteLength
-    truncated ||= chunk.byteLength !== next.value.byteLength
-  }
-  const bytes = new Uint8Array(retained)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return { text: new TextDecoder().decode(bytes), truncated }
-}
-
 async function command(argv: readonly string[], cwd: string, limit = MAX_GIT_OUTPUT) {
   const child = Bun.spawn([...argv], {
     cwd,
@@ -186,8 +155,8 @@ async function command(argv: readonly string[], cwd: string, limit = MAX_GIT_OUT
   }, DEFAULT_COMMAND_TIMEOUT_MS)
   try {
     const [stdout, stderr, exitCode] = await Promise.all([
-      readBounded(child.stdout, limit),
-      readBounded(child.stderr, limit),
+      readBoundedPrefix(child.stdout, limit),
+      readBoundedPrefix(child.stderr, limit),
       child.exited,
     ])
     return {
@@ -356,7 +325,10 @@ async function repositoryRoot(context: GitContext) {
 
 async function localCommit(context: GitContext, ref: string) {
   if (!ref || ref.startsWith("-")) throw new Error("Git ref must be a non-option local ref")
-  return requireSuccess(await git(context, ["rev-parse", "--verify", `${ref}^{commit}`]), `Local ref '${ref}' verification`)
+  return requireSuccess(
+    await git(context, ["rev-parse", "--verify", `${ref}^{commit}`]),
+    `Local ref '${ref}' verification`,
+  )
 }
 
 async function defaultBranch(context: GitContext) {
@@ -390,7 +362,8 @@ async function rejectTrackedOwnedRoots(context: GitContext, roots: readonly stri
   const tracked = requireComplete(await git(context, ["ls-files", "-z", "--", ...roots]), "Owned path collision check")
     .split("\0")
     .filter(Boolean)
-  if (tracked.length > 0) throw new Error(`runtime paths collide with tracked project files: ${tracked.slice(0, 10).join(", ")}`)
+  if (tracked.length > 0)
+    throw new Error(`runtime paths collide with tracked project files: ${tracked.slice(0, 10).join(", ")}`)
 }
 
 async function untrackedFiles(context: GitContext, exclusions: readonly string[]) {
@@ -462,7 +435,9 @@ async function prepareDiff(context: GitContext, args: Record<string, unknown>) {
   const changedArgs = explicitHead
     ? ["diff", "--name-only", "-z", "--no-renames", base, head, ...diffTail]
     : ["diff", "--name-only", "-z", "--no-renames", base, ...diffTail]
-  const changed = requireComplete(await git(context, changedArgs), "Changed-file inventory").split("\0").filter(Boolean)
+  const changed = requireComplete(await git(context, changedArgs), "Changed-file inventory")
+    .split("\0")
+    .filter(Boolean)
   const reviewableFiles = [...new Set([...changed, ...untracked])].sort()
   let patchText = patchResult.stdout
   let patchBytes = Buffer.byteLength(patchText)
@@ -501,7 +476,11 @@ async function prepareDiff(context: GitContext, args: Record<string, unknown>) {
     patch_truncated: false,
     created_at: new Date().toISOString(),
   }
-  await replaceWorkareaFile(context.workareaRoot, `${outputRoot}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n")
+  await replaceWorkareaFile(
+    context.workareaRoot,
+    `${outputRoot}/manifest.json`,
+    JSON.stringify(manifest, null, 2) + "\n",
+  )
   return {
     ...manifest,
     patch_path: `${outputRoot}/changes.patch`,

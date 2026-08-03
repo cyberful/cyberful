@@ -109,6 +109,62 @@ export const ZAP_BRIDGE_TOOLS = [
     },
   },
   {
+    name: "zap_history_replay",
+    description:
+      "Clone one captured HTTP history message and send exactly one same-destination replay with bounded header, query, or JSON Pointer mutations. Captured credentials remain inside ZAP and response bodies remain in history.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: { oneOf: [{ type: "integer" }, { type: "string" }] },
+        header_mutations: {
+          type: "array",
+          maxItems: 32,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              op: { type: "string", enum: ["set", "remove"] },
+              name: { type: "string" },
+              value: { type: "string" },
+            },
+            required: ["op", "name"],
+          },
+        },
+        query_mutations: {
+          type: "array",
+          maxItems: 32,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              op: { type: "string", enum: ["set", "remove"] },
+              name: { type: "string" },
+              value: { type: "string" },
+            },
+            required: ["op", "name"],
+          },
+        },
+        json_body_mutations: {
+          type: "array",
+          maxItems: 32,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              op: { type: "string", enum: ["add", "replace", "remove"] },
+              path: { type: "string" },
+              value: {},
+            },
+            required: ["op", "path"],
+          },
+        },
+        follow_redirects: { type: "boolean", default: false },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "zap_websocket_history",
     description: "Read a bounded page of WebSocket messages, optionally for one channel.",
     inputSchema: {

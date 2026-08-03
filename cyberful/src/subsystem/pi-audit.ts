@@ -63,4 +63,11 @@ export function redactValue(value: unknown): unknown {
   return redact(value, 0, false)
 }
 
+export function redactToolInput(tool: string, input: unknown): unknown {
+  const redacted = redactValue(input)
+  if (!["browser_fill", "browser_type"].includes(tool) || typeof redacted !== "object" || redacted === null)
+    return redacted
+  return { ...(redacted as Record<string, unknown>), value: REDACTED }
+}
+
 export * as PiAudit from "./pi-audit"

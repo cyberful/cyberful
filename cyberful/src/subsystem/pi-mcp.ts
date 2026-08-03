@@ -3,6 +3,7 @@
 // projects approved tools, and routes human elicitation to the host selector.
 // → cyberful/src/subsystem/subsystem.ts — defines the host-owned MCP descriptor.
 // → cyberful/src/subsystem/gateway/config.ts — creates private phase gateways.
+// → cyberful/src/subsystem/runtime-diagnostics.ts — retains sanitized gateway observations.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ import {
   type AskHuman,
 } from "./human-question"
 import type { SubsystemMcpServer } from "./subsystem"
+import type { RuntimeDiagnosticInput, RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
 
 const LIST_TIMEOUT_MS = 20_000
 const TOOL_TIMEOUT_MS = 600_000
@@ -33,22 +35,35 @@ export interface PiMcpToolDetails {
   readonly serverName: string
   readonly toolName: string
   readonly isError: false
+  readonly synthesisOutcome?: "diversified" | "exhausted"
+  readonly activeBlockingHypotheses?: number
 }
 
 export interface PiMcpConnectOptions {
   readonly cwd?: string
   readonly isToolAllowed?: (name: string) => boolean
   readonly askQuestion?: AskHuman
+  readonly diagnostics?: RuntimeDiagnosticRecorder
 }
 
 export interface PiMcpRunToolPolicy {
   readonly isToolAllowed: (name: string) => boolean
   readonly handoffAuthorized: boolean
+  readonly actor?: {
+    readonly runID: string
+    readonly displayName: string
+    readonly kind: "root" | "subagent" | "fallback"
+  }
 }
 
 export interface PiMcpBridge {
   readonly serverName: string
   toolsFor(policy: PiMcpRunToolPolicy): readonly AgentTool<ToolParameters, PiMcpToolDetails>[]
+  recoverHypotheses(input: {
+    readonly fromRunID: string | "*"
+    readonly actor: NonNullable<PiMcpRunToolPolicy["actor"]>
+    readonly reason: "phase_recovery" | "child_finished"
+  }): Promise<ReadonlyArray<{ readonly id: string; readonly nextStep?: string }>>
   close(): Promise<void>
 }
 
@@ -92,6 +107,91 @@ function toolErrorText(content: readonly unknown[], structuredContent?: Record<s
   if (text.length > 0) return text.join("\n")
   if (structuredContent) return printableJson(structuredContent)
   return "MCP tool execution failed"
+}
+
+function errorClass(error: unknown): string {
+  return error instanceof Error ? error.name || "Error" : "Error"
+}
+
+function errorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined
+}
+
+function diagnosticComponent(message: string): "gateway" | "zap" | "browser" | "mcp" {
+  if (/\bzap\b|:8080\b|:8090\b/iu.test(message)) return "zap"
+  if (/\bbrowser\b|\bplaywright\b|\bchrom(?:e|ium)\b/iu.test(message)) return "browser"
+  return "gateway"
+}
+
+function classifyGatewayStderr(
+  message: string,
+): Pick<
+  RuntimeDiagnosticInput,
+  "stage" | "severity" | "errorClass" | "code" | "outcome" | "blocking"
+> {
+  const line = message.trim()
+  if (/^(?:\[[^\]\r\n]{1,80}\]\s+)?stdio server started$/iu.test(line))
+    return {
+      stage: "startup",
+      severity: "info",
+      errorClass: "GatewayLifecycle",
+    }
+  if (/\bcleanup recovered\b/iu.test(line))
+    return {
+      stage: "shutdown",
+      severity: "info",
+      errorClass: "GatewayLifecycle",
+      code: "recovered_cleanup",
+      outcome: "recovered_cleanup",
+      blocking: false,
+    }
+  if (/^(?:\[[^\]\r\n]{1,80}\]\s+)?stdio closed$/iu.test(line))
+    return {
+      stage: "shutdown",
+      severity: "info",
+      errorClass: "GatewayLifecycle",
+    }
+  const declaredLevel = line.slice(0, 160).match(/\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b/iu)?.[1]?.toUpperCase()
+  if (declaredLevel === "TRACE" || declaredLevel === "DEBUG" || declaredLevel === "INFO")
+    return {
+      stage: "startup",
+      severity: "info",
+      errorClass: "GatewayLog",
+    }
+  if (declaredLevel === "ERROR" || declaredLevel === "FATAL")
+    return {
+      stage: "startup",
+      severity: "error",
+      errorClass: "GatewayStderr",
+    }
+  return {
+    stage: "startup",
+    severity: "warning",
+    errorClass: "GatewayStderr",
+  }
+}
+
+function hypothesisSynthesisDetails(
+  name: string,
+  result: McpCallResult,
+): Pick<PiMcpToolDetails, "synthesisOutcome" | "activeBlockingHypotheses"> {
+  if (name !== "hypothesis" || "toolResult" in result) return {}
+  const text = result.content.find(
+    (block): block is Extract<(typeof result.content)[number], { type: "text" }> => block.type === "text",
+  )?.text
+  if (!text) return {}
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || (value.outcome !== "diversified" && value.outcome !== "exhausted")) return {}
+    return {
+      synthesisOutcome: value.outcome,
+      ...(typeof value.activeBlockingHypotheses === "number"
+        ? { activeBlockingHypotheses: Math.max(0, Math.floor(value.activeBlockingHypotheses)) }
+        : {}),
+    }
+  } catch {
+    return {}
+  }
 }
 
 // ── MCP Metadata Never Crosses The Model Boundary ────────────────
@@ -253,20 +353,58 @@ function piTool(
       if (isClosed()) throw new Error(`MCP bridge ${serverName} is closed`)
       if (!isGloballyAuthorized(definition.name, connectOptions) || !isRunAuthorized(definition.name, runPolicy))
         throw new Error(`MCP tool ${definition.name} is not authorized for this agent run`)
-      const result = await client.callTool({ name: definition.name, arguments: params }, undefined, {
-        signal,
-        timeout: TOOL_TIMEOUT_MS,
-        maxTotalTimeout: TOOL_TIMEOUT_MS,
-        resetTimeoutOnProgress: true,
-      })
-      if (!("toolResult" in result) && result.isError)
-        throw new Error(toolErrorText(result.content, result.structuredContent))
+      const arguments_ =
+        definition.name === "hypothesis" && runPolicy.actor
+          ? {
+              ...params,
+              _cyberful_host: undefined,
+              _cyberful_actor: runPolicy.actor,
+            }
+          : params
+      let result: McpCallResult
+      try {
+        result = await client.callTool({ name: definition.name, arguments: arguments_ }, undefined, {
+          signal,
+          timeout: TOOL_TIMEOUT_MS,
+          maxTotalTimeout: TOOL_TIMEOUT_MS,
+          resetTimeoutOnProgress: true,
+        })
+      } catch (error) {
+        connectOptions.diagnostics?.record({
+          component: diagnosticComponent(
+            `${definition.name} ${error instanceof Error ? error.message : String(error)}`,
+          ),
+          profile: definition.name,
+          stage: "tool",
+          severity: "error",
+          errorClass: errorClass(error),
+          ...(errorCode(error) ? { code: errorCode(error) } : {}),
+          message: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
+      if (!("toolResult" in result) && result.isError) {
+        const message = toolErrorText(result.content, result.structuredContent)
+        connectOptions.diagnostics?.record({
+          component: diagnosticComponent(`${definition.name} ${message}`),
+          profile: definition.name,
+          stage: "tool",
+          severity: "error",
+          errorClass: "McpToolError",
+          message: `MCP tool '${definition.name}' returned an error.`,
+          outcome: "tool_failure",
+          blocking: false,
+        })
+        throw new Error(message)
+      }
+      const synthesis = hypothesisSynthesisDetails(definition.name, result)
       return {
         content: convertContent(result),
         details: {
           serverName,
           toolName: definition.name,
           isError: false,
+          ...synthesis,
         },
       }
     },
@@ -289,6 +427,7 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
     const runPolicy = {
       isToolAllowed: policy.isToolAllowed,
       handoffAuthorized: policy.handoffAuthorized,
+      ...(policy.actor ? { actor: policy.actor } : {}),
     } satisfies PiMcpRunToolPolicy
     return this.definitions
       .filter(
@@ -300,12 +439,68 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
       )
   }
 
+  async recoverHypotheses(input: {
+    readonly fromRunID: string | "*"
+    readonly actor: NonNullable<PiMcpRunToolPolicy["actor"]>
+    readonly reason: "phase_recovery" | "child_finished"
+  }) {
+    const definition = this.definitions.find((candidate) => candidate.name === "hypothesis")
+    if (!definition) return []
+    if (this.closing) throw new Error(`MCP bridge ${this.serverName} is closed`)
+    const result = await this.client.callTool(
+      {
+        name: definition.name,
+        arguments: {
+          action: "recover_ownership",
+          fromRunID: input.fromRunID,
+          reason: input.reason,
+          _cyberful_host: true,
+          _cyberful_actor: input.actor,
+        },
+      },
+      undefined,
+      {
+        timeout: TOOL_TIMEOUT_MS,
+        maxTotalTimeout: TOOL_TIMEOUT_MS,
+      },
+    )
+    if (!("toolResult" in result) && result.isError)
+      throw new Error(toolErrorText(result.content, result.structuredContent))
+    const text = convertContent(result).find(
+      (item): item is Extract<PiToolContent, { type: "text" }> => item.type === "text",
+    )?.text
+    if (!text) return []
+    const parsed: unknown = JSON.parse(text)
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((item) =>
+      isRecord(item) && typeof item.id === "string"
+        ? [
+            {
+              id: item.id,
+              ...(typeof item.nextStep === "string" ? { nextStep: item.nextStep } : {}),
+            },
+          ]
+        : [],
+    )
+  }
+
   // Normal completion, cancellation, and worker shutdown may converge here.
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.closing = true
     this.lifecycleAbort.abort(new Error(`MCP bridge ${this.serverName} is closing`))
-    this.closePromise = this.client.close()
+    this.closePromise = this.client.close().catch((error) => {
+      this.connectOptions.diagnostics?.record({
+        component: "mcp",
+        profile: this.serverName,
+        stage: "shutdown",
+        severity: "error",
+        errorClass: errorClass(error),
+        ...(errorCode(error) ? { code: errorCode(error) } : {}),
+        message: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    })
     return this.closePromise
   }
 }
@@ -329,7 +524,22 @@ export async function connectPiMcp(server: SubsystemMcpServer, options: PiMcpCon
     cwd: options.cwd,
     stderr: "pipe",
   })
-  transport.stderr?.on("data", () => undefined)
+  let stderrBuffer = ""
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrBuffer += chunk.toString()
+    const lines = stderrBuffer.split(/\r?\n/u)
+    stderrBuffer = lines.pop() ?? ""
+    for (const line of lines)
+      if (line.trim()) {
+        const classification = classifyGatewayStderr(line)
+        options.diagnostics?.record({
+          component: diagnosticComponent(line),
+          profile: server.name,
+          ...classification,
+          message: line,
+        })
+      }
+  })
   const lifecycleAbort = new AbortController()
   const client = new Client(
     { name: "cyberful-pi-worker", version: "1.0.0" },
@@ -353,6 +563,24 @@ export async function connectPiMcp(server: SubsystemMcpServer, options: PiMcpCon
       lifecycleAbort,
     )
   } catch (error) {
+    if (stderrBuffer.trim()) {
+      const classification = classifyGatewayStderr(stderrBuffer)
+      options.diagnostics?.record({
+        component: diagnosticComponent(stderrBuffer),
+        profile: server.name,
+        ...classification,
+        message: stderrBuffer,
+      })
+    }
+    options.diagnostics?.record({
+      component: "mcp",
+      profile: server.name,
+      stage: "connect",
+      severity: "error",
+      errorClass: errorClass(error),
+      ...(errorCode(error) ? { code: errorCode(error) } : {}),
+      message: error instanceof Error ? error.message : String(error),
+    })
     lifecycleAbort.abort(error)
     try {
       await client.close()

@@ -19,7 +19,9 @@ test("the public schema contains every event family before the catalog is sealed
   expect(document).toContain("message.part.updated")
   expect(document).toContain("session.next.text.delta")
   expect(document).toContain("finding.registry.updated")
+  expect(document).toContain("hypothesis.registry.updated")
   expect(document).toContain("/session/{sessionID}/findings")
+  expect(document).toContain("/session/{sessionID}/hypotheses")
 })
 
 test("late event definitions cannot diverge from the published schema", () => {

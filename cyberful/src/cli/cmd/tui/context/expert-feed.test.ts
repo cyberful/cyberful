@@ -9,13 +9,15 @@ import {
   continuesExpertPhaseTurn,
   decodeExpertContextCompaction,
   decodeExpertPhaseStatus,
+  decodeExpertProviderRetry,
+  decodeExpertRuntimeDiagnostic,
   decodeExpertToolActivity,
-  expertActorCardLabel,
+  expertActorIdentityText,
   expertActorStateText,
-  expertActorTextLabel,
   expertContextCompactionText,
   expertPhaseDuration,
   expertPhaseLabel,
+  expertRuntimeDiagnosticText,
   foldExpertActivity,
   isExpertSemanticProgress,
   type ExpertPhaseEntry,
@@ -57,12 +59,15 @@ describe("continuesExpertPhaseTurn", () => {
   })
 })
 
-test("delegated card attribution labels the card without a directional arrow", () => {
-  expect(expertActorCardLabel("public_osint")).toBe("@public_osint")
-})
-
-test("delegated prose attribution points from the actor label to inline text", () => {
-  expect(expertActorTextLabel("passive_hosts")).toBe("@passive_hosts → ")
+test("delegated identity composes the exact muted-wrapper label", () => {
+  const identity = expertActorIdentityText({
+    id: "child-1",
+    label: "api-monster",
+    displayName: "api-monster",
+    emoji: "👾",
+    role: "subagent",
+  })
+  expect(`@{${identity}}`).toBe("@{👾 api-monster}")
 })
 
 test("semantic progress is recognized for compact muted styling without changing its JSON", () => {
@@ -104,6 +109,70 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("decodes provider retry telemetry for compact grouped styling", () => {
+    expect(
+      decodeExpertProviderRetry("Provider retry scheduled: attempt 1/3 after 624 ms (server_is_overloaded)."),
+    ).toEqual({
+      state: "scheduled",
+      attempt: 1,
+      maxRetries: 3,
+      delayMs: 624,
+      providerCode: "server_is_overloaded",
+    })
+    expect(decodeExpertProviderRetry("Provider retry succeeded: attempt 1/3.")).toEqual({
+      state: "succeeded",
+      attempt: 1,
+      maxRetries: 3,
+    })
+    expect(decodeExpertProviderRetry("Provider retry succeeded eventually.")).toBeUndefined()
+    expect(decodeExpertProviderRetry("Provider retry timed_out: attempt 1/3 (retry_attempt_timeout).")).toEqual({
+      state: "timed_out",
+      attempt: 1,
+      maxRetries: 3,
+      providerCode: "retry_attempt_timeout",
+    })
+
+    const out = foldExpertActivity([], act("status", "Provider retry succeeded: attempt 1/3.", "", "provider-retry"))
+    expect(out[0]?.providerRetry?.state).toBe("succeeded")
+  })
+
+  test("renders a tool diagnostic as a compact recoverable issue with sanitized detail", () => {
+    const payload = JSON.stringify({
+      runtimeDiagnostic: {
+        component: "gateway",
+        profile: "shell",
+        stage: "tool",
+        severity: "error",
+        errorClass: "McpError",
+        message: "Session variable account1_username is not saved.",
+        path: "raw/operations/runtime-diagnostics.jsonl",
+      },
+    })
+    const diagnostic = decodeExpertRuntimeDiagnostic(payload)
+    expect(diagnostic?.stage).toBe("tool")
+    if (!diagnostic) throw new Error("Structured runtime diagnostic was not decoded")
+    expect(expertRuntimeDiagnosticText(diagnostic)).toBe(
+      "ⓘ Tool failed; run continues · gateway/shell · McpError · Session variable account1_username is not saved." +
+        " · log: raw/operations/runtime-diagnostics.jsonl",
+    )
+
+    const out = foldExpertActivity([], act("status", payload, "", "runtime-diagnostic"))
+    expect(out[0]?.runtimeDiagnostic).toEqual(diagnostic)
+    expect(out[0]?.text).toContain("Tool failed; run continues")
+  })
+
+  test("replays legacy path-only diagnostics with a neutral explanatory message", () => {
+    const text = "Runtime diagnostic: gateway · GatewayStderr · raw/operations/runtime-diagnostics.jsonl"
+    const diagnostic = decodeExpertRuntimeDiagnostic(text)
+    expect(diagnostic).toMatchObject({
+      component: "gateway",
+      stage: "startup",
+      severity: "warning",
+      errorClass: "GatewayStderr",
+    })
+    expect(diagnostic?.message).toBe("Sanitized details are available in the local diagnostic log.")
+  })
+
   test("folds one structured compaction completion into concise neutral telemetry", () => {
     const payload = JSON.stringify({
       contextCompaction: {
@@ -114,6 +183,7 @@ describe("foldExpertActivity", () => {
         messagesRemoved: 0,
         toolResultsVirtualized: 18,
         artifactsPreserved: 18,
+        modelSummary: false,
       },
     })
     const decoded = decodeExpertContextCompaction(payload)
@@ -132,6 +202,37 @@ describe("foldExpertActivity", () => {
     expect(out[0]?.phaseStatus).toBeUndefined()
     expect(out[0]?.contextCompaction).toEqual(decoded)
     expect(out[0]?.text).toBe(expertContextCompactionText(decoded))
+
+    const legacyPayload = JSON.stringify({
+      contextCompaction: {
+        ...JSON.parse(payload).contextCompaction,
+        modelSummary: undefined,
+      },
+    })
+    expect(decodeExpertContextCompaction(legacyPayload)?.modelSummary).toBe(false)
+  })
+
+  test("renders exhausted deterministic compaction as a muted no-op", () => {
+    const payload = JSON.stringify({
+      contextCompaction: {
+        state: "noop",
+        mode: "proactive",
+        reason: "no_candidates",
+        estimatedTokensBefore: 172_000,
+        estimatedTokensAfter: 172_000,
+        messagesRemoved: 0,
+        toolResultsVirtualized: 0,
+        artifactsPreserved: 0,
+        modelSummary: false,
+      },
+    })
+    const decoded = decodeExpertContextCompaction(payload)
+
+    expect(decoded?.state).toBe("noop")
+    if (!decoded) throw new Error("Structured no-op compaction status was not decoded")
+    expect(expertContextCompactionText(decoded)).toBe(
+      "↻ Context compaction exhausted · 172.0K → 172.0K tokens · 0 tool results virtualized · 0 complete artifacts preserved",
+    )
   })
 
   test("successful phase status keeps only the concise completion copy and validated successor", () => {

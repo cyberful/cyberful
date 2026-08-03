@@ -4,7 +4,11 @@
 // → cyberful/src/cli/cmd/tui/context/sync.tsx — supplies live registry snapshots.
 // ─────────────────────────────────────────────────────────────────
 
-import type { FindingRegistryView, WorkareaFinding } from "@/server/client"
+import type {
+  FindingRegistryView,
+  SessionHypothesisRegistryView,
+  WorkareaFinding,
+} from "@/server/client"
 import { Locale } from "@/util/locale"
 import { TextAttributes, type KeyEvent } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -109,6 +113,12 @@ export function findingTag(value: string) {
   return `[${value.replaceAll("_", " ")}]`
 }
 
+export function activeHypothesisLabel(value: number): string | undefined {
+  const count = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+  if (count === 0) return
+  return `(i) ${count} active ${count === 1 ? "hypothesis" : "hypotheses"}`
+}
+
 export function findingSeverityTone(value: FindingSeverity) {
   if (value === "CRITICAL") return "error" as const
   if (value === "HIGH") return "warning" as const
@@ -125,12 +135,15 @@ function severityTag(row: FindingRow) {
 export function FindingSidebar(props: {
   width: number
   view: FindingRegistryView | undefined
+  hypotheses?: SessionHypothesisRegistryView
   onOpen: (finding: WorkareaFinding) => void
 }) {
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const groups = createMemo(() => findingGroups(props.view))
   const count = createMemo(() => props.view?.registry.findings.length ?? 0)
+  const activeHypotheses = createMemo(() => Number(props.hypotheses?.activeCount ?? 0))
+  const hypothesisLabel = createMemo(() => activeHypothesisLabel(activeHypotheses()))
   const [focused, setFocused] = createSignal<string>()
   const [hovered, setHovered] = createSignal<string>()
   const severityColor = (value: FindingSeverity) => theme[findingSeverityTone(value)]
@@ -161,20 +174,26 @@ export function FindingSidebar(props: {
       overflow="hidden"
     >
       <box
-        height={3}
+        height={activeHypotheses() > 0 ? 4 : 3}
         width="100%"
         flexShrink={0}
-        alignItems="center"
-        justifyContent="space-between"
-        flexDirection="row"
+        flexDirection="column"
+        justifyContent="center"
         paddingLeft={1}
         paddingRight={1}
         backgroundColor={theme.backgroundElement}
       >
-        <text fg={theme.text} attributes={TextAttributes.BOLD}>
-          Findings
-        </text>
-        <text fg={theme.textMuted}>{`${count()} · #R${props.view?.registry.revision ?? 0}`}</text>
+        <box width="100%" alignItems="center" justifyContent="space-between" flexDirection="row">
+          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            Findings
+          </text>
+          <text fg={theme.textMuted}>{`${count()} · #R${props.view?.registry.revision ?? 0}`}</text>
+        </box>
+        <Show when={hypothesisLabel()}>
+          <text fg={theme.textMuted} wrapMode="none" truncate>
+            {hypothesisLabel()}
+          </text>
+        </Show>
       </box>
       <Show
         when={groups().length > 0}

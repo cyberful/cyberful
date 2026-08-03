@@ -109,6 +109,22 @@ describe("Pi phase registry", () => {
     })
   })
 
+  test("closeout reserves are bounded and legacy budgets degrade visibly", () => {
+    expect(
+      SubsystemPhase.resolveCloseoutMinutes({ brief: 30, $closeout: { brief: 5 } }, "brief", 30),
+    ).toEqual({ minutes: 5 })
+    expect(SubsystemPhase.resolveCloseoutMinutes({ brief: 30 }, "brief", 30)).toEqual({ minutes: 3 })
+    expect(SubsystemPhase.resolveCloseoutMinutes({ recon: 60 }, "recon", 60)).toEqual({ minutes: 5 })
+    expect(SubsystemPhase.resolveCloseoutMinutes({ ask: 30 }, "ask", 30)).toEqual({ minutes: 0 })
+    expect(
+      SubsystemPhase.resolveCloseoutMinutes({ brief: 4, $closeout: { brief: 5 } }, "brief", 4),
+    ).toEqual({
+      minutes: 2,
+      warning:
+        "Closeout 'brief' is invalid; using 2 minutes. Closeout 'brief' reduced to 2 minutes because it must be shorter than the 4-minute phase budget.",
+    })
+  })
+
   test("container identity is stable, bounded, and distinct across projects and sessions", () => {
     const first = SubsystemPhase.expertContainerName(
       "/projects/alpha/work/a-very-long-security-engagement",
@@ -511,6 +527,127 @@ describe("phase orchestration (runAndAdvance)", () => {
     )
     expect(rejected.haltedAt).toBe("verify")
     expect(rejected.summary).toContain("adapter rejected")
+  })
+
+  test("a retryable provider failure restarts the phase once on the configured fallback route", async () => {
+    const specs: PhaseSpec[] = []
+    let reconAttempts = 0
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && reconAttempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "unavailable",
+                providerCode: "server_is_overloaded",
+                retryable: true,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "unavailable",
+                code: "server_is_overloaded",
+                detail: "provider overloaded",
+              },
+              approvalWaitMs: 2_000,
+              retryWaitMs: 12_000,
+              retryCompensationMs: 10_000,
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: true,
+              },
+            }
+          return {
+            ...completedPhase(spec.phase),
+            agentRun: {
+              id: `${spec.phase}-${spec.attempt ?? 1}`,
+              provider: spec.providerRoute === "fallback" ? "fallback" : "main",
+              model: "test",
+              providerAffinity: spec.providerRoute ?? "main",
+              promptManifest: {} as NonNullable<PhaseResult["agentRun"]>["promptManifest"],
+              childRunIDs: [],
+              skillsUsed: [],
+              toolCalls: 0,
+              fallbackAdmissions: 0,
+              fallbackDescendants: 0,
+            },
+          }
+        },
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.phase, spec.attempt, spec.providerRoute])).toEqual([
+      ["recon", 1, "main"],
+      ["recon", 2, "fallback"],
+    ])
+    expect(specs[1]?.objective).toContain("Do not repeat an operation")
+    expect(specs[1]?.timeoutMs).toBe(59_900)
+    expect(specs[1]?.budgetCarry).toEqual({
+      approvalWaitMs: 2_000,
+      retryWaitMs: 12_000,
+      phaseExtensionMs: 10_000,
+    })
+    expect(out.phaseAttempts.slice(0, 2).map((attempt) => [attempt.phase, attempt.attempt, attempt.recovered])).toEqual([
+      ["recon", 1, true],
+      ["recon", 2, false],
+    ])
+    expect(out.terminal).toBe(true)
+    expect(out.outcome).toBe("warning")
+  })
+
+  test("a hard context tail restarts once on the same route and reconciles hypotheses", async () => {
+    const specs: PhaseSpec[] = []
+    let reconAttempts = 0
+    await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && reconAttempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "capacity",
+                providerCode: "active_tail_too_large",
+                retryable: true,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "capacity",
+                code: "active_tail_too_large",
+                detail: "minimal context reached the hard input limit",
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: true,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.phase, spec.attempt, spec.providerRoute])).toEqual([
+      ["recon", 1, "main"],
+      ["recon", 2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain("list the current hypothesis registry")
   })
 
   test("terminal contract failures are failed while a plain interruption is blocked", async () => {
