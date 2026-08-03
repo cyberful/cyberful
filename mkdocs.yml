@@ -25,9 +25,9 @@ theme:
   custom_dir: docs-overrides
   language: en
   font: false
-  favicon: assets/favicon.svg
+  favicon: assets/logo.svg
+  logo: assets/logo.svg
   icon:
-    logo: material/shield-lock-outline
     repo: fontawesome/brands/github
     edit: material/pencil-outline
     view: material/eye-outline
@@ -66,7 +66,7 @@ theme:
     - search.share
 
 extra_css:
-  - stylesheets/extra.css?v=da2f73b
+  - stylesheets/extra.css?v=cyberful-codeblocks-v1
 
 extra:
   generator: false
@@ -84,7 +84,10 @@ markdown_extensions:
       permalink: true
       permalink_title: Anchor link to this section
   - pymdownx.details
-  - pymdownx.highlight
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.tabbed:

@@ -31,7 +31,7 @@ authenticate the default OpenAI Codex provider through Cyberful, then launch
 the terminal:
 
 ```sh
-npm install --global cyberful
+npm i -g cyberful
 cyberful auth login
 cyberful
 ```

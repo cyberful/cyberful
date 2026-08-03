@@ -1,0 +1,11 @@
+{#-
+  Homepage-only shell: keeps landing content inside one full-width hook while
+  the documentation pages retain Material's standard content hierarchy.
+-#}
+{% extends "main.html" %}
+
+{% block content %}
+  <div class="cyberful-home">
+    {% include "partials/content.html" %}
+  </div>
+{% endblock %}

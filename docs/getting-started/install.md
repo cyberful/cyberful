@@ -8,7 +8,7 @@ to build its binaries yourself.
 Install Cyberful and verify the command:
 
 ```sh
-npm install --global cyberful
+npm i -g cyberful
 cyberful --version
 ```
 

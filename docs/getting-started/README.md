@@ -7,10 +7,18 @@ a first penetration test in the terminal interface.
 > begin, know the exact targets, exclusions, test window, and traffic limits for
 > the engagement.
 
+Install the Cyberful CLI globally if it is not already available:
+
+```sh
+npm i -g cyberful
+```
+
+See [Install Cyberful](install.md) for source builds and other installation
+details.
+
 ## 1. Confirm the installation
 
-Complete [Install Cyberful](install.md) and confirm that Cyberful, its main
-provider, and Docker are ready:
+Confirm that Cyberful, its main provider, and Docker are ready:
 
 ```sh
 cyberful --version
