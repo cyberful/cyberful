@@ -47,6 +47,7 @@ theme:
         icon: material/weather-night
         name: Switch to light mode
   features:
+    - announce.dismiss
     - navigation.instant
     - navigation.instant.prefetch
     - navigation.tracking
