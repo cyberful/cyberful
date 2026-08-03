@@ -22,6 +22,14 @@
   src: url("../assets/fonts/jetbrains-mono.woff2") format("woff2");
 }
 
+@font-face {
+  font-display: swap;
+  font-family: "Archivo Black";
+  font-style: normal;
+  font-weight: 400;
+  src: url("../assets/fonts/archivo-black.woff2") format("woff2");
+}
+
 :root {
   --cyberful-blue: #1463ff;
   --cyberful-blue-deep: #0b45c7;
@@ -31,6 +39,7 @@
   --cyberful-line: #e3e7ed;
   --cyberful-panel: #f6f8fb;
   --cyberful-radius: 0.85rem;
+  --cyberful-brand: "Archivo Black", "Arial Black", sans-serif;
   --cyberful-serif: "Newsreader", "EB Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --cyberful-mono: "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrains Mono", monospace;
   --md-primary-fg-color: var(--cyberful-ink);
@@ -79,10 +88,10 @@ body {
 }
 
 .md-header__title {
-  font-family: var(--cyberful-serif);
-  font-optical-sizing: auto;
-  font-weight: 700;
-  letter-spacing: -0.018em;
+  font-family: var(--cyberful-brand);
+  font-size: 0.95rem;
+  font-weight: 400;
+  letter-spacing: -0.055em;
 }
 
 .md-search__form {
