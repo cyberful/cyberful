@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/cyberful/cyberful/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberful/cyberful/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful)
+[![Documentation](https://img.shields.io/badge/docs-cyberful.io-1463ff.svg)](https://cyberful.io/)
 
 Cyberful turns your AI coding agent into an ethical hacker for authorized
 penetration testing, deep code auditing, and bug bounty hunting.
@@ -54,7 +55,8 @@ policy as text, an attachment, or an exact public URL. Code Audit requests may
 name the complete repository or explicitly request review of a branch, commit
 range, or current Git changes.
 
-See [Your first penetration test](docs/getting-started/README.md) and
+Read the complete documentation at [cyberful.io](https://cyberful.io/), then
+start with [Your first penetration test](docs/getting-started/README.md) or
 [Choose a workflow](docs/user-guide/workflows.md).
 
 ## Motivation

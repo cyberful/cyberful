@@ -1,0 +1,55 @@
+# ── Documentation Publication ────────────────────────────────────
+# Builds the strict MkDocs site and publishes its generated artifact to the
+# existing GitHub Pages environment whenever documentation sources change.
+# → mkdocs.yml — defines the public site structure and visual theme.
+# @docs/development/release.md
+# ─────────────────────────────────────────────────────────────────
+
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/docs.yml
+      - docs/**
+      - docs-overrides/**
+      - docs-requirements.txt
+      - mkdocs.yml
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build and publish cyberful.io
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.16
+          enable-cache: true
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Build documentation
+        env:
+          NO_MKDOCS_2_WARNING: "true"
+        run: uv run --with-requirements docs-requirements.txt mkdocs build --strict
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

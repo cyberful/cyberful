@@ -1,0 +1,574 @@
+/* ── Cyberful Documentation Theme ────────────────────────────────
+ * Gives the Material site a crisp product-docs identity with restrained color,
+ * high-contrast navigation, reusable content surfaces, and a responsive home
+ * page. All typography is local and the stylesheet performs no network work.
+ * → docs-overrides/main.html — supplies the announcement markup styled here.
+ * @docs/development/release.md
+ * ───────────────────────────────────────────────────────────────── */
+
+:root {
+  --cyberful-blue: #1463ff;
+  --cyberful-blue-deep: #0b45c7;
+  --cyberful-lime: #c9f36a;
+  --cyberful-ink: #101522;
+  --cyberful-muted: #5f6878;
+  --cyberful-line: #e3e7ed;
+  --cyberful-panel: #f6f8fb;
+  --cyberful-radius: 0.85rem;
+  --md-primary-fg-color: var(--cyberful-ink);
+  --md-primary-fg-color--light: #293144;
+  --md-primary-fg-color--dark: #090d16;
+  --md-accent-fg-color: var(--cyberful-blue);
+  --md-typeset-a-color: var(--cyberful-blue-deep);
+  --md-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --cyberful-ink: #f7f9fc;
+  --cyberful-muted: #aeb7c7;
+  --cyberful-line: #283142;
+  --cyberful-panel: #111827;
+  --md-default-bg-color: #0b101a;
+  --md-default-fg-color: #edf2f8;
+  --md-default-fg-color--light: #bac3d1;
+  --md-primary-fg-color: #090d16;
+  --md-typeset-a-color: #70a2ff;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  letter-spacing: -0.006em;
+}
+
+.md-grid {
+  max-width: 92rem;
+}
+
+.md-header {
+  background: color-mix(in srgb, var(--md-default-bg-color) 94%, transparent);
+  border-bottom: 1px solid var(--cyberful-line);
+  box-shadow: none;
+  color: var(--md-default-fg-color);
+  backdrop-filter: blur(18px);
+}
+
+.md-header__button.md-logo {
+  color: var(--cyberful-blue);
+}
+
+.md-header__title {
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.md-search__form {
+  background: var(--cyberful-panel);
+  border: 1px solid var(--cyberful-line);
+  border-radius: 999px;
+}
+
+.md-search__input::placeholder,
+.md-search__icon {
+  color: var(--cyberful-muted);
+}
+
+.md-tabs {
+  background: var(--md-default-bg-color);
+  border-bottom: 1px solid var(--cyberful-line);
+  color: var(--md-default-fg-color);
+}
+
+.md-tabs__link {
+  font-size: 0.72rem;
+  font-weight: 650;
+  opacity: 0.72;
+}
+
+.md-tabs__link--active,
+.md-tabs__link:hover {
+  color: var(--cyberful-blue);
+  opacity: 1;
+}
+
+.md-banner {
+  background: var(--cyberful-blue);
+  color: white;
+}
+
+.md-banner__inner {
+  margin: 0 auto;
+  padding: 0.5rem 0.8rem;
+}
+
+.cyberful-announcement {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  min-height: 1.8rem;
+  text-align: center;
+}
+
+.cyberful-announcement__badge {
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  font-size: 0.58rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  padding: 0.12rem 0.45rem;
+  text-transform: uppercase;
+}
+
+.cyberful-announcement a {
+  color: white;
+  font-weight: 720;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.52);
+  text-underline-offset: 0.18em;
+}
+
+.md-sidebar__scrollwrap {
+  scrollbar-width: thin;
+}
+
+.md-nav__title,
+.md-nav__item--section > .md-nav__link {
+  font-weight: 730;
+}
+
+.md-nav__link {
+  border-radius: 0.45rem;
+  padding: 0.28rem 0.42rem;
+}
+
+.md-nav__link--active {
+  background: color-mix(in srgb, var(--cyberful-blue) 10%, transparent);
+  color: var(--cyberful-blue);
+  font-weight: 680;
+}
+
+.md-content__inner {
+  padding-bottom: 4rem;
+}
+
+.md-typeset {
+  font-size: 0.81rem;
+  line-height: 1.72;
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+  font-size: clamp(1.9rem, 4vw, 2.75rem);
+  font-weight: 760;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+  margin-bottom: 1rem;
+}
+
+.md-typeset h2 {
+  font-weight: 730;
+  letter-spacing: -0.03em;
+}
+
+.md-typeset h3 {
+  font-weight: 690;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset code {
+  border-radius: 0.35rem;
+}
+
+.md-typeset pre > code,
+.md-typeset .highlighttable {
+  border: 1px solid var(--cyberful-line);
+  border-radius: var(--cyberful-radius);
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--cyberful-line);
+  border-radius: var(--cyberful-radius);
+  box-shadow: none;
+}
+
+.md-typeset .md-button {
+  border: 1px solid var(--cyberful-line);
+  border-radius: 0.58rem;
+  font-weight: 720;
+  padding: 0.62rem 1rem;
+  transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+
+.md-typeset .md-button:hover {
+  box-shadow: 0 0.5rem 1.5rem rgba(16, 21, 34, 0.12);
+  transform: translateY(-1px);
+}
+
+.md-typeset .md-button--primary {
+  background: var(--cyberful-blue);
+  border-color: var(--cyberful-blue);
+  color: white;
+}
+
+.cyberful-hero {
+  background:
+    linear-gradient(var(--cyberful-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--cyberful-line) 1px, transparent 1px),
+    radial-gradient(circle at 76% 14%, color-mix(in srgb, var(--cyberful-lime) 46%, transparent), transparent 34%);
+  background-size: 3rem 3rem, 3rem 3rem, auto;
+  border: 1px solid var(--cyberful-line);
+  border-radius: 1.2rem;
+  display: grid;
+  gap: clamp(1.8rem, 4vw, 3.6rem);
+  grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 0.85fr);
+  margin: 0 0 1.4rem;
+  overflow: hidden;
+  padding: clamp(1.5rem, 5vw, 3.4rem);
+  position: relative;
+}
+
+.cyberful-hero::after {
+  background: var(--md-default-bg-color);
+  content: "";
+  inset: 0;
+  opacity: 0.78;
+  position: absolute;
+}
+
+.cyberful-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.cyberful-eyebrow {
+  color: var(--cyberful-blue);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.85rem;
+  text-transform: uppercase;
+}
+
+.md-typeset .cyberful-hero h1 {
+  font-size: clamp(2.35rem, 5vw, 4.25rem);
+  margin: 0;
+  max-width: 12ch;
+}
+
+.cyberful-hero__lead {
+  color: var(--cyberful-muted);
+  font-size: clamp(0.9rem, 1.8vw, 1.08rem);
+  line-height: 1.65;
+  margin: 1rem 0 1.35rem;
+  max-width: 38rem;
+}
+
+.cyberful-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.cyberful-terminal {
+  align-self: center;
+  background: #0b101a;
+  border: 1px solid #273146;
+  border-radius: 0.9rem;
+  box-shadow: 0 1.5rem 4rem rgba(4, 8, 16, 0.26);
+  color: #d9e2ef;
+  font-family: var(--md-code-font);
+  font-size: 0.68rem;
+  overflow: hidden;
+}
+
+.cyberful-terminal__bar {
+  align-items: center;
+  border-bottom: 1px solid #273146;
+  color: #8e9aad;
+  display: flex;
+  gap: 0.34rem;
+  padding: 0.66rem 0.78rem;
+}
+
+.cyberful-terminal__dot {
+  background: #596579;
+  border-radius: 50%;
+  height: 0.42rem;
+  width: 0.42rem;
+}
+
+.cyberful-terminal__label {
+  margin-left: 0.28rem;
+}
+
+.cyberful-terminal__body {
+  font-size: clamp(0.74rem, 1.3vw, 0.9rem);
+  line-height: 1.9;
+  padding: 1.4rem 1.2rem;
+}
+
+.cyberful-terminal__prompt {
+  color: var(--cyberful-lime);
+}
+
+.cyberful-proof {
+  border: 1px solid var(--cyberful-line);
+  border-radius: var(--cyberful-radius);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 1.4rem 0 2.8rem;
+}
+
+.cyberful-proof__item {
+  padding: 1rem 1.25rem;
+}
+
+.cyberful-proof__item + .cyberful-proof__item {
+  border-left: 1px solid var(--cyberful-line);
+}
+
+.cyberful-proof strong,
+.cyberful-proof span {
+  display: block;
+}
+
+.cyberful-proof strong {
+  font-size: 1rem;
+}
+
+.cyberful-proof span {
+  color: var(--cyberful-muted);
+  font-size: 0.66rem;
+  margin-top: 0.1rem;
+}
+
+.cyberful-section-heading {
+  align-items: end;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin: 2.4rem 0 1rem;
+}
+
+.md-typeset .cyberful-section-heading h2 {
+  margin: 0;
+}
+
+.cyberful-section-heading p {
+  color: var(--cyberful-muted);
+  margin: 0;
+}
+
+.cyberful-card-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cyberful-card {
+  background: var(--cyberful-panel);
+  border: 1px solid var(--cyberful-line);
+  border-radius: var(--cyberful-radius);
+  color: var(--md-default-fg-color) !important;
+  display: block;
+  min-height: 10rem;
+  padding: 1.2rem;
+  position: relative;
+  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.cyberful-card:hover {
+  border-color: color-mix(in srgb, var(--cyberful-blue) 54%, var(--cyberful-line));
+  box-shadow: 0 0.8rem 2rem rgba(16, 21, 34, 0.1);
+  transform: translateY(-2px);
+}
+
+.cyberful-card__number {
+  align-items: center;
+  background: var(--cyberful-lime);
+  border-radius: 0.45rem;
+  color: #17210a;
+  display: inline-flex;
+  font-size: 0.62rem;
+  font-weight: 820;
+  height: 1.55rem;
+  justify-content: center;
+  width: 1.55rem;
+}
+
+.cyberful-card h3 {
+  margin: 0.85rem 0 0.3rem;
+}
+
+.cyberful-card p {
+  color: var(--cyberful-muted);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 34rem;
+}
+
+.cyberful-card__arrow {
+  color: var(--cyberful-blue);
+  font-size: 1rem;
+  position: absolute;
+  right: 1rem;
+  top: 1rem;
+}
+
+.cyberful-workflow {
+  background: #111827;
+  border: 1px solid #2b3548;
+  border-radius: 1rem;
+  color: white;
+  margin: 2.8rem 0 1rem;
+  overflow: hidden;
+  padding: clamp(1.2rem, 4vw, 2rem);
+}
+
+.cyberful-workflow__header {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.cyberful-workflow__header h2 {
+  color: white;
+  margin: 0;
+}
+
+.cyberful-workflow__header a {
+  color: var(--cyberful-lime);
+  font-weight: 720;
+}
+
+.cyberful-phases {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 1.25rem;
+}
+
+.cyberful-phase {
+  background: #192235;
+  border: 1px solid #303b50;
+  border-radius: 0.55rem;
+  color: #c8d1df;
+  font-size: 0.63rem;
+  padding: 0.7rem 0.55rem;
+  text-align: center;
+}
+
+.cyberful-phase:first-child,
+.cyberful-phase:last-child {
+  border-color: color-mix(in srgb, var(--cyberful-lime) 58%, #303b50);
+  color: var(--cyberful-lime);
+}
+
+.cyberful-safety {
+  align-items: flex-start;
+  background: color-mix(in srgb, var(--cyberful-lime) 30%, var(--md-default-bg-color));
+  border: 1px solid color-mix(in srgb, var(--cyberful-lime) 65%, var(--cyberful-line));
+  border-radius: var(--cyberful-radius);
+  display: flex;
+  gap: 0.8rem;
+  margin: 1.4rem 0;
+  padding: 1rem 1.1rem;
+}
+
+.cyberful-safety__mark {
+  background: var(--cyberful-lime);
+  border-radius: 999px;
+  color: #17210a;
+  flex: 0 0 auto;
+  font-weight: 850;
+  height: 1.45rem;
+  line-height: 1.45rem;
+  text-align: center;
+  width: 1.45rem;
+}
+
+.cyberful-safety p {
+  margin: 0;
+}
+
+@media screen and (max-width: 76.234375em) {
+  .md-header {
+    color: var(--md-default-fg-color);
+  }
+}
+
+@media screen and (max-width: 60em) {
+  .cyberful-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .cyberful-terminal {
+    max-width: 34rem;
+  }
+
+  .cyberful-phases {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media screen and (max-width: 44em) {
+  .cyberful-announcement {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.18rem;
+    padding: 0.15rem 0;
+    text-align: left;
+  }
+
+  .cyberful-announcement__badge {
+    display: none;
+  }
+
+  .cyberful-hero {
+    border-left: 0;
+    border-radius: 0;
+    border-right: 0;
+    margin-left: -0.8rem;
+    margin-right: -0.8rem;
+    padding: 1.5rem 0.8rem;
+  }
+
+  .md-typeset .cyberful-hero h1 {
+    font-size: 2.12rem;
+    max-width: none;
+  }
+
+  .cyberful-card-grid,
+  .cyberful-proof {
+    grid-template-columns: 1fr;
+  }
+
+  .cyberful-proof__item + .cyberful-proof__item {
+    border-left: 0;
+    border-top: 1px solid var(--cyberful-line);
+  }
+
+  .cyberful-section-heading,
+  .cyberful-workflow__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .cyberful-card,
+  .md-typeset .md-button {
+    transition: none;
+  }
+}

@@ -1,5 +1,19 @@
 # Release policy
 
+## Documentation publication
+
+The **Documentation** workflow builds the complete MkDocs site with strict link
+and navigation validation, uploads only the generated `site/` artifact, and
+publishes it to the `github-pages` environment at
+[cyberful.io](https://cyberful.io/). It runs when documentation, theme,
+dependency, or publication-workflow files change on `main`, and it can also be
+started manually.
+
+GitHub Pages must use **GitHub Actions** as its build source. The custom domain
+remains `cyberful.io`; Cloudflare provides authoritative DNS only, while GitHub
+Pages terminates and enforces HTTPS. The site loads no remote fonts and emits no
+analytics or telemetry.
+
 Cyberful publishes the unscoped `cyberful` launcher plus native packages under
 the `@cyberful-org` npm organization for macOS arm64/x64, Linux x64, and
 Windows x64. x64 packages contain normal and baseline binaries; the launcher
