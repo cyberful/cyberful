@@ -119,7 +119,7 @@ function archive(input: {
   const extracted = path.join(input.stagingRoot, `.npm-${targetName}`)
   const packageArtifact = findSuffix(
     input.artifactFiles,
-    `cyberful-cli-${input.target.platform}-${input.target.architecture}-${input.version}.tgz`,
+    `cyberful-org-cyberful-${input.target.platform}-${input.target.architecture}-${input.version}.tgz`,
   )
 
   // ── Downloaded Packages Stay Inside Private Staging ───────────────

@@ -41,7 +41,7 @@ describe("release archives", () => {
         [
           "tar",
           "-czf",
-          path.join(artifacts, `cyberful-cli-${target.platform}-${target.architecture}-1.2.3.tgz`),
+          path.join(artifacts, `cyberful-org-cyberful-${target.platform}-${target.architecture}-1.2.3.tgz`),
           "package",
         ],
         { cwd: path.dirname(packageRoot), stdout: "pipe", stderr: "pipe", timeout: 30_000, maxBuffer: 1_048_576 },
@@ -60,10 +60,10 @@ describe("release archives", () => {
     prepareReleaseAssets({ repositoryRoot: root, artifacts, output, version: "1.2.3" })
     expect(fs.readdirSync(output).sort()).toEqual(
       [
-        "cyberful-cli-darwin-arm64-1.2.3.tgz",
-        "cyberful-cli-darwin-x64-1.2.3.tgz",
-        "cyberful-cli-linux-x64-1.2.3.tgz",
-        "cyberful-cli-windows-x64-1.2.3.tgz",
+        "cyberful-org-cyberful-darwin-arm64-1.2.3.tgz",
+        "cyberful-org-cyberful-darwin-x64-1.2.3.tgz",
+        "cyberful-org-cyberful-linux-x64-1.2.3.tgz",
+        "cyberful-org-cyberful-windows-x64-1.2.3.tgz",
         "cyberful-v1.2.3-darwin-arm64.tar.gz",
         "cyberful-v1.2.3-darwin-x64.tar.gz",
         "cyberful-v1.2.3-linux-x64.tar.gz",
@@ -126,7 +126,7 @@ describe("release archives", () => {
     const artifacts = path.join(root, "artifacts")
     const output = path.join(root, "output")
     fs.mkdirSync(artifacts)
-    fs.writeFileSync(path.join(artifacts, "cyberful-cli-linux-x64-1.2.3.tgz"), "not a tarball")
+    fs.writeFileSync(path.join(artifacts, "cyberful-org-cyberful-linux-x64-1.2.3.tgz"), "not a tarball")
 
     expect(() => prepareReleaseAssets({ repositoryRoot: root, artifacts, output, version: "1.2.3" })).toThrow(
       "package listing",
