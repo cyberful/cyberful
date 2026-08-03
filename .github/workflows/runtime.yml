@@ -315,9 +315,10 @@ jobs:
             reference="$RUNTIME_IMAGE@$digest"
             # A digest-pinned native ref exposes one attestation object. The
             # assembled multi-platform index below exposes maps by platform.
+            # BuildKit may emit either the SLSA v0.2 or v1 predicate layout.
             docker buildx imagetools inspect "$reference" \
               --format '{{json .Provenance.SLSA}}' \
-              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
             docker buildx imagetools inspect "$reference" \
               --format '{{json .SBOM.SPDX}}' \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -375,7 +376,7 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -430,7 +431,7 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -489,7 +490,7 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
