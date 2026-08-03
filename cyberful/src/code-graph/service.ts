@@ -9,6 +9,7 @@ import path from "node:path"
 import { chmod, lstat, mkdir, open, realpath, stat } from "node:fs/promises"
 import { constants } from "node:fs"
 import { createHash } from "node:crypto"
+import { contains as contained } from "@/util/filesystem"
 import { replaceWorkareaFile } from "../workarea"
 import { CodeGraphEngine, normalizeCodeGraphEngineLimits, type CodeGraphIndexProgress } from "./engine"
 import { FindingLedger } from "./ledger"
@@ -73,11 +74,6 @@ export interface CodeGraphService {
 
 function isMissing(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
-}
-
-function contained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
 function normalizedExportPath(value: unknown, fallback: string) {

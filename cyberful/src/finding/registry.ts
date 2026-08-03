@@ -10,6 +10,7 @@ import path from "node:path"
 import { lstat, readFile, realpath } from "node:fs/promises"
 import { Schema } from "effect"
 import { Identifier } from "@/id/id"
+import { nodeErrorCode } from "@/util/error"
 import { Flock } from "@/util/flock"
 import { isRecord } from "@/util/record"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
@@ -200,12 +201,6 @@ function emptyRegistry(): Registry {
   return { schema_version: 1, revision: 0, runs: [], findings: [] }
 }
 
-function nodeErrorCode(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined
-}
-
 function boundedText(value: unknown, label: string, maximum: number) {
   if (typeof value !== "string") throw new Error(`${label} must be a string`)
   const normalized = value.trim()
@@ -219,11 +214,8 @@ function positiveEvidence(value: unknown, label = "finding positive_evidence") {
   if (!Array.isArray(value)) return boundedText(value, label, 8_000)
   if (value.length === 0 || value.length > 32)
     throw new Error(`${label} must be a string or an array of 1 to 32 strings`)
-  const normalized = [
-    ...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 8_000))),
-  ].join("\n")
-  if (normalized.length > 8_000)
-    throw new Error(`${label} must contain at most 8000 characters after normalization`)
+  const normalized = [...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 8_000)))].join("\n")
+  if (normalized.length > 8_000) throw new Error(`${label} must contain at most 8000 characters after normalization`)
   return normalized
 }
 

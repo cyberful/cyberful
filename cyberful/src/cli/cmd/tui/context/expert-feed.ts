@@ -140,14 +140,6 @@ export function expertActorIdentityText(actor: PhaseActivityActor | undefined): 
   return actor?.displayName && actor.emoji ? `${actor.emoji} ${actor.displayName}` : undefined
 }
 
-export function expertActorCardLabel(label: string): string {
-  return `@${label}`
-}
-
-export function expertActorTextLabel(label: string): string {
-  return `@${label} → `
-}
-
 export function isExpertSemanticProgress(text: string): boolean {
   try {
     const value: unknown = JSON.parse(text)

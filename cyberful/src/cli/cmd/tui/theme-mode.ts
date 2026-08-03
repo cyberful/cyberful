@@ -2,7 +2,6 @@
 // Chooses light or dark appearance from an explicit renderer report or the
 //   measured terminal background, with a stable fallback for unknown palettes.
 // → cyberful/src/cli/cmd/tui/app.tsx — seeds the full-screen TUI theme.
-// → cyberful/src/cli/cmd/run/theme.ts — resolves direct-mode fallback colors.
 // ─────────────────────────────────────────────────────────────────
 
 import { RGBA, type TerminalColors } from "@opentui/core"

@@ -9,17 +9,8 @@ import path from "node:path"
 import { chmod, lstat, mkdir, realpath } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import { Global } from "@/global"
-
-function nodeErrorCode(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined
-}
-
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
-}
+import { nodeErrorCode } from "@/util/error"
+import { contains as isContained } from "@/util/filesystem"
 
 async function ensurePlainChild(root: string, name: string) {
   const candidate = path.join(root, name)

@@ -10,6 +10,8 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { lstat, mkdir, realpath, rm } from "node:fs/promises"
+import { readBoundedPrefix } from "@/util/bounded-output"
+import { contains as isContained } from "@/util/filesystem"
 import { replaceWorkareaFile } from "@/workarea"
 import { materializeSourceForAuditLab } from "./source-tools"
 
@@ -56,11 +58,6 @@ interface BootstrapAdapter {
   readonly environment?: Readonly<Record<string, string>>
 }
 
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
-}
-
 function requestedPath(value: unknown) {
   if (value === undefined || value === "") return ""
   if (typeof value !== "string" || path.isAbsolute(value) || value.includes("\0"))
@@ -84,34 +81,6 @@ async function plainDirectory(root: string, relative: string) {
     if (!isContained(root, await realpath(current))) throw new Error("audit lab path escapes the workarea")
   }
   return current
-}
-
-async function readBounded(stream: ReadableStream<Uint8Array> | null) {
-  if (!stream) return { text: "", truncated: false }
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let retained = 0
-  let truncated = false
-  while (true) {
-    const next = await reader.read()
-    if (next.done) break
-    if (retained >= MAX_DOCKER_OUTPUT) {
-      truncated = true
-      continue
-    }
-    const remaining = MAX_DOCKER_OUTPUT - retained
-    const chunk = next.value.byteLength <= remaining ? next.value : next.value.slice(0, remaining)
-    chunks.push(chunk)
-    retained += chunk.byteLength
-    truncated ||= chunk.byteLength !== next.value.byteLength
-  }
-  const bytes = new Uint8Array(retained)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return { text: new TextDecoder().decode(bytes), truncated }
 }
 
 function dockerEnvironment() {
@@ -138,8 +107,8 @@ async function docker(argv: readonly string[]): Promise<CommandResult> {
   }, BOOTSTRAP_TIMEOUT_MS)
   try {
     const [stdout, stderr, exitCode] = await Promise.all([
-      readBounded(child.stdout),
-      readBounded(child.stderr),
+      readBoundedPrefix(child.stdout, MAX_DOCKER_OUTPUT),
+      readBoundedPrefix(child.stderr, MAX_DOCKER_OUTPUT),
       child.exited,
     ])
     return {
@@ -215,7 +184,8 @@ function bootstrapAdapters(files: readonly string[]): BootstrapAdapter[] {
   if (manifests.has("pom.xml")) {
     adapters.push({
       name: "maven",
-      command: "mkdir -p .cyberful-cache/m2 && mvn -B -Dmaven.repo.local=/workspace/.cyberful-cache/m2 dependency:go-offline",
+      command:
+        "mkdir -p .cyberful-cache/m2 && mvn -B -Dmaven.repo.local=/workspace/.cyberful-cache/m2 dependency:go-offline",
       environment: { MAVEN_OPTS: "-Dmaven.repo.local=/workspace/.cyberful-cache/m2" },
     })
   }
@@ -367,5 +337,9 @@ export async function cleanupAuditLabs() {
     if (result.status === "fulfilled" && lab) activeLabs.delete(lab)
   }
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
-  if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "audit lab cleanup failed")
+  if (failures.length > 0)
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      "audit lab cleanup failed",
+    )
 }

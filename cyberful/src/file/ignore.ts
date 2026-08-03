@@ -3,8 +3,6 @@
 //   patterns excluded from workspace scans while honoring explicit allowlists.
 // ─────────────────────────────────────────────────────────────────
 
-import { Glob } from "@/util/glob"
-
 const FOLDERS = new Set([
   "node_modules",
   "bower_components",
@@ -58,29 +56,5 @@ const FILES = [
 ]
 
 export const PATTERNS = [...FILES, ...FOLDERS]
-
-export function match(
-  filepath: string,
-  opts?: {
-    extra?: string[]
-    whitelist?: string[]
-  },
-) {
-  for (const pattern of opts?.whitelist || []) {
-    if (Glob.match(pattern, filepath)) return false
-  }
-
-  const parts = filepath.split(/[/\\]/)
-  for (let i = 0; i < parts.length; i++) {
-    if (FOLDERS.has(parts[i])) return true
-  }
-
-  const extra = opts?.extra || []
-  for (const pattern of [...FILES, ...extra]) {
-    if (Glob.match(pattern, filepath)) return true
-  }
-
-  return false
-}
 
 export * as FileIgnore from "./ignore"

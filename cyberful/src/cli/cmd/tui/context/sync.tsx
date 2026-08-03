@@ -145,9 +145,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
     const providerUsageScopes = new Map<string, Map<string, UsageScope>>()
     const usageNumber = (value: unknown) =>
-      typeof value === "number" && Number.isFinite(value)
-        ? Math.max(0, Math.floor(value))
-        : 0
+      typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
     const emptyUsage = (): UsageTotals => ({
       input: 0,
       cacheRead: 0,
@@ -199,11 +197,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       const parentGroup = actor?.parentID ? scopes.get(actor.parentID)?.group : undefined
       const runKind = actor?.role ?? previous?.runKind ?? "root"
       const group =
-        runKind === "root"
-          ? "root"
-          : runKind === "subagent"
-            ? "subagents"
-            : parentGroup ?? previous?.group ?? "root"
+        runKind === "root" ? "root" : runKind === "subagent" ? "subagents" : (parentGroup ?? previous?.group ?? "root")
       scopes.set(usage.scopeID, {
         runID: usage.scopeID,
         ...(actor?.parentID ? { parentRunID: actor.parentID } : {}),
@@ -398,59 +392,36 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     // The completed request then drains that newest revision before releasing
     // ownership, preventing both request storms and stale sidebar snapshots.
     // ─────────────────────────────────────────────────────────────────
-    const findingRefreshes = new Map<string, { running: boolean; pendingRevision?: number }>()
-
-    function queueFindingRefresh(sessionID: string, revision: number) {
-      const state = findingRefreshes.get(sessionID) ?? { running: false }
-      state.pendingRevision = Math.max(state.pendingRevision ?? revision, revision)
-      findingRefreshes.set(sessionID, state)
-      if (state.running) return
-      state.running = true
-      void (async () => {
-        while (state.pendingRevision !== undefined) {
-          const current = state.pendingRevision
-          state.pendingRevision = undefined
-          try {
-            await refreshFindings(sessionID)
-          } catch (error) {
-            Log.Default.warn("finding registry refresh failed", {
-              sessionID,
-              revision: current,
-              error: error instanceof Error ? error.message : String(error),
-            })
+    function revisionRefreshQueue(label: string, refresh: (sessionID: string) => Promise<void>) {
+      const refreshes = new Map<string, { running: boolean; pendingRevision?: number }>()
+      return (sessionID: string, revision: number) => {
+        const state = refreshes.get(sessionID) ?? { running: false }
+        state.pendingRevision = Math.max(state.pendingRevision ?? revision, revision)
+        refreshes.set(sessionID, state)
+        if (state.running) return
+        state.running = true
+        void (async () => {
+          while (state.pendingRevision !== undefined) {
+            const current = state.pendingRevision
+            state.pendingRevision = undefined
+            try {
+              await refresh(sessionID)
+            } catch (error) {
+              Log.Default.warn(`${label} registry refresh failed`, {
+                sessionID,
+                revision: current,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            }
           }
-        }
-        state.running = false
-        findingRefreshes.delete(sessionID)
-      })()
+          state.running = false
+          refreshes.delete(sessionID)
+        })()
+      }
     }
 
-    const hypothesisRefreshes = new Map<string, { running: boolean; pendingRevision?: number }>()
-
-    function queueHypothesisRefresh(sessionID: string, revision: number) {
-      const state = hypothesisRefreshes.get(sessionID) ?? { running: false }
-      state.pendingRevision = Math.max(state.pendingRevision ?? revision, revision)
-      hypothesisRefreshes.set(sessionID, state)
-      if (state.running) return
-      state.running = true
-      void (async () => {
-        while (state.pendingRevision !== undefined) {
-          const current = state.pendingRevision
-          state.pendingRevision = undefined
-          try {
-            await refreshHypotheses(sessionID)
-          } catch (error) {
-            Log.Default.warn("hypothesis registry refresh failed", {
-              sessionID,
-              revision: current,
-              error: error instanceof Error ? error.message : String(error),
-            })
-          }
-        }
-        state.running = false
-        hypothesisRefreshes.delete(sessionID)
-      })()
-    }
+    const queueFindingRefresh = revisionRefreshQueue("finding", refreshFindings)
+    const queueHypothesisRefresh = revisionRefreshQueue("hypothesis", refreshHypotheses)
 
     event.subscribe((event) => {
       switch (event.type) {

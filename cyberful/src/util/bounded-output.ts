@@ -1,7 +1,28 @@
-// ── Bounded Process Output Tail ──────────────────────────────────
-// Retains the final byte window from a stream while counting discarded output,
-// allowing process owners to keep draining without growing application memory.
+// ── Bounded Process Output ───────────────────────────────────────
+// Retains a fixed prefix or tail from process streams while continuing to
+// drain discarded output, preventing child deadlocks and unbounded memory use.
 // ─────────────────────────────────────────────────────────────────
+
+export async function readBoundedPrefix(stream: ReadableStream<Uint8Array> | null, limit: number) {
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("output limit must be a positive safe integer")
+  if (!stream) return { text: "", truncated: false }
+
+  const reader = stream.getReader()
+  const bytes = new Uint8Array(limit)
+  let retained = 0
+  let truncated = false
+  while (true) {
+    const next = await reader.read()
+    if (next.done) break
+    const count = Math.min(next.value.byteLength, limit - retained)
+    if (count > 0) {
+      bytes.set(next.value.subarray(0, count), retained)
+      retained += count
+    }
+    truncated ||= count < next.value.byteLength
+  }
+  return { text: new TextDecoder().decode(bytes.subarray(0, retained)), truncated }
+}
 
 // ── Retention Never Keeps An Oversized Source Chunk Alive ────────
 // Stream chunks are untrusted boundary values and may themselves exceed the

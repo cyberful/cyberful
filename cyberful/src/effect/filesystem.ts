@@ -8,11 +8,12 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { realpathSync } from "node:fs"
 import * as NFS from "node:fs/promises"
-import { dirname, join, relative, resolve as pathResolve } from "node:path"
+import { dirname, join, resolve as pathResolve } from "node:path"
 import { lookup } from "mime-types"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import type { PlatformError } from "effect/PlatformError"
 import { Glob } from "@/util/glob"
+import { contains as pathContains } from "@/util/filesystem"
 import { serviceUse } from "@/effect/service-use"
 
 export namespace AppFileSystem {
@@ -252,12 +253,8 @@ export namespace AppFileSystem {
   }
 
   export function overlaps(a: string, b: string) {
-    const relA = relative(a, b)
-    const relB = relative(b, a)
-    return !relA || !relA.startsWith("..") || !relB || !relB.startsWith("..")
+    return pathContains(a, b) || pathContains(b, a)
   }
 
-  export function contains(parent: string, child: string) {
-    return !relative(parent, child).startsWith("..")
-  }
+  export const contains = pathContains
 }

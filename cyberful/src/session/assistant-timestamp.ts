@@ -1,5 +1,5 @@
 // ── Assistant Timestamp Lines ────────────────────────────────────────────
-// Appends, replaces, and extracts the canonical timestamp line persisted with assistant text.
+// Formats and extracts the canonical timestamp line persisted with assistant text.
 // → cyberful/src/session/message-v2.ts — stores the assistant text carrying this line.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -26,9 +26,4 @@ export function splitAssistantTimeLine(text: string) {
     text: text.slice(0, match.index).replace(/\n+$/, ""),
     timestamp: match[1],
   }
-}
-
-export function appendAssistantTimeLine(text: string, timestamp: number | string) {
-  const body = splitAssistantTimeLine(text).text
-  return [body, assistantTimeLine(timestamp)].filter((part) => part.length > 0).join("\n\n")
 }
