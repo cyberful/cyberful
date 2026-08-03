@@ -117,8 +117,9 @@ export async function runBrowserPreflight(): Promise<void> {
   line(dim("Cyberful preflight — browser"))
 
   // The launcher is <root>/browser/bin/cyber-browser; patchright-core lives at <root>/node_modules.
-  const launcher = cyberBrowserMcpCommand()[0]
-  const pkgRoot = path.resolve(path.dirname(launcher), "..", "..")
+  const browserCommand = cyberBrowserMcpCommand()
+  const launcher = browserCommand[0]
+  const pkgRoot = process.env.CYBER_BROWSER_PACKAGE_ROOT || path.resolve(path.dirname(launcher), "..", "..")
   const browsersPath = process.env.CYBER_BROWSER_BROWSERS_PATH || path.join(pkgRoot, "browser", ".browsers")
 
   // Dedicated persistent profile for cyberful's browser (kept out of any personal Chrome profile).
@@ -180,8 +181,10 @@ export async function runBrowserPreflight(): Promise<void> {
   line(`  ${yellow("⏳")} Chromium not found — downloading now (first run, ~150 MB)…`)
   let install
   try {
-    install = await installChromium(["node", cli, "install", "chromium"], {
+    const embeddedBun = process.env.CYBER_BROWSER_BUN_REENTRY === "1"
+    install = await installChromium([embeddedBun ? launcher : "node", cli, "install", "chromium"], {
       ...process.env,
+      ...(embeddedBun ? { BUN_BE_BUN: "1" } : {}),
       PLAYWRIGHT_BROWSERS_PATH: browsersPath,
       CYBER_BROWSER_BROWSERS_PATH: browsersPath,
     })

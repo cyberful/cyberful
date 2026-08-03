@@ -57,7 +57,13 @@ function materializeBrowser(): boolean {
     fs.writeFileSync(stamp, buildIdSlug())
   }
 
-  process.env.CYBER_BROWSER_MCP_COMMAND = path.join(root, "browser", "bin", "cyber-browser")
+  // The standalone binary already contains Bun. Re-entering it in Bun CLI mode
+  // executes the materialized browser module and Patchright CLI without requiring
+  // a separate host Node runtime. Source checkouts keep their ordinary launcher.
+  process.env.CYBER_BROWSER_MCP_COMMAND = process.execPath
+  process.env.CYBER_BROWSER_MCP_ENTRY = path.join(root, "browser", "browser_mcp.mjs")
+  process.env.CYBER_BROWSER_PACKAGE_ROOT = root
+  process.env.CYBER_BROWSER_BUN_REENTRY = "1"
   return true
 }
 

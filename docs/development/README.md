@@ -23,7 +23,9 @@ make docs-build
 ```
 
 Run Docker, network, ZAP, Ghidra, and Pi/provider contract tiers when the
-affected boundary requires them. Treat new type errors and runtime warnings as defects. Add a
+affected boundary requires them. Unified image changes use `make runtime-build`
+followed by `make test-runtime`; allow at least 100 GB to build and 40 GB to
+run it. Treat new type errors and runtime warnings as defects. Add a
 regression test whenever a defect is technically reproducible. Regenerate the
 control-plane client with `bun run --cwd cyberful generate-client` only when its
 schema changes.

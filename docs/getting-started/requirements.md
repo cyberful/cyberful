@@ -1,48 +1,66 @@
 # What you need
 
-Cyberful brings the workflow and security tools together, but a few programs
-must already be available on your computer.
+The standalone Cyberful CLI requires one configured model provider and a
+running Docker engine. ZAP, Ghidra, Firefox, Python, Node, and the offensive
+toolchain are already inside the unified runtime image; they are not host
+runtime prerequisites.
 
-| Dependency          | Requirement                   | Purpose                           |
-| ------------------- | ----------------------------- | --------------------------------- |
-| Model provider      | At least one configured route | Inference for Pi Agent runs       |
-| Docker with Compose | Running local engine          | cyberful-os, ZAP, Ghidra, and EVM |
-| Python              | 3.10 or newer                 | cyberful-os host bridge           |
-| Node.js and npm     | Node 18 or newer              | npm launcher and browser MCP      |
-| Bun                 | 1.3.14 for source builds only | Workspace build and tests         |
+| Use case | Host requirements |
+| --- | --- |
+| Run a standalone release binary | Docker and one configured provider |
+| Install through npm | Node.js 18+ with npm for the small platform selector, then the requirements above |
+| Develop from this repository | Docker, Bun 1.3.14, Node.js 24 with npm, and Python 3.10+ |
+| Build the runtime image | The development tools above and at least 100 GB free |
 
-Verify the prerequisites before installing Cyberful:
+Check the runtime prerequisite before installing:
 
 ```sh
 docker version
-docker compose version
-python3 --version
-node --version
 ```
 
+Docker Compose is not required. A host JDK, Ghidra, ZAP, Firefox, Python, Bun,
+or Node installation is not required by a standalone release binary. The npm
+distribution channel still uses Node for its portable platform selector; the
+selected Cyberful executable and its embedded browser driver do not.
+
+## First launch and disk capacity
+
+The release CLI pulls one immutable multi-architecture image from
+`ghcr.io/cyberful/cyberful-os`. The initial compressed download can exceed
+6 GB. Keep at least **40 GB free** for the unpacked image, container writable
+layer, browser, persistent Ghidra projects, workarea evidence, and reports.
+Building the image from source requires at least **100 GB free**.
+
+The image index contains native `linux/amd64` and `linux/arm64` manifests.
+Docker selects the matching manifest automatically. Cyberful prints the full
+image reference, selected architecture, and digest while pulling or attesting
+the runtime. A local source checkout instead defaults to `cyberful-os:latest`;
+build it with:
+
+```sh
+make runtime-build
+```
+
+Cyberful does not delete old local images automatically. After confirming that
+no needed engagement is using them, inspect and prune images manually:
+
+```sh
+docker image ls ghcr.io/cyberful/cyberful-os
+docker image prune
+```
+
+## Provider setup
+
 The first launch creates `settings.yaml` with `openai-codex` as the main
-subscription provider. Authenticate and inspect that configured key through Cyberful:
+subscription provider. Authenticate and inspect that route through Cyberful:
 
 ```sh
 cyberful auth login
 cyberful auth status
 ```
 
-You can instead select the reviewed Z.AI or Kimi subscription adapters and run
-`cyberful auth login <name>`, where `<name>` is the key under
-`agent.providers`. Environment-backed providers require only the variable name
-in `settings.yaml`; place the actual secret in the process environment or `.env`. See
-[Agent providers and fallback](../user-guide/settings.md).
-
-Continue with [Install Cyberful](install.md) when these prerequisites are ready.
-
-## First-launch capacity
-
-You do not need to configure those tools one by one. The first launch prepares
-`cyberful-os:latest`, `cyberful-zap:2.17.0`,
-`cyberful-zap-bridge:0.1.0`, `cyberful-ghidra:12.1.2`, and
-`cyberful-ghidra-bridge:0.1.0`, and may download isolated Chromium. Ghidra uses
-JDK 21 inside its image; no host Java installation is required. Allow enough
-disk space for those images, persistent Ghidra projects, the browser, workarea
-evidence, and reports. Use a
-dedicated engagement directory and keep Docker running for the full session.
+You can instead select a reviewed Z.AI or Kimi subscription adapter. Secrets
+for environment-backed providers belong in the process environment or a
+private `.env`, never in `settings.yaml`. See
+[Agent providers and fallback](../user-guide/settings.md), then continue with
+[Install Cyberful](install.md).

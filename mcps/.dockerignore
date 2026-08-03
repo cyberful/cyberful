@@ -1,0 +1,20 @@
+# ── Unified Runtime Build Context ─────────────────────────────────
+# Keeps tests, caches, local state, and obsolete standalone image recipes out
+#   of the single Cyberful engagement-runtime build context.
+# → mcps/cyberful-os/Dockerfile — consumes the remaining first-party sources.
+# ─────────────────────────────────────────────────────────────────
+
+**/.git
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/tests
+browser
+package-lock.json
+cyberful-os/docker-compose.yml
+cyberful-os/Dockerfile
+ghidra/Dockerfile
+ghidra/Dockerfile.bridge
+zap/Dockerfile
+zap/Dockerfile.bridge
+zap/*.test.mjs

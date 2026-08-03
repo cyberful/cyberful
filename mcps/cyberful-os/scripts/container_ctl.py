@@ -199,7 +199,6 @@ def main(argv: list[str]) -> int:
             "--cap-add=SYS_PTRACE",
             *(argument for item in labels.items() for argument in ("--label", f"{item[0]}={item[1]}")),
             image,
-            "sleep", "infinity",
         ]
         # ── Existing Names Must Match Image And Ownership ────────────────
         # A deterministic container name can survive an earlier image build.

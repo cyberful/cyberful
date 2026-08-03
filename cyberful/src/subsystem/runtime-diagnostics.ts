@@ -18,7 +18,7 @@ const MESSAGE_BYTES = 512
 const LABEL_BYTES = 256
 
 export interface RuntimeDiagnosticInput {
-  readonly component: "agent" | "phase" | "gateway" | "zap" | "browser" | "mcp"
+  readonly component: "agent" | "phase" | "gateway" | "zap" | "ghidra" | "browser" | "mcp"
   readonly profile?: string
   readonly stage: "startup" | "connect" | "context" | "provider" | "tool" | "shutdown"
   readonly severity: "info" | "warning" | "error"

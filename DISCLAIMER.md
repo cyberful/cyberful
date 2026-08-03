@@ -1,96 +1,111 @@
-DISCLAIMER
+# Disclaimer
 
-Cyberful is a comprehensive, open-source AI workbench for authorized security
-testing across the full application-security lifecycle. It unifies code and
-project analysis, secure change review, evidence-driven remediation,
-authorized penetration testing, independent verification, and reporting in a
-single controlled workspace.
+Cyberful is an open-source AI workbench intended to support authorized
+application-security assessment, remediation, verification, and reporting. It
+does not replace professional judgment, independent validation, formal
+certification, legal advice, or the operational security controls required to
+protect an organization.
 
-Cyberful supports the application-security lifecycle; it is not a replacement
-for professional judgment, independent validation, formal certification, legal
-advice, or the broader operational security controls required to protect an
-organization.
+## License and effect of this notice
 
-Purpose
+Cyberful is licensed under the [GNU Affero General Public License version 3
+only](LICENSE) (`AGPL-3.0-only`). The license governs the permissions and
+obligations associated with copying, modifying, and distributing Cyberful.
 
-Cyberful is designed to assist security professionals, researchers, organizations, and students in performing authorized cybersecurity activities, including but not limited to:
+This disclaimer describes the project's intended use and material risks. It
+does not modify, supplement, or restrict the rights and obligations provided by
+the license. Neither the license nor this notice grants authorization to access
+or test third-party systems, excuses unlawful conduct, or overrides contracts,
+program rules, or third-party rights.
 
-* Repository-wide security audits and secure review of code changes
-* Project, architecture, dependency, supply-chain, infrastructure, and control assessments
-* Vulnerability discovery, validation, and evidence collection
-* Reproduction, remediation, and independent verification of security findings
-* Authorized penetration testing
-* Bug bounty research within published program rules
-* Defensive security research
-* Audit-readiness and compliance-control evidence gathering
-* Security reporting and scoped follow-up investigation
+## Authorized use and operator responsibility
 
-Cyberful is not intended to facilitate unauthorized access, malicious intrusion, disruption of services, or any activity that violates applicable laws or the rights of third parties.
+Cyberful is intended for activities such as:
 
-⸻
+- security audits and secure change review;
+- architecture, dependency, supply-chain, infrastructure, and control
+  assessments;
+- vulnerability discovery, validation, reproduction, and remediation;
+- authorized penetration testing and defensive security research;
+- bug bounty research within the applicable program rules;
+- audit-readiness, evidence gathering, reporting, and follow-up investigation.
 
-User Responsibility
+The individual or organization operating Cyberful is responsible for:
 
-By downloading, building, modifying, or using Cyberful, you acknowledge that:
+- obtaining authorization from the system owner or another party legally
+  entitled to grant it;
+- confirming the exact assets, accounts, methods, time periods, rate limits,
+  and other conditions within the authorized scope;
+- complying with applicable laws, regulations, contracts, and program rules;
+- protecting credentials, personal data, confidential information, evidence,
+  and generated reports; and
+- evaluating the safety and consequences of each execution.
 
-* You are solely responsible for how you use the software.
-* You will only perform security testing against systems for which you have explicit authorization or that are publicly authorized (for example, bug bounty programs).
-* You are responsible for complying with all applicable laws, regulations, contracts, and program rules.
-* You understand that modifying the source code may alter the security properties of the software.
+A publicly reachable system is not, by itself, authorized for security testing.
+For a bug bounty program, authorization extends only to the assets and methods
+expressly permitted by the current published policy and remains subject to all
+stated exclusions and conditions.
 
-⸻
+The Cyberful project does not endorse unauthorized access, malicious intrusion,
+service disruption, theft of information, malware deployment, or other conduct
+that harms others or violates applicable law or third-party rights.
 
-No Warranty
+## Security-testing risks
 
-Cyberful is provided “AS IS”, without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.
+Security testing can cause service degradation, account lockouts, unintended
+state changes, data corruption or loss, resource consumption, alerts, and other
+operational effects, even when performed within an authorized scope. Operators
+should use appropriate backups, least-privilege credentials, rate and resource
+limits, monitoring and recovery procedures, and controlled or non-production
+environments when the engagement permits them.
 
-To the fullest extent permitted by law, the authors and contributors disclaim all warranties regarding the software and its operation.
+Safeguards in an official release are intended to support responsible operation
+but cannot prevent every misuse, error, unsafe instruction, or harmful outcome.
 
-⸻
+## AI and automated output
 
-Limitation of Liability
+AI-generated or automated output may be inaccurate, incomplete, outdated,
+non-deterministic, or unsafe. Cyberful may produce false positives, false
+negatives, incorrect commands, flawed remediation advice, or reports that omit
+material context. Operators must review and independently validate relevant
+inputs, actions, evidence, findings, fixes, and reports before relying on them.
 
-In no event shall the authors, contributors, maintainers, or copyright holders be liable for any claim, damages, losses, liabilities, or other consequences arising from:
+Use of Cyberful does not establish that a system is secure or compliant, does
+not constitute a certification, and does not guarantee that vulnerabilities are
+absent.
 
-* the use of Cyberful;
-* the misuse of Cyberful;
-* modifications made by third parties;
-* forks or derivative works;
-* integrations with external tools, plugins, or AI models;
-* unauthorized or illegal activities performed using the software.
+## External tools, services, and data
 
-The responsibility for every execution rests solely with the individual or organization operating the software.
+Cyberful may be configured to use third-party tools, plugins, services, and AI
+models. Depending on that configuration, prompts, source code, target data, and
+other content may be processed by those third parties. Operators are responsible
+for deciding what data is appropriate to provide and for reviewing applicable
+terms, privacy practices, retention policies, and organizational requirements.
 
-⸻
+Third-party components and services are governed by their own terms and may
+change, fail, or become unavailable independently of Cyberful. The Cyberful
+authors and contributors do not control or guarantee their behavior.
 
-Open Source Notice
+## Modified and redistributed versions
 
-Cyberful is released as open-source software to encourage transparency, collaboration, education, and the advancement of defensive cybersecurity.
+Modifying Cyberful may alter its security properties, safeguards, data flows,
+or runtime behavior. The authors and contributors cannot control or guarantee
+forks, derivative works, third-party builds, or redistributed versions. No
+affiliation with or endorsement by the official Cyberful project should be
+inferred solely because a version is derived from Cyberful.
 
-Our long-term mission is to democratize cybersecurity by making advanced security testing capabilities more accessible to security professionals, researchers, educators, students, and organizations of all sizes. We believe that improving access to high-quality defensive security tools ultimately contributes to a safer and more resilient digital ecosystem.
+## No warranty
 
-Because the software is open source, anyone may inspect, modify, or fork the code under the terms of the GNU Affero General Public License version 3. The authors cannot control or guarantee the behavior of modified versions or derivative works created by third parties.
+As set out in section 15 of the license, Cyberful is provided **"AS IS"**,
+without warranty of any kind, express or implied, including warranties of
+merchantability, fitness for a particular purpose, and non-infringement, except
+to the extent required by applicable law or agreed to in writing.
 
-Modified or redistributed versions should not imply endorsement by the original Cyberful project.
+## Limitation of liability
 
-⸻
-
-Security-First Philosophy
-
-The official Cyberful project is developed with a security-first philosophy.
-
-Official releases may include safeguards intended to encourage responsible and authorized use. These safeguards are provided to support ethical security testing but should not be interpreted as a guarantee against misuse.
-
-⸻
-
-Ethical Use
-
-Cyberful is intended to empower defenders, security researchers, consultants, and organizations to improve the security of software and infrastructure.
-
-If your intended use involves accessing systems without authorization, disrupting services, stealing information, deploying malware, or otherwise harming others, do not use Cyberful.
-
-⸻
-
-Acceptance
-
-By using, copying, modifying, or distributing Cyberful, you acknowledge that you have read and understood this disclaimer and accept full responsibility for your own actions.
+To the fullest extent permitted by applicable law, and subject to section 16 of
+the license, the authors, contributors, maintainers, and copyright holders are
+not liable for damages or losses arising from the use of or inability to use
+Cyberful, including loss or corruption of data, service interruption, security
+incidents, reliance on generated output, third-party integrations, or modified
+and redistributed versions.

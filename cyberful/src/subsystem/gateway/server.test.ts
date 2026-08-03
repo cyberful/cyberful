@@ -42,6 +42,7 @@ const {
   parentUnavailable,
   runtimeCapabilityAllowed,
   runtimeNetworkAllowed,
+  upstreamFailureIsBlocking,
   writeGatewayPidSignal,
 } = await import("./server")
 const { humanDecisionMetadata } = await import("../human-question")
@@ -299,6 +300,13 @@ describe("expert-gateway variable tool", () => {
 })
 
 describe("expert-gateway workflow capability policy", () => {
+  test("makes ZAP startup blocking only when it enforces the global HTTP budget", () => {
+    expect(upstreamFailureIsBlocking("zap", {})).toBe(false)
+    expect(upstreamFailureIsBlocking("ghidra", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(false)
+    expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(true)
+    expect(upstreamFailureIsBlocking("cyberful-os", {})).toBe(true)
+  })
+
   test("keeps Code Audit offline while live-target workflows own target traffic", () => {
     expect(
       runtimeCapabilityAllowed({

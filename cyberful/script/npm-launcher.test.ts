@@ -52,7 +52,7 @@ describe("npm launcher", () => {
     expect(resolver.architectureName("x64")).toBe("x64")
     expect(resolver.platformName("freebsd")).toBeUndefined()
     expect(resolver.target("darwin", "arm64", false)).toEqual({
-      packageName: "@cyberful/cli-darwin-arm64",
+      packageName: "@cyberful-org/cyberful-darwin-arm64",
       binaryName: "cyberful",
     })
     expect(resolver.target("linux", "arm64", false)).toBeUndefined()
@@ -61,7 +61,7 @@ describe("npm launcher", () => {
 
   test("uses the Windows executable suffix", () => {
     expect(resolver.target("windows", "x64", false, true)).toEqual({
-      packageName: "@cyberful/cli-windows-x64",
+      packageName: "@cyberful-org/cyberful-windows-x64",
       binaryName: "cyberful.exe",
     })
   })
@@ -75,13 +75,13 @@ describe("npm launcher", () => {
   test("finds scoped platform packages above the launcher", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-launcher-"))
     temporaryRoots.push(root)
-    const binary = path.join(root, "node_modules", "@cyberful", "cli-linux-x64", "bin", "cyberful")
+    const binary = path.join(root, "node_modules", "@cyberful-org", "cyberful-linux-x64", "bin", "cyberful")
     fs.mkdirSync(path.dirname(binary), { recursive: true })
     fs.writeFileSync(binary, "binary")
     expect(
       resolver.findBinary(
-        path.join(root, "node_modules", "@cyberful", "cli", "bin"),
-        "@cyberful/cli-linux-x64",
+        path.join(root, "node_modules", "cyberful", "bin"),
+        "@cyberful-org/cyberful-linux-x64",
         "cyberful",
       ),
     ).toBe(binary)

@@ -1,6 +1,6 @@
 // ── Built-In Gateway Upstream Registry ──────────────────────────
-// Constructs the local cyberful-os, isolated browser, ZAP, and Ghidra bridge
-// process descriptors from validated dependency configuration for one gateway.
+// Constructs local cyberful-os, browser, and in-container service bridge process
+// descriptors from validated engagement configuration for one gateway.
 // → cyberful/src/subsystem/gateway/server.ts — starts and proxies these upstreams.
 // ─────────────────────────────────────────────────────────────────
 
@@ -8,11 +8,10 @@ import {
   cyberBrowserZapChainEnv,
   cyberBrowserMcpCommand,
   cyberfulOsDir,
+  cyberfulOsImage,
   cyberfulOsMcpCommand,
   cyberGhidraBridgeCommand,
-  cyberGhidraBridgeContainerName,
   cyberZapBridgeCommand,
-  cyberZapBridgeContainerName,
   shouldChainBrowserThroughZap,
   shouldEnableCyberBrowserMcp,
   shouldEnableCyberGhidra,
@@ -22,8 +21,10 @@ import {
 
 export function builtin() {
   const root = cyberfulOsDir()
-  const image = process.env.CYBERFUL_OS_IMAGE?.trim() || "cyberful-os:latest"
+  const image = cyberfulOsImage()
   const container = process.env.CYBERFUL_OS_CONTAINER?.trim() || "cyberful-os"
+  const zapReady = shouldEnableCyberZap() && process.env.CYBER_ZAP_READY === "1"
+  const ghidraReady = shouldEnableCyberGhidra() && process.env.CYBER_GHIDRA_READY === "1"
   return {
     "cyberful-os": {
       type: "local" as const,
@@ -54,37 +55,28 @@ export function builtin() {
         CYBER_BROWSER_HEADLESS: process.env.CYBER_BROWSER_HEADLESS ?? "false",
         CYBER_BROWSER_STEALTH: "true",
         CYBER_BROWSER_CHANNEL: process.env.CYBER_BROWSER_CHANNEL ?? "chromium",
+        ...(process.env.CYBER_BROWSER_BUN_REENTRY === "1" ? { BUN_BE_BUN: "1" } : {}),
         ...(shouldChainBrowserThroughZap() ? cyberBrowserZapChainEnv() : {}),
       },
     },
-    // ── ZAP Exposure Requires A Live Owned Runtime ─────────────────────
-    // A phase receives a disposable stdio bridge only when its host-owned ZAP
-    // runtime has published a concrete container. Pentest may reuse the runtime
-    // across its engagement, while AppSec workflows retain their narrower phase
-    // ownership. A degraded or disabled startup contributes no ZAP upstream;
-    // the browser then follows its explicit direct-traffic fallback instead of
-    // exposing a bridge that cannot serve requests.
+    // ── Service Exposure Requires An Attested Engagement Runtime ─────
+    // The host sets each ready marker only after its loopback service and real
+    // docker-exec bridge complete preflight. A degraded service contributes no
+    // upstream, while every sequential phase reconnects through a fresh stdio
+    // process inside the same container. No phase owns a bridge image, mount,
+    // network namespace, or Docker cleanup responsibility.
     // ──────────────────────────────────────────────────────────────
     zap: {
       type: "local" as const,
-      command: cyberZapBridgeCommand(),
-      container: cyberZapBridgeContainerName(),
-      enabled: shouldEnableCyberZap() && Boolean(process.env.CYBER_ZAP_CONTAINER?.trim()),
+      command: zapReady ? cyberZapBridgeCommand() : [],
+      enabled: zapReady,
       timeout: 305_000,
       environment: {},
     },
-    // ── Ghidra Exposure Requires The Engagement JVM ────────────────
-    // The bridge has no project or workarea mounts of its own. It can exist only
-    // while the parent runtime publishes a concrete container descriptor and
-    // capability key, and it shares only that container's loopback namespace.
-    // Closing the phase gateway removes this bridge while the JVM and durable
-    // project remain available to the next authorized analysis phase.
-    // ───────────────────────────────────────────────────────────────
     ghidra: {
       type: "local" as const,
-      command: cyberGhidraBridgeCommand(),
-      container: cyberGhidraBridgeContainerName(),
-      enabled: shouldEnableCyberGhidra() && Boolean(process.env.CYBER_GHIDRA_CONTAINER?.trim()),
+      command: ghidraReady ? cyberGhidraBridgeCommand() : [],
+      enabled: ghidraReady,
       timeout: 305_000,
       environment: {},
     },

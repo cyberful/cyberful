@@ -17,7 +17,7 @@ TUI input
        -> bounded delegated AgentRun tree
        -> optional provider-affined fallback AgentRun tree
   -> private host MCP gateway
-  -> read-only source store / Code Graph / cyberful-os / browser / ZAP / Ghidra / variables / question / handoff
+  -> source store / Code Graph / unified tooling container / browser / EVM / variables / question / handoff
   -> workarea artifacts
   -> root-only validated successor
 ```
@@ -108,17 +108,18 @@ tools approved for the workflow and phase from cyberful-os, browser, ZAP,
 Ghidra, Code Graph, session variables, human questions, and handoff. Provider
 and model selection cannot add MCP servers or weaken tool policy.
 
-Pentest uses a host-managed browser profile routed through its shared headless
-ZAP engagement by default. Code Audit has neither browser nor ZAP target
-traffic; its cyberful-os container is phase-owned and offline. Every AgentRun
-in the phase uses the same workarea, gateway capabilities, containers, and
-network policy, with handoff authorization enforced again at the gateway.
+Pentest uses a host-managed browser profile routed through its engagement ZAP
+by default. One unified tooling container holds cyberful-os, ZAP, and Ghidra for
+the complete engagement. Code Audit creates that same image with
+`--network none` and does not start ZAP. Every AgentRun in the phase uses the
+same workarea, gateway capabilities, engagement containers, and fixed network
+policy, with handoff authorization enforced again at the gateway.
 
 Gateway credentials and private environment remain host-owned and never enter
-model context, transcripts, or manifests. ZAP and Ghidra bridge containers are
-named and labelled per gateway, removed explicitly when it closes, and swept
-again when the engagement ends. The networkless Ghidra JVM persists between
-eligible phases; its host-owned project reopens by canonical workarea identity.
+model context, transcripts, or manifests. ZAP and Ghidra bridges are fresh
+`docker exec` stdio processes inside the engagement container, not Docker
+resources of their own. The Ghidra JVM persists between eligible phases; its
+host-owned project reopens by canonical workarea identity.
 
 Repository imports and deterministic source snapshots live in an owner-only
 application-data store outside the model-writable workarea. The gateway exposes
@@ -133,8 +134,9 @@ provider and tool routes resolved by Cyberful.
 
 ## Verification
 
-Run `make typecheck` for repository type checking and `make build` for
-standalone binaries. Focused contracts cover system-message preservation,
+Run `make typecheck` for repository type checking, `make runtime-build
+test-runtime` for the native tooling contract, and `make build` for standalone
+binaries. Focused contracts cover system-message preservation,
 provider security-block normalization, nested delegation, fallback affinity,
 quota behavior, gateway ownership, and credential redaction. MCP integration
 tiers verify cyberful-os command execution, browser navigation through ZAP,

@@ -1,8 +1,8 @@
 // ── Container Runtime Preflight ──────────────────────────────────
 // Verifies the Docker daemon, reaps orphaned managed containers, and prepares
-// every enabled first-party image before a Cyberful session can be created.
+// the single first-party engagement image before a session can be created.
 // → cyberful/src/dependency/config.ts — defines enabled runtimes and pinned image policy.
-// → cyberful/src/dependency/startup.ts — starts the images accepted here.
+// → cyberful/src/subsystem/engagement-runtime.ts — starts the image accepted here.
 // @docs/getting-started/requirements.md
 // ─────────────────────────────────────────────────────────────────
 import * as Log from "@/util/log"
@@ -12,24 +12,13 @@ import {
   cyberfulOsBuildCommand,
   cyberfulOsDir,
   cyberfulOsImage,
-  cyberGhidraBridgeBuildCommand,
-  cyberGhidraBridgeImage,
-  cyberGhidraBuildCommand,
-  cyberGhidraDir,
-  cyberGhidraImage,
-  cyberZapBridgeBuildCommand,
-  cyberZapBridgeImage,
-  cyberZapBuildCommand,
-  cyberZapDir,
-  cyberZapImage,
-  shouldEnableCyberZap,
-  shouldEnableCyberGhidra,
-  shouldStartCyberfulOs,
+  validateUnifiedRuntimeEnvironment,
 } from "./config"
 
 const log = Log.create({ service: "docker-preflight" })
 const DOCKER_COMMAND_TIMEOUT_MS = 30_000
-const DOCKER_BUILD_TIMEOUT_MS = 30 * 60_000
+const DOCKER_BUILD_TIMEOUT_MS = 3 * 60 * 60_000
+const DOCKER_PULL_TIMEOUT_MS = 2 * 60 * 60_000
 const DOCKER_VERIFY_TIMEOUT_MS = 2 * 60_000
 const DOCKER_OUTPUT_LIMIT_BYTES = 1024 * 1024
 const DOCKER_KILL_GRACE_MS = 1_000
@@ -67,7 +56,6 @@ async function runExitCode(
 export async function requireDockerDaemon(
   run: (command: string[]) => Promise<number | null> = (command) => runExitCode(command),
 ): Promise<void> {
-  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap() && !shouldEnableCyberGhidra()) return
   if ((await run(["docker", "version", "--format", "{{.Server.Version}}"])) === 0) return
   throw new Error(
     "Docker is required but its daemon is not reachable. Start Docker Desktop (or the configured Docker daemon) and relaunch Cyberful.",
@@ -124,7 +112,7 @@ async function reapOrphanedManagedContainers() {
 }
 
 export async function runDockerPreflight(): Promise<void> {
-  if (!shouldStartCyberfulOs() && !shouldEnableCyberZap() && !shouldEnableCyberGhidra()) return
+  validateUnifiedRuntimeEnvironment()
 
   line()
   line(dim("Cyberful preflight — preparing container images"))
@@ -152,112 +140,55 @@ export async function runDockerPreflight(): Promise<void> {
   if (reaped > 0)
     line(`  ${green("✓")} removed ${reaped} orphaned Cyberful container${reaped === 1 ? "" : "s"}`)
 
-  const images: { name: string; image: string; command: string[]; cwd?: string; verify?: string[] }[] = [
-    ...(shouldStartCyberfulOs()
-      ? [
-          {
-            name: "cyberful-os",
-            image: cyberfulOsImage(),
-            command: cyberfulOsBuildCommand(),
-            cwd: cyberfulOsDir(),
-            verify: [
-              "docker",
-              "run",
-              "--rm",
-              "--entrypoint",
-              "python3",
-              cyberfulOsImage(),
-              "/opt/cyberful-os/cyberful_os_mcp.py",
-              "--verify-capabilities",
-            ],
-          },
-        ]
-      : []),
-    ...(shouldEnableCyberZap()
-      ? [
-          { name: "OWASP ZAP", image: cyberZapImage(), command: cyberZapBuildCommand(), cwd: cyberZapDir() },
-          {
-            name: "ZAP MCP bridge",
-            image: cyberZapBridgeImage(),
-            command: cyberZapBridgeBuildCommand(),
-            cwd: cyberZapDir(),
-          },
-        ]
-      : []),
-    ...(shouldEnableCyberGhidra()
-      ? [
-          {
-            name: "headless Ghidra",
-            image: cyberGhidraImage(),
-            command: cyberGhidraBuildCommand(),
-            cwd: cyberGhidraDir(),
-            verify: [
-              "docker",
-              "run",
-              "--rm",
-              "--entrypoint",
-              "python3",
-              cyberGhidraImage(),
-              "-c",
-              "import pyghidra",
-            ],
-          },
-          {
-            name: "Ghidra MCP bridge",
-            image: cyberGhidraBridgeImage(),
-            command: cyberGhidraBridgeBuildCommand(),
-            cwd: cyberGhidraDir(),
-          },
-        ]
-      : []),
-  ]
+  const image = cyberfulOsImage()
+  const verify = ["docker", "run", "--rm", "--entrypoint", "/opt/cyberful/runtime-attestation", image]
 
-  // ── Parallel Image Preparation Retains Every Child ──────────────
-  // Independent images may build concurrently, but one early failure must not
-  // let the preflight return while sibling Docker commands still own inherited
-  // terminal streams. Settling the complete batch keeps every child attached to
-  // this startup boundary, then reports all failures after their exits are known.
+  // ── Releases Pull One Immutable Index; Source Builds One Image ─────────
+  // A compiled CLI carries a GHCR index digest and never reconstructs its runtime
+  // from partial embedded Docker contexts. Source checkouts retain the local
+  // cyberful-os:latest build path for contributors. Both paths converge on the
+  // same in-image attestation before startup, and pull/build output remains on the
+  // terminal so a multi-gigabyte first download is never mistaken for a hang.
   // ─────────────────────────────────────────────────────────────────
-  const outcomes = await Promise.allSettled(
-    images.map(async (item) => {
-      const exists = (await runExitCode(["docker", "image", "inspect", item.image])) === 0
-      const attested =
-        !item.verify || (exists && (await runExitCode(item.verify, { timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) === 0)
-      if (exists && attested) {
-        line(`  ${green("✓")} ${item.name} image ready ${dim(`(${item.image})`)}`)
-        return
-      }
-      if (exists && !attested) {
-        line(`  ${yellow("⏳")} ${item.name} image is stale or incomplete ${dim(`(${item.image})`)} — rebuilding…`)
-      }
-      if (!item.command.length || !item.cwd) {
-        line(`  ${red("✗")} ${item.name} build context is unavailable`)
-        log.warn("preflight: image build context unavailable", { image: item.image })
-        throw new Error(`${item.name} build context is unavailable; startup cannot continue safely.`)
-      }
-      if (!exists) line(`  ${yellow("⏳")} ${item.name} image ${dim(`(${item.image})`)} not found — building…`)
-      const built = await runExitCode(item.command, {
-        stream: true,
-        cwd: item.cwd,
-        timeoutMs: DOCKER_BUILD_TIMEOUT_MS,
-      })
-      if (built !== 0) {
-        line(`  ${red("✗")} ${item.name} image build failed ${dim(`(exit ${built ?? "spawn error"})`)}`)
-        log.warn("preflight: image build failed", { name: item.name, image: item.image, code: built })
-        throw new Error(`${item.name} image build failed; startup cannot continue safely.`)
-      }
-      if (
-        item.verify &&
-        (await runExitCode(item.verify, { stream: true, timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) !== 0
-      ) {
-        line(`  ${red("✗")} ${item.name} capability attestation failed after rebuild`)
-        throw new Error(`${item.name} is missing required tools or libraries; startup cannot continue safely.`)
-      }
-      line(`  ${green("✓")} ${item.name} image ready ${dim(`(${item.image})`)}`)
-    }),
-  )
-  const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []))
-  if (failures.length > 0) throw new AggregateError(failures, "one or more container images failed preflight")
+  const exists = (await runExitCode(["docker", "image", "inspect", image])) === 0
+  const attested = exists && (await runExitCode(verify, { timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) === 0
+  if (!attested) {
+    const localSourceImage = image === "cyberful-os:latest"
+    const command = localSourceImage ? cyberfulOsBuildCommand() : ["docker", "pull", image]
+    const cwd = localSourceImage ? cyberfulOsDir() : undefined
+    if (command.length === 0 || (localSourceImage && !cwd)) {
+      line(`  ${red("✗")} unified runtime build context is unavailable`)
+      throw new Error("The unified cyberful-os build context is unavailable; startup cannot continue safely.")
+    }
+    line(
+      `  ${yellow("⏳")} unified runtime ${dim(`(${image})`)} ${
+        exists ? "failed attestation" : "not found"
+      } — ${localSourceImage ? "building" : "pulling"}…`,
+    )
+    if (!localSourceImage) line(dim("    First download may exceed 6 GB; keep at least 40 GB of disk space free."))
+    const prepared = await runExitCode(command, {
+      stream: true,
+      ...(cwd ? { cwd } : {}),
+      timeoutMs: localSourceImage ? DOCKER_BUILD_TIMEOUT_MS : DOCKER_PULL_TIMEOUT_MS,
+    })
+    if (prepared !== 0) {
+      line(`  ${red("✗")} unified runtime preparation failed ${dim(`(exit ${prepared ?? "spawn error"})`)}`)
+      throw new Error("The unified cyberful-os image could not be prepared; startup cannot continue safely.")
+    }
+  }
+  if ((await runExitCode(verify, { stream: true, timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) !== 0) {
+    line(`  ${red("✗")} unified runtime capability attestation failed`)
+    throw new Error("The unified cyberful-os image is incomplete; startup cannot continue safely.")
+  }
+  const identity = await runText([
+    "docker",
+    "image",
+    "inspect",
+    "--format",
+    "{{.Os}}/{{.Architecture}} {{join .RepoDigests \",\"}}",
+    image,
+  ])
+  line(`  ${green("✓")} unified runtime ready ${dim(`(${image}${identity ? `; ${identity}` : ""})`)}`)
   line()
 }
 

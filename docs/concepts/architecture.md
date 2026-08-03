@@ -12,10 +12,12 @@ workflow and phase controller
 in-process Pi phase owner ─── private phase gateway
         │                         ├── read-only host source store
         │                         ├── Code Graph
-        │                         ├── cyberful-os
+        │                         ├── unified engagement container
+        │                         │     ├── cyberful-os tools
+        │                         │     ├── headless OWASP ZAP
+        │                         │     └── persistent headless Ghidra
         │                         ├── isolated browser
-        │                         ├── headless OWASP ZAP
-        │                         └── persistent headless Ghidra
+        │                         └── optional EVM runtime
         ├── root AgentRun
         ├── delegated AgentRun tree
         ├── fallback AgentRun tree

@@ -23,7 +23,7 @@ SPEC.loader.exec_module(prowler_offline)
 class OfflineProwlerLauncherTest(unittest.TestCase):
     def test_image_smoke_reaches_only_the_offline_launcher(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        copy_at = dockerfile.index("COPY prowler_offline.py /usr/local/bin/prowler")
+        copy_at = dockerfile.index("COPY cyberful-os/prowler_offline.py /usr/local/bin/prowler")
 
         self.assertNotIn("ln -sf /opt/prowler-venv/bin/prowler", dockerfile)
         self.assertNotIn("prowler -v", dockerfile[:copy_at])

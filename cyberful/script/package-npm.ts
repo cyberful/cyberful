@@ -18,10 +18,10 @@ const repository = { type: "git", url: "git+https://github.com/cyberful/cyberful
 const homepage = "https://github.com/cyberful/cyberful#readme"
 const bugs = { url: "https://github.com/cyberful/cyberful/issues" }
 const publicPackages = [
-  "@cyberful/cli-darwin-arm64",
-  "@cyberful/cli-darwin-x64",
-  "@cyberful/cli-linux-x64",
-  "@cyberful/cli-windows-x64",
+  "@cyberful-org/cyberful-darwin-arm64",
+  "@cyberful-org/cyberful-darwin-x64",
+  "@cyberful-org/cyberful-linux-x64",
+  "@cyberful-org/cyberful-windows-x64",
 ]
 const publicTargets = new Set(["darwin-arm64", "darwin-x64", "linux-x64", "windows-x64"])
 const releaseNotices = [
@@ -40,7 +40,7 @@ function isNpmArchitecture(value: string | undefined): value is NpmArchitecture 
 }
 
 export function platformPackageName(platform: NpmPlatform, architecture: NpmArchitecture) {
-  return `@cyberful/cli-${platform}-${architecture}`
+  return `@cyberful-org/cyberful-${platform}-${architecture}`
 }
 
 export function platformManifest(platform: NpmPlatform, architecture: NpmArchitecture, version: string) {
@@ -56,23 +56,23 @@ export function platformManifest(platform: NpmPlatform, architecture: NpmArchite
     os: [platform === "windows" ? "win32" : platform],
     cpu: [architecture],
     ...(platform === "linux" ? { libc: ["glibc"] } : {}),
-    files: ["bin", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
+    files: ["bin", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
     publishConfig: { access: "public" },
   }
 }
 
 export function metaManifest(version: string) {
   return {
-    name: "@cyberful/cli",
+    name: "cyberful",
     version,
-    description: "AI-powered application-security workbench for authorized code audits and penetration tests",
+    description: "AI-powered application-security workbench for authorized security workflows",
     license: "AGPL-3.0-only",
     repository,
     homepage,
     bugs,
     engines: { node: ">=18" },
     bin: { cyberful: "bin/cyberful" },
-    files: ["bin", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
+    files: ["bin", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
     optionalDependencies: Object.fromEntries(publicPackages.map((name) => [name, version])),
     publishConfig: { access: "public" },
   }
@@ -117,6 +117,7 @@ export function stagePlatformPackage(input: {
   fs.rmSync(input.packageRoot, { recursive: true, force: true })
   writeManifest(input.packageRoot, platformManifest(input.platform, input.architecture, input.version))
   copyFile(path.join(input.repositoryRoot, "LICENSE"), path.join(input.packageRoot, "LICENSE"))
+  copyFile(path.join(input.repositoryRoot, "README.md"), path.join(input.packageRoot, "README.md"))
   copyReleaseNotices(input.repositoryRoot, input.packageRoot)
 
   const extension = input.platform === "windows" ? ".exe" : ""
@@ -141,6 +142,7 @@ export function stageMetaPackage(input: { repositoryRoot: string; packageRoot: s
   fs.rmSync(input.packageRoot, { recursive: true, force: true })
   writeManifest(input.packageRoot, metaManifest(input.version))
   copyFile(path.join(input.repositoryRoot, "LICENSE"), path.join(input.packageRoot, "LICENSE"))
+  copyFile(path.join(input.repositoryRoot, "README.md"), path.join(input.packageRoot, "README.md"))
   copyReleaseNotices(input.repositoryRoot, input.packageRoot)
   copyFile(path.join(input.repositoryRoot, "cyberful/bin/cyberful"), path.join(input.packageRoot, "bin/cyberful"), true)
   copyFile(path.join(input.repositoryRoot, "cyberful/bin/resolve.cjs"), path.join(input.packageRoot, "bin/resolve.cjs"))
@@ -233,7 +235,7 @@ if (import.meta.main) {
       throw new Error(`--arch must be arm64 or x64: ${architecture || "<empty>"}`)
     }
     if (!publicTargets.has(`${platform}-${architecture}`)) {
-      throw new Error(`Cyberful does not publish @cyberful/cli-${platform}-${architecture}`)
+      throw new Error(`Cyberful does not publish @cyberful-org/cyberful-${platform}-${architecture}`)
     }
     staged = stagePlatformPackage({
       repositoryRoot,

@@ -1,10 +1,11 @@
 # Security tools
 
-Cyberful brings together five tool environments. You normally do not need to
-start them yourself: Cyberful prepares them and gives each phase only the tools
-it needs.
+Cyberful presents five capability families, but only three container
+environments. You normally start none of them yourself: the host gives each
+phase only its allowed MCP surface.
 
-- [cyberful-os](cyberful-os.md) provides the isolated security-tool catalog.
+- [cyberful-os](cyberful-os.md) is the one engagement tooling container and
+  includes the security catalog, ZAP, and Ghidra.
 - [Browser](browser.md) provides DOM, network, cookie, artifact, and controlled
   interaction tools through a dedicated Chromium or Chrome profile.
 - [OWASP ZAP](zap.md) provides headless proxy and scanning capabilities for
@@ -15,15 +16,17 @@ it needs.
   multi-repository materialization, and an engagement-owned Anvil lifecycle.
 
 Pentest and Bug Bounty Program receive browser and ZAP traffic only inside their
-recorded mission. Their investigation phases may use the networkless persistent
-Ghidra project. Bug Bounty may also use the local EVM lab without an RPC proxy
+recorded mission. Their investigation phases may use the persistent Ghidra
+project in that same tooling container. Bug Bounty may also use the local EVM lab without an RPC proxy
 or method filter. Code Audit receives no external target-traffic route. Its runtime lab uses a
 source-blind dependency-bootstrap container followed by offline project
 execution and loopback attack inside cyberful-os.
 
-Each sequential phase receives a fresh private gateway. The host injects
-ephemeral keys, loopback ports, mounts, and network policy; agents cannot turn
-an environment setting into broader authorization.
+Each sequential phase receives a fresh private gateway and reconnects through
+`docker exec`; the tooling container itself lives for the whole engagement.
+The host injects ephemeral keys, loopback ports, mounts, and fixed engagement
+network policy. Agents cannot turn an environment setting into broader
+authorization.
 
 Exposed tools are callable directly under gateway phase policy, the live-target
 mission, traffic budgets, and the visible-CAPTCHA interlock. Individual HTTP

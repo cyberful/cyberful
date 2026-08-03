@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # ── Dockerized Ghidra Persistence Contract ───────────────────────
-# Exercises a real compiled fixture through import, asynchronous analysis,
-# decompilation, call graph, annotations, phase bridge renewal, and JVM restart.
-# → mcps/ghidra/Dockerfile — builds the persistent service under test.
-# → mcps/ghidra/Dockerfile.bridge — builds each disposable phase transport.
+# Exercises a native fixture through import, analysis, decompilation, phase bridge
+# renewal, and runtime recreation inside the unified engagement image.
+# → mcps/cyberful-os/Dockerfile — builds the service and bridge under test.
 # @docs/runtimes/ghidra.md
 # ─────────────────────────────────────────────────────────────────
 
@@ -11,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import select
 import shutil
 import subprocess
@@ -21,8 +21,7 @@ import uuid
 from pathlib import Path
 from typing import TextIO
 
-RUNTIME_IMAGE = os.environ.get("CYBER_GHIDRA_IMAGE", "cyberful-ghidra:12.1.2")
-BRIDGE_IMAGE = os.environ.get("CYBER_GHIDRA_BRIDGE_IMAGE", "cyberful-ghidra-bridge:0.1.0")
+RUNTIME_IMAGE = os.environ.get("CYBERFUL_OS_IMAGE", "cyberful-os:latest")
 STARTUP_TIMEOUT = 360
 ANALYSIS_TIMEOUT = 600
 
@@ -41,20 +40,16 @@ def run(command: list[str], timeout: int = 60, check: bool = True) -> subprocess
 
 class McpClient:
     def __init__(self, container: str, key: str) -> None:
-        self.name = f"cyberful-ghidra-integration-bridge-{uuid.uuid4().hex[:8]}"
         self.process = subprocess.Popen(
             [
                 "docker",
-                "run",
-                "--rm",
+                "exec",
                 "-i",
-                "--name",
-                self.name,
-                "--network",
-                f"container:{container}",
                 "--env",
                 f"CYBER_GHIDRA_MCP_KEY={key}",
-                BRIDGE_IMAGE,
+                container,
+                "/opt/cyberful-os-venv/bin/python",
+                "/opt/cyberful/ghidra/ghidra_bridge.py",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -136,7 +131,6 @@ class McpClient:
             self.process.stdout.close()
         if self.process.stderr:
             self.process.stderr.close()
-        run(["docker", "rm", "--force", self.name], check=False)
 
     def _write(self, value: object) -> None:
         stdin = self.process.stdin
@@ -158,8 +152,6 @@ class McpClient:
 
 class DockerizedGhidraTests(unittest.TestCase):
     def setUp(self) -> None:
-        if os.getuid() == 0:
-            self.skipTest("the hardened persistent store contract refuses root-owned runtime processes")
         if shutil.which("docker") is None or shutil.which("cc") is None:
             self.skipTest("Docker and a C compiler are required")
         run(["docker", "version", "--format", "{{.Server.Version}}"])
@@ -177,6 +169,11 @@ class DockerizedGhidraTests(unittest.TestCase):
             encoding="utf-8",
         )
         run(["cc", "-g", "-O0", str(source), "-o", str(self.workarea / "fixture")])
+        self.runtime_uid = os.getuid() if os.getuid() > 0 else 1000
+        self.runtime_gid = os.getgid() if os.getgid() > 0 else 1000
+        if os.getuid() == 0:
+            for runtime_path in (self.workarea, self.store, source, self.workarea / "fixture"):
+                os.chown(runtime_path, self.runtime_uid, self.runtime_gid)
         self.containers: list[str] = []
         self.clients: list[McpClient] = []
 
@@ -189,7 +186,6 @@ class DockerizedGhidraTests(unittest.TestCase):
 
     def start_runtime(self, key: str) -> str:
         container = f"cyberful-ghidra-integration-{uuid.uuid4().hex[:8]}"
-        user = f"{os.getuid()}:{os.getgid()}"
         run(
             [
                 "docker",
@@ -199,21 +195,20 @@ class DockerizedGhidraTests(unittest.TestCase):
                 container,
                 "--network",
                 "none",
-                "--read-only",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--user",
-                user,
-                "--tmpfs",
-                "/tmp:rw,nosuid,nodev,noexec,size=1g",
                 "--mount",
-                f"type=bind,source={self.workarea},target=/workspace,readonly",
+                f"type=bind,source={self.workarea},target=/workspace",
                 "--mount",
                 f"type=bind,source={self.store},target=/ghidra/store",
                 "--env",
                 f"CYBER_GHIDRA_MCP_KEY={key}",
+                "--env",
+                "CYBERFUL_GHIDRA_ENABLED=1",
+                "--env",
+                "CYBERFUL_ZAP_ENABLED=0",
+                "--env",
+                f"CYBERFUL_RUNTIME_UID={self.runtime_uid}",
+                "--env",
+                f"CYBERFUL_RUNTIME_GID={self.runtime_gid}",
                 RUNTIME_IMAGE,
             ],
         )
@@ -223,21 +218,55 @@ class DockerizedGhidraTests(unittest.TestCase):
             state = run(
                 [
                     "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}",
+                    "exec",
                     container,
+                    "/opt/cyberful-os-venv/bin/python",
+                    "/opt/cyberful/ghidra/healthcheck.py",
                 ],
                 check=False,
-            ).stdout.strip()
-            if state == "true healthy":
+            )
+            if state.returncode == 0:
+                self.assert_runtime_contract(container)
                 return container
-            if state.startswith("false") or not state:
+            running = run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container],
+                check=False,
+            ).stdout.strip()
+            if running != "true":
                 logs = run(["docker", "logs", container], check=False).stderr
                 raise RuntimeError(f"Ghidra runtime exited during startup: {logs}")
             time.sleep(1)
         logs = run(["docker", "logs", container], check=False).stderr
         raise TimeoutError(f"Ghidra runtime did not become healthy: {logs[-8192:]}")
+
+    def assert_runtime_contract(self, container: str) -> None:
+        machine = run(["docker", "exec", container, "uname", "-m"]).stdout.strip()
+        normalized = {"arm64": "aarch64", "amd64": "x86_64"}
+        self.assertEqual(normalized.get(machine, machine), normalized.get(platform.machine(), platform.machine()))
+        decompiler_directory = "linux_arm_64" if machine in {"aarch64", "arm64"} else "linux_x86_64"
+        decompiler = f"/usr/share/ghidra/Ghidra/Features/Decompiler/os/{decompiler_directory}/decompile"
+        description = run(["docker", "exec", container, "file", decompiler]).stdout
+        self.assertIn("ARM aarch64" if machine in {"aarch64", "arm64"} else "x86-64", description)
+        self.assertNotEqual(
+            run(["docker", "exec", container, "getent", "hosts", "example.com"], check=False).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            run(
+                ["docker", "exec", container, "curl", "--max-time", "2", "https://example.com"],
+                timeout=10,
+                check=False,
+            ).returncode,
+            0,
+        )
+        deadline = time.monotonic() + 5
+        while True:
+            status = json.loads(run(["docker", "exec", container, "cat", "/run/cyberful/status.json"]).stdout)
+            if status["services"]["ghidra"]["status"] == "ready" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        self.assertEqual(status["services"]["ghidra"]["status"], "ready")
+        self.assertNotIn("zap", status["services"])
 
     def client(self, container: str, key: str) -> McpClient:
         client = McpClient(container, key)
@@ -312,6 +341,37 @@ class DockerizedGhidraTests(unittest.TestCase):
             {"program": program, "selector": selector},
         )
         self.assertIn("cyberful_fixture", decompiled_after_restart["decompiled"])
+        resumed.close()
+        self.clients.remove(resumed)
+
+        status = json.loads(
+            run(["docker", "exec", second_container, "cat", "/run/cyberful/status.json"]).stdout
+        )
+        ghidra_pid = int(status["services"]["ghidra"]["pid"])
+        run(["docker", "exec", second_container, "kill", "-TERM", str(ghidra_pid)])
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = json.loads(
+                run(["docker", "exec", second_container, "cat", "/run/cyberful/status.json"]).stdout
+            )
+            if status["status"] == "degraded":
+                break
+            time.sleep(0.25)
+        self.assertEqual(status["status"], "degraded")
+        self.assertEqual(status["services"]["ghidra"]["status"], "exited")
+        self.assertEqual(status["services"]["ghidra"]["pid"], ghidra_pid)
+        time.sleep(2)
+        later = json.loads(
+            run(["docker", "exec", second_container, "cat", "/run/cyberful/status.json"]).stdout
+        )
+        self.assertEqual(later["services"]["ghidra"]["pid"], ghidra_pid)
+        self.assertEqual(
+            run(["docker", "inspect", "--format", "{{.State.Running}}", second_container]).stdout.strip(),
+            "true",
+        )
+        with self.assertRaises((RuntimeError, TimeoutError)) as failure:
+            McpClient(second_container, second_key)
+        self.assertRegex(str(failure.exception), "(?:exited|closed|failed|refused|timed out)")
 
 
 if __name__ == "__main__":

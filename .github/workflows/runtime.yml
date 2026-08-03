@@ -1,0 +1,534 @@
+name: Unified runtime
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Registry mutations on main must be ordered. queue: max avoids GitHub's default
+# behavior of replacing an already-pending run with the newest one.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('runtime-pr-{0}', github.event.pull_request.number) || github.ref == 'refs/heads/main' && 'runtime-main' || format('runtime-{0}', github.run_id) }}
+  queue: max
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.14
+  RUNTIME_IMAGE: ghcr.io/cyberful/cyberful-os
+
+jobs:
+  prepare:
+    name: Select runtime work
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime_changed: ${{ steps.change.outputs.runtime_changed }}
+      publish_main: ${{ steps.change.outputs.publish_main }}
+      full_build: ${{ steps.change.outputs.full_build }}
+      sha_exists: ${{ steps.change.outputs.sha_exists }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - id: change
+        name: Detect image-affecting changes and bootstrap state
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          runtime_paths=(
+            .github/workflows/runtime.yml
+            Makefile
+            mcps/.dockerignore
+            mcps/cyberful-os
+            mcps/ghidra
+            mcps/package.json
+            mcps/package-lock.json
+            mcps/zap
+            cyberful/src/dependency/config.ts
+            cyberful/src/dependency/docker-preflight.ts
+            cyberful/src/subsystem/engagement-runtime.ts
+            cyberful/src/subsystem/gateway
+            cyberful/src/subsystem/upstream.ts
+            cyberful/src/subsystem/zap/runtime.ts
+          )
+
+          publish_main=false
+          if [[ "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+            publish_main=true
+          fi
+
+          sha_exists=false
+          if [[ "$publish_main" == true ]] \
+            && docker buildx imagetools inspect "$RUNTIME_IMAGE:sha-$GITHUB_SHA" >/dev/null 2>&1; then
+            sha_exists=true
+          fi
+
+          runtime_changed=false
+          full_build=false
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+            if ! git diff --quiet "$base" "$GITHUB_SHA" -- "${runtime_paths[@]}"; then
+              runtime_changed=true
+            fi
+          elif [[ "$publish_main" == true && "$sha_exists" == false ]]; then
+            edge_revision=""
+            if edge_raw="$(docker buildx imagetools inspect --raw "$RUNTIME_IMAGE:edge" 2>/dev/null)"; then
+              edge_revision="$(jq -r '.annotations["org.opencontainers.image.revision"] // empty' <<<"$edge_raw")"
+            fi
+
+            if [[ "$edge_revision" =~ ^[0-9a-f]{40}$ ]] \
+              && git merge-base --is-ancestor "$edge_revision" "$GITHUB_SHA"; then
+              if ! git diff --quiet "$edge_revision" "$GITHUB_SHA" -- "${runtime_paths[@]}"; then
+                runtime_changed=true
+              fi
+            else
+              # A missing, legacy, or non-ancestor edge cannot be copied safely.
+              runtime_changed=true
+            fi
+
+            if [[ "$runtime_changed" == true ]]; then
+              full_build=true
+            fi
+          elif [[ "$publish_main" == false ]]; then
+            # Manual runs outside main are native, non-publishing validation runs.
+            runtime_changed=true
+          fi
+
+          echo "runtime_changed=$runtime_changed" >> "$GITHUB_OUTPUT"
+          echo "publish_main=$publish_main" >> "$GITHUB_OUTPUT"
+          echo "full_build=$full_build" >> "$GITHUB_OUTPUT"
+          echo "sha_exists=$sha_exists" >> "$GITHUB_OUTPUT"
+
+  native-check:
+    name: Native check ${{ matrix.platform }}
+    needs: [prepare]
+    if: github.event_name == 'pull_request' || needs.prepare.outputs.publish_main == 'false'
+    runs-on: [self-hosted, linux, cyberful-container, "${{ matrix.arch }}"]
+    timeout-minutes: 180
+    env:
+      RUNTIME_ARCH: ${{ matrix.arch }}
+      RUNTIME_MACHINE: ${{ matrix.machine }}
+      RUNTIME_PLATFORM: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            machine: x86_64
+          - arch: arm64
+            platform: linux/arm64
+            machine: aarch64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          no-cache: true
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Require the native runner and free space contract
+        shell: bash
+        run: |
+          test "$(uname -m)" = "$RUNTIME_MACHINE"
+          test "$(df --output=avail -B1 / | tail -n 1)" -ge 100000000000
+          docker buildx inspect --bootstrap
+          if compgen -G '/proc/sys/fs/binfmt_misc/qemu-*' >/dev/null; then
+            echo "QEMU/emulation is forbidden for runtime builds." >&2
+            exit 1
+          fi
+      - run: bun install --frozen-lockfile
+      - run: npm ci --prefix mcps
+      - name: Build the native image into Docker
+        shell: bash
+        run: |
+          docker buildx build \
+            --platform "$RUNTIME_PLATFORM" \
+            --file mcps/cyberful-os/Dockerfile \
+            --tag "cyberful-os:check-${GITHUB_SHA}-${RUNTIME_ARCH}" \
+            --build-arg "BUILD_VERSION=check-${GITHUB_SHA}" \
+            --build-arg "BUILD_REVISION=${GITHUB_SHA}" \
+            --load mcps
+      - name: Verify architecture and full runtime behavior
+        shell: bash
+        run: |
+          image="cyberful-os:check-${GITHUB_SHA}-${RUNTIME_ARCH}"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$RUNTIME_PLATFORM"
+          test "$(docker run --rm --entrypoint uname "$image" -m)" = "$RUNTIME_MACHINE"
+          CYBERFUL_OS_IMAGE="$image" make test-runtime 2>&1 | tee "runtime-${RUNTIME_ARCH}.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        if: always()
+        with:
+          name: runtime-check-${{ matrix.arch }}-results
+          path: runtime-${{ matrix.arch }}.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Bound the architecture-local BuildKit cache
+        if: always()
+        run: docker buildx prune --force --keep-storage 80gb
+
+  main-native:
+    name: Main native ${{ matrix.platform }}
+    needs: [prepare]
+    if: needs.prepare.outputs.publish_main == 'true' && needs.prepare.outputs.full_build == 'true' && needs.prepare.outputs.sha_exists == 'false'
+    permissions:
+      contents: read
+      packages: write # Push the native manifest by digest to GHCR.
+    runs-on: [self-hosted, linux, cyberful-container, "${{ matrix.arch }}"]
+    timeout-minutes: 180
+    env:
+      RUNTIME_ARCH: ${{ matrix.arch }}
+      RUNTIME_MACHINE: ${{ matrix.machine }}
+      RUNTIME_PLATFORM: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            machine: x86_64
+          - arch: arm64
+            platform: linux/arm64
+            machine: aarch64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          no-cache: true
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Require the native runner and free space contract
+        shell: bash
+        run: |
+          test "$(uname -m)" = "$RUNTIME_MACHINE"
+          test "$(df --output=avail -B1 / | tail -n 1)" -ge 100000000000
+          docker buildx inspect --bootstrap
+          if compgen -G '/proc/sys/fs/binfmt_misc/qemu-*' >/dev/null; then
+            echo "QEMU/emulation is forbidden for runtime builds." >&2
+            exit 1
+          fi
+      - run: bun install --frozen-lockfile
+      - run: npm ci --prefix mcps
+      - id: publish
+        name: Build and publish the native platform by digest
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: mcps
+          file: mcps/cyberful-os/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            BUILD_VERSION=sha-${{ github.sha }}
+            BUILD_REVISION=${{ github.sha }}
+      - name: Pull and test the exact published digest
+        env:
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
+        shell: bash
+        run: |
+          digest="$PUBLISHED_DIGEST"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          reference="$RUNTIME_IMAGE@$digest"
+          docker pull --platform "$RUNTIME_PLATFORM" "$reference"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$reference")" = "$RUNTIME_PLATFORM"
+          test "$(docker run --rm --entrypoint uname "$reference" -m)" = "$RUNTIME_MACHINE"
+          CYBERFUL_OS_IMAGE="$reference" make test-runtime 2>&1 | tee "runtime-${RUNTIME_ARCH}.log"
+          printf '%s\n' "$digest" > "runtime-digest-${RUNTIME_ARCH}.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: runtime-digest-${{ matrix.arch }}
+          path: runtime-digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        if: always()
+        with:
+          name: runtime-main-${{ matrix.arch }}-results
+          path: runtime-${{ matrix.arch }}.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Bound the architecture-local BuildKit cache
+        if: always()
+        run: docker buildx prune --force --keep-storage 80gb
+
+  main-index:
+    name: Assemble, attest, and sign the OCI index
+    needs: [prepare, main-native]
+    if: needs.prepare.outputs.publish_main == 'true' && needs.prepare.outputs.full_build == 'true' && needs.prepare.outputs.sha_exists == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # Create the sha/edge tags and store the Cosign signature.
+      id-token: write # Mint the keyless Cosign certificate.
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          pattern: runtime-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - id: index
+        name: Validate native manifests and create the immutable index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          amd64="$(cat digests/runtime-digest-amd64.txt)"
+          arm64="$(cat digests/runtime-digest-arm64.txt)"
+          [[ "$amd64" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$arm64" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$amd64" != "$arm64"
+
+          for entry in "linux/amd64:$amd64" "linux/arm64:$arm64"; do
+            platform="${entry%%:*}"
+            digest="${entry#*:}"
+            reference="$RUNTIME_IMAGE@$digest"
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .Provenance \"$platform\").SLSA}}" \
+              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .SBOM \"$platform\").SPDX}}" \
+              | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
+          done
+
+          sha_ref="$RUNTIME_IMAGE:sha-$GITHUB_SHA"
+          if docker buildx imagetools inspect "$sha_ref" >/dev/null 2>&1; then
+            echo "Refusing to mutate existing immutable tag $sha_ref" >&2
+            exit 1
+          fi
+
+          metadata="$(mktemp)"
+          tags=(--tag "$sha_ref")
+          edge_updated=false
+          main_head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$main_head" == "$GITHUB_SHA" ]]; then
+            tags+=(--tag "$RUNTIME_IMAGE:edge")
+            edge_updated=true
+          fi
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            "${tags[@]}" \
+            --metadata-file "$metadata" \
+            "$RUNTIME_IMAGE@$amd64" "$RUNTIME_IMAGE@$arm64"
+          digest="$(jq -r '."containerimage.descriptor".digest' "$metadata")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "edge_updated=$edge_updated" >> "$GITHUB_OUTPUT"
+      - name: Independently verify tags, platforms, provenance, and SBOM
+        env:
+          EDGE_UPDATED: ${{ steps.index.outputs.edge_updated }}
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+        shell: bash
+        run: |
+          digest="$INDEX_DIGEST"
+          reference="$RUNTIME_IMAGE@$digest"
+          sha_digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:sha-$GITHUB_SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+          test "$sha_digest" = "$digest"
+          if [[ "$EDGE_UPDATED" == true ]]; then
+            edge_digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:edge" --format '{{json .Manifest}}' | jq -r .digest)"
+            test "$edge_digest" = "$digest"
+          fi
+
+          docker buildx imagetools inspect --raw "$reference" > runtime-index.json
+          jq -e --arg revision "$GITHUB_SHA" '
+            .annotations["org.opencontainers.image.revision"] == $revision
+          ' runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
+            | length == 2
+          ' runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]
+          ' runtime-index.json
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .Provenance \"$platform\").SLSA}}" \
+              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .SBOM \"$platform\").SPDX}}" \
+              | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
+          done
+      - name: Sign and verify the immutable index digest
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+        shell: bash
+        run: |
+          reference="$RUNTIME_IMAGE@$INDEX_DIGEST"
+          cosign sign --yes "$reference"
+          cosign verify \
+            --certificate-identity "https://github.com/cyberful/cyberful/.github/workflows/runtime.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$reference"
+
+  main-copy:
+    name: Copy edge to the immutable commit tag
+    needs: [prepare]
+    if: needs.prepare.outputs.publish_main == 'true' && needs.prepare.outputs.full_build == 'false' && needs.prepare.outputs.sha_exists == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # Create the new sha tag in GHCR.
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify edge, copy it registry-side, and verify the result
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        shell: bash
+        run: |
+          edge_digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:edge" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$edge_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          reference="$RUNTIME_IMAGE@$edge_digest"
+
+          docker buildx imagetools inspect --raw "$reference" > runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
+            | length == 2
+          ' runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]
+          ' runtime-index.json
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .Provenance \"$platform\").SLSA}}" \
+              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .SBOM \"$platform\").SPDX}}" \
+              | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
+          done
+          cosign verify \
+            --certificate-identity "https://github.com/cyberful/cyberful/.github/workflows/runtime.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$reference"
+
+          sha_ref="$RUNTIME_IMAGE:sha-$GITHUB_SHA"
+          if docker buildx imagetools inspect "$sha_ref" >/dev/null 2>&1; then
+            echo "Refusing to mutate existing immutable tag $sha_ref" >&2
+            exit 1
+          fi
+          docker buildx imagetools create --tag "$sha_ref" "$reference"
+          sha_digest="$(docker buildx imagetools inspect "$sha_ref" --format '{{json .Manifest}}' | jq -r .digest)"
+          current_edge_digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:edge" --format '{{json .Manifest}}' | jq -r .digest)"
+          test "$sha_digest" = "$edge_digest"
+          test "$current_edge_digest" = "$edge_digest"
+
+  main-existing:
+    name: Verify an existing immutable commit tag
+    needs: [prepare]
+    if: needs.prepare.outputs.publish_main == 'true' && needs.prepare.outputs.sha_exists == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # Finish a signature interrupted after index creation.
+      id-token: write # Mint the keyless Cosign certificate when recovery is needed.
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify metadata and finish an interrupted signature if necessary
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:sha-$GITHUB_SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          reference="$RUNTIME_IMAGE@$digest"
+          docker buildx imagetools inspect --raw "$reference" > runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
+            | length == 2
+          ' runtime-index.json
+          jq -e '
+            [.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]
+          ' runtime-index.json
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .Provenance \"$platform\").SLSA}}" \
+              | jq -e '.buildType == "https://mobyproject.org/buildkit@v1"'
+            docker buildx imagetools inspect "$reference" \
+              --format "{{json (index .SBOM \"$platform\").SPDX}}" \
+              | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
+          done
+          if ! cosign verify \
+            --certificate-identity "https://github.com/cyberful/cyberful/.github/workflows/runtime.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$reference"; then
+            cosign sign --yes "$reference"
+            cosign verify \
+              --certificate-identity "https://github.com/cyberful/cyberful/.github/workflows/runtime.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$reference"
+          fi
+          main_head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$main_head" == "$GITHUB_SHA" ]]; then
+            docker buildx imagetools create --tag "$RUNTIME_IMAGE:edge" "$reference"
+            edge_digest="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:edge" --format '{{json .Manifest}}' | jq -r .digest)"
+            test "$edge_digest" = "$digest"
+          fi
+
+  required:
+    name: Unified runtime required
+    if: always()
+    needs: [prepare, native-check, main-native, main-index, main-copy, main-existing]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require the event-specific execution path
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PUBLISH_MAIN: ${{ needs.prepare.outputs.publish_main }}
+          FULL_BUILD: ${{ needs.prepare.outputs.full_build }}
+          SHA_EXISTS: ${{ needs.prepare.outputs.sha_exists }}
+          NATIVE_RESULT: ${{ needs.native-check.result }}
+          MAIN_NATIVE_RESULT: ${{ needs.main-native.result }}
+          INDEX_RESULT: ${{ needs.main-index.result }}
+          COPY_RESULT: ${{ needs.main-copy.result }}
+          EXISTING_RESULT: ${{ needs.main-existing.result }}
+        shell: bash
+        run: |
+          test "$PREPARE_RESULT" = success
+          if [[ "$PUBLISH_MAIN" != true ]]; then
+            test "$NATIVE_RESULT" = success
+          elif [[ "$SHA_EXISTS" == true ]]; then
+            test "$EXISTING_RESULT" = success
+          elif [[ "$FULL_BUILD" == true ]]; then
+            test "$MAIN_NATIVE_RESULT" = success
+            test "$INDEX_RESULT" = success
+          else
+            test "$COPY_RESULT" = success
+          fi

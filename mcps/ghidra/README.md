@@ -1,23 +1,20 @@
 # Ghidra MCP
 
-This context builds Cyberful's persistent headless Ghidra 12.1.2 service and
-its disposable stdio bridge.
+These sources are copied into Cyberful's unified multi-architecture image as a
+persistent headless Ghidra service and an in-container stdio bridge.
 
-The service uses the official checksum-pinned Ghidra release and its bundled
-PyGhidra package. It opens one project under `/ghidra/store`, reads import
-sources from the read-only `/workspace` mount, listens only on container
-loopback, and serializes every JVM operation. The bridge joins that network
-namespace, authenticates with `CYBER_GHIDRA_MCP_KEY`, and forwards MCP bytes
-without parsing or logging them.
+Kali supplies Ghidra `12.1.2+ds-0kali1`, its architecture-native decompiler,
+and bundled PyGhidra wheels for both `linux/amd64` and `linux/arm64`. The
+service opens one project under `/ghidra/store`, reads imports from the writable
+engagement `/workspace`, listens only on container loopback, and serializes JVM
+operations. The bridge is started with `docker exec`, authenticates with
+`CYBER_GHIDRA_MCP_KEY`, and forwards MCP bytes without logging them.
 
-The service image is pinned to `linux/amd64` because the official distribution
-does not include a Linux ARM64 decompiler. It runs natively on Linux x86_64 and
-Intel macOS Docker Desktop, and through Docker Desktop emulation on Apple
-Silicon. Windows is not a supported target for this runtime.
-
-Build and run the complete persistence contract from the repository root:
+Build the unified image and run the persistence contract from the repository
+root:
 
 ```sh
+make runtime-build
 make test-ghidra
 ```
 

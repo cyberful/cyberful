@@ -1,6 +1,77 @@
 # syntax=docker/dockerfile:1.7
 
+# ── Unified Multi-Architecture Engagement Runtime ────────────────
+# Builds cyberful-os, native Ghidra, headless ZAP, and their protocol bridges
+#   into the single image owned by one Cyberful engagement.
+# → mcps/cyberful-os/runtime_supervisor.py — owns optional service processes.
+# @docs/runtimes/cyberful-os.md
+# ─────────────────────────────────────────────────────────────────
+
+ARG ZAP_VERSION=2.17.0
+ARG BUN_VERSION=1.3.14
+ARG ZAP_BASE_IMAGE=ghcr.io/zaproxy/zaproxy:stable@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
+ARG BUN_BASE_IMAGE=oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0
 ARG KALI_BASE_IMAGE=kalilinux/kali-rolling@sha256:82c8e267c5b46031c6671f7dc8a30b240dabdc7d129e07ac9290ec06dac9b93c
+FROM ${ZAP_BASE_IMAGE} AS zap-runtime
+
+ARG ZAP_VERSION
+USER root
+RUN rm -f \
+  /zap/plugin/onlineMenu-*.zap \
+  /zap/plugin/quickstart-*.zap \
+  /zap/plugin/ascanrules-*.zap \
+  /zap/plugin/spiderAjax-*.zap \
+  /zap/plugin/authhelper-*.zap \
+  /zap/plugin/graphql-*.zap \
+  /zap/plugin/mcp-*.zap \
+  /zap/plugin/oast-*.zap \
+  /zap/plugin/openapi-*.zap \
+  /zap/plugin/pscanrules-*.zap \
+  /zap/plugin/reports-*.zap \
+  /zap/plugin/websocket-*.zap
+ADD --checksum=sha256:9c1b64c2fceda629f7c0ab0c21b5901035494f78da51d584972eaf85e94e91cc \
+  https://github.com/zaproxy/zap-extensions/releases/download/ascanrules-v83/ascanrules-release-83.zap \
+  /zap/plugin/ascanrules-release-83.zap
+ADD --checksum=sha256:9850bb21d7d1ecf8593740069d1eae75b02fb7eefa19af54244c277677031500 \
+  https://github.com/zaproxy/zap-extensions/releases/download/spiderAjax-v23.32.0/spiderAjax-release-23.32.0.zap \
+  /zap/plugin/spiderAjax-release-23.32.0.zap
+ADD --checksum=sha256:8618464c4959dcb90b81e1770304a2a3a0dc4ba31c8a72e518fa95ff0ecf9c01 \
+  https://github.com/zaproxy/zap-extensions/releases/download/authhelper-v0.40.0/authhelper-beta-0.40.0.zap \
+  /zap/plugin/authhelper-beta-0.40.0.zap
+ADD --checksum=sha256:22f1246a302ef42b7eec9af340cc732494025a5fd6a0322d717dfccb44c5b8b3 \
+  https://github.com/zaproxy/zap-extensions/releases/download/graphql-v0.33.0/graphql-alpha-0.33.0.zap \
+  /zap/plugin/graphql-alpha-0.33.0.zap
+ADD --checksum=sha256:adc8692a30bf6f23e5b597b95726f1588f4bd7d34ab57280481a91cbe35aca88 \
+  https://github.com/zaproxy/zap-extensions/releases/download/mcp-v0.2.0/mcp-alpha-0.2.0.zap \
+  /zap/plugin/mcp-alpha-0.2.0.zap
+ADD --checksum=sha256:f06ecea02e2c1df4a164e737dd632afba4430225b2fdc2feb6042bdb1e976b3d \
+  https://github.com/zaproxy/zap-extensions/releases/download/oast-v0.24.0/oast-beta-0.24.0.zap \
+  /zap/plugin/oast-beta-0.24.0.zap
+ADD --checksum=sha256:fe87dd63cb310131c4e7d8c14b675c97f4b7707eda8ccc5fd6042628b6f19ccf \
+  https://github.com/zaproxy/zap-extensions/releases/download/openapi-v57/openapi-beta-57.zap \
+  /zap/plugin/openapi-beta-57.zap
+ADD --checksum=sha256:97814c5f1319a31b5041f1bbd1edfc312b3a539c7cd56f7903e9996858361fcb \
+  https://github.com/zaproxy/zap-extensions/releases/download/pscanrules-v75/pscanrules-release-75.zap \
+  /zap/plugin/pscanrules-release-75.zap
+ADD --checksum=sha256:2e8d42a48e23aefa8a6174b52aa0a8a6b90aca2da0a8bf94ac61f4aaa070bc2c \
+  https://github.com/zaproxy/zap-extensions/releases/download/reports-v0.46.0/reports-release-0.46.0.zap \
+  /zap/plugin/reports-release-0.46.0.zap
+ADD --checksum=sha256:f2c3035976531130494b5b9dfc02ca0ebd7e0388f740f68b6d4e775098be9fc6 \
+  https://github.com/zaproxy/zap-extensions/releases/download/websocket-v37/websocket-release-37.zap \
+  /zap/plugin/websocket-release-37.zap
+RUN test -s "/zap/zap-${ZAP_VERSION}.jar" \
+  && chown -R zap:zap /zap/plugin
+
+FROM --platform=$BUILDPLATFORM ${BUN_BASE_IMAGE} AS zap-bridge-build
+ARG BUN_VERSION
+WORKDIR /src
+COPY zap/package.json zap/bun.lock ./
+RUN test "$(bun --version)" = "${BUN_VERSION}" \
+  && bun install --frozen-lockfile
+COPY zap/zap_bridge.mjs zap/zap_history.mjs zap/zap_history_replay.mjs zap/zap_http_request.mjs \
+  zap/zap_oast.mjs zap/zap_policy.mjs zap/zap_report_path.mjs zap/zap_tool_catalog.mjs ./
+RUN bun build --target=node --format=esm --outfile=/out/zap_bridge.mjs ./zap_bridge.mjs
+
 FROM ${KALI_BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -12,6 +83,23 @@ ENV PATH="${CYBERFUL_OS_PYTHON_VENV}/bin:${PATH}"
 
 ARG JEB_INSTALLER_URL=""
 ARG JEB_SHA256=""
+ARG GHIDRA_VERSION=12.1.2+ds-0kali1
+ARG ZAP_VERSION
+ARG BUN_VERSION
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+ENV CYBERFUL_ZAP_VERSION=${ZAP_VERSION}
+
+LABEL org.opencontainers.image.title="cyberful-os" \
+      org.opencontainers.image.description="Unified Cyberful engagement runtime with cyberful-os, OWASP ZAP, and Ghidra" \
+      org.opencontainers.image.source="https://github.com/cyberful/cyberful" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.cyberful.ghidra.version="${GHIDRA_VERSION}" \
+      org.cyberful.zap.version="${ZAP_VERSION}" \
+      org.cyberful.bun.version="${BUN_VERSION}" \
+      org.cyberful.zap.addons="ascanrules=83,spiderAjax=23.32.0,authhelper=0.40.0,graphql=0.33.0,mcp=0.2.0,oast=0.24.0,openapi=57,pscanrules=75,reports=0.46.0,websocket=37"
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. APT defaults
@@ -44,11 +132,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ripgrep \
     ruby \
     screen \
+    tini \
     socat \
     tmux \
     unzip \
+    util-linux \
     vim \
     wget \
+    xauth \
+    xvfb \
     zsh
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -66,6 +158,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     evil-winrm \
     feroxbuster \
     ffuf \
+    file \
     gobuster \
     hashcat \
     hydra \
@@ -84,6 +177,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     tcpdump \
     traceroute \
     tshark \
+    firefox-esr \
     wfuzz \
     whatweb \
     whois \
@@ -119,7 +213,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   && apt-get install -y --no-install-recommends \
     androguard \
     apktool \
-    ghidra \
+    "ghidra=${GHIDRA_VERSION}" \
     jadx \
     radare2
 
@@ -231,8 +325,8 @@ RUN mkdir -p /opt/cred-tools \
 # the sparse alphabetic dirb/common.txt. See wordlists/content/SOURCES.md for
 # provenance. Committed under mcps/cyberful-os/wordlists/, so runtime stays offline.
 # ───────────────────────────────────────────────────────────────────────────
-COPY --chmod=0644 wordlists/*.txt /usr/share/wordlists/cyberful-os/credentials/
-COPY --chmod=0644 wordlists/content/*.txt /usr/share/wordlists/cyberful-os/content/
+COPY --chmod=0644 cyberful-os/wordlists/*.txt /usr/share/wordlists/cyberful-os/credentials/
+COPY --chmod=0644 cyberful-os/wordlists/content/*.txt /usr/share/wordlists/cyberful-os/content/
 RUN test -s /usr/share/wordlists/cyberful-os/credentials/2025-top200.txt \
   && test -s /usr/share/wordlists/cyberful-os/credentials/darkweb2017-top1000.txt \
   && test -s /usr/share/wordlists/cyberful-os/credentials/xato-1000.txt \
@@ -525,9 +619,9 @@ RUN mkdir -p /etc/kali-motd \
 # registry implementation shipped beside this image and fail the build if any
 # required command or Python module is absent. The smoke probes also catch
 # installations that leave a binary on PATH but cannot actually initialize.
-COPY cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
-COPY mcp_framing.py /opt/cyberful-os/mcp_framing.py
-COPY prowler_offline.py /usr/local/bin/prowler
+COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
+COPY cyberful-os/mcp_framing.py /opt/cyberful-os/mcp_framing.py
+COPY cyberful-os/prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
   && rg --version \
@@ -551,5 +645,47 @@ RUN chmod 0755 /usr/local/bin/prowler \
   && clang --version \
   && msfconsole -q -x 'version; exit'
 
+COPY --from=zap-runtime /zap /zap
+COPY zap/zap-entrypoint.sh /usr/local/bin/cyberful-zap
+COPY --from=zap-bridge-build /out/zap_bridge.mjs /opt/cyberful/zap/zap_bridge.mjs
+COPY ghidra/ghidra_engine.py ghidra/ghidra_mcp.py ghidra/ghidra_bridge.py ghidra/healthcheck.py /opt/cyberful/ghidra/
+COPY cyberful-os/runtime_supervisor.py /opt/cyberful/runtime-supervisor
+COPY cyberful-os/runtime_attestation.py /opt/cyberful/runtime-attestation
+
+# ───────────────────────────────────────────────────────────────────────────
+# 14. Unified runtime contract
+#
+# Kali supplies architecture-native Ghidra decompilers and bundled PyGhidra
+# wheels. Installation stays offline at this point, and the final attestation
+# proves the image selected the decompiler matching TARGETARCH rather than an
+# emulated foreign binary. ZAP remains optional at runtime but complete at build.
+# ───────────────────────────────────────────────────────────────────────────
+ENV GHIDRA_INSTALL_DIR=/usr/share/ghidra \
+    CYBER_GHIDRA_HOST=127.0.0.1 \
+    CYBER_GHIDRA_PORT=47100 \
+    CYBER_GHIDRA_STORE=/ghidra/store \
+    CYBER_GHIDRA_WORKAREA=/workspace \
+    CYBER_ZAP_WORKAREA=/zap/wrk \
+    PYTHONUNBUFFERED=1
+RUN "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
+      --no-index \
+      --find-links /usr/share/ghidra/Ghidra/Features/PyGhidra/pypkg/dist \
+      pyghidra \
+  && chmod 0755 /usr/local/bin/cyberful-zap /opt/cyberful/runtime-supervisor /opt/cyberful/runtime-attestation \
+  && case "${TARGETARCH}" in \
+      amd64) GHIDRA_DECOMPILER=linux_x86_64 ;; \
+      arm64) GHIDRA_DECOMPILER=linux_arm_64 ;; \
+      *) echo "unsupported unified runtime architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+  && test -x "/usr/share/ghidra/Ghidra/Features/Decompiler/os/${GHIDRA_DECOMPILER}/decompile" \
+  && file "/usr/share/ghidra/Ghidra/Features/Decompiler/os/${GHIDRA_DECOMPILER}/decompile" \
+      | grep -q "$(if [[ "${TARGETARCH}" == "amd64" ]]; then echo 'x86-64'; else echo 'ARM aarch64'; fi)" \
+  && test -s /zap/zap-x.sh \
+  && for addon in ascanrules spiderAjax authhelper graphql mcp oast openapi pscanrules reports websocket; do \
+      test -n "$(find /zap/plugin -name "${addon}-*.zap" -print -quit)"; \
+    done \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation
+
 WORKDIR /workspace
-CMD ["sleep", "infinity"]
+EXPOSE 8080
+ENTRYPOINT ["tini", "--", "/opt/cyberful/runtime-supervisor"]

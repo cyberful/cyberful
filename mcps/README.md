@@ -1,13 +1,13 @@
 # Cyberful MCPs
 
-Standalone MCP and shell runtime for aggressive cybersecurity pentesting, OSINT,
-and credential‑leak hunting workflows.
+MCP sources for Cyberful's unified security runtime and isolated browser.
 
 ## cyberful-os MCP
 
-The main MCP server lives in `cyberful-os/`. It is a dependency-free stdio MCP
-server that launches a Docker-backed cyberful-os container on first use and exposes a
-lowercase MCP registry for the security tools installed by the cyberful-os image.
+The main MCP server lives in `cyberful-os/`. In an ordinary engagement it
+attests and reuses the one host-owned tooling container. Standalone use retains
+lazy local container creation. The dependency-free stdio server exposes a
+lowercase registry for tools installed in the unified image.
 
 The registry is intentionally granular: most MCP tools map directly to one
 CLI binary. Tool names are lowercase snake_case, while the catalog preserves the
@@ -111,7 +111,7 @@ mcps/cyberful-os/bin/cyberful-os-container shell
 ### Build the local image
 
 ```sh
-mcps/cyberful-os/bin/cyberful-os-build
+make runtime-build
 ```
 
 ### Container defaults
@@ -174,26 +174,23 @@ without a short browser timeout and releases active tools only after
 or injects tokens. This is why the server runs **headed by default**
 (`CYBER_BROWSER_HEADLESS=false`).
 
-## OWASP ZAP runtime and bridge
+## OWASP ZAP service and bridge
 
-The `zap/` context builds two OCI images: a headless ZAP 2.17.0 runtime and a
-stdio MCP/API bridge. Cyberful prepares both images at application startup,
-starts one isolated ZAP container per engagement, and starts disposable bridge
-containers in its network namespace for phase gateways. Browser traffic is
-proxied automatically with trust scoped to the engagement ZAP CA SPKI.
+The `zap/` sources are bundled into cyberful-os. The engagement supervisor
+starts ZAP when live traffic is enabled, and gateways create bridge processes
+with `docker exec`. Browser traffic is proxied automatically with trust scoped
+to the engagement ZAP CA SPKI.
 
 ZAP and browser proxying are enabled by default. Set `CYBER_ZAP_ENABLED=0` to
 disable the runtime or `CYBER_BROWSER_THROUGH_ZAP=0` to leave ZAP available
 without chaining the browser. See [`docs/runtimes/zap.md`](../docs/runtimes/zap.md).
 
-## Ghidra runtime and bridge
+## Ghidra service and bridge
 
-The `ghidra/` context builds a checksum-pinned Ghidra 12.1.2/PyGhidra service
-and a minimal stdio bridge. Cyberful starts one networkless service per
-engagement, keeps its JVM and project alive across eligible phases, and removes
-the container without deleting the host-owned project store. A later instance
-for the same workarea reopens programs, analysis, names, comments, bookmarks,
-and persistent jobs.
+The `ghidra/` sources are bundled into the same image with Kali's native
+Ghidra/PyGhidra package for amd64 and arm64. Cyberful keeps one JVM and project
+alive across eligible phases. Removing and recreating the engagement container
+does not delete the separately mounted host-owned project store.
 
 The MCP exposes bounded semantic tools for import, job control, search,
 disassembly, decompilation, cross-references, call graphs, and annotations. It

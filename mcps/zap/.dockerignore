@@ -1,7 +1,0 @@
-.git
-.gitignore
-.env
-.env.*
-*.log
-node_modules/
-*.test.mjs

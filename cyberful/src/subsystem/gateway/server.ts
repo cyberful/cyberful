@@ -55,6 +55,7 @@ import {
 import { SubsystemNovelty } from "../novelty"
 import * as Log from "@/util/log"
 import { errorMessage, nodeErrorCode } from "@/util/error"
+import { Process } from "@/util/process"
 import { SOURCE_TOOL_DEFS, handleSourceTool, isSourceTool, sourceToolsAvailable } from "./source-tools"
 import { SOURCE_IMPORT_TOOL_DEF, handleSourceImport, type SourceImportRequest } from "./source-import"
 import { GIT_TOOL_DEFS, gitToolsAvailable, handleGitTool, isGitTool } from "./git-tools"
@@ -86,7 +87,7 @@ import {
   parseHumanQuestions,
   type HumanQuestion,
 } from "../human-question"
-import { gatewayPhasePolicy, runtimeNetworkAllowed, type GatewayPhasePolicy } from "./phase-policy"
+import { gatewayPhasePolicy, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
 import { FindingRegistry } from "@/finding/registry"
 import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } from "../handoff-snapshot"
@@ -94,8 +95,6 @@ import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } f
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
 const log = Log.create({ service: "phase-gateway" })
-const DOCKER_CLEANUP_TIMEOUT_MS = 30_000
-const DOCKER_CLEANUP_OUTPUT_BYTES = 64 * 1024
 
 // ── Gateway Startup Rejects Unscoped Or Invalid Authority ───────────
 // A gateway may access variables for exactly one host-supplied session. Missing
@@ -1295,6 +1294,13 @@ function phaseUpstreamToolAllowed(
   return false
 }
 
+export function upstreamFailureIsBlocking(
+  key: "cyberful-os" | "browser" | "zap" | "ghidra",
+  env: Readonly<NodeJS.ProcessEnv> = process.env,
+) {
+  return key === "cyberful-os" || (key === "zap" && env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1")
+}
+
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
   tools: UpstreamTool[]
   clients: Client[]
@@ -1304,7 +1310,6 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const out: UpstreamTool[] = []
   const clients: Client[] = []
   const ownedProcessRoots = new Set<number>()
-  const bridgeContainers = new Set<string>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
     readonly capability: SubsystemPhase.WorkflowCapability
@@ -1320,6 +1325,18 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     { key: "ghidra", capability: "ghidra" },
   ]
   const policy = gatewayPhasePolicy()
+  const workareaPolicy = await readEngagementPolicy(
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim() || process.cwd(),
+  ).catch((error) => {
+    log.warn("could not read engagement policy while resolving required upstreams", { error })
+    return undefined
+  })
+  const failurePolicyEnvironment = {
+    ...process.env,
+    ...(workareaPolicy?.global_http_rps !== null && workareaPolicy?.global_http_rps !== undefined
+      ? { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" }
+      : {}),
+  }
   for (const { key, capability, browserProfile } of upstreamCapabilities) {
     if (!policy.allows(capability)) continue
     const def = builtins[key]
@@ -1327,8 +1344,6 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     let pendingClient: Client | undefined
     let pendingTransport: StdioClientTransport | undefined
     try {
-      if ((key === "zap" || key === "ghidra") && "container" in def && def.container)
-        bridgeContainers.add(def.container)
       const [cmd, ...args] = def.command
       const env = upstreamProcessEnv(key, process.env, def.environment)
       if (key === "browser" && browserProfile !== undefined) {
@@ -1348,29 +1363,20 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBER_BROWSER_PROFILE_ID = String(browserProfile)
       }
       if (key === "cyberful-os") {
-        // ── Container Identity Includes Network Authority ──────────────────
-        // AppSec execution derives its container identity from both engagement
-        // ownership and the resolved network policy. An offline container can
-        // therefore never be reused later with ordinary Docker networking.
-        // Live-target workflows retain engagement scope, while phase-owned AppSec containers
-        // are registered for removal when their gateway closes.
+        // ── Gateways May Only Attach To Host-Owned Runtime State ───────
+        // The session host already created the engagement container with its final
+        // network policy and mounts. Each phase supplies that exact identity to the
+        // cyberful-os MCP and explicitly disables its standalone lazy-creation path.
+        // A missing or stopped container is therefore a required-upstream failure,
+        // never an invitation for a gateway to create an online/offline replacement.
         // ──────────────────────────────────────────────────────────────
         const workarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim() || process.cwd()
-        const workflow = policy.workflow
-        const networkAllowed = runtimeNetworkAllowed({
-          workflow,
-          phase: policy.phase,
-          authorized: false,
-        })
-        const baseContainer =
+        const container =
           process.env.CYBERFUL_OS_CONTAINER?.trim() ||
           SubsystemPhase.expertContainerName(path.resolve(workarea), boundSession())
-        const appsecProfile = workflow === "code-audit"
-        const container = appsecProfile
-          ? `${baseContainer.slice(0, 240)}-${networkAllowed ? "online" : "offline"}`
-          : baseContainer
         env.CYBERFUL_OS_WORKSPACE = workarea
         env.CYBERFUL_OS_CONTAINER = container
+        env.CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER = "1"
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
         const zapProxy = process.env.CYBER_ZAP_PROXY_URL?.trim()
@@ -1379,22 +1385,30 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           containerProxy.hostname = "host.docker.internal"
           env.CYBERFUL_OS_HTTP_PROXY = containerProxy.toString()
         }
-        const dockerArgs = !networkAllowed
-          ? ["--network=none", "--cpus=2", "--memory=4g", "--pids-limit=512", "--security-opt=no-new-privileges"]
-          : []
-        if (zapProxy) dockerArgs.push("--add-host=host.docker.internal:host-gateway")
-        if (workflow && SubsystemPhase.hasCapability(workflow, "evm-lab")) {
-          dockerArgs.push(
-            ...(zapProxy ? [] : ["--add-host=host.docker.internal:host-gateway"]),
-            "--env=HOME=/workspace/.cyberful-evm/cache/home",
-            "--env=FOUNDRY_DIR=/workspace/.cyberful-evm/cache/home/.foundry",
-            "--env=SVM_HOME=/workspace/.cyberful-evm/cache/home/.svm",
-            "--env=XDG_CACHE_HOME=/workspace/.cyberful-evm/cache/home/.cache",
-          )
-        }
-        if (dockerArgs.length > 0) env.CYBERFUL_OS_DOCKER_ARGS = dockerArgs.join(" ")
-        process.env.CYBERFUL_OS_CONTAINER = container
-        if (appsecProfile) bridgeContainers.add(container)
+        const ownership = await Process.run(
+          [
+            "docker",
+            "inspect",
+            "--format",
+            '{{.State.Running}} {{index .Config.Labels "org.cyberful.managed"}} {{index .Config.Labels "org.cyberful.runtime"}}',
+            container,
+          ],
+          {
+            abort: AbortSignal.timeout(30_000),
+            timeout: 1_000,
+            nothrow: true,
+            maxOutputBytes: 64 * 1024,
+          },
+        )
+        if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== "true engagement cyberful-os")
+          throw new Error(`cyberful-os container is not the running engagement-owned runtime: ${container}`)
+        const mount = await Process.run(["docker", "exec", "-w", "/workspace", container, "true"], {
+          abort: AbortSignal.timeout(30_000),
+          timeout: 1_000,
+          nothrow: true,
+          maxOutputBytes: 64 * 1024,
+        })
+        if (mount.code !== 0) throw new Error(`cyberful-os workspace mount is unavailable: ${container}`)
       }
       pendingTransport = new StdioClientTransport({
         command: cmd,
@@ -1484,7 +1498,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
               .join(", ")}`,
           ),
         )
-      if (key === "cyberful-os") {
+      if (upstreamFailureIsBlocking(key, failurePolicyEnvironment)) {
         if (cleanupFailures.length === 0) throw error
         throw new AggregateError([error, ...cleanupFailures], "required MCP upstream failed startup and cleanup")
       }
@@ -1507,20 +1521,6 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         })
       const operations = [
         ...clients.map((client) => () => client.close()),
-        ...Array.from(bridgeContainers).map((container) => async () => {
-          const proc = Bun.spawn(["docker", "rm", "--force", container], {
-            stdin: "ignore",
-            stdout: "ignore",
-            stderr: "pipe",
-            timeout: DOCKER_CLEANUP_TIMEOUT_MS,
-            maxBuffer: DOCKER_CLEANUP_OUTPUT_BYTES,
-          })
-          const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
-          if (exitCode !== 0 && !stderr.includes("No such container"))
-            throw new Error(
-              `could not remove managed gateway container ${container} (exit ${exitCode}): ${stderr.trim()}`,
-            )
-        }),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
       const operationFailures = outcomes.flatMap((outcome) =>

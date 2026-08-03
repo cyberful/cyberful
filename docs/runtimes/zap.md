@@ -1,8 +1,9 @@
 # OWASP ZAP
 
-Cyberful uses a headless OWASP ZAP 2.17.0 runtime and a separate stdio bridge
-image. Startup prepares both images; traffic-capable engagements then receive
-an isolated runtime with disposable phase gateways.
+Cyberful ships headless OWASP ZAP 2.17.0, Firefox ESR/Xvfb, its pinned add-ons,
+and a bundled stdio bridge inside the unified cyberful-os image. Live-target
+engagements start ZAP once in their single tooling container; phase gateways
+open fresh bridge processes with `docker exec`.
 
 Bridge-owned tool definitions live in one static catalog and are merged with
 the official upstream ZAP tools at startup without renaming either surface.
@@ -20,9 +21,10 @@ HTTP 400. In particular, `script:action:load` requires `scriptName`,
 `scriptType`, `scriptEngine`, and `fileName`; `script:view:globalCustomVar`
 requires `varKey`.
 
-The browser is proxied through ZAP by default. Trust is scoped to the runtime's
-CA public-key pin, while bridge and API keys live in owner-only temporary host
-files rather than model arguments or environment output.
+The browser is proxied through ZAP by default. Only internal port 8080 is
+published as `127.0.0.1:<random-port>`; MCP and service control stay inside the
+container. Trust is scoped to the engagement CA public-key pin, while bridge
+and API keys remain host-owned private environment values.
 
 ```dotenv
 CYBER_ZAP_ENABLED=1
@@ -35,8 +37,14 @@ proxying. Ordinary environment settings cannot grant target access: Pentest and
 Bug Bounty Program are bounded by `MISSION.md`, while Code Audit remains offline
 and never starts ZAP.
 
-Build and exercise the real integration with `make test-zap`. Cyberful cleans
-up phase bridges and owned runtimes on handoff, abort, and shutdown.
+Build with `make runtime-build`, then exercise the existing unified image with
+`make test-zap`. ZAP state stays in the container writable layer and disappears
+when the engagement container is removed; reports written under `/zap/wrk`
+persist in the mounted workarea.
+
+Code Audit creates the unified container with `--network none` and never starts
+ZAP. A ZAP process that dies is not automatically restarted: the supervisor
+marks the container degraded and later bridge calls return a service diagnostic.
 
 ## Engagement rate limit
 
@@ -44,9 +52,9 @@ Brief writes the non-secret `raw/policy/engagement.json`. When it contains a
 numeric aggregate HTTP RPS limit, Cyberful installs one Network add-on rule with
 `groupBy=rule` across the authorized host patterns. Browser profiles, ZAP
 replays, and proxy-aware cyberful-os clients therefore share one counter rather
-than receiving separate per-host budgets. Every later phase reapplies the rule
-to its fresh ZAP runtime. ZAP disabled, unavailable, or unable to accept the
-rule is a hard startup failure; direct browser fallback is not allowed.
+than receiving separate per-host budgets. The one engagement runtime retains
+the rule across phase handoffs. ZAP disabled, unavailable, or unable to accept
+the rule is a hard startup failure; direct browser fallback is not allowed.
 
 Host-side API calls use ZAP's explicit local API authority rather than proxy
 routing. During Brief, the candidate policy is committed only after the rule is

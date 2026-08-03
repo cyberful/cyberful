@@ -397,12 +397,13 @@ and per-attempt summarizer usage. Historical `context_compaction` events remain
 readable, and deterministic tool-result archival retains its existing event
 contract.
 
-The gateway stops before the next phase starts, so phase-local tool registrations
-and traffic grants do not leak across phases. The explicitly engagement-owned
-ZAP, Ghidra, and EVM runtimes are the exceptions: their host owners carry only
-the declared runtime state across eligible phases and guarantee terminal
-container cleanup. Ghidra's protected project remains on disk by design so a
-later instance for the same workarea can reopen analysis and annotations.
+The gateway stops before the next phase starts, so phase-local tool
+registrations do not leak across phases. One explicitly engagement-owned
+cyberful-os container carries the declared cyberful-os, ZAP, and Ghidra state;
+the EVM runtime remains separate. The host fixes container networking before
+the first phase and guarantees terminal cleanup. Ghidra's protected project
+store remains on disk by design so a later engagement instance for the same
+workarea can reopen analysis and annotations.
 
 Before closing upstream MCP clients, the gateway captures the exact PID, PPID,
 start timestamp, and command identities of only the processes it spawned.
@@ -584,9 +585,9 @@ answer arrives, Cyberful retracts the question so it cannot authorize later
 work.
 
 All managed Docker resources carry `managed`, `owner-pid`, `run-owner`,
-`session`, and `runtime` labels, including the shared dependency
+`session`, and `runtime` labels, including the one engagement
 `cyberful-os` container. Normal session closure reaps its exact deterministic
-Expert names and then performs three bounded label-based discovery/removal
+name and then performs three bounded label-based discovery/removal
 passes. The final session-and-run-owner query must prove that no disposable
 session resource remains. A survivor or an unavailable Docker inventory is a
 terminal lifecycle error retained in `run-state.json`; a closed UI cannot

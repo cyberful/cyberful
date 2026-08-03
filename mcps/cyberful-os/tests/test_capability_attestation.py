@@ -124,7 +124,9 @@ class CapabilityReportTest(unittest.TestCase):
 
     def test_docker_build_cannot_drop_the_catalog_verifier(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        copy_at = dockerfile.index("COPY cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py")
+        copy_at = dockerfile.index(
+            "COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py"
+        )
         verify_at = dockerfile.index("python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities")
         workdir_at = dockerfile.index("WORKDIR /workspace")
 

@@ -8,12 +8,13 @@ to build its binaries yourself.
 Install Cyberful and verify the command:
 
 ```sh
-npm install --global @cyberful/cli
+npm install --global cyberful
 cyberful --version
 ```
 
-The `@cyberful/cli` package installs a native Cyberful binary. This path does
-not require Bun.
+The unscoped `cyberful` package installs the command and selects the matching
+native package from the `@cyberful-org` npm organization. This path does not
+require Bun.
 
 Cyberful creates a secret-free `settings.yaml` with OpenAI Codex as the default
 Pi provider. Authenticate that route through Cyberful:

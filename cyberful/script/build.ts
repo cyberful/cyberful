@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // ── Standalone Binary Build Pipeline ────────────────────────────────
-// Compiles each supported Cyberful target, embeds its first-party runtime
-// assets, and rejects artifacts that fail compatibility or launch smoke tests.
-// → cyberful/src/bootstrap-config.ts — materializes the embedded runtime assets.
+// Compiles each supported Cyberful target, embeds its host-side first-party
+// assets and runtime-image digest, then applies compatibility launch smoke tests.
+// → cyberful/src/bootstrap-config.ts — materializes the embedded host launchers.
 // → scripts/release.ts — supplies the immutable version and channel identity.
 // ────────────────────────────────────────────────────────────────────
 
@@ -276,60 +276,23 @@ for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: Builtin
 }
 console.log(`Embedding ${Object.keys(embeddedConfig).length} built-in config files`)
 
-// ── cyberful-os Ships As A Self-Contained Text Toolkit ──────────────────
-// Installed Cyberful must build and launch cyberful-os without a source checkout,
-// so each binary embeds its scripts, runtime definitions, and wordlists. Tests,
-// caches, and bytecode are excluded; the remaining files are treated as text and
-// launcher permissions are restored only when bootstrap materializes them.
+// ── Releases Embed Only The Host-Side Runtime Launcher ───────────
+// The security-tool filesystem ships as one signed GHCR image rather than source
+// Docker contexts inside every platform binary. Releases retain only the stdio
+// MCP launcher and its Python protocol implementation; a source checkout still
+// owns the Dockerfile, supervisor, bridges, wordlists, and contributor build path.
 // → cyberful/src/bootstrap-config.ts — restores the embedded toolkit on first use.
 // ─────────────────────────────────────────────────────────────────────
 const cyberfulOsRoot = path.resolve(dir, "../mcps/cyberful-os")
 const embeddedCyberfulOs: Record<string, string> = {}
 if (fs.existsSync(cyberfulOsRoot)) {
-  const EXCLUDE_SEG = new Set(["__pycache__", "tests", ".git"])
-  for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: cyberfulOsRoot, onlyFiles: true }))) {
-    const norm = rel.replaceAll("\\", "/")
-    if (norm.split("/").some((seg) => EXCLUDE_SEG.has(seg)) || norm.endsWith(".pyc")) continue
-    embeddedCyberfulOs[norm] = await Bun.file(path.join(cyberfulOsRoot, rel)).text()
+  for (const rel of ["bin/cyberful-os", "cyberful_os_mcp.py", "mcp_framing.py"]) {
+    const file = path.join(cyberfulOsRoot, rel)
+    if (!fs.existsSync(file)) throw new Error(`Host runtime asset not found: ${file}`)
+    embeddedCyberfulOs[rel] = await Bun.file(file).text()
   }
 }
 console.log(`Embedding ${Object.keys(embeddedCyberfulOs).length} cyberful-os files`)
-
-// ── ZAP Build Contexts Travel With The Binary ────────────────────────
-// ZAP executes from pinned OCI images rather than embedded application code.
-// The source build contexts still travel inside Cyberful so first startup can
-// reproduce both the headless runtime and stdio bridge without a checkout.
-// Generated dependencies and repository metadata stay outside that context.
-// ─────────────────────────────────────────────────────────────────────
-const zapRoot = path.resolve(dir, "../mcps/zap")
-const embeddedZap: Record<string, string> = {}
-if (fs.existsSync(zapRoot)) {
-  for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: zapRoot, onlyFiles: true }))) {
-    const norm = rel.replaceAll("\\", "/")
-    if (norm.split("/").some((segment) => segment === "node_modules" || segment === ".git")) continue
-    embeddedZap[norm] = await Bun.file(path.join(zapRoot, rel)).text()
-  }
-}
-console.log(`Embedding ${Object.keys(embeddedZap).length} ZAP container files`)
-
-// ── Ghidra Build Contexts Travel With The Binary ─────────────────
-// The official Ghidra archive is too large to embed, so releases carry only the
-// checksum-pinned Docker recipes and first-party MCP implementation. Startup
-// materializes that reviewed text context and Docker downloads the authenticated
-// upstream archive while building the image. Tests and bytecode never enter the
-// release payload or a future build context.
-// ─────────────────────────────────────────────────────────────────
-const ghidraRoot = path.resolve(dir, "../mcps/ghidra")
-const embeddedGhidra: Record<string, string> = {}
-if (fs.existsSync(ghidraRoot)) {
-  const excluded = new Set(["tests", "__pycache__", ".git"])
-  for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: ghidraRoot, onlyFiles: true }))) {
-    const norm = rel.replaceAll("\\", "/")
-    if (norm.split("/").some((segment) => excluded.has(segment)) || norm.endsWith(".pyc")) continue
-    embeddedGhidra[norm] = await Bun.file(path.join(ghidraRoot, rel)).text()
-  }
-}
-console.log(`Embedding ${Object.keys(embeddedGhidra).length} Ghidra container files`)
 
 // ── Browser Driver Embedding Preserves Binary Assets ─────────────────
 // The browser MCP and Patchright driver ship inside Cyberful; only Chromium is
@@ -440,8 +403,7 @@ for (const item of targets) {
       CYBERFUL_EMBEDDED_ENV: JSON.stringify(embeddedEnv),
       CYBERFUL_EMBEDDED_CONFIG: JSON.stringify(embeddedConfig),
       CYBERFUL_EMBEDDED_CYBERFUL_OS: JSON.stringify(embeddedCyberfulOs),
-      CYBERFUL_EMBEDDED_ZAP: JSON.stringify(embeddedZap),
-      CYBERFUL_EMBEDDED_GHIDRA: JSON.stringify(embeddedGhidra),
+      CYBERFUL_RUNTIME_IMAGE: JSON.stringify(process.env.CYBERFUL_RUNTIME_IMAGE?.trim() ?? ""),
       CYBERFUL_EMBEDDED_BROWSER: JSON.stringify(embeddedBrowser),
       CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedBrowserBin),
     },

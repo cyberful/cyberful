@@ -45,13 +45,11 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { ensureProcessMetadata } from "@/util/cyberful-process"
 import { isRecord } from "@/util/record"
 import { AppRuntime } from "@/effect/app-runtime"
-import { DependencyStartup } from "@/dependency/startup"
 import { Effect, Schema } from "effect"
 import { Truncate } from "@/tool/truncate"
 import { emptyTruncationDirSync } from "@/tool/truncation-dir"
 import { SubsystemCli } from "@/subsystem/cli"
 import { SubsystemContainer } from "@/subsystem/container"
-import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
 
 const processMetadata = ensureProcessMetadata("main")
@@ -298,14 +296,8 @@ try {
     SubsystemEvmRuntime.removeAll().catch((error) => {
       Log.Default.warn("EVM container shutdown failed", { error: errorMessage(error) })
     }),
-    SubsystemZapRuntime.removeAll().catch((error) => {
-      Log.Default.warn("ZAP container shutdown failed", { error: errorMessage(error) })
-    }),
     SubsystemContainer.removeForShutdown().catch((error) => {
       Log.Default.warn("expert container shutdown failed", { error: errorMessage(error) })
-    }),
-    DependencyStartup.stopStarted().catch((error) => {
-      Log.Default.warn("dependency shutdown failed", { error: errorMessage(error) })
     }),
   ])
   await Log.dispose()
