@@ -40,6 +40,7 @@
   --cyberful-panel: #f6f8fb;
   --cyberful-radius: 0.85rem;
   --cyberful-brand: "Archivo Black", "Arial Black", sans-serif;
+  --cyberful-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --cyberful-serif: "Newsreader", "EB Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --cyberful-mono: "JetBrainsMono Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrains Mono", monospace;
   --md-primary-fg-color: var(--cyberful-ink);
@@ -72,7 +73,7 @@ body {
 }
 
 .md-grid {
-  max-width: 92rem;
+  max-width: 70rem;
 }
 
 .md-header {
@@ -210,6 +211,14 @@ body {
   font-family: var(--cyberful-serif);
   font-optical-sizing: auto;
   font-weight: 700;
+}
+
+.md-nav--secondary .md-nav__title {
+  font-family: var(--cyberful-ui);
+  font-optical-sizing: initial;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .md-nav__link {
@@ -577,6 +586,12 @@ body {
 @media screen and (max-width: 76.234375em) {
   .md-header {
     color: var(--md-default-fg-color);
+  }
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-grid {
+    width: calc(100% - clamp(3rem, 7vw, 8rem));
   }
 }
 
