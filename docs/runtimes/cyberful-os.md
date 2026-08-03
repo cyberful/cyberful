@@ -75,6 +75,13 @@ verifies the supplied running container, ownership labels, and workspace mount.
 It cannot create, replace, or restart it. Standalone MCP use retains lazy local
 container creation.
 
+Tool discovery is derived from the live capability preflight. Required tools
+remain part of the image contract, while optional tools fail closed until the
+selected image proves they are installed. JEB therefore appears only for a
+private image built with its licensed installer; running
+`capability_attestation` refreshes the snapshot used by discovery, while
+`tool_inventory` independently reports the current live availability.
+
 ## Configuration
 
 | Variable | Default | Meaning |

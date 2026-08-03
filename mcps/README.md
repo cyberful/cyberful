@@ -81,7 +81,9 @@ refresh to a newer signed release.
 Use `tool_inventory` to list registered MCP names, real commands/modules,
 categories, aliases, optional tools, and live availability inside the current
 container. `jeb` is optional and only resolves when a private image build
-includes JEB.
+includes JEB. Optional tools fail closed during discovery until the shared
+runtime preflight proves their command or module is installed; an explicit
+`capability_attestation` refreshes that same snapshot.
 
 `capability_attestation` checks every required catalog command and Python module
 and smoke-tests Nuclei and Metasploit without target traffic. The Dockerfile runs
