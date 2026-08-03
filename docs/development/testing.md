@@ -49,7 +49,9 @@ of `main`, so an older queued run cannot regress the tag.
 
 Each runtime runner needs the labels `self-hosted`, `linux`,
 `cyberful-container`, and its architecture (`amd64` or `arm64`), plus at least
-100 GB free, Docker BuildKit/buildx, Bun, Python, a C compiler, and the isolated
-browser test dependencies. The workflow does not import persistent BuildKit or
-Bun caches into publishable builds; per-job BuildKit state is pruned to an 80 GB
-bound and then cleaned up.
+100 GB free, Docker BuildKit/buildx, Bun, npm, Python, a C compiler, and
+passwordless `sudo` for the pinned browser's Linux packages. The workflow
+installs the pinned Patchright Chromium and its host libraries before the live
+proxy tests; system Chrome is exercised when the runner already provides it.
+The workflow does not import persistent BuildKit or Bun caches into publishable
+builds; per-job BuildKit state is pruned to an 80 GB bound and then cleaned up.

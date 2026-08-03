@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
+import fs from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -189,7 +190,9 @@ function arrayValue(value: unknown, label: string): unknown[] {
 }
 
 function resultRecord(result: Awaited<ReturnType<Client["callTool"]>>, label: string) {
-  return recordValue(jsonValue(resultText(result), label), label)
+  const text = resultText(result)
+  if ("isError" in result && result.isError) throw new Error(`${label} failed: ${text}`)
+  return recordValue(jsonValue(text, label), label)
 }
 
 function resultArray(result: Awaited<ReturnType<Client["callTool"]>>, label: string) {
@@ -302,6 +305,19 @@ async function dockerOutput(...args: string[]) {
   return result.stdout.toString("utf8").trim()
 }
 
+async function terminateManagedService(runtime: EngagementRuntime, serviceName: string) {
+  const status = recordValue(
+    JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json")),
+    "runtime status",
+  )
+  const services = recordValue(status.services, "runtime status.services")
+  const service = recordValue(services[serviceName], `runtime status.services.${serviceName}`)
+  if (typeof service.pid !== "number" || !Number.isSafeInteger(service.pid) || service.pid <= 0) {
+    throw new Error(`runtime status.services.${serviceName}.pid must be a positive integer`)
+  }
+  await dockerOutput("exec", runtime.container, "kill", "-TERM", "--", `-${service.pid}`)
+}
+
 beforeAll(async () => {
   const stderrWrite = spyOn(process.stderr, "write").mockImplementation((chunk) => {
     captureDiagnostic(String(chunk))
@@ -397,7 +413,7 @@ describe("real headless ZAP containers", () => {
       expect(body).toContain("Cyberful engagement global HTTP budget")
       expect(body).toContain("4")
 
-      await dockerOutput("exec", runtime.container, "pkill", "-TERM", "-f", "org.zaproxy.zap.ZAP")
+      await terminateManagedService(runtime, "zap")
       await Bun.sleep(1_500)
       const configured = SubsystemGateway.gatewayMcpServer("ses_rate_limit_failure", {
         proxy: true,
@@ -447,7 +463,9 @@ describe("real headless ZAP containers", () => {
     expect(
       await dockerOutput("inspect", "--format", "{{json .NetworkSettings.Ports}}", runtime.container),
     ).not.toContain("8282")
-    expect(await dockerOutput("exec", runtime.container, "pgrep", "-x", "Xvfb")).toMatch(/^\d+$/)
+    const xvfbProcesses = (await dockerOutput("exec", runtime.container, "pgrep", "-x", "Xvfb")).split("\n")
+    expect(xvfbProcesses.length).toBeGreaterThan(0)
+    expect(xvfbProcesses.every((pid) => /^\d+$/.test(pid))).toBe(true)
     await dockerOutput(
       "exec",
       "--env",
@@ -815,7 +833,16 @@ describe("real headless ZAP containers", () => {
     await releaseRuntimes(runtime)
   }, 240_000)
 
-  test("captures Chrome HTTPS through the engagement CA SPKI without external startup traffic", async () => {
+  test.skipIf(
+    ![
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/opt/google/chrome/chrome",
+      "/usr/bin/chrome",
+    ].some((candidate) => fs.existsSync(candidate)),
+  )("captures system Chrome HTTPS through the engagement CA SPKI without external startup traffic", async () => {
     await verifyBrowserHttps("chrome")
   }, 180_000)
 
@@ -880,7 +907,7 @@ describe("real headless ZAP containers", () => {
     upstreamDiagnostics = ""
     const runtime = await startEngagement({ sessionID: "integration-zap-death", workarea })
     runtimes.push(runtime)
-    await dockerOutput("exec", runtime.container, "pkill", "-TERM", "-f", "org.zaproxy.zap.ZAP")
+    await terminateManagedService(runtime, "zap")
     await Bun.sleep(1_500)
     expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", runtime.container)).toBe("true")
     const status = JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json"))

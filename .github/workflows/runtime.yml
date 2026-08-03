@@ -145,6 +145,10 @@ jobs:
           fi
       - run: bun install --frozen-lockfile
       - run: npm ci --prefix mcps
+      - name: Install the pinned browser test runtime
+        env:
+          CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
+        run: npm --prefix mcps run browser:install -- --with-deps
       - name: Build the native image into Docker
         shell: bash
         run: |
@@ -156,6 +160,8 @@ jobs:
             --build-arg "BUILD_REVISION=${GITHUB_SHA}" \
             --load mcps
       - name: Verify architecture and full runtime behavior
+        env:
+          CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
         shell: bash
         run: |
           image="cyberful-os:check-${GITHUB_SHA}-${RUNTIME_ARCH}"
@@ -171,7 +177,7 @@ jobs:
           retention-days: 7
       - name: Bound the architecture-local BuildKit cache
         if: always()
-        run: docker buildx prune --force --keep-storage 80gb
+        run: docker buildx prune --force --reserved-space 80gb
 
   main-native:
     name: Main native ${{ matrix.platform }}
@@ -222,6 +228,10 @@ jobs:
           fi
       - run: bun install --frozen-lockfile
       - run: npm ci --prefix mcps
+      - name: Install the pinned browser test runtime
+        env:
+          CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
+        run: npm --prefix mcps run browser:install -- --with-deps
       - id: publish
         name: Build and publish the native platform by digest
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -237,6 +247,7 @@ jobs:
             BUILD_REVISION=${{ github.sha }}
       - name: Pull and test the exact published digest
         env:
+          CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
           PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
         shell: bash
         run: |
@@ -263,7 +274,7 @@ jobs:
           retention-days: 7
       - name: Bound the architecture-local BuildKit cache
         if: always()
-        run: docker buildx prune --force --keep-storage 80gb
+        run: docker buildx prune --force --reserved-space 80gb
 
   main-index:
     name: Assemble, attest, and sign the OCI index

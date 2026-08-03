@@ -7,8 +7,11 @@ pull requests and pushes to `main`.
 tests native `linux/amd64` and `linux/arm64` images on the two dedicated
 self-hosted runner classes without publishing. A manual run outside `main` is
 the same non-publishing native check. Runs on `main` are queued and processed in
-order. Runtime changes push one tested native digest per architecture with
-BuildKit SBOM/provenance, then a bounded index job creates
+order. Each native job installs the pinned Patchright Chromium and its Linux
+libraries before exercising browser-through-ZAP; system Chrome is an optional
+additional channel when the runner provides it. Runtime changes push one tested
+native digest per architecture with BuildKit SBOM/provenance, then a bounded
+index job creates
 `sha-<40-character-commit>`, verifies exactly the two executable platforms,
 and signs the immutable digest with Cosign and GitHub OIDC. When that commit is
 still the head of `main`, the same operation also moves `edge` to the identical
