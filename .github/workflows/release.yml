@@ -193,6 +193,23 @@ jobs:
       - run: npm install --global "npm@${NPM_VERSION}"
       - run: bun install --frozen-lockfile
       - run: npm ci --prefix mcps
+      - name: Stage the pinned Bun Windows baseline compiler
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          compiler_dir="$(mktemp -d)"
+          trap 'rm -rf "$compiler_dir"' EXIT
+          archive="$(
+            npm pack \
+              --silent \
+              --ignore-scripts \
+              --pack-destination "$compiler_dir" \
+              "@oven/bun-windows-x64-baseline@$BUN_VERSION"
+          )"
+          test "$archive" = "oven-bun-windows-x64-baseline-$BUN_VERSION.tgz"
+          tar -xOf "$compiler_dir/$archive" package/bin/bun.exe \
+            > "cyberful/bun-windows-x64-baseline-v$BUN_VERSION"
+          test -s "cyberful/bun-windows-x64-baseline-v$BUN_VERSION"
       - name: Build native binaries
         shell: bash
         run: bun run --cwd cyberful build --target "$BUILD_TARGETS" --skip-install
