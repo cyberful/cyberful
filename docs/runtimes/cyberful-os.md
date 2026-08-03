@@ -91,7 +91,7 @@ private image built with its licensed installer; running
 | `CYBER_ZAP_ENABLED` | `1` | Enable ZAP for live-target engagements |
 | `CYBER_BROWSER_THROUGH_ZAP` | `1` | Chain the isolated browser through ready ZAP |
 | `CYBER_ZAP_PROXY_PORT` | random loopback port | Optional fixed host-loopback port |
-| `CYBER_ZAP_STARTUP_TIMEOUT_SECONDS` | `120` | ZAP readiness deadline |
+| `CYBER_ZAP_STARTUP_TIMEOUT_SECONDS` | `120` | Combined ZAP API and MCP readiness deadline |
 | `CYBER_GHIDRA_ENABLED` | `1` | Enable the persistent Ghidra service |
 | `CYBER_GHIDRA_STARTUP_TIMEOUT_SECONDS` | `300` | Ghidra readiness deadline |
 

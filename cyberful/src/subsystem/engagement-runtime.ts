@@ -51,6 +51,15 @@ interface DockerOptions {
   readonly timeoutMs?: number
 }
 
+interface BridgeProbeInput {
+  readonly name: "zap" | "ghidra"
+  readonly command: string[]
+  readonly env: Record<string, string>
+  readonly requiredTools: readonly string[]
+  readonly signal?: AbortSignal
+  readonly timeoutMs?: number
+}
+
 function secret() {
   return randomBytes(32).toString("base64url")
 }
@@ -114,26 +123,42 @@ async function waitForContainer(container: string, signal?: AbortSignal) {
   throw new Error("the unified engagement container did not become ready")
 }
 
-async function waitForZap(proxyUrl: string, apiKey: string, container: string, signal?: AbortSignal) {
-  const deadline = Date.now() + cyberZapStartupTimeoutSeconds() * 1000
+async function waitForZapApi(input: {
+  readonly apiKey: string
+  readonly container: string
+  readonly deadline: number
+  readonly proxyUrl: string
+  readonly signal?: AbortSignal
+  readonly startupTimeoutSeconds: number
+}) {
   let lastError: unknown
-  while (Date.now() < deadline) {
+  while (Date.now() < input.deadline) {
     try {
-      const response = await fetch(`${proxyUrl}/JSON/core/view/version/?apikey=${encodeURIComponent(apiKey)}`, {
-        headers: { Host: "zap" },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1500)]) : AbortSignal.timeout(1500),
-      })
+      const timeout = AbortSignal.timeout(Math.max(1, Math.min(1_500, input.deadline - Date.now())))
+      const response = await fetch(
+        `${input.proxyUrl}/JSON/core/view/version/?apikey=${encodeURIComponent(input.apiKey)}`,
+        {
+          headers: { Host: "zap" },
+          signal: input.signal ? AbortSignal.any([input.signal, timeout]) : timeout,
+        },
+      )
       if (response.ok) return
       lastError = new Error(`ZAP readiness returned HTTP ${response.status}`)
     } catch (error) {
-      signal?.throwIfAborted()
+      input.signal?.throwIfAborted()
       lastError = error
     }
-    const running = await docker(["docker", "inspect", "--format", "{{.State.Running}}", container], { signal })
+    const remainingMs = input.deadline - Date.now()
+    if (remainingMs <= 0) break
+    const running = await docker(["docker", "inspect", "--format", "{{.State.Running}}", input.container], {
+      ...(input.signal ? { signal: input.signal } : {}),
+      timeoutMs: Math.max(1, Math.min(DOCKER_COMMAND_TIMEOUT_MS, remainingMs)),
+    })
     if (running !== "true") throw new Error("the unified engagement container exited during ZAP startup")
-    await sleep(500, signal)
+    const retryDelayMs = Math.min(500, input.deadline - Date.now())
+    if (retryDelayMs > 0) await sleep(retryDelayMs, input.signal)
   }
-  throw new Error(`timed out after ${cyberZapStartupTimeoutSeconds()}s waiting for the ZAP API`, {
+  throw new Error(`timed out after ${input.startupTimeoutSeconds}s waiting for the ZAP API`, {
     cause: lastError,
   })
 }
@@ -168,13 +193,7 @@ async function certificateSpki(proxyUrl: string, apiKey: string, signal?: AbortS
   return spkiFromCertificate(new Uint8Array(await response.arrayBuffer()))
 }
 
-async function probeBridge(input: {
-  readonly name: "zap" | "ghidra"
-  readonly command: string[]
-  readonly env: Record<string, string>
-  readonly requiredTools: readonly string[]
-  readonly signal?: AbortSignal
-}) {
+async function probeBridge(input: BridgeProbeInput) {
   const [command, ...args] = input.command
   if (!command) throw new Error(`${input.name} bridge command is unavailable`)
   const transport = new StdioClientTransport({
@@ -187,14 +206,19 @@ async function probeBridge(input: {
   const capture = (chunk: Buffer) => diagnostics.append(chunk)
   transport.stderr?.on("data", capture)
   const client = new Client({ name: `cyberful-${input.name}-preflight`, version: "0.1.0" })
-  const deadline = AbortSignal.timeout(BRIDGE_PREFLIGHT_TIMEOUT_MS)
+  const timeoutMs = input.timeoutMs ?? BRIDGE_PREFLIGHT_TIMEOUT_MS
+  const deadline = AbortSignal.timeout(timeoutMs)
   const cancellation = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline
   const abort = () => void client.close().catch(() => undefined)
   cancellation.addEventListener("abort", abort, { once: true })
   try {
     await client.connect(transport)
     cancellation.throwIfAborted()
-    const tools = await client.listTools(undefined, { timeout: 20_000, maxTotalTimeout: 20_000 })
+    const requestTimeoutMs = Math.min(20_000, timeoutMs)
+    const tools = await client.listTools(undefined, {
+      timeout: requestTimeoutMs,
+      maxTotalTimeout: requestTimeoutMs,
+    })
     const names = new Set(tools.tools.map((tool) => tool.name))
     for (const required of input.requiredTools)
       if (!names.has(required)) throw new Error(`${input.name} MCP is missing required tool ${required}`)
@@ -208,6 +232,55 @@ async function probeBridge(input: {
     transport.stderr?.off("data", capture)
     await client.close().catch(() => undefined)
   }
+}
+
+// ── ZAP Is Ready Only After Its MCP Listener Accepts Requests ───
+// ZAP's core API can answer before its MCP add-on begins listening, so an HTTP
+// response alone cannot authorize phase gateways or proxy-dependent policy.
+// Startup retries the definitive bridge handshake within the same configured
+// deadline used by the API probe and confirms the container remains alive.
+// Retries end when startup returns; a service that dies later still fails fast
+// and remains stopped under the supervisor's no-restart contract.
+//
+// @docs/runtimes/cyberful-os.md
+// ─────────────────────────────────────────────────────────────────
+async function waitForZapBridge(input: {
+  readonly command: string[]
+  readonly container: string
+  readonly deadline: number
+  readonly env: Record<string, string>
+  readonly signal?: AbortSignal
+  readonly startupTimeoutSeconds: number
+}) {
+  let lastError: unknown
+  while (Date.now() < input.deadline) {
+    try {
+      await probeBridge({
+        name: "zap",
+        command: input.command,
+        env: input.env,
+        requiredTools: ["zap_version"],
+        timeoutMs: Math.max(1, Math.min(BRIDGE_PREFLIGHT_TIMEOUT_MS, input.deadline - Date.now())),
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
+      return
+    } catch (error) {
+      input.signal?.throwIfAborted()
+      lastError = error
+    }
+    const remainingMs = input.deadline - Date.now()
+    if (remainingMs <= 0) break
+    const running = await docker(["docker", "inspect", "--format", "{{.State.Running}}", input.container], {
+      ...(input.signal ? { signal: input.signal } : {}),
+      timeoutMs: Math.max(1, Math.min(DOCKER_COMMAND_TIMEOUT_MS, remainingMs)),
+    })
+    if (running !== "true") throw new Error("the unified engagement container exited during ZAP MCP startup")
+    const retryDelayMs = Math.min(500, input.deadline - Date.now())
+    if (retryDelayMs > 0) await sleep(retryDelayMs, input.signal)
+  }
+  throw new Error(`timed out after ${input.startupTimeoutSeconds}s waiting for the ZAP MCP`, {
+    cause: lastError,
+  })
 }
 
 async function verifyCore(container: string, signal?: AbortSignal) {
@@ -333,10 +406,34 @@ export async function startEngagement(input: {
 
   if (zapEnabled && apiKey && zapMcpKey) {
     try {
+      const startupTimeoutSeconds = cyberZapStartupTimeoutSeconds()
+      const startupDeadline = Date.now() + startupTimeoutSeconds * 1000
       proxyUrl = `http://127.0.0.1:${parsePublishedPort(
         await docker(["docker", "port", input.container, "8080/tcp"], { signal: input.signal }),
       )}`
-      await waitForZap(proxyUrl, apiKey, input.container, input.signal)
+      await waitForZapApi({
+        apiKey,
+        container: input.container,
+        deadline: startupDeadline,
+        proxyUrl,
+        startupTimeoutSeconds,
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
+      const readyEnv = {
+        CYBER_ZAP_READY: "1",
+        CYBER_ZAP_API_KEY: apiKey,
+        CYBER_ZAP_MCP_KEY: zapMcpKey,
+        CYBER_ZAP_PROXY_URL: proxyUrl,
+        CYBER_ZAP_WORKAREA: input.workarea,
+      }
+      await waitForZapBridge({
+        command: cyberZapBridgeCommand(input.container),
+        container: input.container,
+        deadline: startupDeadline,
+        env: { ...env, ...readyEnv },
+        startupTimeoutSeconds,
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
       if (policy)
         await applyEngagementRateLimit(policy, {
           proxyUrl,
@@ -345,21 +442,8 @@ export async function startEngagement(input: {
         })
       const spki = await certificateSpki(proxyUrl, apiKey, input.signal)
       Object.assign(env, {
-        CYBER_ZAP_READY: "1",
-        CYBER_ZAP_API_KEY: apiKey,
-        CYBER_ZAP_MCP_KEY: zapMcpKey,
-        CYBER_ZAP_PROXY_URL: proxyUrl,
-        CYBER_ZAP_WORKAREA: input.workarea,
-        ...(shouldChainBrowserThroughZap()
-          ? { CYBER_BROWSER_PROXY: proxyUrl, CYBER_BROWSER_PROXY_CA_SPKI: spki }
-          : {}),
-      })
-      await probeBridge({
-        name: "zap",
-        command: cyberZapBridgeCommand(input.container),
-        env,
-        requiredTools: ["zap_version"],
-        ...(input.signal ? { signal: input.signal } : {}),
+        ...readyEnv,
+        ...(shouldChainBrowserThroughZap() ? { CYBER_BROWSER_PROXY: proxyUrl, CYBER_BROWSER_PROXY_CA_SPKI: spki } : {}),
       })
       const targetWarning = localTargetWarning(input.objective ?? "")
       if (targetWarning) warnings.push(targetWarning)
