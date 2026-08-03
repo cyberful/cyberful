@@ -61,5 +61,5 @@ digests are recorded beside the lists. Release archives preserve the notice as
 
 The isolated ZAP runtime is based on OWASP ZAP and its official container
 artifacts. Its Apache License 2.0 attribution is recorded in
-`mcps/zap/THIRD_PARTY_NOTICES.md`. The ZAP image remains a separately built and
-distributed component; it is not embedded in the Cyberful executable.
+`mcps/zap/THIRD_PARTY_NOTICES.md`. ZAP is distributed inside the unified
+cyberful-os OCI image; it is not embedded in the Cyberful executable.

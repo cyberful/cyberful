@@ -11,15 +11,17 @@ const ENV_KEYS = [
   "CYBER_BROWSER_MCP_COMMAND",
   "CYBER_BROWSER_MCP",
   "CYBER_BROWSER_MCP_ENABLED",
+  "CYBER_BROWSER_MCP_ENTRY",
+  "CYBER_BROWSER_BUN_REENTRY",
   "CYBER_ZAP_ENABLED",
   "CYBER_BROWSER_THROUGH_ZAP",
-  "CYBER_ZAP_CONTAINER",
+  "CYBER_ZAP_READY",
   "CYBERFUL_SUBSYSTEM_SESSION",
   "CYBER_ZAP_PROXY_URL",
   "CYBER_ZAP_MCP_KEY",
   "CYBER_ZAP_API_KEY",
   "CYBER_GHIDRA_ENABLED",
-  "CYBER_GHIDRA_CONTAINER",
+  "CYBER_GHIDRA_READY",
   "CYBER_GHIDRA_MCP_KEY",
   "CYBER_BROWSER_PROXY_CA_SPKI",
   "CYBERFUL_OS_DIR",
@@ -86,27 +88,31 @@ describe("SubsystemUpstream.builtin", () => {
     }
   })
 
-  test("registers the disposable ZAP bridge after engagement readiness", () => {
+  test("registers an in-container ZAP bridge after engagement readiness", () => {
     const env = snapshotEnv()
     try {
-      process.env.CYBER_ZAP_CONTAINER = "zap-run"
-      process.env.CYBERFUL_SUBSYSTEM_SESSION = "ses-run"
+      process.env.CYBERFUL_OS_CONTAINER = "runtime"
+      process.env.CYBER_ZAP_READY = "1"
       const zap = SubsystemUpstream.builtin().zap
       expect(zap).toMatchObject({
         type: "local",
         enabled: true,
         timeout: 305_000,
-        container: `cyberful-zap-bridge-ses-run-${process.pid}`,
       })
-      expect(zap.command).toEqual(
-        expect.arrayContaining([
-          "--name",
-          `cyberful-zap-bridge-ses-run-${process.pid}`,
-          "org.cyberful.managed=zap-bridge",
-          "org.cyberful.session=ses-run",
-          "container:zap-run",
-        ]),
-      )
+      expect(zap.command).toEqual([
+        "docker",
+        "exec",
+        "-i",
+        "-e",
+        "CYBER_ZAP_MCP_KEY",
+        "-e",
+        "CYBER_ZAP_API_KEY",
+        "-e",
+        "CYBER_ZAP_WORKAREA=/zap/wrk",
+        "runtime",
+        "node",
+        "/opt/cyberful/zap/zap_bridge.mjs",
+      ])
     } finally {
       restoreEnv(env)
     }
@@ -116,7 +122,7 @@ describe("SubsystemUpstream.builtin", () => {
     const env = snapshotEnv()
     try {
       delete process.env.CYBER_ZAP_ENABLED
-      delete process.env.CYBER_ZAP_CONTAINER
+      delete process.env.CYBER_ZAP_READY
       const zap = SubsystemUpstream.builtin().zap
       expect(zap.enabled).toBe(false)
       expect(zap.command).toEqual([])
@@ -128,25 +134,25 @@ describe("SubsystemUpstream.builtin", () => {
   test("registers Ghidra only after the persistent engagement JVM is ready", () => {
     const env = snapshotEnv()
     try {
-      process.env.CYBER_GHIDRA_CONTAINER = "ghidra-run"
-      process.env.CYBERFUL_SUBSYSTEM_SESSION = "ses-run"
+      process.env.CYBERFUL_OS_CONTAINER = "runtime"
+      process.env.CYBER_GHIDRA_READY = "1"
       const ghidra = SubsystemUpstream.builtin().ghidra
       expect(ghidra).toMatchObject({
         type: "local",
         enabled: true,
         timeout: 305_000,
-        container: `cyberful-ghidra-bridge-ses-run-${process.pid}`,
       })
-      expect(ghidra.command).toEqual(
-        expect.arrayContaining([
-          "--name",
-          `cyberful-ghidra-bridge-ses-run-${process.pid}`,
-          "org.cyberful.managed=ghidra-bridge",
-          "org.cyberful.session=ses-run",
-          "container:ghidra-run",
-        ]),
-      )
-      delete process.env.CYBER_GHIDRA_CONTAINER
+      expect(ghidra.command).toEqual([
+        "docker",
+        "exec",
+        "-i",
+        "-e",
+        "CYBER_GHIDRA_MCP_KEY",
+        "runtime",
+        "/opt/cyberful-os-venv/bin/python",
+        "/opt/cyberful/ghidra/ghidra_bridge.py",
+      ])
+      delete process.env.CYBER_GHIDRA_READY
       expect(SubsystemUpstream.builtin().ghidra).toMatchObject({ enabled: false, command: [] })
     } finally {
       restoreEnv(env)

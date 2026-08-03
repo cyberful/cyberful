@@ -62,8 +62,19 @@ make docs-build
 The first command is the fast repository-wide `CODE.md` conformance gate;
 `make typecheck` runs it again before compiling TypeScript.
 
-Docker, network, ZAP, Pi, and provider-adapter changes require their corresponding integration
-targets. See [Build Cyberful with us](docs/development/README.md)
+Image, supervisor, ZAP, Ghidra, or container lifecycle changes additionally
+require the native unified runtime contract:
+
+```sh
+make runtime-build
+make test-runtime
+```
+
+The image build can use more than 100 GB; the complete local test needs at
+least 40 GB free. `make test-zap` and `make test-ghidra` reuse the image selected
+by `CYBERFUL_OS_IMAGE` and do not build component images. Docker, network, Pi,
+and provider-adapter changes require their corresponding integration targets.
+See [Build Cyberful with us](docs/development/README.md)
 for the full verification matrix and
 [Testing and CI](docs/development/testing.md) for CI behavior.
 

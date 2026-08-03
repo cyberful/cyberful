@@ -9,12 +9,10 @@ import {
   cyberBrowserMcpCommand,
   cyberBrowserZapChainEnv,
   cyberGhidraBridgeCommand,
-  cyberGhidraBridgeImage,
-  cyberGhidraImage,
   cyberGhidraStartupTimeoutSeconds,
+  cyberfulOsMcpCommand,
+  cyberfulOsImage,
   cyberZapBridgeCommand,
-  cyberZapBridgeImage,
-  cyberZapImage,
   cyberZapProxyPort,
   cyberZapStartupTimeoutSeconds,
   expertSessionModel,
@@ -24,12 +22,19 @@ import {
   shouldEnableCyberBrowserMcp,
   shouldEnableCyberGhidra,
   shouldEnableCyberZap,
+  validateUnifiedRuntimeEnvironment,
 } from "./config"
 
 const ENV_KEYS = [
   "CYBER_BROWSER_MCP_COMMAND",
   "CYBER_BROWSER_MCP",
   "CYBER_BROWSER_MCP_ENABLED",
+  "CYBER_BROWSER_MCP_ENTRY",
+  "CYBER_BROWSER_PACKAGE_ROOT",
+  "CYBER_BROWSER_BUN_REENTRY",
+  "CYBERFUL_OS_IMAGE",
+  "CYBERFUL_OS_CONTAINER",
+  "CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER",
   "CYBER_ZAP_ENABLED",
   "CYBER_BROWSER_THROUGH_ZAP",
   "CYBER_ZAP_IMAGE",
@@ -87,7 +92,51 @@ describe("Pi runtime config", () => {
   })
 })
 
+describe("unified cyberful-os launcher", () => {
+  test("runs the MCP inside the engagement container without host Python", async () => {
+    await withEnv(
+      { CYBERFUL_OS_CONTAINER: "runtime", CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER: "1" },
+      () => {
+        expect(cyberfulOsMcpCommand()).toEqual([
+          "docker",
+          "exec",
+          "-i",
+          "-w",
+          "/workspace",
+          "-e",
+          "CYBERFUL_OS_IN_CONTAINER=1",
+          "-e",
+          "CYBERFUL_OS_MOUNT=/workspace",
+          "-e",
+          "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT=/workspace",
+          "-e",
+          "CYBERFUL_OS_HTTP_PROXY",
+          "runtime",
+          "/opt/cyberful-os-venv/bin/python",
+          "/opt/cyberful-os/cyberful_os_mcp.py",
+        ])
+      },
+    )
+  })
+})
+
 describe("browser MCP dependency config", () => {
+  test("re-enters a packaged binary as Bun instead of requiring host Node", async () => {
+    await withEnv(
+      {
+        CYBER_BROWSER_MCP_COMMAND: "/opt/cyberful",
+        CYBER_BROWSER_MCP_ENTRY: "/var/cache/cyberful/browser/browser_mcp.mjs",
+        CYBER_BROWSER_BUN_REENTRY: "1",
+      },
+      () => {
+        expect(cyberBrowserMcpCommand()).toEqual([
+          "/opt/cyberful",
+          "/var/cache/cyberful/browser/browser_mcp.mjs",
+        ])
+      },
+    )
+  })
+
   test("uses an explicit command override", async () => {
     await withEnv({ CYBER_BROWSER_MCP_COMMAND: "/opt/cyber-browser" }, () => {
       expect(cyberBrowserMcpCommand()).toEqual(["/opt/cyber-browser"])
@@ -110,18 +159,17 @@ describe("browser MCP dependency config", () => {
 })
 
 describe("ZAP dependency config", () => {
-  test("is ready by default with headless images and a dynamic proxy port", async () => {
+  test("is ready by default inside the unified image with a dynamic proxy port", async () => {
     await withEnv({}, () => {
       expect(shouldEnableCyberZap()).toBe(true)
       expect(shouldChainBrowserThroughZap()).toBe(true)
-      expect(cyberZapImage()).toBe("cyberful-zap:2.17.0")
-      expect(cyberZapBridgeImage()).toBe("cyberful-zap-bridge:0.1.0")
+      expect(cyberfulOsImage()).toBe("cyberful-os:latest")
       expect(cyberZapProxyPort()).toBe(0)
       expect(cyberZapStartupTimeoutSeconds()).toBe(120)
     })
   })
 
-  test("supports explicit image and startup policy", async () => {
+  test("rejects separate images while retaining startup policy", async () => {
     await withEnv(
       {
         CYBER_ZAP_IMAGE: "registry.example/zap@sha256:test",
@@ -130,8 +178,7 @@ describe("ZAP dependency config", () => {
         CYBER_ZAP_STARTUP_TIMEOUT_SECONDS: "45",
       },
       () => {
-        expect(cyberZapImage()).toBe("registry.example/zap@sha256:test")
-        expect(cyberZapBridgeImage()).toBe("registry.example/bridge@sha256:test")
+        expect(() => validateUnifiedRuntimeEnvironment()).toThrow("CYBERFUL_OS_IMAGE")
         expect(cyberZapProxyPort()).toBe(9191)
         expect(cyberZapStartupTimeoutSeconds()).toBe(45)
       },
@@ -172,100 +219,47 @@ describe("ZAP dependency config", () => {
   })
 
   test("creates a bridge only after the engagement container exists", async () => {
-    await withEnv({}, () => expect(cyberZapBridgeCommand("/tmp/workarea")).toEqual([]))
-    await withEnv({ CYBER_ZAP_CONTAINER: "zap-run" }, () => {
-      expect(
-        cyberZapBridgeCommand("/tmp/workarea", {
-          name: "bridge-test",
-          session: "ses-test",
-          ownerPID: 123,
-        }),
-      ).toEqual([
+    await withEnv({}, () => expect(cyberZapBridgeCommand()).toEqual([]))
+    await withEnv({ CYBERFUL_OS_CONTAINER: "runtime" }, () => {
+      expect(cyberZapBridgeCommand()).toEqual([
         "docker",
-        "run",
-        "--rm",
+        "exec",
         "-i",
-        "--pull=never",
-        "--name",
-        "bridge-test",
-        "--label",
-        "org.cyberful.managed=zap-bridge",
-        "--label",
-        "org.cyberful.owner-pid=123",
-        "--label",
-        "org.cyberful.session=ses-test",
-        "--label",
-        "org.cyberful.runtime=zap-bridge",
-        "--label",
-        "org.cyberful.run-owner=unowned",
-        "--label",
-        "org.cyberful.zap-container=zap-run",
-        "--network",
-        "container:zap-run",
-        "--mount",
-        "type=bind,source=/tmp/workarea,target=/zap/wrk",
-        "--env",
+        "-e",
         "CYBER_ZAP_MCP_KEY",
-        "--env",
+        "-e",
         "CYBER_ZAP_API_KEY",
-        "--env",
+        "-e",
         "CYBER_ZAP_WORKAREA=/zap/wrk",
-        "cyberful-zap-bridge:0.1.0",
+        "runtime",
+        "node",
+        "/opt/cyberful/zap/zap_bridge.mjs",
       ])
-    })
-  })
-
-  test("mounts the engagement root even when a phase gateway runs from a nested workarea", async () => {
-    await withEnv({ CYBER_ZAP_CONTAINER: "zap-run", CYBER_ZAP_WORKAREA: "/tmp/engagement-root" }, () => {
-      expect(cyberZapBridgeCommand()).toContain("type=bind,source=/tmp/engagement-root,target=/zap/wrk")
     })
   })
 })
 
 describe("Ghidra dependency config", () => {
-  test("uses pinned headless images and a five-minute JVM startup window by default", async () => {
+  test("uses the unified image and a five-minute JVM startup window by default", async () => {
     await withEnv({}, () => {
       expect(shouldEnableCyberGhidra()).toBe(true)
-      expect(cyberGhidraImage()).toBe("cyberful-ghidra:12.1.2")
-      expect(cyberGhidraBridgeImage()).toBe("cyberful-ghidra-bridge:0.1.0")
+      expect(cyberfulOsImage()).toBe("cyberful-os:latest")
       expect(cyberGhidraStartupTimeoutSeconds()).toBe(300)
       expect(cyberGhidraBridgeCommand()).toEqual([])
     })
   })
 
   test("creates a private bridge only for a live engagement container", async () => {
-    await withEnv({ CYBER_GHIDRA_CONTAINER: "ghidra-run" }, () => {
-      expect(
-        cyberGhidraBridgeCommand({
-          name: "ghidra-bridge-test",
-          session: "ses-test",
-          ownerPID: 123,
-        }),
-      ).toEqual([
+    await withEnv({ CYBERFUL_OS_CONTAINER: "runtime" }, () => {
+      expect(cyberGhidraBridgeCommand()).toEqual([
         "docker",
-        "run",
-        "--rm",
+        "exec",
         "-i",
-        "--pull=never",
-        "--name",
-        "ghidra-bridge-test",
-        "--label",
-        "org.cyberful.managed=ghidra-bridge",
-        "--label",
-        "org.cyberful.owner-pid=123",
-        "--label",
-        "org.cyberful.session=ses-test",
-        "--label",
-        "org.cyberful.runtime=ghidra-bridge",
-        "--label",
-        "org.cyberful.run-owner=unowned",
-        "--label",
-        "org.cyberful.ghidra-container=ghidra-run",
-        "--network",
-        "container:ghidra-run",
-        "--env",
+        "-e",
         "CYBER_GHIDRA_MCP_KEY",
-        "cyberful-ghidra-bridge:0.1.0",
+        "runtime",
+        "/opt/cyberful-os-venv/bin/python",
+        "/opt/cyberful/ghidra/ghidra_bridge.py",
       ])
     })
   })

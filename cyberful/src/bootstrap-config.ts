@@ -1,5 +1,5 @@
 // ── Embedded First-Party Asset Bootstrap ─────────────────────────
-// Materializes release-bundled policy, cyberful-os, ZAP, and Ghidra assets while keeping
+// Materializes release-bundled policy and host cyberful-os launcher while keeping
 // source runs and explicit operator locations on their native filesystem paths.
 // → cyberful/builtin/cyberful.json — anchors the first-party configuration tree.
 // → cyberful/src/index.ts — evaluates this bootstrap before command handlers start.
@@ -13,8 +13,6 @@ import * as Builtin from "./builtin"
 // used directly, NOT JSON.parse'd. Undefined in dev/source mode.
 declare const CYBERFUL_EMBEDDED_CONFIG: Record<string, string> | undefined
 declare const CYBERFUL_EMBEDDED_CYBERFUL_OS: Record<string, string> | undefined
-declare const CYBERFUL_EMBEDDED_ZAP: Record<string, string> | undefined
-declare const CYBERFUL_EMBEDDED_GHIDRA: Record<string, string> | undefined
 declare const CYBERFUL_BUILD_ID: string | undefined
 
 function buildIdSlug(): string {
@@ -80,31 +78,7 @@ function materializeEmbeddedCyberfulOs(): boolean {
   return true
 }
 
-function materializeEmbeddedZap(): boolean {
-  if (typeof CYBERFUL_EMBEDDED_ZAP === "undefined") return false
-  const files = CYBERFUL_EMBEDDED_ZAP
-  if (!files || Object.keys(files).length === 0 || process.env.CYBER_ZAP_DIR) return false
-
-  const zapDir = path.join(Global.Path.cache, `zap-${buildIdSlug()}`)
-  materialize(zapDir, files)
-  process.env.CYBER_ZAP_DIR = zapDir
-  return true
-}
-
-function materializeEmbeddedGhidra(): boolean {
-  if (typeof CYBERFUL_EMBEDDED_GHIDRA === "undefined") return false
-  const files = CYBERFUL_EMBEDDED_GHIDRA
-  if (!files || Object.keys(files).length === 0 || process.env.CYBER_GHIDRA_DIR) return false
-
-  const ghidraDir = path.join(Global.Path.cache, `ghidra-${buildIdSlug()}`)
-  materialize(ghidraDir, files)
-  process.env.CYBER_GHIDRA_DIR = ghidraDir
-  return true
-}
-
 // Run config and cyberful-os bootstraps independently so a build carrying only one asset still initializes it.
 const configReady = materializeEmbeddedConfig() || activateSourceConfig()
 const cyberfulOsReady = materializeEmbeddedCyberfulOs()
-const zapReady = materializeEmbeddedZap()
-const ghidraReady = materializeEmbeddedGhidra()
-export const bootstrapConfigReady = configReady || cyberfulOsReady || zapReady || ghidraReady
+export const bootstrapConfigReady = configReady || cyberfulOsReady

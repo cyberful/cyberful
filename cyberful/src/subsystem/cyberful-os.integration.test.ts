@@ -12,7 +12,7 @@ import { SubsystemPhase } from "./phase"
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dir, "../../..")
 const CYBERFUL_OS_DIR = path.join(REPOSITORY_ROOT, "mcps", "cyberful-os")
-const IMAGE = "cyberful-os:latest"
+const IMAGE = process.env.CYBERFUL_OS_IMAGE?.trim() || "cyberful-os:latest"
 const ENVIRONMENT_KEYS = [
   "CYBERFUL_DB",
   "CYBERFUL_SUBSYSTEM_SESSION",
@@ -28,6 +28,8 @@ const ENVIRONMENT_KEYS = [
   "CYBER_BROWSER_MCP_ENABLED",
   "CYBER_ZAP_ENABLED",
   "CYBERFUL_OS_IMAGE",
+  "CYBERFUL_OS_CONTAINER",
+  "CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER",
   "CYBERFUL_OS_DOCKER_CONFIG",
 ] as const
 
@@ -93,6 +95,9 @@ test("the built image exposes every required capability through cyberful-os and 
   const container = SubsystemPhase.expertContainerName(path.resolve(workarea), "ses_cyberful_os_live")
   let client: InstanceType<typeof import("@modelcontextprotocol/sdk/client/index.js").Client> | undefined
   let gateway: Awaited<ReturnType<typeof import("./gateway/server").createGatewayServer>> | undefined
+  let engagementRuntime: Awaited<
+    ReturnType<typeof import("./engagement-runtime").SubsystemEngagementRuntime.startEngagement>
+  > | undefined
   let closeDatabase: (() => void) | undefined
   let failure: unknown
   let upstreamDiagnostics = ""
@@ -118,8 +123,18 @@ test("the built image exposes every required capability through cyberful-os and 
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js")
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
     const { createGatewayServer } = await import("./gateway/server")
+    const { SubsystemEngagementRuntime } = await import("./engagement-runtime")
     const { Database } = await import("../storage/db")
     closeDatabase = Database.close
+
+    engagementRuntime = await SubsystemEngagementRuntime.startEngagement({
+      sessionID: "ses_cyberful_os_live",
+      workflow: "pentest",
+      container,
+      workarea,
+      objective: "Verify the isolated runtime contract without target traffic.",
+    })
+    Object.assign(process.env, engagementRuntime.env)
 
     gateway = await createGatewayServer({
       upstreamDiagnosticSink: (text) => {
@@ -222,9 +237,11 @@ test("the built image exposes every required capability through cyberful-os and 
     }
     const activeClient = client
     const activeGateway = gateway
+    const activeRuntime = engagementRuntime
     await attempt(activeClient ? () => activeClient.close() : undefined)
     await attempt(activeGateway ? () => activeGateway.closeGateway() : undefined)
     await attempt(closeDatabase)
+    await attempt(activeRuntime ? () => activeRuntime.stop() : undefined)
     await attempt(() => removeContainer(container))
     await attempt(() => process.chdir(previousCwd))
     for (const [key, value] of previousEnvironment) {

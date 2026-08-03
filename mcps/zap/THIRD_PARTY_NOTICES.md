@@ -1,7 +1,7 @@
 # Third-party notices
 
-`cyberful-zap` contains OWASP ZAP 2.17.0 and the ZAP add-ons listed in the
-image label `org.cyberful.zap.addons`. ZAP and these first-party add-ons are
+The unified `cyberful-os` image contains OWASP ZAP 2.17.0 and the ZAP add-ons
+listed in the image label `org.cyberful.zap.addons`. ZAP and these first-party add-ons are
 Copyright the ZAP Development Team and contributors and are distributed under
 the Apache License 2.0.
 

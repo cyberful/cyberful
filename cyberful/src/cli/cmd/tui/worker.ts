@@ -1,6 +1,6 @@
 // ── TUI Control-Plane Worker ─────────────────────────────────────
 // Boots the worker-owned application runtime and RPC server, forwards global
-//   events, and disposes in-process phase owners, gateways, instances, and dependencies
+//   events, and disposes in-process phase owners, gateways, instances, and containers
 //   before the worker exits.
 // → cyberful/src/cli/cmd/tui/thread.ts — launches the worker and owns emergency reaping.
 // ─────────────────────────────────────────────────────────────────
@@ -19,12 +19,9 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { ensureProcessMetadata } from "@/util/cyberful-process"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
-import { DependencyStartup } from "@/dependency/startup"
 import { SubsystemCli } from "@/subsystem/cli"
 import { SubsystemContainer } from "@/subsystem/container"
-import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
-import { SubsystemGhidraRuntime } from "@/subsystem/ghidra/runtime"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
 import { decodeTuiGlobalEvent, TuiRpcContract } from "./rpc-contract"
 
@@ -68,32 +65,12 @@ SubsystemCli.onLiveChange((pids) => {
 })
 
 let expertContainers: string[] = []
-let zapContainers: string[] = []
-let ghidraContainers: string[] = []
-let dependencyContainers: string[] = []
 const emitContainers = () =>
   Rpc.emit(TuiRpcContract, "docker.live", {
-    resources: [
-      ...expertContainers.map((name) => ({ name, action: "remove" as const, kind: "expert" as const })),
-      ...zapContainers.map((name) => ({ name, action: "remove" as const, kind: "zap" as const })),
-      ...ghidraContainers.map((name) => ({ name, action: "remove" as const, kind: "ghidra" as const })),
-      ...dependencyContainers.map((name) => ({ name, action: "stop" as const, kind: "dependency" as const })),
-    ],
+    resources: expertContainers.map((name) => ({ name, action: "remove" as const, kind: "expert" as const })),
   })
 const stopExpertContainerLiveUpdates = SubsystemContainer.onLiveChange((containers) => {
   expertContainers = containers
-  emitContainers()
-})
-SubsystemZapRuntime.onLiveChange((containers) => {
-  zapContainers = containers
-  emitContainers()
-})
-SubsystemGhidraRuntime.onLiveChange((containers) => {
-  ghidraContainers = containers
-  emitContainers()
-})
-const stopDependencyLiveUpdates = DependencyStartup.onLiveChange((containers) => {
-  dependencyContainers = containers
   emitContainers()
 })
 
@@ -189,27 +166,22 @@ const handlers = {
       })
     })
 
-    // ── Runtime Cleanup Precedes The Ownership Sweep ───────────────
-    // Runtime-specific owners know about bridges, graceful shutdown, and shared
-    // dependency state that a label-only remover cannot preserve. Their bounded
-    // cleanup therefore runs concurrently first. The run-owner sweep follows as
-    // an idempotent catch-all for failures and late creations. In particular,
-    // this ordering prevents the newly labelled generic cyberful-os container
-    // from being removed while its dependency owner is still issuing `down`.
+    // ── One Registry Owns Engagement Container Cleanup ────────────
+    // EVM remains an independent optional runtime. Every security-tool service
+    // lives in the engagement cyberful-os container and has no secondary owner,
+    // so the run-owner sweep is the single idempotent cleanup path for tooling.
+    // The main process mirrors this exact container list as its emergency backstop.
     // ────────────────────────────────────────────────────────────────
     Log.Default.info("container cleanup started")
     const runtimeCleanupResults = await Promise.allSettled([
       SubsystemEvmRuntime.removeAll(),
-      SubsystemZapRuntime.removeAll(),
-      SubsystemGhidraRuntime.removeAll(),
-      DependencyStartup.stopStarted(),
     ])
     const runOwnedCleanupResult = await SubsystemContainer.removeForShutdown().then(
       () => ({ status: "fulfilled", value: undefined }) as const,
       (reason: unknown) => ({ status: "rejected", reason }) as const,
     )
     const cleanupResults = [...runtimeCleanupResults, runOwnedCleanupResult]
-    const cleanupNames = ["EVM", "ZAP", "Ghidra", "dependency", "run-owned"] as const
+    const cleanupNames = ["EVM", "run-owned"] as const
     const cleanupFailures = cleanupResults.flatMap((result, index) =>
       result.status === "rejected" ? [{ resource: cleanupNames[index], error: result.reason }] : [],
     )
@@ -221,7 +193,6 @@ const handlers = {
     }
     if (cleanupFailures.length > 0) Log.Default.warn("container cleanup incomplete", { failures: cleanupFailures.length })
     else Log.Default.info("container cleanup completed")
-    stopDependencyLiveUpdates()
     stopExpertContainerLiveUpdates()
 
     await AppRuntime.dispose().catch((error) => {

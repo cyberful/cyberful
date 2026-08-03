@@ -1,11 +1,11 @@
 // ── ZAP Runtime Boundary Tests ───────────────────────────────────
 // Verifies published proxy-port validation, local-target guidance, and disabled
-// runtime behavior without requiring an external daemon.
-// → cyberful/src/subsystem/zap/runtime.ts — owns engagement ZAP resources.
+// certificate behavior without requiring an external daemon.
+// → cyberful/src/subsystem/zap/runtime.ts — provides shared ZAP utilities.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { localTargetWarning, parsePublishedPort, startEngagement } from "./runtime"
+import { localTargetWarning, parsePublishedPort } from "./runtime"
 
 describe("ZAP engagement runtime", () => {
   test("accepts only a concrete published loopback port", () => {
@@ -22,19 +22,5 @@ describe("ZAP engagement runtime", () => {
       "http://host.docker.internal:8080",
     )
     expect(localTargetWarning("Assess https://target.example")).toBeUndefined()
-  })
-
-  test("an explicit disable skips Docker and returns a direct clean runtime", async () => {
-    const previous = process.env.CYBER_ZAP_ENABLED
-    process.env.CYBER_ZAP_ENABLED = "0"
-    try {
-      const runtime = await startEngagement({ sessionID: "disabled", workarea: "/tmp" })
-      expect(runtime.env).toEqual({})
-      expect(runtime.degraded).toBe(false)
-      await runtime.stop()
-    } finally {
-      if (previous === undefined) delete process.env.CYBER_ZAP_ENABLED
-      if (previous !== undefined) process.env.CYBER_ZAP_ENABLED = previous
-    }
   })
 })

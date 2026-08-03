@@ -5,33 +5,32 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import type { EngagementRuntime } from "./zap/runtime"
+import type { EngagementRuntime } from "./engagement-runtime"
 import { createManager } from "./ask-runtime"
-import { SubsystemPhase } from "./phase"
+
+function runtime(stop: () => Promise<void>, env: Record<string, string> = {}): EngagementRuntime {
+  return {
+    container: "cyberful-runtime",
+    env,
+    degraded: false,
+    warnings: [],
+    stop,
+  }
+}
 
 describe("Ask operational runtime lifecycle", () => {
   test("reuses one runtime, stops it after inactivity, and restarts transparently", async () => {
     let starts = 0
     let stops = 0
-    const removed: string[] = []
     const idleCleanupObserved = Promise.withResolvers<void>()
     const manager = createManager(
       {
         start: async () => {
           starts++
-          return {
-            env: {},
-            degraded: false,
-            stop: async () => {
-              stops++
-            },
-          } satisfies EngagementRuntime
-        },
-        remember: () => {},
-        reap: async () => {},
-        remove: async (container) => {
-          removed.push(container)
-          idleCleanupObserved.resolve()
+          return runtime(async () => {
+            stops++
+            idleCleanupObserved.resolve()
+          })
         },
       },
       5,
@@ -43,7 +42,6 @@ describe("Ask operational runtime lifecycle", () => {
     manager.release(input.sessionID)
     await idleCleanupObserved.promise
     expect(stops).toBe(1)
-    expect(removed).toEqual([SubsystemPhase.expertContainerName(input.workarea, input.sessionID)])
 
     await manager.acquire(input)
     expect(starts).toBe(2)
@@ -51,72 +49,45 @@ describe("Ask operational runtime lifecycle", () => {
     expect(stops).toBe(2)
   })
 
-  test("cleans up the owned container when startup fails", async () => {
-    const removed: string[] = []
+  test("propagates startup failure after the owner performs its own cleanup", async () => {
     const manager = createManager({
       start: async () => {
         throw new Error("runtime failed")
-      },
-      remember: () => {},
-      reap: async () => {},
-      remove: async (container) => {
-        removed.push(container)
       },
     })
 
     await expect(
       manager.acquire({ sessionID: "ses_failed", workarea: "/tmp/failure", objective: "Question" }),
     ).rejects.toThrow("runtime failed")
-    expect(removed).toEqual([SubsystemPhase.expertContainerName("/tmp/failure", "ses_failed")])
   })
 
-  test("runs every shutdown action and reports cleanup failures", async () => {
+  test("reports an owner cleanup failure", async () => {
     let runtimeStops = 0
-    let containerRemovals = 0
     const manager = createManager({
-      start: async () => ({
-        env: {},
-        degraded: false,
-        stop: async () => {
+      start: async () =>
+        runtime(async () => {
           runtimeStops++
-          throw new Error("ZAP cleanup failed")
-        },
-      }),
-      remember: () => {},
-      reap: async () => {},
-      remove: async () => {
-        containerRemovals++
-        throw new Error("container cleanup failed")
-      },
+          throw new Error("runtime cleanup failed")
+        }),
     })
 
     await manager.acquire({ sessionID: "ses_cleanup", workarea: "/tmp/cleanup", objective: "Question" })
     await expect(manager.stopAll()).rejects.toThrow("Ask runtime shutdown failed")
     expect(runtimeStops).toBe(1)
-    expect(containerRemovals).toBe(1)
   })
 
   test("joins cleanup already started by idle expiry during shutdown", async () => {
     const cleanupStarted = Promise.withResolvers<void>()
     const releaseCleanup = Promise.withResolvers<void>()
     let runtimeStops = 0
-    let containerRemovals = 0
     const manager = createManager(
       {
-        start: async () => ({
-          env: {},
-          degraded: false,
-          stop: async () => {
+        start: async () =>
+          runtime(async () => {
             runtimeStops++
             cleanupStarted.resolve()
             await releaseCleanup.promise
-          },
-        }),
-        remember: () => {},
-        reap: async () => {},
-        remove: async () => {
-          containerRemovals++
-        },
+          }),
       },
       1,
     )
@@ -135,7 +106,6 @@ describe("Ask operational runtime lifecycle", () => {
     releaseCleanup.resolve()
     await shutdown
     expect(runtimeStops).toBe(1)
-    expect(containerRemovals).toBe(1)
   })
 
   test("waits for idle cleanup before reacquiring the same session runtime", async () => {
@@ -147,19 +117,15 @@ describe("Ask operational runtime lifecycle", () => {
         start: async () => {
           starts++
           const generation = starts
-          return {
-            env: { generation: String(generation) },
-            degraded: false,
-            stop: async () => {
+          return runtime(
+            async () => {
               if (generation !== 1) return
               cleanupStarted.resolve()
               await releaseCleanup.promise
             },
-          }
+            { generation: String(generation) },
+          )
         },
-        remember: () => {},
-        reap: async () => {},
-        remove: async () => {},
       },
       1,
     )

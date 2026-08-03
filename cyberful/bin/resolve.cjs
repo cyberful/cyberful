@@ -95,7 +95,7 @@ function target(
   if (platform === "linux" && musl) return
   if (architecture === "arm64" && platform !== "darwin") return
   return {
-    packageName: `@cyberful/cli-${platform}-${architecture}`,
+    packageName: `@cyberful-org/cyberful-${platform}-${architecture}`,
     binaryName: `cyberful${architecture === "x64" && !avx2 ? "-baseline" : ""}${platform === "windows" ? ".exe" : ""}`,
   }
 }
@@ -120,7 +120,7 @@ function resolveBinary(startDirectory) {
 function missingBinaryMessage() {
   const selected = target()
   if (!selected) return `Cyberful does not publish a binary for ${os.platform()} ${os.arch()}.`
-  return `The Cyberful binary ${selected.binaryName} was not found in ${selected.packageName}. Reinstall @cyberful/cli with a supported npm client.`
+  return `The Cyberful binary ${selected.binaryName} was not found in ${selected.packageName}. Reinstall cyberful with a supported npm client.`
 }
 
 module.exports = {

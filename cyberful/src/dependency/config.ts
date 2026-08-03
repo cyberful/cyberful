@@ -1,14 +1,15 @@
 // ── Runtime Dependency Policy ────────────────────────────────────
 // Resolves validated environment policy, executable locations, container
 // commands, and immutable runtime identity for Cyberful's external services.
-// → cyberful/src/dependency/startup.ts — starts dependencies from this canonical policy.
+// → cyberful/src/subsystem/engagement-runtime.ts — starts the selected unified image.
 // → cyberful/src/subsystem/phase-runner.ts — consumes the resolved phase policy.
 // @docs/getting-started/requirements.md
 // ─────────────────────────────────────────────────────────────────
 
 import fs from "node:fs"
 import path from "node:path"
-import { dockerOwnershipLabels } from "@/util/container-ownership"
+
+declare const CYBERFUL_RUNTIME_IMAGE: string | undefined
 
 const SIBLING_CYBERFUL_OS_DIR = "../../../cyberful-os"
 const SIBLING_MCPS_DIR = "../../../mcps"
@@ -62,10 +63,6 @@ export function cyberfulOsDir() {
   )
 }
 
-export function shouldStartCyberfulOs() {
-  return Boolean(cyberfulOsDir()) && !disabled("CYBERFUL_OS_AUTOSTART")
-}
-
 export function shouldEnableCyberfulOsMcp() {
   return Boolean(cyberfulOsDir()) && !disabled("CYBERFUL_OS_MCP_ENABLED")
 }
@@ -84,6 +81,29 @@ function cyberfulOsBinaryPath(root: string, name: string) {
 export function cyberfulOsMcpCommand() {
   const configured = envValue("CYBERFUL_OS_MCP_COMMAND") ?? envValue("CYBERFUL_OS_MCP")
   if (configured) return [configured]
+
+  const engagementContainer = envValue("CYBERFUL_OS_CONTAINER")
+  const requireEngagementContainer = envValue("CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER")
+  if (engagementContainer && requireEngagementContainer && !disabled("CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER")) {
+    return [
+      "docker",
+      "exec",
+      "-i",
+      "-w",
+      "/workspace",
+      "-e",
+      "CYBERFUL_OS_IN_CONTAINER=1",
+      "-e",
+      "CYBERFUL_OS_MOUNT=/workspace",
+      "-e",
+      "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT=/workspace",
+      "-e",
+      "CYBERFUL_OS_HTTP_PROXY",
+      engagementContainer,
+      "/opt/cyberful-os-venv/bin/python",
+      "/opt/cyberful-os/cyberful_os_mcp.py",
+    ]
+  }
 
   const root = cyberfulOsDir()
   if (root) return [cyberfulOsBinaryPath(root, "cyberful-os")]
@@ -109,26 +129,17 @@ export function shouldEnableCyberBrowserMcp() {
 
 export function cyberBrowserMcpCommand() {
   const configured = envValue("CYBER_BROWSER_MCP_COMMAND") ?? envValue("CYBER_BROWSER_MCP")
-  if (configured) return [configured]
+  if (configured) {
+    const entry = envValue("CYBER_BROWSER_MCP_ENTRY")
+    return entry ? [configured, entry] : [configured]
+  }
   const dir = cyberBrowserMcpDir()
   if (dir) return [path.join(dir, "bin/cyber-browser")]
   return ["cyber-browser"]
 }
 
-export function cyberZapDir() {
-  return envPath("CYBER_ZAP_DIR") ?? existingDir(path.resolve(import.meta.dirname, SIBLING_MCPS_DIR, "zap"))
-}
-
 export function shouldEnableCyberZap() {
   return !disabled("CYBER_ZAP_ENABLED")
-}
-
-export function cyberZapImage() {
-  return envValue("CYBER_ZAP_IMAGE") ?? "cyberful-zap:2.17.0"
-}
-
-export function cyberZapBridgeImage() {
-  return envValue("CYBER_ZAP_BRIDGE_IMAGE") ?? "cyberful-zap-bridge:0.1.0"
 }
 
 export function cyberZapProxyPort() {
@@ -139,95 +150,32 @@ export function cyberZapStartupTimeoutSeconds() {
   return envInt("CYBER_ZAP_STARTUP_TIMEOUT_SECONDS", 120, { minimum: 1, maximum: 3_600 })
 }
 
-export function cyberZapBuildCommand() {
-  const dir = cyberZapDir()
-  return dir ? ["docker", "build", "--tag", cyberZapImage(), "--file", path.join(dir, "Dockerfile"), dir] : []
-}
-
-export function cyberZapBridgeBuildCommand() {
-  const dir = cyberZapDir()
-  return dir
-    ? ["docker", "build", "--tag", cyberZapBridgeImage(), "--file", path.join(dir, "Dockerfile.bridge"), dir]
-    : []
-}
-
-export function cyberGhidraDir() {
-  return envPath("CYBER_GHIDRA_DIR") ?? existingDir(path.resolve(import.meta.dirname, SIBLING_MCPS_DIR, "ghidra"))
-}
-
 export function shouldEnableCyberGhidra() {
   return !disabled("CYBER_GHIDRA_ENABLED")
-}
-
-export function cyberGhidraImage() {
-  return envValue("CYBER_GHIDRA_IMAGE") ?? "cyberful-ghidra:12.1.2"
-}
-
-export function cyberGhidraBridgeImage() {
-  return envValue("CYBER_GHIDRA_BRIDGE_IMAGE") ?? "cyberful-ghidra-bridge:0.1.0"
 }
 
 export function cyberGhidraStartupTimeoutSeconds() {
   return envInt("CYBER_GHIDRA_STARTUP_TIMEOUT_SECONDS", 300, { minimum: 30, maximum: 3_600 })
 }
 
-export function cyberGhidraBuildCommand() {
-  const dir = cyberGhidraDir()
-  return dir ? ["docker", "build", "--tag", cyberGhidraImage(), "--file", path.join(dir, "Dockerfile"), dir] : []
-}
-
-export function cyberGhidraBridgeBuildCommand() {
-  const dir = cyberGhidraDir()
-  return dir
-    ? ["docker", "build", "--tag", cyberGhidraBridgeImage(), "--file", path.join(dir, "Dockerfile.bridge"), dir]
-    : []
-}
-
-// ── Ghidra Bridges Share Only The Runtime Loopback ───────────────
-// The persistent service has no published port and no target network. A fresh
-// bridge joins its network namespace for one phase, receives only the opaque MCP
-// key, and disappears when the gateway closes. It mounts neither the protected
-// project store nor the engagement workarea, so protocol forwarding cannot
-// become a second filesystem authority.
+// ── Protocol Bridges Execute Inside The Engagement Runtime ──────
+// ZAP and Ghidra listeners remain loopback-only inside the unified container.
+// A phase gateway uses docker exec for a fresh stdio process, forwarding only
+// the service credential selected by its upstream environment. Closing stdio
+// reaps that process without creating another image, network namespace, mount,
+// label, or independently owned Docker resource.
 // ─────────────────────────────────────────────────────────────────
-export function cyberGhidraBridgeContainerName() {
-  const container = envValue("CYBER_GHIDRA_CONTAINER")
-  if (!container) return
-  return `cyberful-ghidra-bridge-${dockerIdentifier(envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)}-${process.pid}`
-}
-
-export function cyberGhidraBridgeCommand(options?: {
-  container?: string
-  name?: string
-  session?: string
-  ownerPID?: number
-}) {
-  const container = options?.container ?? envValue("CYBER_GHIDRA_CONTAINER")
+export function cyberGhidraBridgeCommand(container = envValue("CYBERFUL_OS_CONTAINER")) {
   if (!container) return []
-  const session = dockerIdentifier(options?.session ?? envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)
-  const name = options?.name ?? `cyberful-ghidra-bridge-${session}-${options?.ownerPID ?? process.pid}`
-  const ownershipLabels = dockerOwnershipLabels({
-    managed: "ghidra-bridge",
-    runtime: "ghidra-bridge",
-    session,
-    ownerPID: options?.ownerPID,
-  })
   return [
     "docker",
-    "run",
-    "--rm",
+    "exec",
     "-i",
-    "--pull=never",
-    "--name",
-    name,
-    ...ownershipLabels.flatMap((label) => ["--label", label]),
-    "--label",
-    `org.cyberful.ghidra-container=${container}`,
-    "--network",
-    `container:${container}`,
-    "--env",
+    "-e",
     "CYBER_GHIDRA_MCP_KEY",
-    cyberGhidraBridgeImage(),
+    container,
+    "/opt/cyberful-os-venv/bin/python",
+    "/opt/cyberful/ghidra/ghidra_bridge.py",
   ]
 }
 
@@ -247,60 +195,21 @@ export function cyberBrowserZapChainEnv():
   return { CYBER_BROWSER_PROXY: proxy, CYBER_BROWSER_PROXY_CA_SPKI: spki }
 }
 
-// ── ZAP Bridges Preserve The Session Trust Boundary ──────────────
-// Each phase receives an ephemeral bridge in the session ZAP container's
-// network namespace, leaving the MCP port reachable only through loopback.
-// The bridge mounts the authorized engagement workarea for large artifacts and
-// receives secret names through the environment rather than command arguments.
-// Labels bind cleanup to the owning process and session without broadening the
-// target or filesystem scope granted to the phase.
-// ─────────────────────────────────────────────────────────────────
-function dockerIdentifier(value: string) {
-  return value.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(-36)
-}
-
-export function cyberZapBridgeContainerName() {
-  const container = envValue("CYBER_ZAP_CONTAINER")
-  if (!container) return
-  return `cyberful-zap-bridge-${dockerIdentifier(envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)}-${process.pid}`
-}
-
-export function cyberZapBridgeCommand(
-  workarea?: string,
-  options?: { container?: string; name?: string; session?: string; ownerPID?: number },
-) {
-  const container = options?.container ?? envValue("CYBER_ZAP_CONTAINER")
+export function cyberZapBridgeCommand(container = envValue("CYBERFUL_OS_CONTAINER")) {
   if (!container) return []
-  const session = dockerIdentifier(options?.session ?? envValue("CYBERFUL_SUBSYSTEM_SESSION") ?? container)
-  const name = options?.name ?? `cyberful-zap-bridge-${session}-${options?.ownerPID ?? process.pid}`
-  const ownershipLabels = dockerOwnershipLabels({
-    managed: "zap-bridge",
-    runtime: "zap-bridge",
-    session,
-    ownerPID: options?.ownerPID,
-  })
   return [
     "docker",
-    "run",
-    "--rm",
+    "exec",
     "-i",
-    "--pull=never",
-    "--name",
-    name,
-    ...ownershipLabels.flatMap((label) => ["--label", label]),
-    "--label",
-    `org.cyberful.zap-container=${container}`,
-    "--network",
-    `container:${container}`,
-    "--mount",
-    `type=bind,source=${path.resolve(workarea ?? envPath("CYBER_ZAP_WORKAREA") ?? process.cwd())},target=/zap/wrk`,
-    "--env",
+    "-e",
     "CYBER_ZAP_MCP_KEY",
-    "--env",
+    "-e",
     "CYBER_ZAP_API_KEY",
-    "--env",
+    "-e",
     "CYBER_ZAP_WORKAREA=/zap/wrk",
-    cyberZapBridgeImage(),
+    container,
+    "node",
+    "/opt/cyberful/zap/zap_bridge.mjs",
   ]
 }
 
@@ -325,7 +234,29 @@ export function cyberfulOsBuildCommand() {
 }
 
 export function cyberfulOsImage() {
-  return envValue("CYBERFUL_OS_IMAGE") ?? "cyberful-os:latest"
+  const embedded = typeof CYBERFUL_RUNTIME_IMAGE === "string" ? CYBERFUL_RUNTIME_IMAGE.trim() : ""
+  return envValue("CYBERFUL_OS_IMAGE") ?? (embedded || "cyberful-os:latest")
+}
+
+const DEPRECATED_RUNTIME_ENV = [
+  "CYBERFUL_OS_AUTOSTART",
+  "CYBER_ZAP_DIR",
+  "CYBER_ZAP_IMAGE",
+  "CYBER_ZAP_BRIDGE_IMAGE",
+  "CYBER_ZAP_CONTAINER",
+  "CYBER_GHIDRA_DIR",
+  "CYBER_GHIDRA_IMAGE",
+  "CYBER_GHIDRA_BRIDGE_IMAGE",
+  "CYBER_GHIDRA_CONTAINER",
+] as const
+
+export function validateUnifiedRuntimeEnvironment() {
+  const configured = DEPRECATED_RUNTIME_ENV.filter((name) => process.env[name]?.trim())
+  if (configured.length === 0) return
+  throw new Error(
+    `Separate runtime configuration is no longer supported (${configured.join(", ")}). ` +
+      "Use CYBERFUL_OS_IMAGE to override the unified cyberful-os image.",
+  )
 }
 
 // ── Pi Is The Immutable Agent Subsystem ──────────────────────────

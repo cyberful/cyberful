@@ -1,18 +1,18 @@
 // ── Live ZAP Engagement Contract Tests ──────────────────────────
-// Exercises real headless ZAP and bridge containers, proxy capture, scoped MCP
-// operations, authentication, shared state, and deterministic cleanup.
-// → cyberful/src/subsystem/zap/runtime.ts — owns the tested engagement lifecycle.
+// Exercises real headless ZAP inside the unified engagement container, proxy
+// capture, scoped MCP operations, authentication, and deterministic cleanup.
+// → cyberful/src/subsystem/engagement-runtime.ts — owns the tested lifecycle.
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
-import { mkdtemp, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { cyberZapBridgeImage } from "@/dependency/config"
+import { cyberGhidraBridgeCommand, cyberZapBridgeCommand } from "@/dependency/config"
 import { run } from "@/util/process"
-import { startEngagement, type EngagementRuntime } from "./runtime"
+import { startEngagement as startUnifiedEngagement, type EngagementRuntime } from "../engagement-runtime"
 import { SubsystemGateway } from "../gateway/config"
 import { EngagementPolicyStore } from "../gateway/engagement-policy"
 
@@ -38,26 +38,11 @@ function bridge(
   mcpKey = runtime.env.CYBER_ZAP_MCP_KEY,
   stderr: "pipe" | "ignore" = "pipe",
 ) {
-  const command = [
-    "run",
-    "--rm",
-    "-i",
-    "--pull=never",
-    "--network",
-    `container:${runtime.env.CYBER_ZAP_CONTAINER}`,
-    "--mount",
-    `type=bind,source=${workarea},target=/zap/wrk`,
-    "--env",
-    "CYBER_ZAP_MCP_KEY",
-    "--env",
-    "CYBER_ZAP_API_KEY",
-    "--env",
-    "CYBER_ZAP_WORKAREA=/zap/wrk",
-    cyberZapBridgeImage(),
-  ]
+  const [command, ...args] = cyberZapBridgeCommand(runtime.container)
+  if (!command) throw new Error("unified ZAP bridge command is unavailable")
   const transport = new StdioClientTransport({
-    command: "docker",
-    args: command,
+    command,
+    args,
     stderr,
     env: {
       PATH: process.env.PATH ?? "",
@@ -66,6 +51,14 @@ function bridge(
     },
   })
   return stderr === "pipe" ? pipeDiagnostics(transport) : transport
+}
+
+async function startEngagement(input: { sessionID: string; workarea: string }) {
+  return startUnifiedEngagement({
+    ...input,
+    workflow: "pentest",
+    container: `cyberful-runtime-${input.sessionID.replace(/[^a-zA-Z0-9_.-]/g, "-")}-${process.pid}`,
+  })
 }
 
 async function connect(runtime: EngagementRuntime) {
@@ -309,15 +302,6 @@ async function dockerOutput(...args: string[]) {
   return result.stdout.toString("utf8").trim()
 }
 
-async function waitForDockerFilter(filters: string[], present: boolean, deadline = Date.now() + 15_000) {
-  while (true) {
-    const output = await dockerOutput("ps", "--all", "--quiet", ...filters.flatMap((filter) => ["--filter", filter]))
-    if (Boolean(output) === present) return output
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for managed bridge present=${present}`)
-    await Bun.sleep(250)
-  }
-}
-
 beforeAll(async () => {
   const stderrWrite = spyOn(process.stderr, "write").mockImplementation((chunk) => {
     captureDiagnostic(String(chunk))
@@ -412,6 +396,41 @@ describe("real headless ZAP containers", () => {
       const body = await response.text()
       expect(body).toContain("Cyberful engagement global HTTP budget")
       expect(body).toContain("4")
+
+      await dockerOutput("exec", runtime.container, "pkill", "-TERM", "-f", "org.zaproxy.zap.ZAP")
+      await Bun.sleep(1_500)
+      const configured = SubsystemGateway.gatewayMcpServer("ses_rate_limit_failure", {
+        proxy: true,
+        phase: "recon",
+        env: {
+          ...runtime.env,
+          CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
+          CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: policyWorkarea,
+          CYBERFUL_OS_MCP_ENABLED: "0",
+          CYBER_BROWSER_MCP_ENABLED: "0",
+          CYBER_ZAP_ENABLED: "1",
+        },
+      })
+      const client = new Client({ name: "cyberful-required-zap-failure", version: "0" })
+      await expect(
+        client.connect(
+          pipeDiagnostics(
+            new StdioClientTransport({
+              command: configured.command,
+              args: [...configured.args],
+              stderr: "pipe",
+              env: {
+                PATH: process.env.PATH ?? "",
+                HOME: os.homedir(),
+                ...configured.env,
+                ...configured.privateEnv,
+              },
+            }),
+          ),
+        ),
+      ).rejects.toBeDefined()
+      await client.close().catch(() => undefined)
+      expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", runtime.container)).toBe("true")
     } finally {
       await runtime?.stop()
       await rm(policyWorkarea, { recursive: true, force: true })
@@ -423,11 +442,26 @@ describe("real headless ZAP containers", () => {
     runtimes.push(runtime)
     expect(runtime.degraded).toBe(false)
 
-    const published = await dockerOutput("port", runtime.env.CYBER_ZAP_CONTAINER, "8080/tcp")
+    const published = await dockerOutput("port", runtime.container, "8080/tcp")
     expect(published).toMatch(/^127\.0\.0\.1:\d+$/)
     expect(
-      await dockerOutput("inspect", "--format", "{{json .NetworkSettings.Ports}}", runtime.env.CYBER_ZAP_CONTAINER),
+      await dockerOutput("inspect", "--format", "{{json .NetworkSettings.Ports}}", runtime.container),
     ).not.toContain("8282")
+    expect(await dockerOutput("exec", runtime.container, "pgrep", "-x", "Xvfb")).toMatch(/^\d+$/)
+    await dockerOutput(
+      "exec",
+      "--env",
+      "HOME=/tmp",
+      runtime.container,
+      "timeout",
+      "30",
+      "firefox-esr",
+      "--headless",
+      "--screenshot",
+      "/tmp/cyberful-firefox-headless.png",
+      "about:blank",
+    )
+    await dockerOutput("exec", runtime.container, "test", "-s", "/tmp/cyberful-firefox-headless.png")
 
     const authenticated = await fetch(
       `${runtime.env.CYBER_ZAP_PROXY_URL}/JSON/core/view/version/?apikey=${encodeURIComponent(runtime.env.CYBER_ZAP_API_KEY)}`,
@@ -591,7 +625,7 @@ describe("real headless ZAP containers", () => {
     expect(optionalArray(shared.messages, "zap_history_search.messages").length).toBeGreaterThan(0)
     expect(optionalArray(separate.messages, "zap_history_search.messages")).toHaveLength(0)
 
-    const firstContainer = first.env.CYBER_ZAP_CONTAINER
+    const firstContainer = first.container
     await releaseRuntimes(first, second)
     const inspect = await run(["docker", "inspect", firstContainer], {
       abort: AbortSignal.timeout(30_000),
@@ -601,6 +635,89 @@ describe("real headless ZAP containers", () => {
     })
     expect(inspect.code).not.toBe(0)
   }, 240_000)
+
+  test("connects ZAP and Ghidra bridges concurrently inside the one engagement container", async () => {
+    const combinedRoot = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-combined-runtime-integration-")),
+    )
+    const combinedWorkarea = path.join(combinedRoot, "workarea")
+    const ghidraStore = path.join(combinedRoot, "ghidra-store")
+    await Promise.all([mkdir(combinedWorkarea, { mode: 0o700 }), mkdir(ghidraStore, { mode: 0o700 })])
+    let runtime: EngagementRuntime | undefined
+    const combinedClients: Client[] = []
+    try {
+      runtime = await startUnifiedEngagement({
+        sessionID: "integration-combined-bridges",
+        workflow: "pentest",
+        container: `cyberful-runtime-integration-combined-${process.pid}`,
+        workarea: combinedWorkarea,
+        ghidraStore,
+      })
+      runtimes.push(runtime)
+      expect(runtime.degraded).toBe(false)
+
+      const zap = new Client({ name: "cyberful-zap-combined", version: "0" })
+      const [ghidraCommand, ...ghidraArgs] = cyberGhidraBridgeCommand(runtime.container)
+      if (!ghidraCommand) throw new Error("unified Ghidra bridge command is unavailable")
+      const ghidra = new Client({ name: "cyberful-ghidra-combined", version: "0" })
+      await Promise.all([
+        zap.connect(bridge(runtime)),
+        ghidra.connect(
+          pipeDiagnostics(
+            new StdioClientTransport({
+              command: ghidraCommand,
+              args: ghidraArgs,
+              stderr: "pipe",
+              env: {
+                PATH: process.env.PATH ?? "",
+                CYBER_GHIDRA_MCP_KEY: runtime.env.CYBER_GHIDRA_MCP_KEY,
+              },
+            }),
+          ),
+        ),
+      ])
+      combinedClients.push(zap, ghidra)
+      const [zapTools, ghidraTools] = await Promise.all([zap.listTools(), ghidra.listTools()])
+      expect(zapTools.tools.some((tool) => tool.name === "zap_version")).toBe(true)
+      expect(ghidraTools.tools.some((tool) => tool.name === "ghidra_decompile")).toBe(true)
+
+      expect(
+        await dockerOutput(
+          "inspect",
+          "--format",
+          '{{index .Config.Labels "org.cyberful.managed"}} {{index .Config.Labels "org.cyberful.runtime"}}',
+          runtime.container,
+        ),
+      ).toBe("engagement cyberful-os")
+      const capEff = BigInt(
+        `0x${await dockerOutput("exec", runtime.container, "sh", "-lc", "awk '/CapEff/ {print $2}' /proc/self/status")}`,
+      )
+      expect(capEff & (1n << 12n)).not.toBe(0n)
+      expect(capEff & (1n << 19n)).not.toBe(0n)
+      await dockerOutput("exec", runtime.container, "touch", "/workspace/.cyberful-runtime-write-test")
+      expect((await stat(path.join(combinedWorkarea, ".cyberful-runtime-write-test"))).isFile()).toBe(true)
+      const expectedIdentity = `${process.getuid?.() || 1000}:${process.getgid?.() || 1000}`
+      expect(await dockerOutput("exec", runtime.container, "stat", "-c", "%u:%g", "/ghidra/store/home")).toBe(
+        expectedIdentity,
+      )
+      expect(await dockerOutput("exec", runtime.container, "stat", "-c", "%u:%g", "/var/lib/cyberful/zap")).toBe(
+        expectedIdentity,
+      )
+      expect(
+        await dockerOutput("ps", "--all", "--quiet", "--filter", "label=org.cyberful.managed=zap-bridge"),
+      ).toBe("")
+    } finally {
+      await cleanupOperations("combined bridge cleanup failed", [
+        ...combinedClients.map((client) => () => client.close()),
+        ...(runtime ? [runtime.stop] : []),
+        () => rm(combinedRoot, { recursive: true, force: true }),
+      ])
+      if (runtime) {
+        const index = runtimes.indexOf(runtime)
+        if (index >= 0) runtimes.splice(index, 1)
+      }
+    }
+  }, 420_000)
 
   test("passively and actively scan a local test target and write a report", async () => {
     const runtime = await startEngagement({ sessionID: "integration-scan", workarea })
@@ -706,7 +823,7 @@ describe("real headless ZAP containers", () => {
     await verifyBrowserHttps("chromium")
   }, 180_000)
 
-  test("removes the named bridge when its real phase gateway closes", async () => {
+  test("uses docker exec without creating a bridge container", async () => {
     upstreamDiagnostics = ""
     const runtime = await startEngagement({ sessionID: "integration-gateway-lifecycle", workarea })
     runtimes.push(runtime)
@@ -723,7 +840,6 @@ describe("real headless ZAP containers", () => {
       },
     })
     const client = new Client({ name: "cyberful-gateway-lifecycle", version: "0" })
-    const filters = ["label=org.cyberful.managed=zap-bridge", "label=org.cyberful.session=ses_integration_gateway"]
     let gatewayFailure: unknown
     try {
       const transport = pipeDiagnostics(
@@ -741,7 +857,7 @@ describe("real headless ZAP containers", () => {
       )
       await client.connect(transport)
       expect((await client.listTools()).tools.some((tool) => tool.name === "zap_version")).toBe(true)
-      await waitForDockerFilter(filters, true)
+      expect(await dockerOutput("ps", "--all", "--quiet", "--filter", "label=org.cyberful.managed=zap-bridge")).toBe("")
     } catch (error) {
       gatewayFailure = error
     }
@@ -756,39 +872,57 @@ describe("real headless ZAP containers", () => {
       const diagnostics = upstreamDiagnostics.trim() || "no gateway diagnostics were emitted"
       throw new Error(`phase gateway lifecycle failed:\n${diagnostics}`, { cause: gatewayFailure })
     }
-    expect(await waitForDockerFilter(filters, false)).toBe("")
+    expect(await dockerOutput("ps", "--all", "--quiet", "--filter", "label=org.cyberful.managed=zap-bridge")).toBe("")
     await releaseRuntimes(runtime)
   }, 180_000)
 
-  test("marks a failed ZAP startup degraded and keeps the direct browser warning visible", async () => {
-    const previous = process.env.CYBER_ZAP_IMAGE
-    process.env.CYBER_ZAP_IMAGE = `cyberful-zap-missing:${Date.now()}`
-    const runtime = await startEngagement({ sessionID: "integration-fallback", workarea }).finally(() => {
-      if (previous === undefined) delete process.env.CYBER_ZAP_IMAGE
-      if (previous !== undefined) process.env.CYBER_ZAP_IMAGE = previous
+  test("keeps the container alive and does not restart ZAP after service death", async () => {
+    upstreamDiagnostics = ""
+    const runtime = await startEngagement({ sessionID: "integration-zap-death", workarea })
+    runtimes.push(runtime)
+    await dockerOutput("exec", runtime.container, "pkill", "-TERM", "-f", "org.zaproxy.zap.ZAP")
+    await Bun.sleep(1_500)
+    expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", runtime.container)).toBe("true")
+    const status = JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json"))
+    expect(status.status).toBe("degraded")
+    expect(status.services.zap.status).toBe("exited")
+    await Bun.sleep(1_500)
+    const laterStatus = JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json"))
+    expect(laterStatus.services.zap.pid).toBe(status.services.zap.pid)
+    const deadBridge = new Client({ name: "cyberful-zap-dead-service", version: "0" })
+    await expect(deadBridge.connect(bridge(runtime))).rejects.toBeDefined()
+    await deadBridge.close().catch(() => undefined)
+    expect(upstreamDiagnostics).toMatch(/(?:refused|closed|connect|unavailable|exited)/i)
+    const configured = SubsystemGateway.gatewayMcpServer("ses_optional_zap_failure", {
+      proxy: true,
+      phase: "recon",
+      env: {
+        ...runtime.env,
+        CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
+        CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: workarea,
+        CYBERFUL_OS_MCP_ENABLED: "0",
+        CYBER_BROWSER_MCP_ENABLED: "0",
+        CYBER_ZAP_ENABLED: "1",
+      },
     })
-    expect(runtime.degraded).toBe(true)
-    const warning = runtime.warning
-    if (!warning) throw new Error("degraded ZAP runtime returned no browser warning")
-    expect(warning).toContain("direct fallback")
-    const browserClient = await connectBrowser({
-      profile: "browser-fallback-profile",
-      warning: runtime.env.CYBER_BROWSER_PROXY_WARNING,
-    })
-    const navigation = await browserClient.callTool({
-      name: "browser_navigate",
-      arguments: { url: `http://127.0.0.1:${target.port}/direct-fallback` },
-    })
-    expect("isError" in navigation && navigation.isError).not.toBe(true)
-    const browserStatus = resultRecord(
-      await browserClient.callTool({ name: "browser_status", arguments: {} }),
-      "browser_status",
+    const degradedGateway = new Client({ name: "cyberful-optional-zap-failure", version: "0" })
+    await degradedGateway.connect(
+      pipeDiagnostics(
+        new StdioClientTransport({
+          command: configured.command,
+          args: [...configured.args],
+          stderr: "pipe",
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: os.homedir(),
+            ...configured.env,
+            ...configured.privateEnv,
+          },
+        }),
+      ),
     )
-    expect(recordValue(browserStatus.proxy, "browser_status.proxy")).toEqual({
-      configured: false,
-      mode: "direct",
-      warning,
-    })
+    expect((await degradedGateway.listTools()).tools.some((tool) => tool.name.startsWith("zap_"))).toBe(false)
+    await degradedGateway.close()
     await releaseRuntimes(runtime)
-  }, 60_000)
+  }, 180_000)
 })

@@ -2,8 +2,7 @@
 // Journals user input and runs or steers the Pi engagement selected
 //   for a session through completion.
 // → cyberful/src/subsystem/orchestrator.ts — advances workflow phases.
-// → cyberful/src/subsystem/zap/runtime.ts — owns authorized runtime-test resources.
-// → cyberful/src/subsystem/ghidra/runtime.ts — owns persistent binary-analysis resources.
+// → cyberful/src/subsystem/engagement-runtime.ts — owns the unified tooling container.
 // → cyberful/src/subsystem/container.ts — proves disposable session resources are absent.
 // → cyberful/src/util/bounded-output.ts — bounds retained user shell output.
 // ─────────────────────────────────────────────────────────────────
@@ -44,9 +43,8 @@ import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact
 import { SubsystemUsage } from "@/subsystem/usage"
 import { RuntimeDiagnosticRecorder } from "@/subsystem/runtime-diagnostics"
 import { SubsystemVerdict } from "@/subsystem/verdict"
-import { SubsystemZapRuntime } from "@/subsystem/zap/runtime"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
-import { SubsystemGhidraRuntime } from "@/subsystem/ghidra/runtime"
+import { SubsystemEngagementRuntime } from "@/subsystem/engagement-runtime"
 import { HostGhidraStore } from "@/ghidra-store"
 import { HostSourceStore } from "@/source-store"
 import { Question } from "@/question"
@@ -85,7 +83,7 @@ import { readHypothesisRegistryView } from "@/subsystem/gateway/hypothesis-regis
 import { createCodeGraphService } from "@/code-graph/service"
 import { findingHandoffWarning, findingWorkflow } from "./finding-handoff"
 import type { CommandInput, LoopInput, PromptInput, ShellInput } from "./prompt-input"
-import { carryEngagementStatus, steerHeadFields, zapRuntimeLifecycle } from "./prompt-policy"
+import { carryEngagementStatus, steerHeadFields } from "./prompt-policy"
 import { ATTACHMENT_TEXT_LIMIT, attachmentText, objectiveFromMessage, textMime } from "./prompt-content"
 import { createShellOutputTail, renderShellOutput } from "./shell-output"
 
@@ -946,8 +944,6 @@ export const layer = Layer.effect(
       const objective = objectiveFromMessage(userMessage)
       const assistant = yield* createAssistant({ user, phase: startPhase, ctx })
       const container = SubsystemPhase.expertContainerName(workareaCwd, session.id)
-      SubsystemContainer.remember(container)
-      yield* Effect.promise(() => SubsystemContainer.reap(container))
 
       const bridge = yield* EffectBridge.make()
       const registryWorkflow = findingWorkflow(workflow)
@@ -1247,59 +1243,57 @@ export const layer = Layer.effect(
           }
         })
       }
+      // ── One Host Owner Fixes Runtime Policy Before Any Phase ───────
+      // The engagement container starts once after durable stores exist and before
+      // the first private gateway. Its network mode, mounts, service credentials,
+      // and proxy publication therefore cannot drift during handoff. Optional
+      // service failures degrade the shared runtime, while core image or container
+      // failures abort before an autonomous phase can observe partial capability.
+      // ─────────────────────────────────────────────────────────────────
+      const engagementRuntime = yield* Effect.promise(async (signal) => {
+        const diagnostics = new RuntimeDiagnosticRecorder({
+          workarea: workareaCwd,
+          sessionID: session.id,
+          workflow,
+          phase: startPhase,
+          attempt: 1,
+        })
+        try {
+          return await SubsystemEngagementRuntime.startEngagement({
+            sessionID: session.id,
+            workflow,
+            container,
+            workarea: workareaCwd,
+            ...(ghidraStore ? { ghidraStore: ghidraStore.root } : {}),
+            objective,
+            signal,
+            onDiagnostic: (diagnostic) =>
+              diagnostics.record({
+                component: diagnostic.component,
+                profile: "engagement",
+                stage: "startup",
+                severity: diagnostic.severity,
+                errorClass: diagnostic.errorClass,
+                message: diagnostic.message,
+              }),
+          })
+        } finally {
+          await diagnostics.close().catch(() => undefined)
+        }
+      })
       const engagementEvm = SubsystemPhase.hasCapability(workflow, "evm-lab")
-        ? yield* Effect.promise(() =>
-            SubsystemEvmRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd }),
-          )
-        : { env: {}, stop: () => Promise.resolve() }
-      const engagementGhidra = ghidraStore
-        ? yield* Effect.promise((signal) =>
-            SubsystemGhidraRuntime.startEngagement({
-              sessionID: session.id,
-              workarea: workareaCwd,
-              store: ghidraStore.root,
-              signal,
-            }),
-          )
-        : { env: {}, degraded: false, stop: () => Promise.resolve() }
-      // Live-target workflows deliberately retain one engagement-wide proxy/history. Code Audit stays offline.
-      const engagementZap =
-        zapRuntimeLifecycle(workflow) === "engagement"
-          ? yield* Effect.promise(async (signal) => {
-              const diagnostics = new RuntimeDiagnosticRecorder({
-                workarea: workareaCwd,
-                sessionID: session.id,
-                workflow,
-                phase: startPhase,
-                attempt: 1,
+        ? yield* Effect.promise(async () => {
+            try {
+              return await SubsystemEvmRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd })
+            } catch (error) {
+              await engagementRuntime.stop().catch((cleanupError) => {
+                throw new AggregateError([error, cleanupError], "EVM startup and engagement runtime cleanup failed")
               })
-              try {
-                return await SubsystemZapRuntime.startEngagement({
-                  sessionID: session.id,
-                  workarea: workareaCwd,
-                  objective,
-                  signal,
-                  onDiagnostic: (diagnostic) =>
-                    diagnostics.record({
-                      component: "zap",
-                      profile: "engagement",
-                      stage: "startup",
-                      severity: diagnostic.severity,
-                      errorClass: diagnostic.errorClass,
-                      message: diagnostic.message,
-                    }),
-                })
-              } finally {
-                await diagnostics.close().catch(() => undefined)
-              }
-            })
-          : { env: {}, degraded: false, stop: () => Promise.resolve() }
-      const runtimeWarnings = [
-        engagementZap.degraded
-          ? "ZAP startup degraded; sanitized details are available at raw/operations/runtime-diagnostics.jsonl."
-          : engagementZap.warning,
-        engagementGhidra.warning,
-      ].filter((warning): warning is string => Boolean(warning))
+              throw error
+            }
+          })
+        : { env: {}, stop: () => Promise.resolve() }
+      const runtimeWarnings = engagementRuntime.warnings
       const engagementObjective =
         runtimeWarnings.length > 0
           ? `${objective}\n\n## Runtime warning\n${runtimeWarnings.join("\n")}\nContinue within scope using the remaining tools.`
@@ -1317,12 +1311,10 @@ export const layer = Layer.effect(
           settingsDirectory: ctx.directory,
           path: { cwd: ctx.directory, root: ctx.worktree },
           timeoutMs: SubsystemPhase.DEFAULT_PHASE_BUDGET_MINUTES * 60_000,
-          degraded: EngagementStatus.isDegraded(user.metadata) || engagementZap.degraded || engagementGhidra.degraded,
+          degraded: EngagementStatus.isDegraded(user.metadata) || engagementRuntime.degraded,
           env: {
-            ...engagementZap.env,
+            ...engagementRuntime.env,
             ...engagementEvm.env,
-            ...engagementGhidra.env,
-            CYBERFUL_OS_CONTAINER: container,
             ...(codeGraphLedgerKey ? { CYBERFUL_CODE_GRAPH_LEDGER_KEY: codeGraphLedgerKey } : {}),
             ...(sourceStore
               ? {
@@ -1343,16 +1335,11 @@ export const layer = Layer.effect(
           Effect.promise((signal) => findingStore.finishRun({ id: session.id, status: findingRunStatus }, signal)),
         ),
         Effect.ensuring(Effect.promise(engagementEvm.stop)),
-        Effect.ensuring(Effect.promise(engagementGhidra.stop)),
-        Effect.ensuring(Effect.promise(engagementZap.stop)),
+        Effect.ensuring(Effect.promise(engagementRuntime.stop)),
         Effect.ensuring(
           Effect.promise(async () => {
             try {
-              const cleanup = await SubsystemContainer.removeSession(session.id, [
-                container,
-                `${container}-offline`,
-                `${container}-online`,
-              ])
+              const cleanup = await SubsystemContainer.removeSession(session.id, [container])
               await SubsystemRunStateArtifact.recordTerminalCleanup({
                 workarea: workareaCwd,
                 sessionID: session.id,
@@ -1523,7 +1510,7 @@ export const layer = Layer.effect(
         history,
         "## Current request",
         objective,
-        runtime.warning ? `## Runtime warning\n${runtime.warning}` : undefined,
+        runtime.warnings.length > 0 ? `## Runtime warning\n${runtime.warnings.join("\n")}` : undefined,
       ]
         .filter((value): value is string => Boolean(value))
         .join("\n\n")

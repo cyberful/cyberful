@@ -8,7 +8,6 @@ import { File } from "../file"
 import { Snapshot } from "../snapshot"
 import * as Vcs from "./vcs"
 import { Bus } from "../bus"
-import { Event } from "@/event"
 import { InstanceState } from "@/effect/instance-state"
 import { InstanceDisposalRegistry } from "@/effect/instance-registry"
 import { FileWatcher } from "@/file/watcher"
@@ -16,7 +15,6 @@ import { Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Service } from "./bootstrap-service"
 import { Reference } from "@/reference/reference"
-import { DependencyStartup } from "@/dependency/startup"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -32,7 +30,6 @@ export const layer = Layer.effect(
     // instance construction free of a bootstrap/store module cycle.
     // ───────────────────────────────────────────────────────────────────────────
     const config = yield* Config.Service
-    const events = yield* Event.Service
     const file = yield* File.Service
     const fileWatcher = yield* FileWatcher.Service
     const format = yield* Format.Service
@@ -45,7 +42,6 @@ export const layer = Layer.effect(
       yield* Effect.logInfo("bootstrapping").pipe(Effect.annotateLogs("directory", ctx.directory))
       // everything depends on config so eager load it for nice traces
       yield* config.get()
-      yield* DependencyStartup.runCyberfulOs.pipe(Effect.provideService(Event.Service, events))
       // Each service owns its scoped background work; bootstrap only waits for materialization.
       yield* Effect.forEach(
         [reference, format, file, fileWatcher, vcs, snapshot],
@@ -61,7 +57,6 @@ export const layer = Layer.effect(
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(
   Layer.provide([
     Bus.layer,
-    Event.defaultLayer,
     Config.defaultLayer,
     File.defaultLayer,
     FileWatcher.defaultLayer,

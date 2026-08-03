@@ -12,8 +12,9 @@ import { metaManifest, packNpmPackage, platformManifest, stageMetaPackage, stage
 
 const temporaryRoots: string[] = []
 
-function writeReleaseNotices(repositoryRoot: string) {
+function writePackageDocuments(repositoryRoot: string) {
   for (const file of [
+    "README.md",
     "THIRD_PARTY_NOTICES.md",
     "cyberful/src/tool/assets/fonts/EB_GARAMOND_OFL.txt",
     "cyberful/src/tool/assets/fonts/UBUNTU_FONT_LICENCE.txt",
@@ -31,24 +32,24 @@ afterEach(() => {
 describe("npm package manifests", () => {
   test("pins every optional platform package to the release version", () => {
     expect(metaManifest("1.2.3")).toMatchObject({
-      name: "@cyberful/cli",
+      name: "cyberful",
       version: "1.2.3",
       license: "AGPL-3.0-only",
       homepage: "https://github.com/cyberful/cyberful#readme",
       bugs: { url: "https://github.com/cyberful/cyberful/issues" },
       engines: { node: ">=18" },
       optionalDependencies: {
-        "@cyberful/cli-darwin-arm64": "1.2.3",
-        "@cyberful/cli-darwin-x64": "1.2.3",
-        "@cyberful/cli-linux-x64": "1.2.3",
-        "@cyberful/cli-windows-x64": "1.2.3",
+        "@cyberful-org/cyberful-darwin-arm64": "1.2.3",
+        "@cyberful-org/cyberful-darwin-x64": "1.2.3",
+        "@cyberful-org/cyberful-linux-x64": "1.2.3",
+        "@cyberful-org/cyberful-windows-x64": "1.2.3",
       },
     })
   })
 
   test("declares npm platform constraints", () => {
     expect(platformManifest("linux", "x64", "1.2.3")).toMatchObject({
-      name: "@cyberful/cli-linux-x64",
+      name: "@cyberful-org/cyberful-linux-x64",
       version: "1.2.3",
       license: "AGPL-3.0-only",
       homepage: "https://github.com/cyberful/cyberful#readme",
@@ -67,13 +68,13 @@ describe("npm package staging", () => {
     temporaryRoots.push(repositoryRoot)
     fs.mkdirSync(path.join(repositoryRoot, "cyberful/bin"), { recursive: true })
     fs.writeFileSync(path.join(repositoryRoot, "LICENSE"), "AGPL-3.0-only")
-    writeReleaseNotices(repositoryRoot)
+    writePackageDocuments(repositoryRoot)
     fs.writeFileSync(path.join(repositoryRoot, "cyberful/bin/cyberful"), "launcher")
     fs.writeFileSync(path.join(repositoryRoot, "cyberful/bin/resolve.cjs"), "resolver")
     const packageRoot = path.join(repositoryRoot, "package")
     stageMetaPackage({ repositoryRoot, packageRoot, version: "1.2.3" })
     expect(fs.readdirSync(packageRoot).sort()).toEqual(
-      ["LICENSE", "THIRD_PARTY_NOTICES.md", "bin", "licenses", "package.json"].sort(),
+      ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "bin", "licenses", "package.json"].sort(),
     )
     expect(fs.readdirSync(path.join(packageRoot, "bin")).sort()).toEqual(["cyberful", "resolve.cjs"])
     const artifact = packNpmPackage(packageRoot, path.join(repositoryRoot, "packed"))
@@ -87,6 +88,7 @@ describe("npm package staging", () => {
     expect(new TextDecoder().decode(listing.stdout).trim().split("\n").sort()).toEqual(
       [
         "package/LICENSE",
+        "package/README.md",
         "package/THIRD_PARTY_NOTICES.md",
         "package/bin/cyberful",
         "package/bin/resolve.cjs",
@@ -109,11 +111,11 @@ describe("npm package staging", () => {
       fs.mkdirSync(path.dirname(path.join(repositoryRoot, file)), { recursive: true })
       fs.writeFileSync(path.join(repositoryRoot, file), file)
     }
-    writeReleaseNotices(repositoryRoot)
+    writePackageDocuments(repositoryRoot)
     const packageRoot = path.join(repositoryRoot, "package")
     stagePlatformPackage({ repositoryRoot, packageRoot, platform: "linux", architecture: "x64", version: "1.2.3" })
     expect(fs.readdirSync(packageRoot).sort()).toEqual(
-      ["LICENSE", "THIRD_PARTY_NOTICES.md", "bin", "licenses", "package.json"].sort(),
+      ["LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "bin", "licenses", "package.json"].sort(),
     )
     expect(fs.readdirSync(path.join(packageRoot, "bin")).sort()).toEqual(["cyberful", "cyberful-baseline"])
   })

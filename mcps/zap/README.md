@@ -1,8 +1,9 @@
 # Cyberful ZAP
 
-Cyberful runs one headless OWASP ZAP container per engagement and one short-lived bridge container for
-each phase gateway. The bridge shares the ZAP container's network namespace, so the official MCP server
-remains bound to loopback and is never published on the host.
+These sources are copied into the unified cyberful-os image. Cyberful runs one
+tooling container per engagement and one short-lived `docker exec` bridge
+process per eligible phase gateway. The ZAP service and bridge communicate on
+container loopback; only ZAP port 8080 may be published on host loopback.
 
 The runtime image is pinned to the official ZAP 2.17.0 stable OCI digest. The MCP add-on is pinned to
 0.2.0 and verified with the SHA-256 published in the ZAP add-on catalog. Runtime
@@ -33,9 +34,10 @@ reads reuse one on-disk value instead of emitting timestamp-named duplicates.
 The generic `core/view/message` and `core/view/messages` operations remain
 available when an agent needs the native ZAP response.
 
-For local development:
+For local development, build and test the unified image from the repository
+root:
 
 ```sh
-docker build -t cyberful-zap:2.17.0 -f Dockerfile .
-docker build -t cyberful-zap-bridge:0.1.0 -f Dockerfile.bridge .
+make runtime-build
+make test-zap
 ```

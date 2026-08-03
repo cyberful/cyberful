@@ -11,11 +11,11 @@ import path from "node:path"
 import semver from "semver"
 
 const expectedPackages = [
-  "@cyberful/cli-darwin-arm64",
-  "@cyberful/cli-darwin-x64",
-  "@cyberful/cli-linux-x64",
-  "@cyberful/cli-windows-x64",
-  "@cyberful/cli",
+  "@cyberful-org/cyberful-darwin-arm64",
+  "@cyberful-org/cyberful-darwin-x64",
+  "@cyberful-org/cyberful-linux-x64",
+  "@cyberful-org/cyberful-windows-x64",
+  "cyberful",
 ]
 
 export async function npmIntegrity(file: string) {
@@ -139,8 +139,8 @@ if (import.meta.main) {
     }
 
     const publish = Bun.spawnSync(
-      ["npm", "publish", entry.file, "--access", "public", "--tag", "latest", "--provenance", "--ignore-scripts"],
-      { stdout: "inherit", stderr: "inherit", timeout: 300_000 },
+      ["npm", "publish", entry.file, "--access", "public", "--tag", "latest", "--ignore-scripts"],
+      { stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: 300_000 },
     )
     if (publish.exitCode !== 0) throw new Error(`npm publish failed for ${name}@${version}`)
   }

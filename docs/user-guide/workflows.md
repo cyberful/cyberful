@@ -231,11 +231,11 @@ ambiguity as a blocker.
 
 Brief also writes `raw/policy/engagement.json`, a non-secret projection of
 profile readiness, authorized HTTP hosts, and the aggregate HTTP RPS limit.
-Each fresh ZAP runtime installs one shared Network rule before traffic. If a
+The engagement ZAP runtime installs one shared Network rule before traffic. If a
 numeric limit exists, ZAP startup and browser proxying fail closed.
-The gateway commits this file only after the Brief's current ZAP runtime accepts
-the policy, and Brief handoff is refused until that succeeds in the current
-phase. A host-side installation failure is reported once as a non-retryable
+The gateway commits this file only after the engagement ZAP runtime accepts
+the policy, and Brief handoff is refused until that succeeds. A host-side
+installation failure is reported once as a non-retryable
 technical blocker; it is not turned into a generic approval or a request to
 restore ZAP.
 
@@ -408,8 +408,8 @@ Dependency bootstrap and project execution are intentionally split:
 3. Package-manager lifecycle scripts and audit/telemetry paths are disabled
    where supported. The bootstrap container is destroyed.
 4. The host materializes the sealed source into the resulting lab tree.
-5. The phase-owned cyberful-os container runs offline and uses loopback for the
-   project and attack tools.
+5. The engagement-owned cyberful-os container runs offline and uses loopback
+   for the project and attack tools.
 6. The gateway removes the mutable lab tree at phase exit. Durable, redacted
    evidence remains under `raw/code-audit/attack/`,
    `raw/code-audit/verify/`, and their lab records.

@@ -1,5 +1,8 @@
 # Cyberful
 
+[![CI](https://github.com/cyberful/cyberful/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberful/cyberful/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful)
+
 Cyberful turns your AI coding agent into an ethical hacker for authorized
 penetration testing, deep code auditing, and bug bounty hunting.
 
@@ -27,10 +30,15 @@ authenticate the default OpenAI Codex provider through Cyberful, then launch
 the terminal:
 
 ```sh
-npm install --global @cyberful/cli
+npm install --global cyberful
 cyberful auth login
 cyberful
 ```
+
+The first run pulls one native `amd64` or `arm64` tooling image. The download
+can exceed 6 GB; keep at least 40 GB of disk space free. Packaged releases need
+Docker as their only tooling prerequisite—ZAP, Ghidra, Python, Node, Firefox,
+and Kali tools are inside the image.
 
 For a source checkout:
 
@@ -224,10 +232,11 @@ Attack and Verify automatically prepare a local lab when feasible:
    and privilege limits and is destroyed when bootstrap ends.
 3. Only after networked bootstrap exits does the host materialize the sealed
    source snapshot under the workarea.
-4. Project build, startup, tests, and attacks run offline inside the phase-owned
-   cyberful-os container, against loopback services only.
-5. The phase container and mutable lab tree are destroyed at phase exit;
-   retained evidence stays under `raw/code-audit/`.
+4. Project build, startup, tests, and attacks run offline inside the
+   engagement-owned cyberful-os container, against loopback services only.
+5. Phase-owned mutable lab trees are destroyed when their gateways close; the
+   one offline tooling container is removed at engagement completion. Retained
+   evidence stays under `raw/code-audit/`.
 
 Automatic adapters cover common Node.js, Python, Go, Rust, PHP Composer, Ruby
 Bundler, and Maven manifests when the matching runtime exists in cyberful-os.
@@ -305,10 +314,11 @@ and structured evidence from the validated Code Graph ledger.
   gateway lifecycle, Code Graph, handoffs, reporting, and cleanup.
 - `cyberful/builtin/` — embedded first-party personas, budgets, instructions,
   skills, and MCP policy.
-- `mcps/cyberful-os/` — isolated offensive and analysis toolchain.
+- `mcps/cyberful-os/` — unified multi-architecture image, supervisor, and
+  offensive/analysis toolchain.
 - `mcps/browser/` — dedicated Chromium automation.
-- `mcps/zap/` — headless OWASP ZAP runtime and bridge for live-target workflows.
-- `mcps/ghidra/` — persistent headless PyGhidra runtime and disposable phase bridge.
+- `mcps/zap/` — ZAP service and in-container bridge sources bundled into cyberful-os.
+- `mcps/ghidra/` — native Ghidra/PyGhidra service and in-container bridge sources.
 
 Pi Agent is the only runtime. Provider and model routing are host-owned and
 configured in `settings.yaml`; OpenAI Codex, Z.AI Coding Plan, and Kimi For
@@ -320,11 +330,10 @@ Cyberful emits no outbound telemetry, metrics, or analytics.
 
 ## Requirements
 
-- Bun 1.3.14 or compatible for source builds
-- one provider configured in `settings.yaml` and its required credentials
-- Docker with Compose
-- Python 3.10+ for cyberful-os host control
-- Node.js 18+ for the npm launcher and browser MCP
+Packaged releases require Docker and one provider configured in
+`settings.yaml`. Source development additionally requires Bun 1.3.14, Node.js
+24 with npm, and Python 3.10+. Keep 40 GB free to run the downloaded image and
+100 GB free when building it locally. Docker Compose is not required.
 
 See the [requirements guide](docs/getting-started/requirements.md) for macOS,
 Linux, and Windows setup.
@@ -337,7 +346,9 @@ From the repository root:
 make deps        # install workspace and MCP dependencies
 make typecheck   # run source policy checks and TypeScript checks
 make test        # run Bun/Python tests and live container contracts
-make test-ghidra # real binary import, decompilation, call graph, annotation, and restart
+make runtime-build # build the unified image for the native host architecture
+make test-runtime  # exercise cyberful-os, ZAP, Ghidra, bridges, and persistence
+make test-ghidra # focused native import, decompilation, annotation, and recreation
 make test-all    # include loopback, ZAP, Ghidra, and Pi/provider contracts
 make build       # build standalone binaries
 make install     # build and install for the current system

@@ -1,6 +1,7 @@
-.PHONY: all help deps install typecheck test test-bun test-browser test-python test-cyberful-os test-network test-zap test-ghidra test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
+.PHONY: all help deps install typecheck test test-bun test-browser test-python runtime-build test-runtime test-cyberful-os test-network test-zap test-ghidra test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
 
 PYTHON ?= python3
+CYBERFUL_OS_IMAGE ?= cyberful-os:latest
 
 all: typecheck test test-network build
 
@@ -12,6 +13,8 @@ help:
 	@echo "  make test-bun     Run the isolated application and browser MCP Bun tests"
 	@echo "  make test-browser Run the browser MCP boundary and ownership tests"
 	@echo "  make test-python  Run the cyberful-os Python unit tests"
+	@echo "  make runtime-build Build the native unified cyberful-os image"
+	@echo "  make test-runtime Attest the existing unified image, ZAP, and Ghidra end to end"
 	@echo "  make test-cyberful-os Build and verify the real cyberful-os image, MCP, and gateway"
 	@echo "  make test-network Run loopback/socket integration tests"
 	@echo "  make test-zap     Run the real Docker ZAP, bridge, browser, scan, and cleanup suite"
@@ -57,24 +60,34 @@ test-browser:
 test-python:
 	cd mcps/cyberful-os && $(PYTHON) -m unittest discover -s tests -v
 
-test-cyberful-os:
-	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make test-cyberful-os; start Docker and retry." >&2; exit 1)
+runtime-build:
+	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make runtime-build; start Docker and retry." >&2; exit 1)
 	@mcps/cyberful-os/bin/cyberful-os-build --quiet
+
+test-runtime:
+	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make test-runtime; start Docker and retry." >&2; exit 1)
+	@docker image inspect '$(CYBERFUL_OS_IMAGE)' >/dev/null || (echo "Runtime image $(CYBERFUL_OS_IMAGE) is missing; run make runtime-build first." >&2; exit 1)
+	CYBERFUL_OS_IMAGE='$(CYBERFUL_OS_IMAGE)' bun run --cwd cyberful test:cyberful-os
+	CYBERFUL_OS_IMAGE='$(CYBERFUL_OS_IMAGE)' bun run --cwd cyberful test:zap
+	$(PYTHON) -m unittest discover -s mcps/ghidra/tests -p 'test_*.py' -v
+	CYBERFUL_OS_IMAGE='$(CYBERFUL_OS_IMAGE)' $(PYTHON) mcps/ghidra/tests/integration_test.py -v
+
+test-cyberful-os: runtime-build
 	bun run --cwd cyberful test:cyberful-os
 
 test-network:
 	bun run --cwd cyberful test:network
 
 test-zap:
-	bun run --cwd cyberful test:zap
+	@docker image inspect '$(CYBERFUL_OS_IMAGE)' >/dev/null || (echo "Runtime image $(CYBERFUL_OS_IMAGE) is missing; run make runtime-build first." >&2; exit 1)
+	CYBERFUL_OS_IMAGE='$(CYBERFUL_OS_IMAGE)' bun run --cwd cyberful test:zap
 
 test-ghidra:
 	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make test-ghidra; start Docker and retry." >&2; exit 1)
-	docker build --tag cyberful-ghidra:12.1.2 --file mcps/ghidra/Dockerfile mcps/ghidra
-	docker build --tag cyberful-ghidra-bridge:0.1.0 --file mcps/ghidra/Dockerfile.bridge mcps/ghidra
+	@docker image inspect '$(CYBERFUL_OS_IMAGE)' >/dev/null || (echo "Runtime image $(CYBERFUL_OS_IMAGE) is missing; run make runtime-build first." >&2; exit 1)
 	bun --cwd cyberful test --isolate src/ghidra-store.test.ts src/dependency/config.test.ts src/subsystem/upstream.test.ts src/subsystem/gateway/phase-policy.test.ts src/subsystem/gateway/ghidra-evidence.test.ts
 	$(PYTHON) -m unittest discover -s mcps/ghidra/tests -p 'test_*.py' -v
-	$(PYTHON) mcps/ghidra/tests/integration_test.py -v
+	CYBERFUL_OS_IMAGE='$(CYBERFUL_OS_IMAGE)' $(PYTHON) mcps/ghidra/tests/integration_test.py -v
 
 test-all: test test-network test-zap test-ghidra
 

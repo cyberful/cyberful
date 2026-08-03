@@ -160,6 +160,29 @@ class ContainerExecWorkdirTest(unittest.TestCase):
             f"cd {shlex.quote(cyberful_os_mcp.mount_dir())} 2>/dev/null || true; echo hi",
         )
 
+    def test_in_container_mode_executes_locally_without_docker(self):
+        captured = {}
+
+        def fake_run_process(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return _dummy_result()
+
+        with mock.patch.dict(
+            os.environ,
+            {cyberful_os_mcp.IN_CONTAINER_EXECUTION_ENV: "1"},
+            clear=False,
+        ), mock.patch.object(cyberful_os_mcp, "run_process", fake_run_process), mock.patch.object(
+            cyberful_os_mcp,
+            "ensure_container",
+            side_effect=AssertionError("in-container execution cannot call Docker"),
+        ):
+            result = cyberful_os_mcp.run_argv_in_container(["nmap", "--version"], cwd="/workspace")
+
+        self.assertEqual(captured["argv"][-2:], ["nmap", "--version"])
+        self.assertNotIn("docker", captured["argv"])
+        self.assertEqual(result.target, "cyberful-os")
+
 
 # ── A Stale /workspace Mount Must Recreate, Not Reuse ─────────────────
 # A container that outlives a previous run can have its /workspace bind mount detach (the host
@@ -209,6 +232,50 @@ class EnsureContainerStaleMountTest(unittest.TestCase):
         self.assertNotIn("rm", kinds)  # did NOT drop it
         self.assertNotIn("run", kinds)  # did NOT recreate it
         self.assertTrue(cyberful_os_mcp._mount_verified)
+
+    def test_engagement_mode_only_attests_the_received_container(self):
+        calls = []
+
+        def responder(argv, **_options):
+            calls.append(list(argv))
+            if argv[0] == "container" and "org.cyberful.managed" not in argv[-2]:
+                return _completed(0, stdout=b"IMGID true")
+            if argv[0] == "container":
+                return _completed(0, stdout=b"engagement cyberful-os")
+            if argv[0] == "exec":
+                return _completed(0)
+            raise AssertionError(f"engagement mode attempted a lifecycle mutation: {argv}")
+
+        with mock.patch.dict(
+            os.environ,
+            {cyberful_os_mcp.REQUIRE_ENGAGEMENT_CONTAINER_ENV: "1"},
+            clear=False,
+        ), mock.patch.object(cyberful_os_mcp, "docker", responder):
+            cyberful_os_mcp.ensure_container(60)
+
+        kinds = [call[0] for call in calls]
+        self.assertNotIn("run", kinds)
+        self.assertNotIn("rm", kinds)
+        self.assertEqual(kinds, ["container", "container", "exec"])
+
+    def test_engagement_mode_rejects_an_unowned_container_without_replacing_it(self):
+        calls = []
+
+        def responder(argv, **_options):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                return _completed(0, stdout=b"IMGID true")
+            return _completed(0, stdout=b"project cyberful-os")
+
+        with mock.patch.dict(
+            os.environ,
+            {cyberful_os_mcp.REQUIRE_ENGAGEMENT_CONTAINER_ENV: "1"},
+            clear=False,
+        ), mock.patch.object(cyberful_os_mcp, "docker", responder):
+            with self.assertRaisesRegex(RuntimeError, "not the engagement-owned"):
+                cyberful_os_mcp.ensure_container(60)
+
+        self.assertEqual([call[0] for call in calls], ["container", "container"])
 
     def test_recreates_when_mount_is_stale(self):
         breakout = b"unable to start container process: current working directory is outside of " \

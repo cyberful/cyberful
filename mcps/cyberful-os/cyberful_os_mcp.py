@@ -77,6 +77,8 @@ CURRENT_PROGRESS_TOKEN: Any | None = None
 LAST_PROGRESS_AT = 0.0
 PROGRESS_SEQUENCE = 0
 STRICT_PREFLIGHT_ENV = "CYBERFUL_OS_STRICT_PREFLIGHT"
+REQUIRE_ENGAGEMENT_CONTAINER_ENV = "CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER"
+IN_CONTAINER_EXECUTION_ENV = "CYBERFUL_OS_IN_CONTAINER"
 WORKAREA_ROOT_ENV = "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
 RUN_ID_ENV = "CYBERFUL_RUN_ID"
 OWNER_LABEL = "org.cyberful.run-owner"
@@ -367,11 +369,12 @@ def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     return next_env
 
 
-# ── Create The cyberful-os Runtime Lazily And Reuse It ───────────────
-# Tool listing and initialization should not start Docker. The first real tool
-# call inspects the named container, starts or safely recreates it when needed,
-# and verifies a reused workspace mount once. Later exec calls can then rely on
-# one live mounted runtime without introducing import-time side effects.
+# ── Engagement Ownership Disables Lazy Container Creation ──────────
+# Standalone MCP use retains lazy creation because no host lifecycle exists.
+# Cyberful engagements instead set an explicit ownership marker before the first
+# tool call; that mode may only attest the already-running named container and
+# its workarea mount. It never starts, replaces, or adopts Docker state, leaving
+# creation, network policy, and cleanup with the single engagement host owner.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -431,6 +434,28 @@ def ensure_container(timeout_seconds: int) -> None:
     global _mount_verified
     name = container_name()
     inspect = docker(["container", "inspect", "--format", "{{.Image}} {{.State.Running}}", name], timeout_seconds=30)
+    if env_bool(REQUIRE_ENGAGEMENT_CONTAINER_ENV, False):
+        if inspect.returncode != 0:
+            raise RuntimeError(f"engagement-owned cyberful-os container is missing: {name}")
+        _, _, running = inspect.stdout.decode("utf-8", errors="replace").strip().partition(" ")
+        if running != "true":
+            raise RuntimeError(f"engagement-owned cyberful-os container is not running: {name}")
+        ownership = docker(
+            [
+                "container",
+                "inspect",
+                "--format",
+                '{{ index .Config.Labels "org.cyberful.managed" }} {{ index .Config.Labels "org.cyberful.runtime" }}',
+                name,
+            ],
+            timeout_seconds=30,
+        )
+        if ownership.returncode != 0 or ownership.stdout.decode("utf-8", errors="replace").strip() != "engagement cyberful-os":
+            raise RuntimeError(f"container is not the engagement-owned cyberful-os runtime: {name}")
+        if not (_mount_verified or container_mount_healthy(name)):
+            raise RuntimeError(f"engagement-owned cyberful-os workspace mount is unavailable: {name}")
+        _mount_verified = True
+        return
     if inspect.returncode == 0:
         container_image, _, running = inspect.stdout.decode("utf-8", errors="replace").strip().partition(" ")
         # ── Reuse Requires The Current Container Image ─────────────────
@@ -471,8 +496,6 @@ def ensure_container(timeout_seconds: int) -> None:
         *docker_extra_args(),
         *container_owner_args(),
         image_name(),
-        "sleep",
-        "infinity",
     ]
     run = docker(args, timeout_seconds=max(60, timeout_seconds))
     if run.returncode != 0:
@@ -710,9 +733,19 @@ def run_in_container(
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     extra_env: dict[str, str] | None = None,
 ) -> CommandResult:
-    """Run a shell command inside the cyberful-os container via docker exec."""
-    ensure_container(timeout_seconds)
+    """Run a shell command in cyberful-os, directly when the MCP itself is containerized."""
     workdir = cwd or mount_dir()
+    if env_bool(IN_CONTAINER_EXECUTION_ENV, False):
+        result = run_process(
+            ["/bin/bash", "-lc", _cd_prelude(workdir) + command],
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            extra_env=inherited_container_env(extra_env),
+        )
+        result.target = "cyberful-os"
+        result.command = command
+        return result
+    ensure_container(timeout_seconds)
     exec_args = container_exec_args(
         ["/bin/bash", "-lc", _cd_prelude(workdir) + command], extra_env
     )
@@ -737,9 +770,20 @@ def run_argv_in_container(
     extra_env: dict[str, str] | None = None,
     stdin: bytes | None = None,
 ) -> CommandResult:
-    """Run an argv command directly inside the cyberful-os container via docker exec."""
-    ensure_container(timeout_seconds)
+    """Run argv in cyberful-os, directly when the MCP itself is containerized."""
     workdir = cwd or mount_dir()
+    if env_bool(IN_CONTAINER_EXECUTION_ENV, False):
+        result = run_process(
+            ["/bin/sh", "-c", _cd_prelude(workdir) + 'exec "$@"', "sh", *argv],
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            extra_env=inherited_container_env(extra_env),
+            stdin=stdin,
+        )
+        result.target = "cyberful-os"
+        result.command = shlex.join(argv)
+        return result
+    ensure_container(timeout_seconds)
     exec_args = container_exec_args(
         ["/bin/sh", "-c", _cd_prelude(workdir) + 'exec "$@"', "sh", *argv], extra_env
     )
@@ -2481,6 +2525,11 @@ register_tool(
 def capabilities_text() -> str:
     registry = _exposed_tool_registry()
     tool_names = "\n".join(f"- `{name}`: {desc}" for name, desc, _, _ in registry)
+    lifecycle = (
+        "provided and owned by the Cyberful engagement host"
+        if env_bool(REQUIRE_ENGAGEMENT_CONTAINER_ENV, False)
+        else "created on first tool call, then reused"
+    )
     return f"""# {SERVER_NAME} capabilities
 
 This MCP server exposes {len(registry)} tools:
@@ -2492,7 +2541,7 @@ All tools run inside Docker container `{container_name()}` using image `{image_n
 Container defaults:
 - workspace mount: `{project_root()}` -> `{mount_dir()}`
 - default cwd: `{mount_dir()}`
-- lifecycle: created on first tool call, then reused.
+- lifecycle: {lifecycle}.
 - capabilities: `--cap-add=NET_ADMIN --cap-add=SYS_PTRACE`
 
 Environment variables:
