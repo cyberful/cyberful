@@ -1,7 +1,7 @@
 // ── Adaptive Bug Bounty Novelty Contract ───────────────────────
 // Enables a qualitative contrarian pass without quotas, counters, or numeric
 //   handoff gates that could reward administrative work over target research.
-// → cyberful/src/subsystem/gateway/novelty-ledger.ts — records evidence and synthesis.
+// → cyberful/src/subsystem/gateway/hypothesis-registry.ts — records and enforces phase synthesis.
 // @docs/user-guide/workflows.md
 // ─────────────────────────────────────────────────────────────────
 

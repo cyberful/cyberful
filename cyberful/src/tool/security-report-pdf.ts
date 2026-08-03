@@ -10,6 +10,7 @@ import path from "node:path"
 import PDFDocument from "pdfkit"
 import { marked, type Tokens } from "marked"
 import { all, createLowlight } from "lowlight"
+import { contains as isContained } from "@/util/filesystem"
 
 // ── Bundled Fonts Make Rendering Reproducible ───────────────────
 // Bun resolves these assets from source and from the compiled application bundle.
@@ -219,11 +220,6 @@ function resolveReportPath(workareaCwd: string, relativePath: string, field: str
     throw new Error(`${field} must stay inside the workarea`)
   }
   return resolved
-}
-
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
 async function requireContainedSource(workareaCwd: string, sourcePath: string) {
@@ -570,11 +566,7 @@ function layoutToc(document: PDFKit.PDFDocument, entries: readonly { text: strin
   return pages
 }
 
-function fillToc(
-  document: PDFKit.PDFDocument,
-  entries: { text: string; page: number }[],
-  layout: TocPosition[][],
-) {
+function fillToc(document: PDFKit.PDFDocument, entries: { text: string; page: number }[], layout: TocPosition[][]) {
   const contentWidth = page.width - page.margin * 2
   const pageNumWidth = 34
   layout.forEach((positions, pageIndex) => {
@@ -595,13 +587,7 @@ function fillToc(
         align: "right",
         lineBreak: false,
       })
-      document.goTo(
-        page.margin,
-        position.y - TOC_ROW_GAP / 2,
-        contentWidth,
-        position.height,
-        `toc-${position.index}`,
-      )
+      document.goTo(page.margin, position.y - TOC_ROW_GAP / 2, contentWidth, position.height, `toc-${position.index}`)
     })
   })
 }

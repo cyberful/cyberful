@@ -10,19 +10,10 @@ import { constants } from "node:fs"
 import { chmod, link, lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises"
 import { createHash, randomBytes } from "node:crypto"
 import { Global } from "@/global"
+import { nodeErrorCode } from "@/util/error"
+import { contains as isContained } from "@/util/filesystem"
 
 const KEY_PATTERN = /^[a-f0-9]{64}$/
-
-function nodeErrorCode(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined
-}
-
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
-}
 
 async function ensurePlainChild(root: string, name: string) {
   const candidate = path.join(root, name)

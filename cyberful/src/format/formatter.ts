@@ -31,25 +31,24 @@ function hasDependency(manifest: unknown, section: string, dependency: string) {
   return typeof asRecord(asRecord(manifest)[section])[dependency] === "string"
 }
 
-export const gofmt: Info = {
-  name: "gofmt",
-  extensions: [".go"],
-  async enabled() {
-    const match = which("gofmt")
-    if (!match) return false
-    return [match, "-w", "$FILE"]
-  },
+function executableFormatter(name: string, extensions: string[], args: string[], executable = name): Info {
+  return {
+    name,
+    extensions,
+    async enabled() {
+      const match = which(executable)
+      return match ? [match, ...args] : false
+    },
+  }
 }
 
-export const mix: Info = {
-  name: "mix",
-  extensions: [".ex", ".exs", ".eex", ".heex", ".leex", ".neex", ".sface"],
-  async enabled() {
-    const match = which("mix")
-    if (!match) return false
-    return [match, "format", "$FILE"]
-  },
-}
+export const gofmt = executableFormatter("gofmt", [".go"], ["-w", "$FILE"])
+
+export const mix = executableFormatter(
+  "mix",
+  [".ex", ".exs", ".eex", ".heex", ".leex", ".neex", ".sface"],
+  ["format", "$FILE"],
+)
 
 export const prettier: Info = {
   name: "prettier",
@@ -166,15 +165,7 @@ export const biome: Info = {
   },
 }
 
-export const zig: Info = {
-  name: "zig",
-  extensions: [".zig", ".zon"],
-  async enabled() {
-    const match = which("zig")
-    if (!match) return false
-    return [match, "fmt", "$FILE"]
-  },
-}
+export const zig = executableFormatter("zig", [".zig", ".zon"], ["fmt", "$FILE"])
 
 export const clang: Info = {
   name: "clang-format",
@@ -189,15 +180,7 @@ export const clang: Info = {
   },
 }
 
-export const ktlint: Info = {
-  name: "ktlint",
-  extensions: [".kt", ".kts"],
-  async enabled() {
-    const match = which("ktlint")
-    if (!match) return false
-    return [match, "-F", "$FILE"]
-  },
-}
+export const ktlint = executableFormatter("ktlint", [".kt", ".kts"], ["-F", "$FILE"])
 
 export const ruff: Info = {
   name: "ruff",
@@ -259,45 +242,15 @@ export const uvformat: Info = {
   },
 }
 
-export const rubocop: Info = {
-  name: "rubocop",
-  extensions: [".rb", ".rake", ".gemspec", ".ru"],
-  async enabled() {
-    const match = which("rubocop")
-    if (!match) return false
-    return [match, "--autocorrect", "$FILE"]
-  },
-}
+const rubyExtensions = [".rb", ".rake", ".gemspec", ".ru"]
 
-export const standardrb: Info = {
-  name: "standardrb",
-  extensions: [".rb", ".rake", ".gemspec", ".ru"],
-  async enabled() {
-    const match = which("standardrb")
-    if (!match) return false
-    return [match, "--fix", "$FILE"]
-  },
-}
+export const rubocop = executableFormatter("rubocop", rubyExtensions, ["--autocorrect", "$FILE"])
 
-export const htmlbeautifier: Info = {
-  name: "htmlbeautifier",
-  extensions: [".erb", ".html.erb"],
-  async enabled() {
-    const match = which("htmlbeautifier")
-    if (!match) return false
-    return [match, "$FILE"]
-  },
-}
+export const standardrb = executableFormatter("standardrb", rubyExtensions, ["--fix", "$FILE"])
 
-export const dart: Info = {
-  name: "dart",
-  extensions: [".dart"],
-  async enabled() {
-    const match = which("dart")
-    if (!match) return false
-    return [match, "format", "$FILE"]
-  },
-}
+export const htmlbeautifier = executableFormatter("htmlbeautifier", [".erb", ".html.erb"], ["$FILE"])
+
+export const dart = executableFormatter("dart", [".dart"], ["format", "$FILE"])
 
 export const ocamlformat: Info = {
   name: "ocamlformat",
@@ -310,65 +263,17 @@ export const ocamlformat: Info = {
   },
 }
 
-export const terraform: Info = {
-  name: "terraform",
-  extensions: [".tf", ".tfvars"],
-  async enabled() {
-    const match = which("terraform")
-    if (!match) return false
-    return [match, "fmt", "$FILE"]
-  },
-}
+export const terraform = executableFormatter("terraform", [".tf", ".tfvars"], ["fmt", "$FILE"])
 
-export const latexindent: Info = {
-  name: "latexindent",
-  extensions: [".tex"],
-  async enabled() {
-    const match = which("latexindent")
-    if (!match) return false
-    return [match, "-w", "-s", "$FILE"]
-  },
-}
+export const latexindent = executableFormatter("latexindent", [".tex"], ["-w", "-s", "$FILE"])
 
-export const gleam: Info = {
-  name: "gleam",
-  extensions: [".gleam"],
-  async enabled() {
-    const match = which("gleam")
-    if (!match) return false
-    return [match, "format", "$FILE"]
-  },
-}
+export const gleam = executableFormatter("gleam", [".gleam"], ["format", "$FILE"])
 
-export const shfmt: Info = {
-  name: "shfmt",
-  extensions: [".sh", ".bash"],
-  async enabled() {
-    const match = which("shfmt")
-    if (!match) return false
-    return [match, "-w", "$FILE"]
-  },
-}
+export const shfmt = executableFormatter("shfmt", [".sh", ".bash"], ["-w", "$FILE"])
 
-export const nixfmt: Info = {
-  name: "nixfmt",
-  extensions: [".nix"],
-  async enabled() {
-    const match = which("nixfmt")
-    if (!match) return false
-    return [match, "$FILE"]
-  },
-}
+export const nixfmt = executableFormatter("nixfmt", [".nix"], ["$FILE"])
 
-export const rustfmt: Info = {
-  name: "rustfmt",
-  extensions: [".rs"],
-  async enabled() {
-    const match = which("rustfmt")
-    if (!match) return false
-    return [match, "$FILE"]
-  },
-}
+export const rustfmt = executableFormatter("rustfmt", [".rs"], ["$FILE"])
 
 export const pint: Info = {
   name: "pint",
@@ -384,32 +289,8 @@ export const pint: Info = {
   },
 }
 
-export const ormolu: Info = {
-  name: "ormolu",
-  extensions: [".hs"],
-  async enabled() {
-    const match = which("ormolu")
-    if (!match) return false
-    return [match, "-i", "$FILE"]
-  },
-}
+export const ormolu = executableFormatter("ormolu", [".hs"], ["-i", "$FILE"])
 
-export const cljfmt: Info = {
-  name: "cljfmt",
-  extensions: [".clj", ".cljs", ".cljc", ".edn"],
-  async enabled() {
-    const match = which("cljfmt")
-    if (!match) return false
-    return [match, "fix", "--quiet", "$FILE"]
-  },
-}
+export const cljfmt = executableFormatter("cljfmt", [".clj", ".cljs", ".cljc", ".edn"], ["fix", "--quiet", "$FILE"])
 
-export const dfmt: Info = {
-  name: "dfmt",
-  extensions: [".d"],
-  async enabled() {
-    const match = which("dfmt")
-    if (!match) return false
-    return [match, "-i", "$FILE"]
-  },
-}
+export const dfmt = executableFormatter("dfmt", [".d"], ["-i", "$FILE"])

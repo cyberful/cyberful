@@ -12,10 +12,8 @@ import {
   decodeExpertProviderRetry,
   decodeExpertRuntimeDiagnostic,
   decodeExpertToolActivity,
-  expertActorCardLabel,
   expertActorIdentityText,
   expertActorStateText,
-  expertActorTextLabel,
   expertContextCompactionText,
   expertPhaseDuration,
   expertPhaseLabel,
@@ -59,14 +57,6 @@ describe("continuesExpertPhaseTurn", () => {
       ),
     ).toBe(false)
   })
-})
-
-test("delegated card attribution labels the card without a directional arrow", () => {
-  expect(expertActorCardLabel("public_osint")).toBe("@public_osint")
-})
-
-test("delegated prose attribution points from the actor label to inline text", () => {
-  expect(expertActorTextLabel("passive_hosts")).toBe("@passive_hosts → ")
 })
 
 test("delegated identity composes the exact muted-wrapper label", () => {

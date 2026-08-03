@@ -1,6 +1,6 @@
 // ── Architecture Tombstones ─────────────────────────────────────
-// Prevents retired compatibility layers from silently returning after the Pi,
-// Event, and direct TUI capability refactors.
+// Prevents retired compatibility layers and the duplicate direct-interactive UI
+// from silently returning after the Pi, Event, and TUI capability refactors.
 // → cyberful/src/event.ts — exposes the single application event facade.
 // → cyberful/src/subsystem/pi-agent.ts — owns the sole agent runtime.
 // → cyberful/src/cli/cmd/tui/feature/builtins.ts — installs host capabilities directly.
@@ -37,6 +37,11 @@ describe("retired architecture boundaries", () => {
       "cli/cmd/tui/feature/command-shim.ts",
       "cli/cmd/tui/feature/internal.ts",
       "cli/cmd/tui/feature/runtime.ts",
+      "cli/cmd/run/demo.ts",
+      "cli/cmd/run/footer.ts",
+      "cli/cmd/run/runtime.ts",
+      "cli/cmd/run/stream.transport.ts",
+      "cli/cmd/run/types.ts",
     ]
 
     const existing = await Promise.all(

@@ -10,6 +10,8 @@ import path from "node:path"
 import { constants } from "node:fs"
 import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises"
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto"
+import { nodeErrorCode } from "@/util/error"
+import { contains as isContained } from "@/util/filesystem"
 import { parseSecurityFindingInput } from "../../code-graph/ledger"
 import { createCodeGraphService, type CodeGraphService, type FindingIntegrityState } from "../../code-graph/service"
 import { findingIdentity } from "../../code-graph/store"
@@ -25,12 +27,6 @@ const findingWorkflows = ["code-audit"] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function nodeErrorCode(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined
 }
 
 function isFindingStatus(value: unknown): value is SecurityFinding["status"] {
@@ -354,11 +350,6 @@ function configuredRoots(environment: Environment) {
   const workareaRoot = environment.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   if (!sourceRoot || !workareaRoot || !path.isAbsolute(sourceRoot) || !path.isAbsolute(workareaRoot)) return
   return { sourceRoot: path.resolve(sourceRoot), workareaRoot: path.resolve(workareaRoot) }
-}
-
-function isContained(root: string, candidate: string) {
-  const relative = path.relative(root, candidate)
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
 async function canonicalPlainDirectory(input: string, label: string) {

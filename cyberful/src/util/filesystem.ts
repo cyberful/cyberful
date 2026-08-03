@@ -7,7 +7,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync, statSync } from "node:fs"
 import { realpathSync } from "node:fs"
-import { dirname, join, resolve as pathResolve, win32 } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve as pathResolve, sep, win32 } from "node:path"
+import { nodeErrorCode } from "./error"
 
 // Fast sync version for metadata checks
 export async function exists(p: string): Promise<boolean> {
@@ -24,6 +25,11 @@ export async function isDir(p: string): Promise<boolean> {
 
 export function stat(p: string): ReturnType<typeof statSync> | undefined {
   return statSync(p, { throwIfNoEntry: false }) ?? undefined
+}
+
+export function contains(parent: string, child: string): boolean {
+  const path = relative(parent, child)
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
 }
 
 export async function readText(p: string): Promise<string> {
@@ -43,10 +49,6 @@ export async function readArrayBuffer(p: string): Promise<ArrayBuffer> {
   return Uint8Array.from(buf).buffer
 }
 
-function isEnoent(e: unknown): e is { code: "ENOENT" } {
-  return typeof e === "object" && e !== null && "code" in e && e.code === "ENOENT"
-}
-
 export async function write(p: string, content: string | Buffer | Uint8Array, mode?: number): Promise<void> {
   try {
     if (mode) {
@@ -55,7 +57,7 @@ export async function write(p: string, content: string | Buffer | Uint8Array, mo
       await writeFile(p, content)
     }
   } catch (e) {
-    if (isEnoent(e)) {
+    if (nodeErrorCode(e) === "ENOENT") {
       await mkdir(dirname(p), { recursive: true })
       if (mode) {
         await writeFile(p, content, { mode })
@@ -103,7 +105,7 @@ export function resolve(p: string): string {
   try {
     return normalizePath(realpathSync(resolved))
   } catch (e) {
-    if (isEnoent(e)) return normalizePath(resolved)
+    if (nodeErrorCode(e) === "ENOENT") return normalizePath(resolved)
     throw e
   }
 }

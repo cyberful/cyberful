@@ -54,7 +54,7 @@ import {
 } from "./test-object-lifecycle"
 import { SubsystemNovelty } from "../novelty"
 import * as Log from "@/util/log"
-import { errorMessage } from "@/util/error"
+import { errorMessage, nodeErrorCode } from "@/util/error"
 import { SOURCE_TOOL_DEFS, handleSourceTool, isSourceTool, sourceToolsAvailable } from "./source-tools"
 import { SOURCE_IMPORT_TOOL_DEF, handleSourceImport, type SourceImportRequest } from "./source-import"
 import { GIT_TOOL_DEFS, gitToolsAvailable, handleGitTool, isGitTool } from "./git-tools"
@@ -89,11 +89,7 @@ import {
 import { gatewayPhasePolicy, runtimeNetworkAllowed, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
 import { FindingRegistry } from "@/finding/registry"
-import {
-  createHandoffSnapshot,
-  HandoffSnapshotError,
-  type HandoffSnapshotV2,
-} from "../handoff-snapshot"
+import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } from "../handoff-snapshot"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
@@ -281,21 +277,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function nodeErrorCode(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined
-}
-
 async function settleOperations(label: string, operations: ReadonlyArray<() => Promise<void>>) {
   const first = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
   const failedOperations = first.flatMap((outcome, index) =>
     outcome.status === "rejected" ? [operations[index]!] : [],
   )
   if (failedOperations.length === 0) return
-  const retried = await Promise.allSettled(
-    failedOperations.map((operation) => Promise.resolve().then(operation)),
-  )
+  const retried = await Promise.allSettled(failedOperations.map((operation) => Promise.resolve().then(operation)))
   const failures = retried
     .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
     .map((outcome): unknown => outcome.reason)
@@ -566,8 +554,7 @@ function handoffConfig(): HandoffConfig | undefined {
   if (Boolean(successor) === terminal)
     throw new Error("expert-gateway handoff requires exactly one successor or terminal marker")
   const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
-  if (workareaRoot && !path.isAbsolute(workareaRoot))
-    throw new Error("expert-gateway workarea root must be absolute")
+  if (workareaRoot && !path.isAbsolute(workareaRoot)) throw new Error("expert-gateway workarea root must be absolute")
   const artifact = process.env.CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT?.trim()
   if (artifact && (path.isAbsolute(artifact) || artifact.split(/[\\/]+/).includes("..")))
     throw new Error("expert-gateway handoff artifact must be a relative workarea path")
@@ -1078,10 +1065,9 @@ function boundedErrorCode(value: unknown): string | undefined {
   return code && code.length <= 64 && /^[a-zA-Z0-9_.:-]+$/.test(code) ? code : undefined
 }
 
-function toolFailureMetadata(result: CallToolResult): Pick<
-  ToolUsageEvent,
-  "error_class" | "error_code" | "tool_exit_code"
-> {
+function toolFailureMetadata(
+  result: CallToolResult,
+): Pick<ToolUsageEvent, "error_class" | "error_code" | "tool_exit_code"> {
   const text = result.content?.flatMap((content) => (content.type === "text" ? [content.text] : [])).join("\n") ?? ""
   const records = result.content?.flatMap((content) => {
     if (content.type !== "text") return []
@@ -1095,8 +1081,7 @@ function toolFailureMetadata(result: CallToolResult): Pick<
     Number(text.match(/^exit_code:\s*(-?[0-9]+)$/m)?.[1])
   const toolExitCode = Number.isInteger(exitValue) ? Number(exitValue) : undefined
   const timedOut =
-    candidates.some((item) => item.timed_out === true || item.timedOut === true) ||
-    /^timed_out:\s*true$/m.test(text)
+    candidates.some((item) => item.timed_out === true || item.timedOut === true) || /^timed_out:\s*true$/m.test(text)
   const errorCode = candidates
     .map((item) => item.error_code ?? item.errorCode ?? item.code)
     .map(boundedErrorCode)
@@ -1120,8 +1105,7 @@ function toolFailureMetadata(result: CallToolResult): Pick<
 
 function transportFailureMetadata(error: unknown): Pick<ToolUsageEvent, "error_class" | "error_code"> {
   const message = error instanceof Error ? error.message.toLowerCase() : ""
-  const code =
-    typeof error === "object" && error !== null && "code" in error ? boundedErrorCode(error.code) : undefined
+  const code = typeof error === "object" && error !== null && "code" in error ? boundedErrorCode(error.code) : undefined
   return {
     error_class: message.includes("timeout") || code === "ETIMEDOUT" ? "timeout" : "transport",
     ...(code ? { error_code: code } : {}),
@@ -1616,9 +1600,7 @@ export async function createGatewayServer(opts?: {
     egress: liveTargetResearch,
     hypothesis: Boolean(workareaRoot && phase && (policy.hypothesisResearch || policy.hypothesisReadOnly)),
     engagementPolicy: Boolean(
-      workareaRoot &&
-        phase === "brief" &&
-        (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
+      workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
   }
   const localTools = localToolDefinitions(policy, liveTargetTools)
@@ -1710,8 +1692,7 @@ export async function createGatewayServer(opts?: {
         testObjects,
         hypotheses,
         coverage,
-        engagementPolicy:
-          engagementPolicy && !engagementPolicySetThisPhase ? undefined : enforcedEngagementPolicy,
+        engagementPolicy: engagementPolicy && !engagementPolicySetThisPhase ? undefined : enforcedEngagementPolicy,
         engagementPolicyRequired: engagementPolicy !== undefined,
         findings,
       })
