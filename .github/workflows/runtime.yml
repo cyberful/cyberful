@@ -318,7 +318,11 @@ jobs:
             # BuildKit may emit either the SLSA v0.2 or v1 predicate layout.
             docker buildx imagetools inspect "$reference" \
               --format '{{json .Provenance.SLSA}}' \
-              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '
+                  (.buildType // .buildDefinition.buildType) as $build_type
+                  | $build_type == "https://mobyproject.org/buildkit@v1"
+                    or $build_type == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+                '
             docker buildx imagetools inspect "$reference" \
               --format '{{json .SBOM.SPDX}}' \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -376,7 +380,11 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '
+                  (.buildType // .buildDefinition.buildType) as $build_type
+                  | $build_type == "https://mobyproject.org/buildkit@v1"
+                    or $build_type == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+                '
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -431,7 +439,11 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '
+                  (.buildType // .buildDefinition.buildType) as $build_type
+                  | $build_type == "https://mobyproject.org/buildkit@v1"
+                    or $build_type == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+                '
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
@@ -490,7 +502,11 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '(.buildType // .buildDefinition.buildType) == "https://mobyproject.org/buildkit@v1"'
+              | jq -e '
+                  (.buildType // .buildDefinition.buildType) as $build_type
+                  | $build_type == "https://mobyproject.org/buildkit@v1"
+                    or $build_type == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+                '
             docker buildx imagetools inspect "$reference" \
               --format "{{json (index .SBOM \"$platform\").SPDX}}" \
               | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
