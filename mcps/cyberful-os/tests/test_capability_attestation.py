@@ -92,6 +92,47 @@ class CapabilityReportTest(unittest.TestCase):
         finally:
             cyberful_os_mcp.PREFLIGHT_REPORT = previous
 
+    def test_incomplete_preflight_does_not_expose_unproven_optional_tools(self):
+        previous = cyberful_os_mcp.PREFLIGHT_REPORT
+        cyberful_os_mcp.PREFLIGHT_REPORT = {"tools": []}
+        try:
+            exposed = {name for name, _, _, _ in cyberful_os_mcp._exposed_tool_registry()}
+            self.assertNotIn("jeb", exposed)
+        finally:
+            cyberful_os_mcp.PREFLIGHT_REPORT = previous
+
+    def test_optional_tools_fail_closed_before_preflight(self):
+        optional = {
+            spec.name
+            for spec in (*cyberful_os_mcp.CLI_TOOL_SPECS, *cyberful_os_mcp.LIBRARY_TOOL_SPECS)
+            if spec.optional
+        }
+        previous = cyberful_os_mcp.PREFLIGHT_REPORT
+        cyberful_os_mcp.PREFLIGHT_REPORT = None
+        try:
+            exposed = {name for name, _, _, _ in cyberful_os_mcp._exposed_tool_registry()}
+            self.assertTrue(optional)
+            self.assertTrue(optional.isdisjoint(exposed))
+            self.assertIn("nuclei", exposed)
+            self.assertIn("capability_attestation", exposed)
+        finally:
+            cyberful_os_mcp.PREFLIGHT_REPORT = previous
+
+    def test_attestation_refreshes_the_registry_snapshot(self):
+        available = {
+            "status": "available",
+            "tools": [{"name": "jeb", "status": "available"}],
+        }
+        with mock.patch.object(cyberful_os_mcp, "PREFLIGHT_REPORT", None), mock.patch.object(
+            cyberful_os_mcp, "container_capability_report", return_value=available
+        ), mock.patch.object(cyberful_os_mcp, "_write_capability_attestation"):
+            result = cyberful_os_mcp.handle_capability_attestation({})
+
+            self.assertFalse(result["isError"])
+            self.assertIs(cyberful_os_mcp.PREFLIGHT_REPORT, available)
+            exposed = {name for name, _, _, _ in cyberful_os_mcp._exposed_tool_registry()}
+            self.assertIn("jeb", exposed)
+
     def test_fallback_profiles_use_versioned_first_party_roles(self):
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("shell"), ["shell"])
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("tool_inventory"), ["evidence"])

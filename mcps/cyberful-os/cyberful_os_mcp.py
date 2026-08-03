@@ -1810,9 +1810,13 @@ def ensure_strict_preflight() -> None:
 
 
 def handle_capability_attestation(args: dict[str, Any]) -> dict[str, Any]:
-    report = container_capability_report(args)
-    _write_capability_attestation(report)
-    return tool_result(json.dumps(report, indent=2, sort_keys=True) + "\n", is_error=report["status"] != "available")
+    global PREFLIGHT_REPORT
+    PREFLIGHT_REPORT = container_capability_report(args)
+    _write_capability_attestation(PREFLIGHT_REPORT)
+    return tool_result(
+        json.dumps(PREFLIGHT_REPORT, indent=2, sort_keys=True) + "\n",
+        is_error=PREFLIGHT_REPORT["status"] != "available",
+    )
 
 
 def handle_tool_inventory(args: dict[str, Any]) -> dict[str, Any]:
@@ -2555,13 +2559,28 @@ Environment variables:
 
 
 def _exposed_tool_registry() -> list[ToolEntry]:
-    if not PREFLIGHT_REPORT:
-        return TOOL_REGISTRY
-    disabled = {
-        tool["name"]
-        for tool in PREFLIGHT_REPORT.get("tools", [])
-        if tool.get("status") == "optional-disabled"
+    # ── Optional Capabilities Fail Closed Until Runtime Proof ────────
+    # Tool discovery can precede an explicit attestation in standalone MCP
+    # clients. Advertising an optional commercial or private-build command in
+    # that window would give the model a tool the selected image cannot run.
+    # Required tools remain part of the strict image contract; optional tools
+    # enter the registry only after the shared preflight snapshot proves them.
+    # ─────────────────────────────────────────────────────────────────
+    optional = {
+        spec.name
+        for spec in (*CLI_TOOL_SPECS, *LIBRARY_TOOL_SPECS)
+        if spec.optional
     }
+    proven_available = (
+        {
+            tool["name"]
+            for tool in PREFLIGHT_REPORT.get("tools", [])
+            if tool.get("name") in optional and tool.get("status") == "available"
+        }
+        if PREFLIGHT_REPORT
+        else set()
+    )
+    disabled = optional - proven_available
     return [tool for tool in TOOL_REGISTRY if tool[0] not in disabled]
 
 
