@@ -59,7 +59,15 @@ ADD --checksum=sha256:2e8d42a48e23aefa8a6174b52aa0a8a6b90aca2da0a8bf94ac61f4aaa0
 ADD --checksum=sha256:f2c3035976531130494b5b9dfc02ca0ebd7e0388f740f68b6d4e775098be9fc6 \
   https://github.com/zaproxy/zap-extensions/releases/download/websocket-v37/websocket-release-37.zap \
   /zap/plugin/websocket-release-37.zap
+# ── Pinned Add-ons Must Survive The Runtime UID Boundary ────────────────
+# Docker ADD creates the downloaded archives with mode 0600, owned by the
+# upstream zap user. The unified supervisor deliberately runs ZAP as the host
+# engagement UID instead, so owner-only archives silently disappear from ZAP's
+# add-on catalog. Read-only public archives preserve image immutability while
+# allowing every validated runtime identity to load the exact pinned catalog.
+# ───────────────────────────────────────────────────────────────────────────
 RUN test -s "/zap/zap-${ZAP_VERSION}.jar" \
+  && chmod 0444 /zap/plugin/*.zap \
   && chown -R zap:zap /zap/plugin
 
 FROM --platform=$BUILDPLATFORM ${BUN_BASE_IMAGE} AS zap-bridge-build
@@ -84,22 +92,6 @@ ENV PATH="${CYBERFUL_OS_PYTHON_VENV}/bin:${PATH}"
 ARG JEB_INSTALLER_URL=""
 ARG JEB_SHA256=""
 ARG GHIDRA_VERSION=12.1.2+ds-0kali1
-ARG ZAP_VERSION
-ARG BUN_VERSION
-ARG BUILD_VERSION=dev
-ARG BUILD_REVISION=unknown
-ENV CYBERFUL_ZAP_VERSION=${ZAP_VERSION}
-
-LABEL org.opencontainers.image.title="cyberful-os" \
-      org.opencontainers.image.description="Unified Cyberful engagement runtime with cyberful-os, OWASP ZAP, and Ghidra" \
-      org.opencontainers.image.source="https://github.com/cyberful/cyberful" \
-      org.opencontainers.image.version="${BUILD_VERSION}" \
-      org.opencontainers.image.revision="${BUILD_REVISION}" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
-      org.cyberful.ghidra.version="${GHIDRA_VERSION}" \
-      org.cyberful.zap.version="${ZAP_VERSION}" \
-      org.cyberful.bun.version="${BUN_VERSION}" \
-      org.cyberful.zap.addons="ascanrules=83,spiderAjax=23.32.0,authhelper=0.40.0,graphql=0.33.0,mcp=0.2.0,oast=0.24.0,openapi=57,pscanrules=75,reports=0.46.0,websocket=37"
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. APT defaults
@@ -660,7 +652,9 @@ COPY cyberful-os/runtime_attestation.py /opt/cyberful/runtime-attestation
 # proves the image selected the decompiler matching TARGETARCH rather than an
 # emulated foreign binary. ZAP remains optional at runtime but complete at build.
 # ───────────────────────────────────────────────────────────────────────────
-ENV GHIDRA_INSTALL_DIR=/usr/share/ghidra \
+ARG ZAP_VERSION
+ENV CYBERFUL_ZAP_VERSION=${ZAP_VERSION} \
+    GHIDRA_INSTALL_DIR=/usr/share/ghidra \
     CYBER_GHIDRA_HOST=127.0.0.1 \
     CYBER_GHIDRA_PORT=47100 \
     CYBER_GHIDRA_STORE=/ghidra/store \
@@ -682,9 +676,31 @@ RUN "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
       | grep -q "$(if [[ "${TARGETARCH}" == "amd64" ]]; then echo 'x86-64'; else echo 'ARM aarch64'; fi)" \
   && test -s /zap/zap-x.sh \
   && for addon in ascanrules spiderAjax authhelper graphql mcp oast openapi pscanrules reports websocket; do \
-      test -n "$(find /zap/plugin -name "${addon}-*.zap" -print -quit)"; \
+      test -n "$(find /zap/plugin -name "${addon}-*.zap" -perm -004 -print -quit)"; \
     done \
   && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation
+
+# ── Volatile Release Metadata Follows Runtime Filesystem Layers ─────────────
+# BUILD_VERSION and BUILD_REVISION change for every published commit, while
+# ZAP and Bun version bumps do not alter the expensive Kali toolchain layers.
+# Consuming those arguments only after installation and attestation lets
+# BuildKit reuse the complete runtime filesystem and regenerate only image
+# metadata when the release identity changes. The final labels remain identical
+# to the public OCI contract consumed by the runtime and release workflows.
+# ───────────────────────────────────────────────────────────────────────────
+ARG BUN_VERSION
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="cyberful-os" \
+      org.opencontainers.image.description="Unified Cyberful engagement runtime with cyberful-os, OWASP ZAP, and Ghidra" \
+      org.opencontainers.image.source="https://github.com/cyberful/cyberful" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.cyberful.ghidra.version="${GHIDRA_VERSION}" \
+      org.cyberful.zap.version="${ZAP_VERSION}" \
+      org.cyberful.bun.version="${BUN_VERSION}" \
+      org.cyberful.zap.addons="ascanrules=83,spiderAjax=23.32.0,authhelper=0.40.0,graphql=0.33.0,mcp=0.2.0,oast=0.24.0,openapi=57,pscanrules=75,reports=0.46.0,websocket=37"
 
 WORKDIR /workspace
 EXPOSE 8080

@@ -195,6 +195,32 @@ class CapabilityReportTest(unittest.TestCase):
         ):
             self.assertIn(smoke, dockerfile[verify_at:workdir_at])
 
+    def test_per_build_metadata_cannot_invalidate_runtime_installation_layers(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        attestation_at = dockerfile.rindex(
+            '&& "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation'
+        )
+        release_arguments_at = dockerfile.index("ARG BUILD_VERSION=dev")
+        labels_at = dockerfile.index('LABEL org.opencontainers.image.title="cyberful-os"')
+        workdir_at = dockerfile.index("WORKDIR /workspace")
+
+        self.assertLess(attestation_at, release_arguments_at)
+        self.assertLess(release_arguments_at, labels_at)
+        self.assertLess(labels_at, workdir_at)
+
+    def test_pinned_zap_addons_are_readable_by_the_runtime_identity(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        addon_permissions_at = dockerfile.index("chmod 0444 /zap/plugin/*.zap")
+        runtime_copy_at = dockerfile.index("COPY --from=zap-runtime /zap /zap")
+        runtime_contract_at = dockerfile.index("# 14. Unified runtime contract")
+
+        self.assertLess(addon_permissions_at, runtime_copy_at)
+        self.assertLess(runtime_copy_at, runtime_contract_at)
+        self.assertIn(
+            'find /zap/plugin -name "${addon}-*.zap" -perm -004 -print -quit',
+            dockerfile[runtime_contract_at:],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
