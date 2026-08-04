@@ -372,7 +372,6 @@ jobs:
             BUILD_VERSION=check-${{ github.sha }}
             BUILD_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=cyberful-os-${{ env.RUNTIME_ARCH }}
-          cache-to: type=gha,mode=min,scope=cyberful-os-${{ env.RUNTIME_ARCH }},ignore-error=true
           load: true
       - name: Verify architecture and full runtime behavior
         env:

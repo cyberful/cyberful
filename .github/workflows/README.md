@@ -15,8 +15,10 @@ instances. Each native job installs the pinned Patchright Chromium and its
 Linux libraries before exercising browser-through-ZAP; system Chrome is an
 optional additional channel when the runner provides it. Architecture-scoped
 GitHub Actions caches preserve final-image BuildKit layers across disposable
-instances without retaining quota-heavy intermediate stages. Runtime changes
-push
+instances without retaining quota-heavy intermediate stages. Pull requests and
+non-main dry-runs consume the base branch cache read-only; only `main` updates
+it, preventing a full image cache from being duplicated for every pull-request
+ref. Runtime changes push
 one tested native digest per architecture with BuildKit SBOM/provenance, then a
 bounded index job creates
 `sha-<40-character-commit>`, verifies exactly the two executable platforms,
