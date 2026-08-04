@@ -389,6 +389,13 @@ Resources:
                   - ec2:DescribeInstanceStatus
                   - ec2:DescribeLaunchTemplates
                 Resource: "*"
+              - Sid: PassOnlyTheEphemeralRunnerRoleToEc2
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt RunnerInstanceRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ec2.amazonaws.com
               - Sid: ManageOneTimeRegistrationTokens
                 Effect: Allow
                 Action:
