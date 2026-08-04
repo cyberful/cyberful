@@ -52,7 +52,8 @@ A live run performs the same work, then:
    different digest;
 3. creates or verifies the annotated source `v<version>` tag at the selected
    `main` commit;
-4. creates a draft GitHub Release and uploads its immutable assets;
+4. creates or resumes the exact draft GitHub Release by its authenticated
+   numeric ID and uploads its immutable assets;
 5. publishes the four platform packages, then `cyberful`;
 6. makes the GitHub Release public only after every npm package succeeds.
 
@@ -60,7 +61,9 @@ Release archives include the AGPL license, third-party notices, and the font
 and wordlist license texts. A partial release is resumed from its original tag
 and commit. Already-published npm artifacts are accepted only when their remote
 integrity exactly matches the release artifact; a version can never be rebuilt
-with different bytes.
+with different bytes. Draft lookup, asset upload, and final publication all use
+the same numeric release ID because GitHub does not expose drafts through its
+public release-by-tag endpoint.
 
 ## One-time npm bootstrap
 
@@ -82,6 +85,7 @@ first release therefore has one manual publication step:
    The first command must print `cyberful`; the second must list `cyberful` as
    an owner. The unscoped `cyberful` package and all four organization packages
    must still be unpublished before this bootstrap.
+
 2. Merge the active `ci.yml`, `runtime.yml`, and `release.yml` workflows to
    `main`; wait for CI and the first signed `sha-*` runtime index.
 3. Run **Release** from `main` with version `0.1.0` and `dry_run: false`. The
@@ -103,13 +107,13 @@ first release therefore has one manual publication step:
 
 5. In the settings for each package, add the same npm trusted publisher:
 
-   | Package                                  | Publisher      | Organization | Repository | Workflow      | Allowed action |
-   | ---------------------------------------- | -------------- | ------------ | ---------- | ------------- | -------------- |
-   | `@cyberful-org/cyberful-darwin-arm64`    | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
-   | `@cyberful-org/cyberful-darwin-x64`      | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
-   | `@cyberful-org/cyberful-linux-x64`       | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
-   | `@cyberful-org/cyberful-windows-x64`     | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
-   | `cyberful`                               | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
+   | Package                               | Publisher      | Organization | Repository | Workflow      | Allowed action |
+   | ------------------------------------- | -------------- | ------------ | ---------- | ------------- | -------------- |
+   | `@cyberful-org/cyberful-darwin-arm64` | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
+   | `@cyberful-org/cyberful-darwin-x64`   | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
+   | `@cyberful-org/cyberful-linux-x64`    | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
+   | `@cyberful-org/cyberful-windows-x64`  | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
+   | `cyberful`                            | GitHub Actions | `cyberful`   | `cyberful` | `release.yml` | `npm publish`  |
 
    Leave the environment field empty. The workflow runs on GitHub-hosted
    runners with `id-token: write`; no `NPM_TOKEN` repository secret is used.

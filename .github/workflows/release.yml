@@ -361,6 +361,8 @@ jobs:
     needs: [assemble, promote-runtime]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
     permissions:
@@ -400,15 +402,35 @@ jobs:
               -f "ref=refs/tags/$TAG" \
               -f "sha=$tag_object"
           fi
-      - name: Create or verify the draft GitHub Release
+      - id: release
+        name: Create or verify the draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ inputs.version }}
         shell: bash
         run: |
-          if ! gh release view "$TAG" --json id --jq .id >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+          release_ids="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id"
+          )"
+          if [[ -z "$release_ids" ]]; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              --title "$TAG"
+            release_ids="$(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"$TAG\") | .id"
+            )"
           fi
+          if [[ "$release_ids" == *$'\n'* || ! "$release_ids" =~ ^[0-9]+$ ]]; then
+            echo "Expected exactly one GitHub Release for $TAG." >&2
+            exit 1
+          fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_ids" --jq .tag_name)" = "$TAG"
+          echo "release_id=$release_ids" >> "$GITHUB_OUTPUT"
       - name: Upload immutable release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -458,7 +480,7 @@ jobs:
   publish-release:
     name: Publish the GitHub Release
     if: inputs.dry_run != true
-    needs: [publish-npm]
+    needs: [publish-npm, stage-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -467,9 +489,27 @@ jobs:
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.stage-release.outputs.release_id }}
           TAG: v${{ inputs.version }}
         shell: bash
-        run: gh release edit "$TAG" --draft=false --latest
+        run: |
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false \
+            -f make_latest=true \
+            --silent
+          for attempt in {1..12}; do
+            state="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+                --jq '[.tag_name, (.draft | tostring), (.immutable | tostring)] | @tsv'
+            )"
+            if [[ "$state" = "$TAG"$'\tfalse\ttrue' ]]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "GitHub Release $TAG was not published and locked as immutable." >&2
+          exit 1
 
   required:
     name: Release required
