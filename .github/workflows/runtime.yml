@@ -241,7 +241,7 @@ jobs:
               ]}]')"
             instance_id="$(aws ec2 run-instances \
               --region "$AWS_REGION" \
-              --launch-template "LaunchTemplateId=$template_id,Version=\$Default" \
+              --launch-template "LaunchTemplateId=$template_id,Version=\$Latest" \
               --tag-specifications "$tag_specification" \
               --count 1 \
               --query 'Instances[0].InstanceId' \
