@@ -66,8 +66,12 @@ instance.
 
 ## Ephemeral runner control plane
 
-Deploy `infra/github-runners.yml` once in `eu-central-1`. Record its three
-outputs as the `AWS_RUNNER_ROLE_ARN`, `AWS_RUNNER_AMD64_TEMPLATE_ID`, and
+Deploy `infra/github-runners.yml` once in `eu-central-1`, selecting a public
+subnet in the configured VPC. The subnet is part of both launch templates so
+the provisioning role can require every network resource to originate from an
+approved template; it must assign public IPv4 addresses and route outbound
+traffic through an internet gateway. Record the stack's three outputs as the
+`AWS_RUNNER_ROLE_ARN`, `AWS_RUNNER_AMD64_TEMPLATE_ID`, and
 `AWS_RUNNER_ARM64_TEMPLATE_ID` variables in both GitHub environments:
 
 - `runtime-pr` requires `ottaviofogliata` as its only reviewer and permits

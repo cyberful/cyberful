@@ -16,6 +16,9 @@ Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC with default subnets that provide outbound internet access
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in VpcId used by both ephemeral runner launch templates
   Amd64InstanceType:
     Type: String
     Default: c7i.xlarge
@@ -126,6 +129,7 @@ Resources:
           - AssociatePublicIpAddress: true
             DeleteOnTermination: true
             DeviceIndex: 0
+            SubnetId: !Ref SubnetId
             Groups:
               - !GetAtt RunnerSecurityGroup.GroupId
         BlockDeviceMappings:
@@ -237,6 +241,7 @@ Resources:
           - AssociatePublicIpAddress: true
             DeleteOnTermination: true
             DeviceIndex: 0
+            SubnetId: !Ref SubnetId
             Groups:
               - !GetAtt RunnerSecurityGroup.GroupId
         BlockDeviceMappings:
