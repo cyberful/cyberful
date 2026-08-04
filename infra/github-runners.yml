@@ -477,12 +477,17 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PassedToService: ec2.amazonaws.com
+              - Sid: EnumerateOneTimeRegistrationTokens
+                Effect: Allow
+                Action: ssm:GetParametersByPath
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cyberful/github-runners
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cyberful/github-runners/*
               - Sid: ManageOneTimeRegistrationTokens
                 Effect: Allow
                 Action:
                   - ssm:DeleteParameter
                   - ssm:DeleteParameters
-                  - ssm:GetParametersByPath
                   - ssm:PutParameter
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cyberful/github-runners/*
       Tags:
