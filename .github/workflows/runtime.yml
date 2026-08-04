@@ -470,7 +470,31 @@ jobs:
           digest="$PUBLISHED_DIGEST"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           reference="$RUNTIME_IMAGE@$digest"
-          docker pull --platform "$RUNTIME_PLATFORM" "$reference"
+
+          # ── Exact Digest Pulls Tolerate Registry Propagation ─────
+          # GHCR can acknowledge a digest push before every pull backend can
+          # serve its manifest. Retrying the exact immutable reference absorbs
+          # only that bounded consistency window; no tag or digest can change.
+          # Exhausting the schedule still fails before smoke tests or indexing,
+          # so authorization and missing-content failures remain release blockers.
+          # ─────────────────────────────────────────────────────────
+          retry_delays=(0 5 10 20 30 30 30 30)
+          pulled=false
+          for retry_delay in "${retry_delays[@]}"; do
+            if (( retry_delay > 0 )); then
+              echo "::warning::GHCR has not made $reference pullable; retrying in ${retry_delay}s."
+              sleep "$retry_delay"
+            fi
+            if docker pull --platform "$RUNTIME_PLATFORM" "$reference"; then
+              pulled=true
+              break
+            fi
+          done
+          if [[ "$pulled" != true ]]; then
+            echo "GHCR did not make $reference pullable within the bounded retry window." >&2
+            exit 1
+          fi
+
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$reference")" = "$RUNTIME_PLATFORM"
           test "$(docker run --rm --entrypoint uname "$reference" -m)" = "$RUNTIME_MACHINE"
           CYBERFUL_OS_IMAGE="$reference" make test-runtime 2>&1 | tee "runtime-${RUNTIME_ARCH}.log"
