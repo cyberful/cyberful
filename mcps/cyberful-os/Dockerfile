@@ -59,7 +59,15 @@ ADD --checksum=sha256:2e8d42a48e23aefa8a6174b52aa0a8a6b90aca2da0a8bf94ac61f4aaa0
 ADD --checksum=sha256:f2c3035976531130494b5b9dfc02ca0ebd7e0388f740f68b6d4e775098be9fc6 \
   https://github.com/zaproxy/zap-extensions/releases/download/websocket-v37/websocket-release-37.zap \
   /zap/plugin/websocket-release-37.zap
+# ── Pinned Add-ons Must Survive The Runtime UID Boundary ────────────────
+# Docker ADD creates the downloaded archives with mode 0600, owned by the
+# upstream zap user. The unified supervisor deliberately runs ZAP as the host
+# engagement UID instead, so owner-only archives silently disappear from ZAP's
+# add-on catalog. Read-only public archives preserve image immutability while
+# allowing every validated runtime identity to load the exact pinned catalog.
+# ───────────────────────────────────────────────────────────────────────────
 RUN test -s "/zap/zap-${ZAP_VERSION}.jar" \
+  && chmod 0444 /zap/plugin/*.zap \
   && chown -R zap:zap /zap/plugin
 
 FROM --platform=$BUILDPLATFORM ${BUN_BASE_IMAGE} AS zap-bridge-build
@@ -668,7 +676,7 @@ RUN "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
       | grep -q "$(if [[ "${TARGETARCH}" == "amd64" ]]; then echo 'x86-64'; else echo 'ARM aarch64'; fi)" \
   && test -s /zap/zap-x.sh \
   && for addon in ascanrules spiderAjax authhelper graphql mcp oast openapi pscanrules reports websocket; do \
-      test -n "$(find /zap/plugin -name "${addon}-*.zap" -print -quit)"; \
+      test -n "$(find /zap/plugin -name "${addon}-*.zap" -perm -004 -print -quit)"; \
     done \
   && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation
 
