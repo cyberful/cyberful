@@ -71,9 +71,10 @@ npm trusted publishing can be configured only after a package exists. The
 first release therefore has one manual publication step:
 
 1. Authenticate to npm as the `cyberful` account, enable account-level
-   two-factor authentication, use Node.js 22.14 or newer with npm 11.5.1 or
-   newer, and confirm that the account owns the free public `cyberful-org`
-   organization:
+   two-factor authentication, and confirm that the account owns the free public
+   `cyberful-org` organization. Use npm 12.0.2 or newer for trusted-publisher
+   management, with a supported Node.js release (Node.js 24.15 or newer on the
+   24.x line, or Node.js 26 or newer):
 
    ```sh
    node --version
@@ -121,23 +122,33 @@ first release therefore has one manual publication step:
    created without the web form:
 
    ```sh
-   npm trust github @cyberful-org/cyberful-darwin-arm64 --repo cyberful/cyberful --file release.yml --allow-publish
-   npm trust github @cyberful-org/cyberful-darwin-x64 --repo cyberful/cyberful --file release.yml --allow-publish
-   npm trust github @cyberful-org/cyberful-linux-x64 --repo cyberful/cyberful --file release.yml --allow-publish
-   npm trust github @cyberful-org/cyberful-windows-x64 --repo cyberful/cyberful --file release.yml --allow-publish
-   npm trust github cyberful --repo cyberful/cyberful --file release.yml --allow-publish
+   npx --yes npm@12.0.2 trust github @cyberful-org/cyberful-darwin-arm64 --repo cyberful/cyberful --file release.yml --allow-publish
+   npx --yes npm@12.0.2 trust github @cyberful-org/cyberful-darwin-x64 --repo cyberful/cyberful --file release.yml --allow-publish
+   npx --yes npm@12.0.2 trust github @cyberful-org/cyberful-linux-x64 --repo cyberful/cyberful --file release.yml --allow-publish
+   npx --yes npm@12.0.2 trust github @cyberful-org/cyberful-windows-x64 --repo cyberful/cyberful --file release.yml --allow-publish
+   npx --yes npm@12.0.2 trust github cyberful --repo cyberful/cyberful --file release.yml --allow-publish
    ```
 
-   Confirm each result with `npm trust list <package>`. npm does not validate
-   the repository/workflow tuple when it is saved, so check the spelling
-   exactly before the CI retry.
+   Confirm each result with `npx --yes npm@12.0.2 trust list <package>`. npm
+   does not validate the repository/workflow tuple when it is saved, so check
+   the spelling exactly before the CI retry.
 
 6. Re-run the failed **Publish npm packages** job. The helper verifies and skips
    the five matching packages; its dependent **Publish the GitHub Release** job
    then makes the draft release public.
 7. For every package, set publishing access to require two-factor
    authentication and disallow tokens. Future releases authenticate through
-   short-lived OIDC credentials and npm adds package provenance automatically.
+   short-lived OIDC credentials and npm adds package provenance automatically:
+
+   ```sh
+   npx --yes npm@12.0.2 access set mfa=publish @cyberful-org/cyberful-darwin-arm64
+   npx --yes npm@12.0.2 access set mfa=publish @cyberful-org/cyberful-darwin-x64
+   npx --yes npm@12.0.2 access set mfa=publish @cyberful-org/cyberful-linux-x64
+   npx --yes npm@12.0.2 access set mfa=publish @cyberful-org/cyberful-windows-x64
+   npx --yes npm@12.0.2 access set mfa=publish cyberful
+   ```
+
+   npm requires a separate WebAuthn confirmation for each access change.
 
 If the unscoped `cyberful` name or any required `@cyberful-org` package cannot
 be published by the authenticated owner, stop before announcing the release.

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { npmIntegrity, publishedIntegrity } from "../../scripts/publish-npm"
+import { confirmPublishedIntegrity, npmIntegrity, publishedIntegrity } from "../../scripts/publish-npm"
 
 const temporaryRoots: string[] = []
 
@@ -57,5 +57,32 @@ console.log(JSON.stringify("sha512-Y3liZXJmdWw="))
     expect(publishedIntegrity("@cyberful/missing", "1.2.3", npm)).toBeUndefined()
     expect(() => publishedIntegrity("@cyberful/outage", "1.2.3", npm)).toThrow("ECONNRESET")
     expect(() => publishedIntegrity("@cyberful/malformed", "1.2.3", npm)).toThrow("invalid JSON")
+  })
+
+  test("waits for an accepted publication to propagate", async () => {
+    const integrity = "sha512-Y3liZXJmdWw="
+    const sleeps: number[] = []
+    let attempts = 0
+    const confirmed = await confirmPublishedIntegrity("@cyberful/package", "1.2.3", integrity, {
+      delaysMs: [0, 10, 20],
+      lookup: () => (++attempts === 3 ? integrity : undefined),
+      sleep: (milliseconds) => {
+        sleeps.push(milliseconds)
+        return Promise.resolve()
+      },
+    })
+
+    expect(confirmed).toBeTrue()
+    expect(attempts).toBe(3)
+    expect(sleeps).toEqual([10, 20])
+  })
+
+  test("rejects a propagated version with different integrity", async () => {
+    await expect(
+      confirmPublishedIntegrity("@cyberful/package", "1.2.3", "sha512-bG9jYWw=", {
+        delaysMs: [0],
+        lookup: () => "sha512-cmVtb3Rl",
+      }),
+    ).rejects.toThrow("different integrity")
   })
 })

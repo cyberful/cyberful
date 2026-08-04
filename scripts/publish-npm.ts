@@ -100,6 +100,41 @@ export function publishedIntegrity(name: string, version: string, npmExecutable 
   return value
 }
 
+// ── Registry Propagation Is Part of Publication ───────────────────────
+// npm can accept an immutable version before `npm view` sees it. Confirm every
+// publish against the registry, including a non-zero command that may have failed
+// after the registry accepted the tarball. Only the exact local integrity completes
+// the release; other registry failures retain their fail-closed behavior above.
+// ───────────────────────────────────────────────
+const registryPropagationDelaysMs = [0, 1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const
+
+type PublishConfirmationOptions = {
+  delaysMs?: readonly number[]
+  lookup?: (name: string, version: string) => string | undefined
+  sleep?: (milliseconds: number) => Promise<unknown>
+}
+
+export async function confirmPublishedIntegrity(
+  name: string,
+  version: string,
+  expectedIntegrity: string,
+  options: PublishConfirmationOptions = {},
+) {
+  const delaysMs = options.delaysMs ?? registryPropagationDelaysMs
+  if (delaysMs.length === 0) throw new Error("At least one npm registry confirmation attempt is required")
+  const lookup = options.lookup ?? publishedIntegrity
+  const sleep = options.sleep ?? Bun.sleep
+
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) await sleep(delayMs)
+    const remote = lookup(name, version)
+    if (!remote) continue
+    if (remote !== expectedIntegrity) throw new Error(`${name}@${version} exists with different integrity`)
+    return true
+  }
+  return false
+}
+
 if (import.meta.main) {
   const directoryArgument = argument("--directory")
   const version = argument("--version")
@@ -142,6 +177,13 @@ if (import.meta.main) {
       ["npm", "publish", entry.file, "--access", "public", "--tag", "latest", "--ignore-scripts"],
       { stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: 300_000 },
     )
-    if (publish.exitCode !== 0) throw new Error(`npm publish failed for ${name}@${version}`)
+    const confirmed = await confirmPublishedIntegrity(name, version, local)
+    if (!confirmed) {
+      if (publish.exitCode !== 0) throw new Error(`npm publish failed for ${name}@${version}`)
+      throw new Error(`npm did not expose ${name}@${version} after publication`)
+    }
+    if (publish.exitCode !== 0) {
+      console.log(`Recovered ${name}@${version}; npm integrity matches after publication`)
+    }
   }
 }
