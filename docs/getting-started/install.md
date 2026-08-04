@@ -1,7 +1,9 @@
 # Install Cyberful
 
 Choose the standard npm installation unless you are developing Cyberful or need
-to build its binaries yourself.
+to build its binaries yourself. If the computer does not yet have Docker,
+Node.js, npm, or a configured provider, use the complete OS-specific
+[fresh-host walkthrough](README.md) instead of starting on this page.
 
 ## Install the release
 
@@ -14,10 +16,12 @@ cyberful --version
 
 The unscoped `cyberful` package installs the command and selects the matching
 native package from the `@cyberful-org` npm organization. This path does not
-require Bun.
+require Bun. Published packages cover macOS on Apple silicon and Intel, Linux
+on `x86_64` with glibc, and 64-bit x86 Windows.
 
 Cyberful creates a secret-free `settings.yaml` with OpenAI Codex as the default
-Pi provider. Authenticate that route through Cyberful:
+Pi provider. From the directory that will contain the engagement, authenticate
+that route through Cyberful:
 
 ```sh
 cyberful auth login

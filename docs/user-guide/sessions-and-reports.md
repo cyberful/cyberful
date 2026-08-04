@@ -45,6 +45,15 @@ Use `session steer` to add short, routine guidance to an AgentRun that is
 already running. The ordinary TUI uses an internal transport, so expose its
 loopback control plane when starting it.
 
+This control-plane path is also useful when Cyberful runs under the supervision
+of an external coding agent such as Codex, Claude Code, Kimi, or a similar
+orchestrator. The supervising agent can keep the TUI as the operator's view and
+send bounded `session steer` messages from its own process instead of trying to
+drive the terminal UI. This is an out-of-band guidance path, not shared
+ownership of the run: it reaches only the currently busy root AgentRun, never
+starts a turn, and carries no approval, authorization, provider, model, or
+phase authority.
+
 Terminal 1:
 
 ```sh

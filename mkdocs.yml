@@ -54,7 +54,6 @@ theme:
     - navigation.tabs
     - navigation.tabs.sticky
     - navigation.sections
-    - navigation.indexes
     - navigation.top
     - navigation.footer
     - content.action.edit
@@ -66,7 +65,7 @@ theme:
     - search.share
 
 extra_css:
-  - stylesheets/extra.css?v=cyberful-codeblocks-v1
+  - stylesheets/extra.css?v=cyberful-ui-v2
 
 extra:
   generator: false
@@ -110,11 +109,11 @@ validation:
     unrecognized_links: info
 
 nav:
-  - Overview: README.md
-  - Start:
+  - Home: README.md
+  - Getting Start:
+      - Your first penetration test: getting-started/README.md
       - What you need: getting-started/requirements.md
       - Install Cyberful: getting-started/install.md
-      - Your first penetration test: getting-started/README.md
   - Use Cyberful:
       - Choose a workflow: user-guide/workflows.md
       - Terminal interface: user-guide/interface.md
