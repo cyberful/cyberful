@@ -58,11 +58,12 @@ Each runtime runner receives the labels `self-hosted`, `linux`,
 passwordless `sudo` for the pinned browser's Linux packages. The workflow
 installs the pinned Patchright Chromium and its host libraries before the live
 proxy tests; system Chrome is exercised when the runner already provides it.
-BuildKit exports an architecture-scoped cache to GitHub Actions and restores it
-on later runs, so disposable instances still reuse safe Docker layers. The
-publishable image remains a fresh, digest-addressed result; local BuildKit state
-is pruned to an 80 GB bound and the encrypted root volume is deleted with the
-instance.
+BuildKit exports the final-image layers to an architecture-scoped GitHub
+Actions cache and restores them on later runs, so disposable instances still
+reuse safe Docker layers without duplicating intermediate stages into the
+repository's bounded cache quota. The publishable image remains a fresh,
+digest-addressed result; local BuildKit state is pruned to an 80 GB bound and
+the encrypted root volume is deleted with the instance.
 
 ## Ephemeral runner control plane
 

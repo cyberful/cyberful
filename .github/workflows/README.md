@@ -14,8 +14,9 @@ with PR runtime validation in one global FIFO, bounding live capacity to two
 instances. Each native job installs the pinned Patchright Chromium and its
 Linux libraries before exercising browser-through-ZAP; system Chrome is an
 optional additional channel when the runner provides it. Architecture-scoped
-GitHub Actions caches preserve reusable BuildKit layers across the disposable
-instances. Runtime changes push
+GitHub Actions caches preserve final-image BuildKit layers across disposable
+instances without retaining quota-heavy intermediate stages. Runtime changes
+push
 one tested native digest per architecture with BuildKit SBOM/provenance, then a
 bounded index job creates
 `sha-<40-character-commit>`, verifies exactly the two executable platforms,
