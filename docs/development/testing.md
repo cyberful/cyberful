@@ -94,5 +94,8 @@ The provisioning job writes each one-time registration token to an encrypted
 SSM parameter. The matching EC2 instance consumes and deletes it before running
 any pull-request code. The instance has no inbound security-group rules,
 requires IMDSv2 with a hop limit of one, terminates after its single ephemeral
-job, and has a four-hour shutdown deadline. The trusted cleanup workflow on
-`main` handles cancellation and an hourly stale-capacity sweep.
+job, and has a four-hour shutdown deadline. A failed bootstrap remains alive
+only long enough for the provisioning job to copy its serial-console output
+into the private Actions log, then the same failure trap terminates it. The
+trusted cleanup workflow on `main` handles cancellation and an hourly
+stale-capacity sweep.

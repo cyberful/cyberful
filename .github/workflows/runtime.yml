@@ -168,6 +168,20 @@ jobs:
             done
           }
 
+          dump_console_output() {
+            local instance_id
+            for instance_id in "${instance_ids[@]}"; do
+              echo "::group::EC2 console output for $instance_id"
+              aws ec2 get-console-output \
+                --region "$AWS_REGION" \
+                --instance-id "$instance_id" \
+                --latest \
+                --query Output \
+                --output text || true
+              echo "::endgroup::"
+            done
+          }
+
           terminate_instances() {
             local ids
             local -a stale_ids
@@ -194,6 +208,7 @@ jobs:
             local status=$?
             trap - EXIT
             if (( status != 0 )); then
+              dump_console_output
               terminate_instances || true
               delete_parameters
             fi

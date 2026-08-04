@@ -161,7 +161,19 @@ Resources:
                 #!/usr/bin/env bash
                 set -Eeuo pipefail
                 shutdown -h +240
-                trap 'shutdown -h now' EXIT
+                exec > >(tee -a /var/log/cyberful-runner-bootstrap.log \
+                  | logger --tag cyberful-runner-bootstrap --stderr 2>/dev/console) 2>&1
+                cleanup() {
+                  status=$?
+                  trap - EXIT
+                  if (( status != 0 )); then
+                    echo "Cyberful runner bootstrap failed with exit status $status."
+                    sleep 900
+                  fi
+                  shutdown -h now
+                  exit "$status"
+                }
+                trap cleanup EXIT
 
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
@@ -273,7 +285,19 @@ Resources:
                 #!/usr/bin/env bash
                 set -Eeuo pipefail
                 shutdown -h +240
-                trap 'shutdown -h now' EXIT
+                exec > >(tee -a /var/log/cyberful-runner-bootstrap.log \
+                  | logger --tag cyberful-runner-bootstrap --stderr 2>/dev/console) 2>&1
+                cleanup() {
+                  status=$?
+                  trap - EXIT
+                  if (( status != 0 )); then
+                    echo "Cyberful runner bootstrap failed with exit status $status."
+                    sleep 900
+                  fi
+                  shutdown -h now
+                  exit "$status"
+                }
+                trap cleanup EXIT
 
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
@@ -394,6 +418,14 @@ Resources:
                   - ec2:DescribeInstanceStatus
                   - ec2:DescribeLaunchTemplates
                 Resource: "*"
+              - Sid: InspectManagedRunnerBootstrap
+                Effect: Allow
+                Action: ec2:GetConsoleOutput
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/cyberful:managed: "true"
+                    aws:ResourceTag/cyberful:repository: !Ref Repository
               - Sid: PassOnlyTheEphemeralRunnerRoleToEc2
                 Effect: Allow
                 Action: iam:PassRole
