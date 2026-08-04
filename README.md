@@ -4,8 +4,8 @@
 [![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful)
 [![Documentation](https://img.shields.io/badge/docs-cyberful.io-1463ff.svg)](https://cyberful.io/)
 
-Cyberful turns your AI coding agent into an application-security workbench for
-authorized penetration tests, code audits, and bug bounty programs.
+Cyberful is an AI-powered application-security workbench for authorized
+penetration testing, code auditing, and bug bounty research.
 
 > **Documentation:** installation, workflows, configuration, architecture, and
 > security runtimes are documented at **[cyberful.io](https://cyberful.io/)**.
