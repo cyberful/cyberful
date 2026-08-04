@@ -413,17 +413,42 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
               --jq ".[] | select(.tag_name == \"$TAG\") | .id"
           )"
+
+          # ── Draft Identity Comes From The Mutation Boundary ───────────────
+          # GitHub can accept a draft release and still omit it briefly from
+          # the authenticated list endpoint. A successful creation therefore
+          # supplies its own numeric identity directly from the POST response.
+          # If creation instead collides with a draft that is not visible yet,
+          # bounded discovery recovers that same release without duplicating it.
+          # ──────────────────────────────────────────────────────────────────
           if [[ -z "$release_ids" ]]; then
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --draft \
-              --verify-tag \
-              --generate-notes \
-              --title "$TAG"
-            release_ids="$(
-              gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                --jq ".[] | select(.tag_name == \"$TAG\") | .id"
-            )"
+            create_error="$(mktemp)"
+            trap 'rm -f "$create_error"' EXIT
+            if release_id="$(
+              gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+                -f "tag_name=$TAG" \
+                -f "name=$TAG" \
+                -F draft=true \
+                -F generate_release_notes=true \
+                --jq .id \
+                2>"$create_error"
+            )"; then
+              release_ids="$release_id"
+            else
+              retry_delays=(2 4 8 16 30)
+              for retry_delay in "${retry_delays[@]}"; do
+                sleep "$retry_delay"
+                release_ids="$(
+                  gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                    --jq ".[] | select(.tag_name == \"$TAG\") | .id"
+                )"
+                [[ -n "$release_ids" ]] && break
+              done
+              if [[ -z "$release_ids" ]]; then
+                cat "$create_error" >&2
+                exit 1
+              fi
+            fi
           fi
           if [[ "$release_ids" == *$'\n'* || ! "$release_ids" =~ ^[0-9]+$ ]]; then
             echo "Expected exactly one GitHub Release for $TAG." >&2

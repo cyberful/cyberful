@@ -61,9 +61,13 @@ Release archives include the AGPL license, third-party notices, and the font
 and wordlist license texts. A partial release is resumed from its original tag
 and commit. Already-published npm artifacts are accepted only when their remote
 integrity exactly matches the release artifact; a version can never be rebuilt
-with different bytes. Draft lookup, asset upload, and final publication all use
-the same numeric release ID because GitHub does not expose drafts through its
-public release-by-tag endpoint.
+with different bytes. Fresh draft creation captures the numeric release ID
+directly from the authenticated create response. Resumption discovers the
+existing draft through the authenticated release list, with bounded discovery
+after a create conflict when GitHub has accepted the draft but has not made it
+list-visible yet. Asset upload and final publication keep using that same
+numeric ID because GitHub does not expose drafts through its public
+release-by-tag endpoint.
 
 ## One-time npm bootstrap
 
