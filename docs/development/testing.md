@@ -72,7 +72,10 @@ the provisioning role can require every network resource to originate from an
 approved template; it must assign public IPv4 addresses and route outbound
 traffic through an internet gateway. Provisioning always consumes the latest
 CloudFormation-managed template version; the GitHub role cannot create or
-modify versions. Record the stack's three outputs as the
+modify versions. A temporary capacity shortage retries a bounded list of native
+4-vCPU compute and general-purpose families in the same approved subnet. Other
+EC2 failures remain fatal, and exhausting the list terminates any peer runner
+that was already created. Record the stack's three outputs as the
 `AWS_RUNNER_ROLE_ARN`, `AWS_RUNNER_AMD64_TEMPLATE_ID`, and
 `AWS_RUNNER_ARM64_TEMPLATE_ID` variables in both GitHub environments:
 

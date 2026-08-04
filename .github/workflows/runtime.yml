@@ -216,6 +216,36 @@ jobs:
           }
           trap cleanup_on_failure EXIT
 
+          launch_instance() {
+            local template_id="$1"
+            shift
+            local error_file instance_type launched_id
+            error_file="$(mktemp)"
+            for instance_type in "$@"; do
+              if launched_id="$(aws ec2 run-instances \
+                --region "$AWS_REGION" \
+                --launch-template "LaunchTemplateId=$template_id,Version=\$Latest" \
+                --instance-type "$instance_type" \
+                --tag-specifications "$tag_specification" \
+                --count 1 \
+                --query 'Instances[0].InstanceId' \
+                --output text 2>"$error_file")"; then
+                rm -f "$error_file"
+                printf '%s\n' "$launched_id"
+                return 0
+              fi
+              if ! grep --quiet 'InsufficientInstanceCapacity' "$error_file"; then
+                cat "$error_file" >&2
+                rm -f "$error_file"
+                return 1
+              fi
+              echo "::warning::AWS has no $instance_type capacity in the approved subnet; trying the next native 4-vCPU family." >&2
+            done
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 1
+          }
+
           # Global workflow concurrency makes every matching instance stale.
           # Reaping first also recovers safely after a cancelled or failed run.
           terminate_instances
@@ -224,8 +254,10 @@ jobs:
           for architecture in amd64 arm64; do
             if [[ "$architecture" == amd64 ]]; then
               template_id="$AMD64_TEMPLATE_ID"
+              instance_types=(c7i.xlarge c6i.xlarge m7i.xlarge m6i.xlarge)
             else
               template_id="$ARM64_TEMPLATE_ID"
+              instance_types=(c7g.xlarge c6g.xlarge m7g.xlarge m6g.xlarge)
             fi
             [[ "$template_id" =~ ^lt-[0-9a-f]+$ ]]
 
@@ -254,13 +286,7 @@ jobs:
                 {Key:"cyberful:run-id",Value:$run_id},
                 {Key:"cyberful:run-attempt",Value:$run_attempt}
               ]}]')"
-            instance_id="$(aws ec2 run-instances \
-              --region "$AWS_REGION" \
-              --launch-template "LaunchTemplateId=$template_id,Version=\$Latest" \
-              --tag-specifications "$tag_specification" \
-              --count 1 \
-              --query 'Instances[0].InstanceId' \
-              --output text)"
+            instance_id="$(launch_instance "$template_id" "${instance_types[@]}")"
             [[ "$instance_id" =~ ^i-[0-9a-f]+$ ]]
             instance_ids+=("$instance_id")
           done
