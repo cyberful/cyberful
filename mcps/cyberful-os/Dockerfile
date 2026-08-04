@@ -84,22 +84,6 @@ ENV PATH="${CYBERFUL_OS_PYTHON_VENV}/bin:${PATH}"
 ARG JEB_INSTALLER_URL=""
 ARG JEB_SHA256=""
 ARG GHIDRA_VERSION=12.1.2+ds-0kali1
-ARG ZAP_VERSION
-ARG BUN_VERSION
-ARG BUILD_VERSION=dev
-ARG BUILD_REVISION=unknown
-ENV CYBERFUL_ZAP_VERSION=${ZAP_VERSION}
-
-LABEL org.opencontainers.image.title="cyberful-os" \
-      org.opencontainers.image.description="Unified Cyberful engagement runtime with cyberful-os, OWASP ZAP, and Ghidra" \
-      org.opencontainers.image.source="https://github.com/cyberful/cyberful" \
-      org.opencontainers.image.version="${BUILD_VERSION}" \
-      org.opencontainers.image.revision="${BUILD_REVISION}" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
-      org.cyberful.ghidra.version="${GHIDRA_VERSION}" \
-      org.cyberful.zap.version="${ZAP_VERSION}" \
-      org.cyberful.bun.version="${BUN_VERSION}" \
-      org.cyberful.zap.addons="ascanrules=83,spiderAjax=23.32.0,authhelper=0.40.0,graphql=0.33.0,mcp=0.2.0,oast=0.24.0,openapi=57,pscanrules=75,reports=0.46.0,websocket=37"
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. APT defaults
@@ -660,7 +644,9 @@ COPY cyberful-os/runtime_attestation.py /opt/cyberful/runtime-attestation
 # proves the image selected the decompiler matching TARGETARCH rather than an
 # emulated foreign binary. ZAP remains optional at runtime but complete at build.
 # ───────────────────────────────────────────────────────────────────────────
-ENV GHIDRA_INSTALL_DIR=/usr/share/ghidra \
+ARG ZAP_VERSION
+ENV CYBERFUL_ZAP_VERSION=${ZAP_VERSION} \
+    GHIDRA_INSTALL_DIR=/usr/share/ghidra \
     CYBER_GHIDRA_HOST=127.0.0.1 \
     CYBER_GHIDRA_PORT=47100 \
     CYBER_GHIDRA_STORE=/ghidra/store \
@@ -685,6 +671,28 @@ RUN "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
       test -n "$(find /zap/plugin -name "${addon}-*.zap" -print -quit)"; \
     done \
   && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation
+
+# ── Volatile Release Metadata Follows Runtime Filesystem Layers ─────────────
+# BUILD_VERSION and BUILD_REVISION change for every published commit, while
+# ZAP and Bun version bumps do not alter the expensive Kali toolchain layers.
+# Consuming those arguments only after installation and attestation lets
+# BuildKit reuse the complete runtime filesystem and regenerate only image
+# metadata when the release identity changes. The final labels remain identical
+# to the public OCI contract consumed by the runtime and release workflows.
+# ───────────────────────────────────────────────────────────────────────────
+ARG BUN_VERSION
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="cyberful-os" \
+      org.opencontainers.image.description="Unified Cyberful engagement runtime with cyberful-os, OWASP ZAP, and Ghidra" \
+      org.opencontainers.image.source="https://github.com/cyberful/cyberful" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.cyberful.ghidra.version="${GHIDRA_VERSION}" \
+      org.cyberful.zap.version="${ZAP_VERSION}" \
+      org.cyberful.bun.version="${BUN_VERSION}" \
+      org.cyberful.zap.addons="ascanrules=83,spiderAjax=23.32.0,authhelper=0.40.0,graphql=0.33.0,mcp=0.2.0,oast=0.24.0,openapi=57,pscanrules=75,reports=0.46.0,websocket=37"
 
 WORKDIR /workspace
 EXPOSE 8080

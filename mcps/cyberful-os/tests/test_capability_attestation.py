@@ -195,6 +195,19 @@ class CapabilityReportTest(unittest.TestCase):
         ):
             self.assertIn(smoke, dockerfile[verify_at:workdir_at])
 
+    def test_per_build_metadata_cannot_invalidate_runtime_installation_layers(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        attestation_at = dockerfile.rindex(
+            '&& "${CYBERFUL_OS_PYTHON_VENV}/bin/python" /opt/cyberful/runtime-attestation'
+        )
+        release_arguments_at = dockerfile.index("ARG BUILD_VERSION=dev")
+        labels_at = dockerfile.index('LABEL org.opencontainers.image.title="cyberful-os"')
+        workdir_at = dockerfile.index("WORKDIR /workspace")
+
+        self.assertLess(attestation_at, release_arguments_at)
+        self.assertLess(release_arguments_at, labels_at)
+        self.assertLess(labels_at, workdir_at)
+
 
 if __name__ == "__main__":
     unittest.main()
