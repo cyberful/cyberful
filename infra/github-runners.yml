@@ -41,6 +41,18 @@ Parameters:
     Type: String
     Default: 58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1
     AllowedPattern: "^[0-9a-f]{64}$"
+  AwsCliVersion:
+    Type: String
+    Default: 2.27.41
+    AllowedPattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+  AwsCliX64Sha256:
+    Type: String
+    Default: 15daae6cc803984064e3d4be9cfd07c4ae8ea703633c0a0b67acc6e321f706a3
+    AllowedPattern: "^[0-9a-f]{64}$"
+  AwsCliArm64Sha256:
+    Type: String
+    Default: 2c6ed21cf7cff0a7d77118c69bee867128bf4c588db7b5c044ffba5faeb6ccde
+    AllowedPattern: "^[0-9a-f]{64}$"
   Amd64ImageId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
@@ -178,9 +190,23 @@ Resources:
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
                 apt-get install --yes --no-install-recommends \
-                  awscli build-essential ca-certificates curl docker-buildx docker.io \
+                  build-essential ca-certificates curl docker-buildx docker.io \
                   git jq npm python3 python3-pip python3-venv sudo tar unzip
                 systemctl enable --now docker
+
+                aws_cli_archive=/tmp/awscliv2.zip
+                aws_cli_installer=/tmp/aws-cli-installer
+                curl --fail --location --retry 5 --retry-all-errors \
+                  --output "$aws_cli_archive" \
+                  "https://awscli.amazonaws.com/awscli-exe-linux-${AwsCliArch}-${AwsCliVersion}.zip"
+                printf '%s  %s\n' '${AwsCliSha256}' "$aws_cli_archive" \
+                  | sha256sum --check --strict
+                install --directory "$aws_cli_installer"
+                unzip -q "$aws_cli_archive" -d "$aws_cli_installer"
+                "$aws_cli_installer/aws/install" \
+                  --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+                aws --version
+                rm -rf "$aws_cli_archive" "$aws_cli_installer"
 
                 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
                 usermod --append --groups docker runner
@@ -227,6 +253,8 @@ Resources:
                 sudo --user runner --set-home ./run.sh
               - RunnerArch: x64
                 RunnerSha256: !Ref RunnerX64Sha256
+                AwsCliArch: x86_64
+                AwsCliSha256: !Ref AwsCliX64Sha256
 
   Arm64LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -302,9 +330,23 @@ Resources:
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
                 apt-get install --yes --no-install-recommends \
-                  awscli build-essential ca-certificates curl docker-buildx docker.io \
+                  build-essential ca-certificates curl docker-buildx docker.io \
                   git jq npm python3 python3-pip python3-venv sudo tar unzip
                 systemctl enable --now docker
+
+                aws_cli_archive=/tmp/awscliv2.zip
+                aws_cli_installer=/tmp/aws-cli-installer
+                curl --fail --location --retry 5 --retry-all-errors \
+                  --output "$aws_cli_archive" \
+                  "https://awscli.amazonaws.com/awscli-exe-linux-${AwsCliArch}-${AwsCliVersion}.zip"
+                printf '%s  %s\n' '${AwsCliSha256}' "$aws_cli_archive" \
+                  | sha256sum --check --strict
+                install --directory "$aws_cli_installer"
+                unzip -q "$aws_cli_archive" -d "$aws_cli_installer"
+                "$aws_cli_installer/aws/install" \
+                  --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+                aws --version
+                rm -rf "$aws_cli_archive" "$aws_cli_installer"
 
                 id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
                 usermod --append --groups docker runner
@@ -351,6 +393,8 @@ Resources:
                 sudo --user runner --set-home ./run.sh
               - RunnerArch: arm64
                 RunnerSha256: !Ref RunnerArm64Sha256
+                AwsCliArch: aarch64
+                AwsCliSha256: !Ref AwsCliArm64Sha256
 
   GitHubProvisionRole:
     Type: AWS::IAM::Role

@@ -98,4 +98,6 @@ job, and has a four-hour shutdown deadline. A failed bootstrap remains alive
 only long enough for the provisioning job to copy its serial-console output
 into the private Actions log, then the same failure trap terminates it. The
 trusted cleanup workflow on `main` handles cancellation and an hourly
-stale-capacity sweep.
+stale-capacity sweep. Both the GitHub Actions runner and the official AWS CLI
+v2 installer are version-pinned and checksum-verified independently for amd64
+and arm64 before execution.
