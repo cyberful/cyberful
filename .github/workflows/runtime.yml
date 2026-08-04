@@ -336,17 +336,18 @@ jobs:
           CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
         run: npm --prefix mcps run browser:install -- --with-deps
       - name: Build the native image into Docker
-        shell: bash
-        run: |
-          docker buildx build \
-            --platform "$RUNTIME_PLATFORM" \
-            --file mcps/cyberful-os/Dockerfile \
-            --tag "cyberful-os:check-${GITHUB_SHA}-${RUNTIME_ARCH}" \
-            --build-arg "BUILD_VERSION=check-${GITHUB_SHA}" \
-            --build-arg "BUILD_REVISION=${GITHUB_SHA}" \
-            --cache-from "type=gha,scope=cyberful-os-${RUNTIME_ARCH}" \
-            --cache-to "type=gha,mode=max,scope=cyberful-os-${RUNTIME_ARCH},ignore-error=true" \
-            --load mcps
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: mcps
+          file: mcps/cyberful-os/Dockerfile
+          platforms: ${{ env.RUNTIME_PLATFORM }}
+          tags: cyberful-os:check-${{ github.sha }}-${{ env.RUNTIME_ARCH }}
+          build-args: |
+            BUILD_VERSION=check-${{ github.sha }}
+            BUILD_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=cyberful-os-${{ env.RUNTIME_ARCH }}
+          cache-to: type=gha,mode=max,scope=cyberful-os-${{ env.RUNTIME_ARCH }},ignore-error=true
+          load: true
       - name: Verify architecture and full runtime behavior
         env:
           CYBER_BROWSER_BROWSERS_PATH: ${{ runner.temp }}/cyberful-browser
