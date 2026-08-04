@@ -37,9 +37,14 @@ cyberful
 ```
 
 The first run pulls one native `amd64` or `arm64` tooling image. The download
-can exceed 6 GB; keep at least 40 GB of disk space free. Packaged releases need
-Docker as their only tooling prerequisite—ZAP, Ghidra, Python, Node, Firefox,
-and Kali tools are inside the image.
+can exceed 6 GB; keep at least 40 GB of disk space free. A standalone binary
+needs Docker as its only host tooling prerequisite; the npm channel also needs
+Node.js and npm for its platform selector. ZAP, Ghidra, Python, Firefox, and
+Kali tools are inside the image.
+
+For a new macOS, Linux, or Windows host, follow [Your first penetration
+test](docs/getting-started/README.md) to install every prerequisite,
+authenticate the provider, verify the environment, and run the workflow.
 
 For a source checkout:
 
@@ -337,8 +342,9 @@ Packaged releases require Docker and one provider configured in
 24 with npm, and Python 3.10+. Keep 40 GB free to run the downloaded image and
 100 GB free when building it locally. Docker Compose is not required.
 
-See the [requirements guide](docs/getting-started/requirements.md) for macOS,
-Linux, and Windows setup.
+See the [requirements guide](docs/getting-started/requirements.md) for the host
+contract and the [fresh-host walkthrough](docs/getting-started/README.md) for
+complete macOS, Linux, and Windows setup.
 
 ## Build and test
 

@@ -2,11 +2,11 @@
 
 - [Home](README.md)
 
-## Start
+## Getting Start
 
+- [Your first penetration test](getting-started/README.md)
 - [What you need](getting-started/requirements.md)
 - [Install Cyberful](getting-started/install.md)
-- [Your first penetration test](getting-started/README.md)
 
 ## Use Cyberful
 

@@ -29,12 +29,6 @@ hide:
   </figure>
 </section>
 
-<div class="cyberful-proof">
-  <div class="cyberful-proof__item"><strong>3 workflows</strong><span>Pentest, bug bounty, and code audit</span></div>
-  <div class="cyberful-proof__item"><strong>Independent verification</strong><span>Evidence before conclusions</span></div>
-  <div class="cyberful-proof__item"><strong>Scoped by design</strong><span>Authorization is a system boundary</span></div>
-</div>
-
 <section class="cyberful-home-section">
   <div class="cyberful-section-heading cyberful-section-heading--editorial">
     <div>

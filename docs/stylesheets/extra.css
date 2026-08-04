@@ -239,9 +239,9 @@ body {
 
 .md-nav__title,
 .md-nav__item--section > .md-nav__link {
-  font-family: var(--cyberful-serif);
-  font-optical-sizing: auto;
+  font-family: var(--cyberful-ui);
   font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .md-nav--secondary .md-nav__title {
@@ -311,6 +311,19 @@ body {
 
 .md-typeset p {
   margin: 1em 0;
+}
+
+.md-content__inner:not(:has(> .cyberful-home)) a:not(.headerlink, .md-button) {
+  color: var(--cyberful-blue);
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.16em;
+}
+
+.md-content__inner:not(:has(> .cyberful-home)) a:not(.headerlink, .md-button):is(:hover, :focus-visible) {
+  color: var(--md-typeset-a-color);
+  text-decoration-thickness: 0.09em;
 }
 
 .md-typeset blockquote {
@@ -483,6 +496,7 @@ body {
 .md-typeset .md-button {
   border: 1px solid var(--cyberful-line);
   border-radius: 0.58rem;
+  color: var(--md-default-fg-color);
   font-weight: 720;
   padding: 0.62rem 1rem;
   transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
@@ -620,43 +634,6 @@ body {
   position: relative;
   width: 100%;
   z-index: 1;
-}
-
-.cyberful-proof {
-  background: var(--md-default-bg-color);
-  border: 1px solid var(--cyberful-line);
-  border-radius: 0.95rem;
-  box-shadow: 0 0.8rem 2.8rem rgb(4 8 16 / 7%);
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  margin: -1.15rem clamp(1.1rem, 2vw, 2rem) 4.5rem;
-  position: relative;
-  z-index: 2;
-}
-
-.cyberful-proof__item {
-  padding: 1.15rem 1.35rem;
-}
-
-.cyberful-proof__item + .cyberful-proof__item {
-  border-left: 1px solid var(--cyberful-line);
-}
-
-.cyberful-proof strong,
-.cyberful-proof span {
-  display: block;
-}
-
-.cyberful-proof strong {
-  font-family: var(--cyberful-serif);
-  font-size: 0.95rem;
-  font-weight: 640;
-}
-
-.cyberful-proof span {
-  color: var(--cyberful-muted);
-  font-size: 0.6rem;
-  margin-top: 0.18rem;
 }
 
 .cyberful-home-section {
@@ -1025,10 +1002,6 @@ body {
     margin-top: 1rem;
   }
 
-  .cyberful-proof {
-    margin: -0.9rem 0.8rem 3.5rem;
-  }
-
   .cyberful-home-section {
     margin: 3.6rem 0;
     padding: 0 0.8rem;
@@ -1044,18 +1017,12 @@ body {
 
   .cyberful-workflow-grid,
   .cyberful-card-grid,
-  .cyberful-proof,
   .cyberful-deep-grid {
     grid-template-columns: 1fr;
   }
 
   .cyberful-workflow-card {
     min-height: 14rem;
-  }
-
-  .cyberful-proof__item + .cyberful-proof__item {
-    border-left: 0;
-    border-top: 1px solid var(--cyberful-line);
   }
 
   .cyberful-section-heading,
