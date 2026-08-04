@@ -1,3 +1,11 @@
+# ── Unified Runtime CI/CD ────────────────────────────────────────
+# Reviews, provisions, tests, publishes, attests, and signs the two native
+#   architectures that form the immutable Cyberful runtime OCI index.
+# → infra/github-runners.yml — defines the ephemeral native runner boundary.
+# → .github/workflows/runtime-runner-cleanup.yml — reaps runner capacity.
+# @docs/development/testing.md
+# @docs/development/release.md
+# ─────────────────────────────────────────────────────────────────
 name: Unified runtime
 
 on:
@@ -6,16 +14,18 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Registry mutations on main must be ordered. queue: max avoids GitHub's default
-# behavior of replacing an already-pending run with the newest one.
+# Native capacity is deliberately global: at most one amd64 and one arm64
+# instance may exist for this repository. queue: max preserves every approved
+# run while serializing PR validation and main publication.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('runtime-pr-{0}', github.event.pull_request.number) || github.ref == 'refs/heads/main' && 'runtime-main' || format('runtime-{0}', github.run_id) }}
+  group: runtime-native
   queue: max
 
 permissions:
   contents: read
 
 env:
+  AWS_REGION: eu-central-1
   BUN_VERSION: 1.3.14
   RUNTIME_IMAGE: ghcr.io/cyberful/cyberful-os
 
@@ -27,6 +37,7 @@ jobs:
       runtime_changed: ${{ steps.change.outputs.runtime_changed }}
       publish_main: ${{ steps.change.outputs.publish_main }}
       full_build: ${{ steps.change.outputs.full_build }}
+      needs_runners: ${{ steps.change.outputs.needs_runners }}
       sha_exists: ${{ steps.change.outputs.sha_exists }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
@@ -99,15 +110,175 @@ jobs:
             runtime_changed=true
           fi
 
+          needs_runners=false
+          if [[ "$publish_main" == true && "$full_build" == true && "$sha_exists" == false ]]; then
+            needs_runners=true
+          elif [[ "$publish_main" == false && "$runtime_changed" == true ]]; then
+            needs_runners=true
+          fi
+
           echo "runtime_changed=$runtime_changed" >> "$GITHUB_OUTPUT"
           echo "publish_main=$publish_main" >> "$GITHUB_OUTPUT"
           echo "full_build=$full_build" >> "$GITHUB_OUTPUT"
+          echo "needs_runners=$needs_runners" >> "$GITHUB_OUTPUT"
           echo "sha_exists=$sha_exists" >> "$GITHUB_OUTPUT"
+
+  provision-runners:
+    name: Authorize and provision native runners
+    needs: [prepare]
+    if: needs.prepare.outputs.needs_runners == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: ${{ github.event_name == 'push' && 'runtime-main' || 'runtime-pr' }}
+    permissions:
+      contents: read
+      id-token: write # Exchange GitHub OIDC for the narrowly scoped AWS role.
+    steps:
+      - id: app-token
+        name: Mint a short-lived runner administration token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.CYBERFUL_RUNNER_APP_ID }}
+          private-key: ${{ secrets.CYBERFUL_RUNNER_APP_PRIVATE_KEY }}
+      - name: Assume the ephemeral runner provisioning role
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+          role-session-name: cyberful-runtime-${{ github.run_id }}
+          role-to-assume: ${{ vars.AWS_RUNNER_ROLE_ARN }}
+      - name: Replace stale capacity and start exactly two native runners
+        env:
+          AMD64_TEMPLATE_ID: ${{ vars.AWS_RUNNER_AMD64_TEMPLATE_ID }}
+          ARM64_TEMPLATE_ID: ${{ vars.AWS_RUNNER_ARM64_TEMPLATE_ID }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          parameter_root="/cyberful/github-runners/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+          instance_ids=()
+
+          delete_parameters() {
+            for architecture in amd64 arm64; do
+              aws ssm delete-parameter \
+                --name "$parameter_root/$architecture" \
+                --region "$AWS_REGION" >/dev/null 2>&1 || true
+            done
+          }
+
+          terminate_instances() {
+            local ids
+            local -a stale_ids
+            ids="$(aws ec2 describe-instances \
+              --region "$AWS_REGION" \
+              --filters \
+                'Name=tag:cyberful:managed,Values=true' \
+                "Name=tag:cyberful:repository,Values=$GITHUB_REPOSITORY" \
+                'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output text)"
+            if [[ -n "$ids" ]]; then
+              read -r -a stale_ids <<<"$ids"
+              aws ec2 terminate-instances \
+                --region "$AWS_REGION" \
+                --instance-ids "${stale_ids[@]}" >/dev/null
+              aws ec2 wait instance-terminated \
+                --region "$AWS_REGION" \
+                --instance-ids "${stale_ids[@]}"
+            fi
+          }
+
+          cleanup_on_failure() {
+            local status=$?
+            trap - EXIT
+            if (( status != 0 )); then
+              terminate_instances || true
+              delete_parameters
+            fi
+            exit "$status"
+          }
+          trap cleanup_on_failure EXIT
+
+          # Global workflow concurrency makes every matching instance stale.
+          # Reaping first also recovers safely after a cancelled or failed run.
+          terminate_instances
+          delete_parameters
+
+          for architecture in amd64 arm64; do
+            if [[ "$architecture" == amd64 ]]; then
+              template_id="$AMD64_TEMPLATE_ID"
+            else
+              template_id="$ARM64_TEMPLATE_ID"
+            fi
+            [[ "$template_id" =~ ^lt-[0-9a-f]+$ ]]
+
+            registration_token="$(gh api \
+              --method POST \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/actions/runners/registration-token" \
+              --jq .token)"
+            test -n "$registration_token"
+            echo "::add-mask::$registration_token"
+            aws ssm put-parameter \
+              --region "$AWS_REGION" \
+              --name "$parameter_root/$architecture" \
+              --type SecureString \
+              --value "$registration_token" \
+              --overwrite >/dev/null
+            unset registration_token
+
+            tag_specification="$(jq --compact-output --null-input \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+              '[{ResourceType:"instance",Tags:[
+                {Key:"cyberful:managed",Value:"true"},
+                {Key:"cyberful:repository",Value:$repository},
+                {Key:"cyberful:run-id",Value:$run_id},
+                {Key:"cyberful:run-attempt",Value:$run_attempt}
+              ]}]')"
+            instance_id="$(aws ec2 run-instances \
+              --region "$AWS_REGION" \
+              --launch-template "LaunchTemplateId=$template_id,Version=\$Default" \
+              --tag-specifications "$tag_specification" \
+              --count 1 \
+              --query 'Instances[0].InstanceId' \
+              --output text)"
+            [[ "$instance_id" =~ ^i-[0-9a-f]+$ ]]
+            instance_ids+=("$instance_id")
+          done
+
+          aws ec2 wait instance-status-ok \
+            --region "$AWS_REGION" \
+            --instance-ids "${instance_ids[@]}"
+
+          for architecture in amd64 arm64; do
+            runner_name="cyberful-aws-$architecture-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            online=false
+            for _ in {1..60}; do
+              if gh api \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                --paginate "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" \
+                | jq --exit-status --arg name "$runner_name" \
+                    '.runners[] | select(.name == $name and .status == "online" and .busy == false)' \
+                    >/dev/null; then
+                online=true
+                break
+              fi
+              sleep 10
+            done
+            if [[ "$online" != true ]]; then
+              echo "Runner $runner_name did not become ready within ten minutes." >&2
+              exit 1
+            fi
+          done
 
   native-check:
     name: Native check ${{ matrix.platform }}
-    needs: [prepare]
-    if: github.event_name == 'pull_request' || needs.prepare.outputs.publish_main == 'false'
+    needs: [prepare, provision-runners]
+    if: needs.prepare.outputs.needs_runners == 'true' && needs.prepare.outputs.publish_main == 'false'
     runs-on: [self-hosted, linux, cyberful-container, "${{ matrix.arch }}"]
     timeout-minutes: 180
     env:
@@ -158,6 +329,8 @@ jobs:
             --tag "cyberful-os:check-${GITHUB_SHA}-${RUNTIME_ARCH}" \
             --build-arg "BUILD_VERSION=check-${GITHUB_SHA}" \
             --build-arg "BUILD_REVISION=${GITHUB_SHA}" \
+            --cache-from "type=gha,scope=cyberful-os-${RUNTIME_ARCH}" \
+            --cache-to "type=gha,mode=max,scope=cyberful-os-${RUNTIME_ARCH},ignore-error=true" \
             --load mcps
       - name: Verify architecture and full runtime behavior
         env:
@@ -181,7 +354,7 @@ jobs:
 
   main-native:
     name: Main native ${{ matrix.platform }}
-    needs: [prepare]
+    needs: [prepare, provision-runners]
     if: needs.prepare.outputs.publish_main == 'true' && needs.prepare.outputs.full_build == 'true' && needs.prepare.outputs.sha_exists == 'false'
     permissions:
       contents: read
@@ -242,6 +415,8 @@ jobs:
           outputs: type=image,name=${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
+          cache-from: type=gha,scope=cyberful-os-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=cyberful-os-${{ matrix.arch }},ignore-error=true
           build-args: |
             BUILD_VERSION=sha-${{ github.sha }}
             BUILD_REVISION=${{ github.sha }}
@@ -531,7 +706,7 @@ jobs:
   required:
     name: Unified runtime required
     if: always()
-    needs: [prepare, native-check, main-native, main-index, main-copy, main-existing]
+    needs: [prepare, provision-runners, native-check, main-native, main-index, main-copy, main-existing]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -541,7 +716,9 @@ jobs:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           PUBLISH_MAIN: ${{ needs.prepare.outputs.publish_main }}
           FULL_BUILD: ${{ needs.prepare.outputs.full_build }}
+          NEEDS_RUNNERS: ${{ needs.prepare.outputs.needs_runners }}
           SHA_EXISTS: ${{ needs.prepare.outputs.sha_exists }}
+          PROVISION_RESULT: ${{ needs.provision-runners.result }}
           NATIVE_RESULT: ${{ needs.native-check.result }}
           MAIN_NATIVE_RESULT: ${{ needs.main-native.result }}
           INDEX_RESULT: ${{ needs.main-index.result }}
@@ -551,10 +728,17 @@ jobs:
         run: |
           test "$PREPARE_RESULT" = success
           if [[ "$PUBLISH_MAIN" != true ]]; then
-            test "$NATIVE_RESULT" = success
+            if [[ "$NEEDS_RUNNERS" == true ]]; then
+              test "$PROVISION_RESULT" = success
+              test "$NATIVE_RESULT" = success
+            else
+              test "$PROVISION_RESULT" = skipped
+              test "$NATIVE_RESULT" = skipped
+            fi
           elif [[ "$SHA_EXISTS" == true ]]; then
             test "$EXISTING_RESULT" = success
           elif [[ "$FULL_BUILD" == true ]]; then
+            test "$PROVISION_RESULT" = success
             test "$MAIN_NATIVE_RESULT" = success
             test "$INDEX_RESULT" = success
           else

@@ -157,18 +157,20 @@ Do not substitute another public launcher name: it would break the documented
 
 ## GitHub release prerequisites
 
-- Keep `main` as the default protected branch and require both
-  **Typecheck, test, and docs** and **Unified runtime required** before merging.
+- Keep `main` as the default protected branch and require one current approval,
+  dismiss stale approvals after every new push, and require both **Typecheck,
+  test, and docs** and **Unified runtime required** before merging.
   Require `main` to advance by one
   first-parent commit per push (squash or a single merge commit; no rebase
   merges or direct multi-commit pushes), because GitHub emits one workflow SHA
   per push. The runtime workflow queues up to 100 `main` runs and processes
   registry mutations one at a time.
-- Register exactly two self-hosted runner classes with the labels documented in
-  the testing guide. Do not install or register QEMU/binfmt emulators on them.
-  Keep the runner agent current and provision these as ephemeral, clean hosts:
-  pull requests execute repository code and use the Docker socket, so a
-  persistent PR runner must never later become a trusted `main` publisher.
+- Deploy the two launch templates and OIDC roles from
+  `infra/github-runners.yml`, then configure the protected GitHub environments
+  documented in the testing guide. Do not install or register QEMU/binfmt
+  emulators. Pull requests execute repository code and use the Docker socket,
+  so every runner is single-job, ephemeral, and destroyed before another trust
+  context can use it.
 - Allow GitHub Actions to write repository packages. The runtime assembly job
   and interrupted-signature recovery receive `packages: write` plus
   `id-token: write` for Cosign; runtime platform jobs and tag-copy jobs receive
