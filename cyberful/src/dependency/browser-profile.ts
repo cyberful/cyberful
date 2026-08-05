@@ -83,6 +83,7 @@ export function manualBrowserProfileEnv(
     CYBER_BROWSER_BROWSERS_PATH:
       configuredPath(env, "CYBER_BROWSER_BROWSERS_PATH") ?? path.join(browserHome(homeDirectory), ".browsers"),
     CYBER_BROWSER_USER_DATA_DIR: browserProfileDir(profile, env, homeDirectory),
+    CYBER_BROWSER_ARTIFACTS_DIR: browserArtifactsDir(profile, env, homeDirectory),
     CYBER_BROWSER_PROFILE_ID: String(profile),
     CYBER_BROWSER_EAGER: "1",
     CYBER_BROWSER_HEADLESS: "false",
