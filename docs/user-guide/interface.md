@@ -5,6 +5,21 @@ first prompt before opening a persisted session. The terminal layout remains
 usable at different window sizes and keeps transient menus in front of the
 controls they describe.
 
+## Prepare a browser profile
+
+Use `cyberful browser-1` through `cyberful browser-5` to open one isolated,
+persistent browser identity before a test. The command works from the global npm
+installation, provisions Chromium when necessary, and stays attached until the
+window closes or the terminal command is interrupted. Fully close the window
+before starting Cyberful so the test can acquire that profile without replacing
+it with a temporary unauthenticated fallback.
+
+Each number retains separate cookies, local storage, cache, tabs, and downloads.
+Use only the authorized target account assigned to that identity; the command
+never opens a personal browser profile. An invalid number or a profile that
+cannot be started returns a non-zero status with a terminal error. See the
+[browser runtime](../runtimes/browser.md) for storage paths and configuration.
+
 ## Appearance and light mode
 
 Cyberful uses its built-in color theme; custom theme files, installation, and

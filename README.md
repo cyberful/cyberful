@@ -43,6 +43,10 @@ cyberful
 the Cyberful security image and installs its isolated Chromium browser. Keep at
 least 40 GB of disk space free.
 
+Open any persistent browser identity before a test with `cyberful browser-1`
+through `cyberful browser-5`. Sign in only to the authorized target account,
+then fully close the browser so Cyberful can reuse that profile during the test.
+
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow
 **[Your first penetration test](https://cyberful.io/getting-started/)**.
 

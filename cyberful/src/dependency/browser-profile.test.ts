@@ -61,6 +61,7 @@ describe("browser profile identity", () => {
       PATH: "/usr/bin",
       CYBER_BROWSER_BROWSERS_PATH: "/home/tester/.cyberful/browser/.browsers",
       CYBER_BROWSER_USER_DATA_DIR: "/profiles/two",
+      CYBER_BROWSER_ARTIFACTS_DIR: "/home/tester/.cyberful/browser/artifacts/profile-2",
       CYBER_BROWSER_PROFILE_ID: "2",
       CYBER_BROWSER_EAGER: "1",
       CYBER_BROWSER_HEADLESS: "false",

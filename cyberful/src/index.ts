@@ -34,6 +34,7 @@ import { EOL } from "os"
 import { SessionCommand } from "./cli/cmd/session"
 import { ApprovalCommand } from "./cli/cmd/approval"
 import { AuthCommand } from "./cli/cmd/auth"
+import { BrowserCommand, browserProfileCommandKind, invalidBrowserProfileMessage } from "./cli/cmd/browser"
 import { bootstrapConfigReady } from "./bootstrap-config"
 import { bootstrapBrowserReady } from "./bootstrap-browser"
 import { GATEWAY_ARGV } from "./subsystem/gateway/config"
@@ -95,6 +96,11 @@ if (process.argv.includes(GATEWAY_ARGV)) {
 }
 
 const args = hideBin(process.argv)
+const requestedBrowserCommand = args[0]
+if (requestedBrowserCommand && browserProfileCommandKind(requestedBrowserCommand) === "unsupported") {
+  UI.error(invalidBrowserProfileMessage(requestedBrowserCommand))
+  process.exit(2)
+}
 
 function show(out: string) {
   const text = out.trimStart()
@@ -215,6 +221,7 @@ const cli = yargs(args)
   .command(SessionCommand)
   .command(ApprovalCommand)
   .command(AuthCommand)
+  .command(BrowserCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

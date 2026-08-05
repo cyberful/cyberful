@@ -35,16 +35,22 @@ those identities to `profile: 1` and `profile: 2` on every browser call.
 
 ## Pre-authenticate profiles manually
 
-From the repository root, open the identity you want to seed:
+From a global npm installation, open the identity you want to seed:
 
 ```sh
-make browser-run-1
-make browser-run-2
-# ...through make browser-run-5
+cyberful browser-1
+cyberful browser-2
+# ...through cyberful browser-5
 ```
 
+The command installs the isolated Chromium build when necessary, opens the same
+persistent profile used during tests, and remains attached until the browser is
+closed or the command is interrupted. Invalid or unavailable profile numbers
+fail with a non-zero status. Source contributors can use the equivalent
+`make browser-run-1` through `make browser-run-5` targets.
+
 Sign in only to the authorized target account for that identity, then fully
-close the Chromium window. The Make command returns after the browser exits and
+close the Chromium window. The command returns after the browser exits and
 releases its profile lock. Repeat for other accounts, then run Cyberful and tell
 it which account is stored in each numbered profile. Do not leave a manual
 profile open when starting Cyberful: a locked profile is replaced with a
