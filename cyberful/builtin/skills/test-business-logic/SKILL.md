@@ -35,8 +35,7 @@ Identify which system owns price, payment, inventory, entitlement, approval, quo
 
 Check sign, zero, maximum, precision, rounding, currency, unit conversion, tax, discount, quantity, duplicate, overflow, underflow, and allocation semantics. Use synthetic low-value transactions and never create material financial impact.
 
-Read [references/financial-and-entitlement-workflows.md](references/financial-and-entitlement-workflows.md) when money, inventory, or access is involved.
-Use [references/field-heuristics.md](references/field-heuristics.md) to expose hidden invariants, temporal seams, and cross-channel compositions that conventional endpoint testing misses.
+Read [references/financial-and-entitlement-workflows.md](references/financial-and-entitlement-workflows.md) when money, inventory, or access is involved. Use [references/field-heuristics.md](references/field-heuristics.md) to expose hidden invariants, temporal seams, and cross-channel compositions that conventional endpoint testing misses.
 
 ## Audit implementation
 

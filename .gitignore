@@ -77,3 +77,4 @@ OPPORTUNITIES/
 *.zip
 __pycache__/
 *.py[cod]
+.tmp

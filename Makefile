@@ -1,7 +1,14 @@
-.PHONY: all help deps install typecheck test test-bun test-browser test-python runtime-build test-runtime test-cyberful-os test-network test-zap test-ghidra test-all build run browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
+.PHONY: all help deps install typecheck test test-bun test-browser test-python runtime-build test-runtime test-cyberful-os test-network test-zap test-ghidra test-all build run cve_dictionary cve_dictionary_publish browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
 
 PYTHON ?= python3
 CYBERFUL_OS_IMAGE ?= cyberful-os:latest
+CVE_DICTIONARY_DEFINITION ?= cyberful/data/cve-dictionary/sources.json
+CVE_DICTIONARY_OUTPUT ?= dist/cve-dictionary
+CVE_DICTIONARY_OFFLINE ?= 0
+CVE_DICTIONARY_MODEL_CACHE ?= .cache/cve-dictionary/models
+CVE_DICTIONARY_GOLDEN_SET ?= cyberful/data/cve-dictionary/golden-queries.json
+CVE_DICTIONARY_PUBLISH_REPOSITORY ?= cyberful/cyberful
+CVE_DICTIONARY_PUBLISH_DRY_RUN ?= 0
 
 all: typecheck test test-network build
 
@@ -23,6 +30,8 @@ help:
 	@echo "  make build        Build standalone binaries for all platforms"
 	@echo "  make install      Build and install the 'cyberful' command for this system"
 	@echo "  make run          Launch Cyberful from the repository root"
+	@echo "  make cve_dictionary Rebuild the pinned offline CVE dictionary and its manifests"
+	@echo "  make cve_dictionary_publish Sign and publish the verified local CVE snapshot"
 	@echo "  make browser-run-{1..5} Open a persistent browser profile for target pre-authentication"
 	@echo "  make docs         Serve the engineer docs locally"
 	@echo "  make docs-build   Build the static documentation site"
@@ -62,7 +71,7 @@ test-python:
 
 runtime-build:
 	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make runtime-build; start Docker and retry." >&2; exit 1)
-	@mcps/cyberful-os/bin/cyberful-os-build --quiet
+	@mcps/cyberful-os/bin/cyberful-os-build
 
 test-runtime:
 	@docker version --format '{{.Server.Version}}' >/dev/null || (echo "Docker is required for make test-runtime; start Docker and retry." >&2; exit 1)
@@ -106,6 +115,18 @@ install:
 # the app layers `.env` itself, so no --env-file is needed.
 run:
 	cd $(dir $(abspath $(firstword $(MAKEFILE_LIST)))) && CYBERFUL_BUILD_ID="$${CYBERFUL_BUILD_ID:-$$(bun ./cyberful/script/source-build-id.ts)}" bun --preload ./cyberful/node_modules/@opentui/solid/scripts/preload.ts --conditions=browser cyberful/src/index.ts $(ARGS)
+
+# Materialize only immutable revisions declared in the source registry, then
+# rebuild SQLite, FTS/vector indexes, coverage, manifests, checksums, and gzip.
+cve_dictionary:
+	bun cyberful/script/cve-dictionary-sources.ts --definition "$(CVE_DICTIONARY_DEFINITION)" --offline "$(CVE_DICTIONARY_OFFLINE)"
+	bun cyberful/script/cve-dictionary-build.ts --definition "$(CVE_DICTIONARY_DEFINITION)" --output "$(CVE_DICTIONARY_OUTPUT)" --model-cache "$(CVE_DICTIONARY_MODEL_CACHE)" --golden-set "$(CVE_DICTIONARY_GOLDEN_SET)" --offline "$(CVE_DICTIONARY_OFFLINE)"
+
+# Maintainer-only release path. It never rebuilds the corpus: it signs the exact
+# completed local snapshot, validates its documented assets, and creates one
+# immutable GitHub release after explicit invocation.
+cve_dictionary_publish:
+	bun cyberful/script/cve-dictionary-release.ts --definition "$(CVE_DICTIONARY_DEFINITION)" --output "$(CVE_DICTIONARY_OUTPUT)" --repository "$(CVE_DICTIONARY_PUBLISH_REPOSITORY)" --dry-run "$(CVE_DICTIONARY_PUBLISH_DRY_RUN)"
 
 browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5:
 	bun cyberful/script/browser-run.ts $(@:browser-run-%=%)

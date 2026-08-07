@@ -11,8 +11,7 @@ Model every participant and artifact before testing. A syntactically valid token
 
 Record authorization server or identity provider, resource server or service provider, clients, redirect endpoints, browsers, back channels, issuers, audiences, keys, metadata, scopes, claims, subject mapping, tenant mapping, token types, logout paths, and trust administrators.
 
-Read [references/oauth-oidc-jwt.md](references/oauth-oidc-jwt.md) for OAuth/OIDC/JWT and [references/saml-federation.md](references/saml-federation.md) for SAML.
-Use [references/field-heuristics.md](references/field-heuristics.md) for mix-up, key-resolution, account-linking, and multi-tenant differentials that commonly escape checklist testing.
+Read [references/oauth-oidc-jwt.md](references/oauth-oidc-jwt.md) for OAuth/OIDC/JWT and [references/saml-federation.md](references/saml-federation.md) for SAML. Use [references/field-heuristics.md](references/field-heuristics.md) for mix-up, key-resolution, account-linking, and multi-tenant differentials that commonly escape checklist testing.
 
 ## Test artifact binding
 
@@ -34,12 +33,7 @@ Check immutable versus mutable identifiers, email verification semantics, issuer
 
 Separate public, confidential, native, browser, machine, and administrative clients. Check redirect registration, response modes, browser history and referrer exposure, front-channel versus back-channel delivery, client authentication, token storage, resource indicators, sender constraint, scope minimization, and unsafe token forwarding.
 
-For dynamic client registration, do not treat the absence of a documented client-deletion endpoint as an
-automatic blocker when the mission permits state changes. Create at most one uniquely named synthetic client,
-retain registration artifacts and tokens only in session variables, run the minimum token and protected-resource
-oracle once, attempt any advertised or directly observed management operation, erase local artifacts, and
-record residual state. Stop before a second client, a third-party redirect, a transaction, non-tester data, or
-any persistent code or retained reusable access.
+For dynamic client registration, do not treat the absence of a documented client-deletion endpoint as an automatic blocker when the mission permits state changes. Create at most one uniquely named synthetic client, retain registration artifacts and tokens only in session variables, run the minimum token and protected-resource oracle once, attempt any advertised or directly observed management operation, erase local artifacts, and record residual state. Stop before a second client, a third-party redirect, a transaction, non-tester data, or any persistent code or retained reusable access.
 
 ## Audit libraries and configuration
 

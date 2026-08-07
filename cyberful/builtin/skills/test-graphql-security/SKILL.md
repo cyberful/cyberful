@@ -11,8 +11,7 @@ Treat the schema as an attacker-controlled query language and every resolver edg
 
 Use authorized introspection, documentation, client queries, persisted-operation manifests, schema registries, gateway configuration, frontend bundles, errors, and source registration. Do not infer absence from disabled introspection.
 
-Map types, interfaces, unions, fields, arguments, directives, mutations, subscriptions, custom scalars, deprecated fields, federation entities, and root operations. Read [references/schema-resolver-review.md](references/schema-resolver-review.md).
-Use [references/field-heuristics.md](references/field-heuristics.md) for resolver identity, federation, batching, cache, and cost differentials.
+Map types, interfaces, unions, fields, arguments, directives, mutations, subscriptions, custom scalars, deprecated fields, federation entities, and root operations. Read [references/schema-resolver-review.md](references/schema-resolver-review.md). Use [references/field-heuristics.md](references/field-heuristics.md) for resolver identity, federation, batching, cache, and cost differentials.
 
 ## Test resolver authorization
 

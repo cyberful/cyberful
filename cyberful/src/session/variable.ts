@@ -397,9 +397,10 @@ export function systemContext(variables: Summary[]) {
   return [
     "Session variable store:",
     "- Save long reusable constants, tokens, IDs, request bodies, and structured JSON with the variable tool instead of rewriting them.",
-    "- Always reference saved values as {{var:name}} in tool arguments, including shell commands, instead of copying raw values.",
-    "- Do not call variable get with reveal:true only to pass a value to another tool. Use the {{var:name}} template instead.",
-    "- Saved values may compose other saved values with {{var:name}}. Action arguments expand up to 16 nested references; cycles or deeper chains fail before the tool runs.",
+    "- Tool template metasyntax is {{var:<saved-name>}}. Replace <saved-name> with an exact listed name, including in shell commands.",
+    "- Do not reveal a variable only to pass it elsewhere; use its exact saved name in a template.",
+    "- In narrative file arguments, use [session-variable:<saved-name>] with the exact name substituted so the value is not inserted.",
+    "- Saved values may compose through templates. Actions expand up to 16 nested references; cycles or deeper chains fail.",
     "- Exact references preserve JSON values; embedded references stringify them.",
     "- Do not copy raw variable values into messages unless you have explicitly revealed them and truly need the literal value.",
     "<session_variables>",

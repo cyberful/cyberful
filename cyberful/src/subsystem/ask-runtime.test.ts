@@ -11,9 +11,11 @@ import { createManager } from "./ask-runtime"
 function runtime(stop: () => Promise<void>, env: Record<string, string> = {}): EngagementRuntime {
   return {
     container: "cyberful-runtime",
+    containers: ["cyberful-runtime"],
     env,
     degraded: false,
     warnings: [],
+    preparePhase: async () => ({ warnings: [], env: {} }),
     stop,
   }
 }

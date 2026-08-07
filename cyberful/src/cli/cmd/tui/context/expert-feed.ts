@@ -60,6 +60,7 @@ export type ExpertPhaseStatus = {
   effectiveLimitMs: number
   deadlineAt: number
   approvalWaitMs?: number
+  targetCooldownWaitMs?: number
   exitCode: number
   failure?: {
     phase: string
@@ -97,9 +98,13 @@ export type ExpertProviderRetry = {
 }
 
 export type ExpertRuntimeDiagnostic = {
-  component: "gateway" | "zap" | "browser" | "mcp"
+  component: "agent" | "phase" | "gateway" | "zap" | "ghidra" | "browser" | "mcp"
+  runID?: string
+  parentRunID?: string
+  role?: "root" | "subagent" | "fallback"
+  termination?: "completed" | "budget_exhausted" | "cancelled" | "provider_failed" | "failed"
   profile?: string
-  stage: "startup" | "connect" | "tool" | "shutdown"
+  stage: "startup" | "connect" | "context" | "provider" | "tool" | "shutdown"
   severity: "warning" | "error"
   errorClass: string
   code?: string
@@ -207,12 +212,19 @@ export function decodeExpertRuntimeDiagnostic(text: string): ExpertRuntimeDiagno
     if (!isRecord(value) || !isRecord(value.runtimeDiagnostic)) return
     const diagnostic = value.runtimeDiagnostic
     if (
-      !["gateway", "zap", "browser", "mcp"].includes(String(diagnostic.component)) ||
-      !["startup", "connect", "tool", "shutdown"].includes(String(diagnostic.stage)) ||
+      !["agent", "phase", "gateway", "zap", "ghidra", "browser", "mcp"].includes(String(diagnostic.component)) ||
+      !["startup", "connect", "context", "provider", "tool", "shutdown"].includes(String(diagnostic.stage)) ||
       !["warning", "error"].includes(String(diagnostic.severity)) ||
       typeof diagnostic.errorClass !== "string" ||
       typeof diagnostic.message !== "string" ||
       typeof diagnostic.path !== "string" ||
+      (diagnostic.runID !== undefined && typeof diagnostic.runID !== "string") ||
+      (diagnostic.parentRunID !== undefined && typeof diagnostic.parentRunID !== "string") ||
+      (diagnostic.role !== undefined && !["root", "subagent", "fallback"].includes(String(diagnostic.role))) ||
+      (diagnostic.termination !== undefined &&
+        !["completed", "budget_exhausted", "cancelled", "provider_failed", "failed"].includes(
+          String(diagnostic.termination),
+        )) ||
       (diagnostic.profile !== undefined && typeof diagnostic.profile !== "string") ||
       (diagnostic.code !== undefined && typeof diagnostic.code !== "string")
     )
@@ -222,7 +234,7 @@ export function decodeExpertRuntimeDiagnostic(text: string): ExpertRuntimeDiagno
     const legacy = text.match(/^Runtime diagnostic:\s*([^·]+?)\s*·\s*([^·]+?)\s*·\s*(.+)$/u)
     if (!legacy) return
     const component = legacy[1]?.trim()
-    if (!component || !["gateway", "zap", "browser", "mcp"].includes(component)) return
+    if (!component || !["agent", "phase", "gateway", "zap", "ghidra", "browser", "mcp"].includes(component)) return
     return {
       component: component as ExpertRuntimeDiagnostic["component"],
       stage: "startup",
@@ -245,8 +257,15 @@ export function expertRuntimeDiagnosticText(diagnostic: ExpertRuntimeDiagnostic)
         : `Runtime ${diagnostic.stage} notice`
   const source = diagnostic.profile ? `${diagnostic.component}/${diagnostic.profile}` : diagnostic.component
   const code = diagnostic.code ? ` (${diagnostic.code})` : ""
+  const actor = diagnostic.runID
+    ? ` · ${diagnostic.role ?? "run"} ${diagnostic.runID}`
+    : diagnostic.role
+      ? ` · ${diagnostic.role}`
+      : ""
+  const termination = diagnostic.termination ? ` · ${diagnostic.termination}` : ""
   return (
-    `ⓘ ${headline} · ${source} · ${diagnostic.errorClass}${code} · ${diagnostic.message}` + ` · log: ${diagnostic.path}`
+    `ⓘ ${headline} · ${source}${actor}${termination} · ${diagnostic.errorClass}${code} · ${diagnostic.message}` +
+    ` · log: ${diagnostic.path}`
   )
 }
 
@@ -300,6 +319,10 @@ export function decodeExpertPhaseStatus(text: string): ExpertPhaseStatus | undef
       deadlineAt: value.deadlineAt,
       approvalWaitMs:
         typeof value.approvalWaitMs === "number" && value.approvalWaitMs >= 0 ? value.approvalWaitMs : undefined,
+      targetCooldownWaitMs:
+        typeof value.targetCooldownWaitMs === "number" && value.targetCooldownWaitMs >= 0
+          ? value.targetCooldownWaitMs
+          : undefined,
       exitCode: value.exitCode,
       failure: decodeExpertPhaseFailure(value.failure),
       warnings: Array.isArray(value.warnings)
@@ -355,13 +378,16 @@ function phaseStatusText(status: ExpertPhaseStatus): string {
   const limit = (status.limitMs / 60_000).toFixed(1)
   const effective = (status.effectiveLimitMs / 60_000).toFixed(1)
   const approvalWait = status.approvalWaitMs ? ` · approval wait ${expertPhaseDuration(status.approvalWaitMs)}` : ""
+  const targetCooldownWait = status.targetCooldownWaitMs
+    ? ` · target cooldown ${expertPhaseDuration(status.targetCooldownWaitMs)}`
+    : ""
   const warning = status.failure?.detail ?? status.warnings[0]
   const additionalWarnings = status.failure ? status.warnings.length : Math.max(0, status.warnings.length - 1)
   const detail = warning ? ` · ${warning}${additionalWarnings > 0 ? ` (+${additionalWarnings})` : ""}` : ""
   return (
     `Phase failed · ${status.backend} · ${status.termination} · worker exit ${status.exitCode} · ${elapsed}s · ` +
     `limit ${limit}m (effective ${effective}m) · deadline ${new Date(status.deadlineAt).toISOString()}` +
-    `${approvalWait}${detail}`
+    `${approvalWait}${targetCooldownWait}${detail}`
   )
 }
 

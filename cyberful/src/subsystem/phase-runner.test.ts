@@ -131,6 +131,83 @@ function deps(over: Partial<PhaseDeps> = {}): PhaseDeps {
 }
 
 describe("runPhase transcript persistence", () => {
+  test("a failed required-upstream preflight is primary and prevents worker spawn", async () => {
+    let ran = false
+    const state: string[] = []
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec(),
+      deps({
+        run: async () => {
+          ran = true
+          return { stdout: "", stderr: "", exitCode: 0, timedOut: false }
+        },
+        preparePhase: async () => {
+          throw Object.assign(new Error("ZAP health check failed"), {
+            kind: "required_upstream_unavailable",
+            retryable: true,
+          })
+        },
+        createRunState: () => ({
+          start: async () => {
+            state.push("starting")
+          },
+          fail: async () => {
+            state.push("failed")
+          },
+        }),
+      }),
+    )
+    expect(ran).toBeFalse()
+    expect(state).toEqual(["starting", "failed"])
+    expect(result.phaseFailure).toMatchObject({
+      source: "upstream",
+      class: "required_upstream_unavailable",
+      retryable: true,
+    })
+    expect(result.phaseFailure?.class).not.toBe("required_deliverable_missing")
+    expect(result.recoveryPolicy?.maxRestarts).toBe(1)
+  })
+
+  test("a gateway required-upstream signal remains primary over a missing handoff", async () => {
+    let privateSignalPath: string | undefined
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "brief", workflow: "bug-bounty", handoff: { successor: "recon" } }),
+      deps({
+        run: async (input) => {
+          privateSignalPath = input.gateway.privateEnv?.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH
+          return {
+            stdout: '{"type":"result","result":"stopped after required ZAP failure"}',
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+          }
+        },
+        readUpstreamFailureSignal: async () =>
+          JSON.stringify({
+            version: 1,
+            phase: "brief",
+            source: "upstream",
+            class: "required_upstream_unavailable",
+            code: "zap_transport_failed",
+            detail: "Required OWASP ZAP MCP upstream failed during a phase tool call.",
+            retryable: true,
+          }),
+      }),
+    )
+    expect(privateSignalPath).toContain("expert-phase-upstream-failure-")
+    expect(result.ok).toBeFalse()
+    expect(result.termination).toBe("subsystem_failed")
+    expect(result.phaseFailure).toEqual({
+      phase: "brief",
+      source: "upstream",
+      class: "required_upstream_unavailable",
+      code: "zap_transport_failed",
+      detail: "Required OWASP ZAP MCP upstream failed during a phase tool call.",
+      retryable: true,
+    })
+    expect(result.phaseFailure?.class).not.toBe("handoff_invalid")
+  })
+
   test("persists the full AgentEvent transcript to spec.transcriptPath", async () => {
     const writes: Array<{ filePath: string; ndjson: string }> = []
     const result = await SubsystemPhaseRunner.runPhase(
@@ -373,6 +450,7 @@ describe("runPhase transcript persistence", () => {
         budgetCarry: {
           approvalWaitMs: 2_000,
           retryWaitMs: 12_000,
+          targetCooldownWaitMs: 180_000,
           phaseExtensionMs: 10_000,
         },
       }),
@@ -386,6 +464,7 @@ describe("runPhase transcript persistence", () => {
           expect(input.budgetClock?.snapshot()).toMatchObject({
             approvalWaitMs: 2_000,
             retryWaitMs: 12_000,
+            targetCooldownWaitMs: 180_000,
             retryCompensationMs: 10_000,
           })
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
@@ -541,6 +620,7 @@ describe("runPhase transcript persistence", () => {
             {
               type: "run_finished",
               runID: "root",
+              role: "root",
               termination: "completed",
               usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
               skillsUsed: [],
@@ -1143,6 +1223,7 @@ describe("runPhase transcript persistence", () => {
         backend: "pi",
         budget: {
           retryWaitMs: 0,
+          targetCooldownWaitMs: 0,
           retryCompensationMs: 0,
           phaseExtensionMs: 0,
           phaseExtensionCapMs: 15 * 60_000,

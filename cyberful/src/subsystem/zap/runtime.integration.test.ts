@@ -5,8 +5,9 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -22,6 +23,7 @@ const clients: Client[] = []
 let workarea = ""
 let target: ReturnType<typeof Bun.serve>
 let httpsTarget: ReturnType<typeof Bun.serve>
+let gitRepository = ""
 let upstreamDiagnostics = ""
 let restoreStderr = () => {}
 
@@ -39,7 +41,7 @@ function bridge(
   mcpKey = runtime.env.CYBER_ZAP_MCP_KEY,
   stderr: "pipe" | "ignore" = "pipe",
 ) {
-  const [command, ...args] = cyberZapBridgeCommand(runtime.container)
+  const [command, ...args] = cyberZapBridgeCommand(requiredZapContainer(runtime))
   if (!command) throw new Error("unified ZAP bridge command is unavailable")
   const transport = new StdioClientTransport({
     command,
@@ -52,6 +54,20 @@ function bridge(
     },
   })
   return stderr === "pipe" ? pipeDiagnostics(transport) : transport
+}
+
+function requiredZapContainer(runtime: EngagementRuntime) {
+  if (!runtime.zapContainer) throw new Error("engagement did not start its dedicated ZAP container")
+  return runtime.zapContainer
+}
+
+function zapHostPaths(root: string, sessionID: string) {
+  const scope = createHash("sha256").update(sessionID).digest("hex").slice(0, 32)
+  return {
+    bundle: path.join(root, "raw/zap/trust", scope, "ca-bundle.pem"),
+    privateCertificate: path.join(root, "raw/zap/runtime", scope, "root-ca.pem"),
+    publicCertificate: path.join(root, "raw/zap/trust", scope, "root-ca-public.pem"),
+  }
 }
 
 async function startEngagement(input: { sessionID: string; workarea: string }) {
@@ -305,9 +321,48 @@ async function dockerOutput(...args: string[]) {
   return result.stdout.toString("utf8").trim()
 }
 
+function coreProxyEnvironment(runtime: EngagementRuntime) {
+  const proxy = new URL(runtime.env.CYBER_ZAP_PROXY_URL)
+  proxy.hostname = "host.docker.internal"
+  const proxyUrl = proxy.toString()
+  const bundle = runtime.env.CYBERFUL_OS_CA_BUNDLE
+  if (!bundle) throw new Error("engagement did not expose its attested core CA bundle")
+  return {
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+    NO_PROXY: "127.0.0.1,localhost",
+    no_proxy: "127.0.0.1,localhost",
+    SSL_CERT_FILE: bundle,
+    CURL_CA_BUNDLE: bundle,
+    REQUESTS_CA_BUNDLE: bundle,
+    GIT_SSL_CAINFO: bundle,
+    GIT_SSL_NO_VERIFY: "false",
+    PIP_CERT: bundle,
+    NODE_EXTRA_CA_CERTS: bundle,
+    NODE_USE_ENV_PROXY: "1",
+  }
+}
+
+async function coreClientOutput(
+  runtime: EngagementRuntime,
+  command: readonly string[],
+  overrides: Record<string, string> = {},
+) {
+  const environment = { ...coreProxyEnvironment(runtime), ...overrides }
+  return dockerOutput(
+    "exec",
+    ...Object.entries(environment).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
+    runtime.container,
+    ...command,
+  )
+}
+
 async function terminateManagedService(runtime: EngagementRuntime, serviceName: string) {
+  const container = serviceName === "zap" ? requiredZapContainer(runtime) : runtime.container
   const status = recordValue(
-    JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json")),
+    JSON.parse(await dockerOutput("exec", container, "cat", "/run/cyberful/status.json")),
     "runtime status",
   )
   const services = recordValue(status.services, "runtime status.services")
@@ -315,7 +370,7 @@ async function terminateManagedService(runtime: EngagementRuntime, serviceName: 
   if (typeof service.pid !== "number" || !Number.isSafeInteger(service.pid) || service.pid <= 0) {
     throw new Error(`runtime status.services.${serviceName}.pid must be a positive integer`)
   }
-  await dockerOutput("exec", runtime.container, "kill", "-TERM", "--", `-${service.pid}`)
+  await dockerOutput("exec", container, "kill", "-TERM", "--", `-${service.pid}`)
 }
 
 beforeAll(async () => {
@@ -324,7 +379,46 @@ beforeAll(async () => {
     return true
   })
   restoreStderr = () => stderrWrite.mockRestore()
-  workarea = await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-integration-"))
+  workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-integration-")))
+  const gitSource = path.join(workarea, "git-source")
+  gitRepository = path.join(workarea, "repo.git")
+  await mkdir(gitSource, { mode: 0o700 })
+  await run(["git", "init", gitSource], {
+    abort: AbortSignal.timeout(30_000),
+    timeout: 1_000,
+    maxOutputBytes: 64 * 1024,
+  })
+  await writeFile(path.join(gitSource, "README.md"), "# Cyberful TLS integration fixture\n")
+  await run(["git", "-C", gitSource, "add", "README.md"], {
+    abort: AbortSignal.timeout(30_000),
+    timeout: 1_000,
+    maxOutputBytes: 64 * 1024,
+  })
+  await run(
+    [
+      "git",
+      "-C",
+      gitSource,
+      "-c",
+      "user.name=Cyberful Test",
+      "-c",
+      "user.email=cyberful-test@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ],
+    { abort: AbortSignal.timeout(30_000), timeout: 1_000, maxOutputBytes: 64 * 1024 },
+  )
+  await run(["git", "clone", "--bare", gitSource, gitRepository], {
+    abort: AbortSignal.timeout(30_000),
+    timeout: 1_000,
+    maxOutputBytes: 64 * 1024,
+  })
+  await run(["git", "-C", gitRepository, "update-server-info"], {
+    abort: AbortSignal.timeout(30_000),
+    timeout: 1_000,
+    maxOutputBytes: 64 * 1024,
+  })
   const key = path.join(workarea, "target.key")
   const certificate = path.join(workarea, "target.pem")
   await run(
@@ -369,7 +463,19 @@ beforeAll(async () => {
     hostname: "0.0.0.0",
     port: 0,
     tls: { key: Bun.file(key), cert: Bun.file(certificate) },
-    fetch: (request) => new Response(`secure integration target ${new URL(request.url).pathname}`),
+    fetch: async (request) => {
+      const pathname = decodeURIComponent(new URL(request.url).pathname)
+      const repositoryPrefix = "/repo.git/"
+      if (pathname.startsWith(repositoryPrefix)) {
+        const candidate = path.resolve(gitRepository, pathname.slice(repositoryPrefix.length))
+        if (candidate.startsWith(`${gitRepository}${path.sep}`)) {
+          const file = Bun.file(candidate)
+          if (await file.exists()) return new Response(file)
+        }
+        return new Response("not found", { status: 404 })
+      }
+      return new Response(`secure integration target ${pathname}`)
+    },
   })
 })
 
@@ -415,38 +521,11 @@ describe("real headless ZAP containers", () => {
 
       await terminateManagedService(runtime, "zap")
       await Bun.sleep(1_500)
-      const configured = SubsystemGateway.gatewayMcpServer("ses_rate_limit_failure", {
-        proxy: true,
-        phase: "recon",
-        env: {
-          ...runtime.env,
-          CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
-          CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: policyWorkarea,
-          CYBERFUL_OS_MCP_ENABLED: "0",
-          CYBER_BROWSER_MCP_ENABLED: "0",
-          CYBER_ZAP_ENABLED: "1",
-        },
-      })
-      const client = new Client({ name: "cyberful-required-zap-failure", version: "0" })
-      await expect(
-        client.connect(
-          pipeDiagnostics(
-            new StdioClientTransport({
-              command: configured.command,
-              args: [...configured.args],
-              stderr: "pipe",
-              env: {
-                PATH: process.env.PATH ?? "",
-                HOME: os.homedir(),
-                ...configured.env,
-                ...configured.privateEnv,
-              },
-            }),
-          ),
-        ),
-      ).rejects.toBeDefined()
-      await client.close().catch(() => undefined)
-      expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", runtime.container)).toBe("true")
+      const prepared = await runtime.preparePhase({ phase: "recon", attempt: 1 })
+      expect(prepared.warnings.join(" ")).toContain("session preserved")
+      const recovered = await fetch(endpoint, { headers: { Host: "zap" } })
+      expect(recovered.ok).toBe(true)
+      expect(await recovered.text()).toContain("Cyberful engagement global HTTP budget")
     } finally {
       await runtime?.stop()
       await rm(policyWorkarea, { recursive: true, force: true })
@@ -458,12 +537,12 @@ describe("real headless ZAP containers", () => {
     runtimes.push(runtime)
     expect(runtime.degraded).toBe(false)
 
-    const published = await dockerOutput("port", runtime.container, "8080/tcp")
+    const published = await dockerOutput("port", requiredZapContainer(runtime), "8080/tcp")
     expect(published).toMatch(/^127\.0\.0\.1:\d+$/)
     expect(
-      await dockerOutput("inspect", "--format", "{{json .NetworkSettings.Ports}}", runtime.container),
+      await dockerOutput("inspect", "--format", "{{json .NetworkSettings.Ports}}", requiredZapContainer(runtime)),
     ).not.toContain("8282")
-    const xvfbProcesses = (await dockerOutput("exec", runtime.container, "pgrep", "-x", "Xvfb")).split("\n")
+    const xvfbProcesses = (await dockerOutput("exec", requiredZapContainer(runtime), "pgrep", "-x", "Xvfb")).split("\n")
     expect(xvfbProcesses.length).toBeGreaterThan(0)
     expect(xvfbProcesses.every((pid) => /^\d+$/.test(pid))).toBe(true)
     await dockerOutput(
@@ -581,70 +660,227 @@ describe("real headless ZAP containers", () => {
     await releaseRuntimes(runtime)
   }, 180_000)
 
-  test("concurrent bridges share one history while separate engagements remain isolated", async () => {
-    const [first, second] = await Promise.all([
-      startEngagement({ sessionID: "integration-shared", workarea }),
-      startEngagement({ sessionID: "integration-isolated", workarea }),
-    ])
-    runtimes.push(first, second)
-    expect(first.degraded).toBe(false)
-    expect(second.degraded).toBe(false)
-    expect(first.env.CYBER_ZAP_API_KEY).not.toBe(second.env.CYBER_ZAP_API_KEY)
-    expect(first.env.CYBER_ZAP_MCP_KEY).not.toBe(second.env.CYBER_ZAP_MCP_KEY)
+  test("isolates the proxy key and verifies standard core clients through the public CA bundle", async () => {
+    const sessionID = "integration-core-proxy-trust"
+    const runtime = await startEngagement({ sessionID, workarea })
+    runtimes.push(runtime)
+    expect(runtime.degraded).toBe(false)
+    expect(runtime.env.CYBERFUL_OS_CA_BUNDLE).toBe("/run/cyberful/proxy-trust/ca-bundle.pem")
 
-    const [writer, reader, isolated] = await Promise.all([connect(first), connect(first), connect(second)])
-    const marker = `shared-${Date.now()}`
-    const targetUrl = `https://host.docker.internal:${httpsTarget.port}/${marker}`
-    const ambiguous = await writer.callTool({
-      name: "zap_http_request",
-      arguments: {
-        request:
-          `GET /ambiguous-${marker} HTTP/1.1\r\n` +
-          `Host: host.docker.internal:${httpsTarget.port}\r\nConnection: close\r\n\r\n`,
-      },
-    })
-    expect("isError" in ambiguous && ambiguous.isError).toBe(true)
+    await dockerOutput("exec", requiredZapContainer(runtime), "test", "-s", "/var/lib/cyberful/zap/root-ca.pem")
+    await dockerOutput(
+      "exec",
+      requiredZapContainer(runtime),
+      "grep",
+      "-q",
+      "PRIVATE KEY",
+      "/var/lib/cyberful/zap/root-ca.pem",
+    )
+    await dockerOutput("exec", runtime.container, "test", "!", "-e", "/workspace/raw/zap/runtime/root-ca.pem")
+    await dockerOutput("exec", runtime.container, "test", "-r", "/workspace/raw/zap/trust/ca-bundle.pem")
+    await dockerOutput("exec", runtime.container, "test", "-r", runtime.env.CYBERFUL_OS_CA_BUNDLE)
+    const publicCertificate = await dockerOutput(
+      "exec",
+      runtime.container,
+      "cat",
+      "/run/cyberful/proxy-trust/root-ca-public.pem",
+    )
+    expect(publicCertificate).toContain("BEGIN CERTIFICATE")
+    expect(publicCertificate).not.toContain("PRIVATE KEY")
+    const systemCertificateCount = Number(
+      await dockerOutput("exec", runtime.container, "grep", "-c", "BEGIN CERTIFICATE", "/etc/ssl/certs/ca-certificates.crt"),
+    )
+    const combinedCertificateCount = Number(
+      await dockerOutput("exec", runtime.container, "grep", "-c", "BEGIN CERTIFICATE", runtime.env.CYBERFUL_OS_CA_BUNDLE),
+    )
+    expect(combinedCertificateCount).toBeGreaterThan(systemCertificateCount)
+
+    const httpsUrl = `https://host.docker.internal:${httpsTarget.port}/verified-clients`
+    expect(await coreClientOutput(runtime, ["curl", "-fsS", httpsUrl])).toContain("verified-clients")
     expect(
-      optionalArray(
-        resultRecord(
-          await reader.callTool({ name: "zap_history_search", arguments: { search: `ambiguous-${marker}` } }),
-          "zap_history_search",
-        ).messages,
-        "zap_history_search.messages",
-      ),
-    ).toHaveLength(0)
+      await coreClientOutput(runtime, [
+        "/opt/cyberful-os-venv/bin/python",
+        "-c",
+        "import requests,sys; response=requests.get(sys.argv[1], timeout=15); response.raise_for_status(); print(response.text)",
+        httpsUrl,
+      ]),
+    ).toContain("verified-clients")
+    expect(
+      await coreClientOutput(runtime, [
+        "node",
+        "--use-env-proxy",
+        "--eval",
+        "fetch(process.argv[1]).then(r => { if (!r.ok) throw new Error(String(r.status)); return r.text() }).then(console.log)",
+        httpsUrl,
+      ]),
+    ).toContain("verified-clients")
 
-    const sent = resultRecord(
-      await writer.callTool({
+    const gitUrl = `https://host.docker.internal:${httpsTarget.port}/repo.git`
+    expect(await coreClientOutput(runtime, ["git", "ls-remote", gitUrl])).toContain("HEAD")
+    const clonePath = `/tmp/cyberful-proxy-trust-${process.pid}`
+    await coreClientOutput(runtime, ["git", "clone", gitUrl, clonePath])
+    await coreClientOutput(runtime, ["git", "-C", clonePath, "fetch", "--force"])
+
+    await expect(
+      coreClientOutput(runtime, ["curl", "-fsS", httpsUrl], {
+        CURL_CA_BUNDLE: "/workspace/target.pem",
+      }),
+    ).rejects.toThrow()
+    const bundlePath = zapHostPaths(workarea, sessionID).bundle
+    await writeFile(bundlePath, "corrupt bundle\n", { mode: 0o600 })
+    await runtime.preparePhase({ phase: "recon", attempt: 1 })
+    expect(await Bun.file(bundlePath).text()).toContain("BEGIN CERTIFICATE")
+    const lifecycle = await Bun.file(path.join(workarea, "raw/operations/zap-runtime.jsonl")).text()
+    expect(lifecycle).toContain('"ca_bundle_attested":true')
+    expect(lifecycle).not.toContain("PRIVATE KEY")
+    await releaseRuntimes(runtime)
+  }, 240_000)
+
+  test("fails closed when a corrupt bundle cannot be regenerated and verified", async () => {
+    const isolatedWorkarea = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-corrupt-trust-integration-")),
+    )
+    let runtime: EngagementRuntime | undefined
+    try {
+      const sessionID = "integration-corrupt-proxy-trust"
+      runtime = await startEngagement({ sessionID, workarea: isolatedWorkarea })
+      runtimes.push(runtime)
+      await writeFile(zapHostPaths(isolatedWorkarea, sessionID).bundle, "corrupt bundle\n", {
+        mode: 0o600,
+      })
+      await dockerOutput(
+        "exec",
+        runtime.container,
+        "mv",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/tmp/ca-certificates.crt.disabled",
+      )
+      await expect(runtime.preparePhase({ phase: "exploit", attempt: 1 })).rejects.toThrow(
+        "required OWASP ZAP upstream is unavailable",
+      )
+      const lifecycle = await Bun.file(path.join(isolatedWorkarea, "raw/operations/zap-runtime.jsonl")).text()
+      expect(lifecycle).toContain('"failure_stage":"ca"')
+    } finally {
+      await runtime?.stop()
+      if (runtime) {
+        const index = runtimes.indexOf(runtime)
+        if (index >= 0) runtimes.splice(index, 1)
+      }
+      await rm(isolatedWorkarea, { recursive: true, force: true })
+    }
+  }, 240_000)
+
+  test("authorizes CA rotation only after reset recovery installs the replacement bundle", async () => {
+    const isolatedWorkarea = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-ca-reset-integration-")),
+    )
+    let runtime: EngagementRuntime | undefined
+    try {
+      const sessionID = "integration-proxy-ca-reset"
+      runtime = await startEngagement({ sessionID, workarea: isolatedWorkarea })
+      runtimes.push(runtime)
+      const { publicCertificate: publicPath, privateCertificate: privatePath } = zapHostPaths(isolatedWorkarea, sessionID)
+      const originalCertificate = await Bun.file(publicPath).text()
+      await terminateManagedService(runtime, "zap")
+      await rm(privatePath)
+      const prepared = await runtime.preparePhase({ phase: "hacker", attempt: 1 })
+      expect(prepared.warnings.join(" ")).toContain("new visible session generation")
+      expect(await Bun.file(publicPath).text()).not.toBe(originalCertificate)
+      await dockerOutput(
+        "exec",
+        runtime.container,
+        "openssl",
+        "verify",
+        "-CAfile",
+        runtime.env.CYBERFUL_OS_CA_BUNDLE,
+        "/run/cyberful/proxy-trust/root-ca-public.pem",
+      )
+      const lifecycle = await Bun.file(path.join(isolatedWorkarea, "raw/operations/zap-runtime.jsonl")).text()
+      expect(lifecycle).toContain('"event":"ca_rotation_authorized"')
+      expect(lifecycle).toContain('"ca_certificate_changed":true')
+    } finally {
+      await runtime?.stop()
+      if (runtime) {
+        const index = runtimes.indexOf(runtime)
+        if (index >= 0) runtimes.splice(index, 1)
+      }
+      await rm(isolatedWorkarea, { recursive: true, force: true })
+    }
+  }, 240_000)
+
+  test("concurrent bridges share one history while separate engagements remain isolated", async () => {
+    const active: EngagementRuntime[] = []
+    let firstContainer = ""
+    try {
+      const started = await Promise.allSettled([
+        startEngagement({ sessionID: "integration-shared", workarea }),
+        startEngagement({ sessionID: "integration-isolated", workarea }),
+      ])
+      for (const result of started) if (result.status === "fulfilled") active.push(result.value)
+      runtimes.push(...active)
+      const failures = started.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+      if (failures.length > 0) throw new AggregateError(failures, "one or more concurrent engagements failed to start")
+      const [first, second] = active
+      if (!first || !second) throw new Error("concurrent engagement startup returned an incomplete pair")
+      firstContainer = first.container
+      expect(first.degraded).toBe(false)
+      expect(second.degraded).toBe(false)
+      expect(first.env.CYBER_ZAP_API_KEY).not.toBe(second.env.CYBER_ZAP_API_KEY)
+      expect(first.env.CYBER_ZAP_MCP_KEY).not.toBe(second.env.CYBER_ZAP_MCP_KEY)
+
+      const [writer, reader, isolated] = await Promise.all([connect(first), connect(first), connect(second)])
+      const marker = `shared-${Date.now()}`
+      const targetUrl = `https://host.docker.internal:${httpsTarget.port}/${marker}`
+      const ambiguous = await writer.callTool({
         name: "zap_http_request",
         arguments: {
           request:
-            `GET /${marker} HTTP/1.1\r\n` +
+            `GET /ambiguous-${marker} HTTP/1.1\r\n` +
             `Host: host.docker.internal:${httpsTarget.port}\r\nConnection: close\r\n\r\n`,
-          target_url: targetUrl,
         },
-      }),
-      "zap_http_request",
-    )
-    expect(recordValue(sent.cyberful_request_target, "zap_http_request.cyberful_request_target")).toEqual({
-      target_url: targetUrl,
-      scheme: "https",
-      normalized_origin_form: true,
-      recorded_url: targetUrl,
-    })
-    const shared = resultRecord(
-      await reader.callTool({ name: "zap_history_search", arguments: { search: marker } }),
-      "zap_history_search",
-    )
-    const separate = resultRecord(
-      await isolated.callTool({ name: "zap_history_search", arguments: { search: marker } }),
-      "zap_history_search",
-    )
-    expect(optionalArray(shared.messages, "zap_history_search.messages").length).toBeGreaterThan(0)
-    expect(optionalArray(separate.messages, "zap_history_search.messages")).toHaveLength(0)
+      })
+      expect("isError" in ambiguous && ambiguous.isError).toBe(true)
+      expect(
+        optionalArray(
+          resultRecord(
+            await reader.callTool({ name: "zap_history_search", arguments: { search: `ambiguous-${marker}` } }),
+            "zap_history_search",
+          ).messages,
+          "zap_history_search.messages",
+        ),
+      ).toHaveLength(0)
 
-    const firstContainer = first.container
-    await releaseRuntimes(first, second)
+      const sent = resultRecord(
+        await writer.callTool({
+          name: "zap_http_request",
+          arguments: {
+            request:
+              `GET /${marker} HTTP/1.1\r\n` +
+              `Host: host.docker.internal:${httpsTarget.port}\r\nConnection: close\r\n\r\n`,
+            target_url: targetUrl,
+          },
+        }),
+        "zap_http_request",
+      )
+      expect(recordValue(sent.cyberful_request_target, "zap_http_request.cyberful_request_target")).toEqual({
+        target_url: targetUrl,
+        scheme: "https",
+        normalized_origin_form: true,
+        recorded_url: targetUrl,
+      })
+      const shared = resultRecord(
+        await reader.callTool({ name: "zap_history_search", arguments: { search: marker } }),
+        "zap_history_search",
+      )
+      const separate = resultRecord(
+        await isolated.callTool({ name: "zap_history_search", arguments: { search: marker } }),
+        "zap_history_search",
+      )
+      expect(optionalArray(shared.messages, "zap_history_search.messages").length).toBeGreaterThan(0)
+      expect(optionalArray(separate.messages, "zap_history_search.messages")).toHaveLength(0)
+    } finally {
+      await releaseRuntimes(...active)
+    }
     const inspect = await run(["docker", "inspect", firstContainer], {
       abort: AbortSignal.timeout(30_000),
       timeout: 1_000,
@@ -654,7 +890,7 @@ describe("real headless ZAP containers", () => {
     expect(inspect.code).not.toBe(0)
   }, 240_000)
 
-  test("connects ZAP and Ghidra bridges concurrently inside the one engagement container", async () => {
+  test("connects dedicated ZAP and core Ghidra bridges concurrently", async () => {
     const combinedRoot = await realpath(
       await mkdtemp(path.join(os.tmpdir(), "cyberful-combined-runtime-integration-")),
     )
@@ -718,7 +954,7 @@ describe("real headless ZAP containers", () => {
       expect(await dockerOutput("exec", runtime.container, "stat", "-c", "%u:%g", "/ghidra/store/home")).toBe(
         expectedIdentity,
       )
-      expect(await dockerOutput("exec", runtime.container, "stat", "-c", "%u:%g", "/var/lib/cyberful/zap")).toBe(
+      expect(await dockerOutput("exec", requiredZapContainer(runtime), "stat", "-c", "%u:%g", "/var/lib/cyberful/zap")).toBe(
         expectedIdentity,
       )
       expect(
@@ -903,53 +1139,40 @@ describe("real headless ZAP containers", () => {
     await releaseRuntimes(runtime)
   }, 180_000)
 
-  test("keeps the container alive and does not restart ZAP after service death", async () => {
+  test("does not restart ZAP autonomously and recovers it at the next phase preflight", async () => {
     upstreamDiagnostics = ""
-    const runtime = await startEngagement({ sessionID: "integration-zap-death", workarea })
+    const sessionID = "integration-zap-death"
+    const runtime = await startEngagement({ sessionID, workarea })
     runtimes.push(runtime)
+    const { publicCertificate: publicCertificatePath, bundle: bundlePath } = zapHostPaths(workarea, sessionID)
+    const [publicCertificateBefore, bundleBefore] = await Promise.all([
+      Bun.file(publicCertificatePath).text(),
+      Bun.file(bundlePath).arrayBuffer(),
+    ])
     await terminateManagedService(runtime, "zap")
     await Bun.sleep(1_500)
-    expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", runtime.container)).toBe("true")
-    const status = JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json"))
+    expect(await dockerOutput("inspect", "--format", "{{.State.Running}}", requiredZapContainer(runtime))).toBe("true")
+    const status = JSON.parse(await dockerOutput("exec", requiredZapContainer(runtime), "cat", "/run/cyberful/status.json"))
     expect(status.status).toBe("degraded")
     expect(status.services.zap.status).toBe("exited")
     await Bun.sleep(1_500)
-    const laterStatus = JSON.parse(await dockerOutput("exec", runtime.container, "cat", "/run/cyberful/status.json"))
+    const laterStatus = JSON.parse(await dockerOutput("exec", requiredZapContainer(runtime), "cat", "/run/cyberful/status.json"))
     expect(laterStatus.services.zap.pid).toBe(status.services.zap.pid)
     const deadBridge = new Client({ name: "cyberful-zap-dead-service", version: "0" })
     await expect(deadBridge.connect(bridge(runtime))).rejects.toBeDefined()
     await deadBridge.close().catch(() => undefined)
     expect(upstreamDiagnostics).toMatch(/(?:refused|closed|connect|unavailable|exited)/i)
-    const configured = SubsystemGateway.gatewayMcpServer("ses_optional_zap_failure", {
-      proxy: true,
-      phase: "recon",
-      env: {
-        ...runtime.env,
-        CYBERFUL_SUBSYSTEM_WORKFLOW: "pentest",
-        CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: workarea,
-        CYBERFUL_OS_MCP_ENABLED: "0",
-        CYBER_BROWSER_MCP_ENABLED: "0",
-        CYBER_ZAP_ENABLED: "1",
-      },
-    })
-    const degradedGateway = new Client({ name: "cyberful-optional-zap-failure", version: "0" })
-    await degradedGateway.connect(
-      pipeDiagnostics(
-        new StdioClientTransport({
-          command: configured.command,
-          args: [...configured.args],
-          stderr: "pipe",
-          env: {
-            PATH: process.env.PATH ?? "",
-            HOME: os.homedir(),
-            ...configured.env,
-            ...configured.privateEnv,
-          },
-        }),
-      ),
+    const recovered = await runtime.preparePhase({ phase: "hacker", attempt: 1 })
+    expect(recovered.warnings.join(" ")).toContain("session preserved")
+    const recoveredStatus = JSON.parse(
+      await dockerOutput("exec", requiredZapContainer(runtime), "cat", "/run/cyberful/status.json"),
     )
-    expect((await degradedGateway.listTools()).tools.some((tool) => tool.name.startsWith("zap_"))).toBe(false)
-    await degradedGateway.close()
+    expect(recoveredStatus.services.zap.status).toBe("ready")
+    expect(recoveredStatus.services.zap.restart_count).toBe(1)
+    expect(await Bun.file(publicCertificatePath).text()).toBe(publicCertificateBefore)
+    expect(Buffer.from(await Bun.file(bundlePath).arrayBuffer())).toEqual(Buffer.from(bundleBefore))
+    const recoveredBridge = await connect(runtime)
+    expect((await recoveredBridge.listTools()).tools.some((tool) => tool.name === "zap_version")).toBe(true)
     await releaseRuntimes(runtime)
   }, 180_000)
 })

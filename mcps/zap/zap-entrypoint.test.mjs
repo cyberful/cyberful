@@ -15,4 +15,13 @@ describe("ZAP runtime entrypoint", () => {
     expect(entrypoint).not.toContain('-config "api.filexfer=false"')
     expect(entrypoint).not.toContain('-config "mcp.recordInHistory=false"')
   })
+
+  test("persists the private Root CA and reloads it across supervised restarts", async () => {
+    const entrypoint = await Bun.file(new URL("./zap-entrypoint.sh", import.meta.url)).text()
+
+    expect(entrypoint).toContain("umask 077")
+    expect(entrypoint).toContain('certificate_option="-certload"')
+    expect(entrypoint).toContain('certificate_option="-certfulldump"')
+    expect(entrypoint).toContain('"${certificate_option}" "${certificate_path}"')
+  })
 })

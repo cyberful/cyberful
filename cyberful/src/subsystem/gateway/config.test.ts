@@ -31,6 +31,7 @@ test("phase gateways receive the host browser profile contract and keep per-run 
     const server = SubsystemGateway.gatewayMcpServer("ses_1", {
       proxy: true,
       phase: "recon",
+      upstreamFailureSignalPath: "/tmp/cyberful-upstream-failure.json",
       env: { CYBER_BROWSER_HEADLESS: "true" },
     })
 
@@ -39,6 +40,9 @@ test("phase gateways receive the host browser profile contract and keep per-run 
     expect(server.privateEnv?.CYBER_BROWSER_CLEAR_COOKIES_ON_START).toBe("false")
     expect(server.privateEnv?.CYBER_BROWSER_HEADLESS).toBe("true")
     expect(server.privateEnv?.CYBERFUL_SUBSYSTEM_PHASE).toBe("recon")
+    expect(server.privateEnv?.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH).toBe(
+      "/tmp/cyberful-upstream-failure.json",
+    )
     expect(server.privateEnv?.CYBERFUL_RUN_ID).toBe("run-private-1")
     expect(server.privateEnv?.CYBERFUL_PROCESS_ROLE).toBe("worker")
     expect(server.privateEnv?.CYBERFUL_OWNER_PID).toBe(String(process.pid))

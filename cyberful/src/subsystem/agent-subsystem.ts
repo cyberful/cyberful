@@ -87,6 +87,25 @@ export interface RecoveredHypothesis {
   readonly nextStep?: string
 }
 
+export interface RecoveredTestObject {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly state: "planned" | "not_created" | "created" | "oracle_checked" | "cleanup_attempted" | "cleaned" | "residual"
+  readonly phase: string
+  readonly evidencePath?: string
+  readonly evidenceExists?: boolean
+  readonly note?: string
+  readonly residualReason?: string
+}
+
+export interface AgentRunRecoverySummary {
+  readonly capturedAt: string
+  readonly termination: "budget_exhausted" | "cancelled"
+  readonly narrative?: string
+  readonly path?: string
+}
+
 export interface ChildPromptInput {
   readonly role: Exclude<AgentRunRole, "root">
   readonly providerRoute: ProviderRoute
@@ -130,6 +149,9 @@ export interface AgentRunSpec {
     }
     readonly reason: "phase_recovery" | "child_finished"
   }) => Promise<readonly RecoveredHypothesis[]>
+  readonly recoverTestObjects?: (input: {
+    readonly fromRunID: AgentRunID
+  }) => Promise<readonly RecoveredTestObject[]>
   readonly skills: readonly PromptSkill[]
   readonly budget: AgentRunBudget
   readonly abort?: AbortSignal
@@ -294,6 +316,8 @@ export type AgentEvent =
   | {
       readonly type: "run_finished"
       readonly runID: AgentRunID
+      readonly parentID?: AgentRunID
+      readonly role: AgentRunRole
       readonly termination: AgentRunTermination
       readonly failure?: Failure
       readonly usage: AgentRunUsage
@@ -303,6 +327,8 @@ export type AgentEvent =
       readonly fallbackDescendants: number
       readonly toolCalls: number
       readonly recoveredHypotheses?: readonly RecoveredHypothesis[]
+      readonly recoveredTestObjects?: readonly RecoveredTestObject[]
+      readonly recoverySummary?: AgentRunRecoverySummary
     }
 
 export interface AgentRunUsage {
@@ -336,6 +362,8 @@ export interface AgentRunResult {
   readonly fallbackAdmissions: number
   readonly fallbackDescendants: number
   readonly recoveredHypotheses: readonly RecoveredHypothesis[]
+  readonly recoveredTestObjects: readonly RecoveredTestObject[]
+  readonly recoverySummary?: AgentRunRecoverySummary
 }
 
 export interface AgentRun {

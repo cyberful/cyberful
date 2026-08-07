@@ -1,6 +1,6 @@
 // ── Phase Gateway MCP Server ────────────────────────────────────────────────
-// Runs the session-scoped MCP bridge for variables, handoffs, questions, usage
-// recording, and hardened proxying to browser, ZAP, Ghidra, and execution runtimes.
+// Runs the session-scoped MCP bridge for control tools, cooperative target
+// cooldowns, and hardened proxying to browser, ZAP, and execution runtimes.
 // Template resolution and response redaction keep stored secrets out of model traffic.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ import { ToolUsageRecorder, type ToolUsageEvent } from "./tool-usage"
 import { ownedProcessTree, processSnapshot, reapCapturedProcessTree } from "./mcp-process-owner"
 import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
-import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry } from "./hypothesis-registry"
+import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry, HypothesisRegistryError } from "./hypothesis-registry"
 import {
   applyEngagementRateLimit,
   ENGAGEMENT_POLICY_TOOL_DEF,
@@ -64,6 +64,7 @@ import { EVM_LAB_TOOL_DEF, evmLabAvailable, handleEvmLab } from "./evm-lab"
 import { EVM_EVIDENCE_TOOL_DEF, evmEvidenceAvailable, handleEvmEvidence } from "./evm-evidence"
 import { GhidraEvidenceRecorder } from "./ghidra-evidence"
 import { evmVariableRegistryName } from "../evm/runtime"
+import { CORE_PROXY_CA_BUNDLE } from "../zap/runtime"
 import {
   CODE_GRAPH_TOOL_DEFS,
   codeGraphToolsAvailable,
@@ -91,6 +92,15 @@ import { gatewayPhasePolicy, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
 import { FindingRegistry } from "@/finding/registry"
 import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } from "../handoff-snapshot"
+import {
+  CVE_DICTIONARY_TOOL_DEF,
+  CveDictionaryTool,
+} from "./cve-dictionary-tool"
+import {
+  TARGET_COOLDOWN_TOOL_DEF,
+  TARGET_COOLDOWN_TOOL_NAME,
+  TargetCooldownController,
+} from "./target-cooldown"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
@@ -107,6 +117,50 @@ function boundSession(): SessionID {
   const id = process.env.CYBERFUL_SUBSYSTEM_SESSION?.trim()
   if (!id) throw new Error("expert-gateway requires CYBERFUL_SUBSYSTEM_SESSION")
   return SessionID.make(id)
+}
+
+// ── Required-Upstream Failure Has A Host-Owned Causal Record ─────
+// A model may correctly stop without handoff after a mandatory runtime fails.
+// The gateway records the first such failure outside the workarea so the phase
+// host can classify the initiating cause instead of the downstream missing
+// handoff. Only bounded, non-secret codes and fixed descriptions cross this
+// channel; first-writer-wins preserves the earliest observed failure.
+// ─────────────────────────────────────────────────────────────────
+async function recordRequiredUpstreamFailure(input: {
+  readonly code: string
+  readonly detail: string
+}): Promise<void> {
+  const signalPath = process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH?.trim()
+  if (!signalPath) return
+  if (!path.isAbsolute(signalPath)) {
+    log.warn("required-upstream signal path is not absolute")
+    return
+  }
+  const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
+  if (!phase) {
+    log.warn("required-upstream failure had no bound phase")
+    return
+  }
+  const code = input.code.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").slice(0, 100)
+  const detail = input.detail.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 500)
+  try {
+    await writeFile(
+      signalPath,
+      `${JSON.stringify({
+        version: 1,
+        phase,
+        source: "upstream",
+        class: "required_upstream_unavailable",
+        code: code || "required_upstream_failure",
+        detail: detail || "A required phase upstream became unavailable.",
+        retryable: true,
+      })}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 },
+    )
+  } catch (error) {
+    if (nodeErrorCode(error) !== "EEXIST")
+      log.warn("could not record required-upstream failure", { error: nodeErrorCode(error) ?? "unknown" })
+  }
 }
 
 export async function loadPrivateGatewayEnvironment(filePath = process.env.CYBERFUL_SUBSYSTEM_ENV_PATH?.trim()) {
@@ -234,12 +288,14 @@ function liveTargetToolDefinitions(input: {
   egress: boolean
   hypothesis: boolean
   engagementPolicy: boolean
+  targetCooldown: boolean
 }) {
   return [
     ...(input.testObjects ? [TEST_OBJECT_TOOL_DEF] : []),
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
     ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
     ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
+    ...(input.targetCooldown ? [TARGET_COOLDOWN_TOOL_DEF] : []),
   ]
 }
 
@@ -250,6 +306,7 @@ function localToolDefinitions(
     egress: boolean
     hypothesis: boolean
     engagementPolicy: boolean
+    targetCooldown: boolean
   },
 ) {
   if (!policy.active) return []
@@ -260,6 +317,9 @@ function localToolDefinitions(
   const lab = policy.auditLab && auditLabAvailable() ? [AUDIT_LAB_TOOL_DEF] : []
   const evmLab = policy.evmLab && evmLabAvailable() ? [EVM_LAB_TOOL_DEF] : []
   const evmEvidence = policy.evmEvidence && evmEvidenceAvailable() ? [EVM_EVIDENCE_TOOL_DEF] : []
+  const cveDictionary = policy.allows("cve-dictionary")
+    ? [CVE_DICTIONARY_TOOL_DEF]
+    : []
   return [
     ...sourceImport,
     ...source,
@@ -268,6 +328,7 @@ function localToolDefinitions(
     ...lab,
     ...evmLab,
     ...evmEvidence,
+    ...cveDictionary,
     ...liveTargetToolDefinitions(input),
   ]
 }
@@ -329,8 +390,9 @@ const VARIABLE_TOOL_DEF = {
   description:
     "Read and write this session's variable store — the same store the rest of the engagement shares " +
     "across its agents. Save long, secret, or reused values (auth tokens, a target base URL, IDs, " +
-    "request bodies) here, then reference them as {{var:name}} in later tool arguments (including the " +
-    "proxied cyberful-os/browser tools) instead of pasting raw values. Actions: set | get | list | delete.",
+    "request bodies) here. For later tool arguments, replace <saved-name> in {{var:<saved-name>}} with an exact " +
+    "listed identifier. In narrative files, use [session-variable:<saved-name>] so no value is inserted. " +
+    "Actions: set | get | list | delete.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -902,7 +964,7 @@ export interface UpstreamTool {
   def: { name: string; description?: string; inputSchema: unknown; _meta?: unknown }
   capability?: SubsystemPhase.WorkflowCapability
   browserProfile?: BrowserProfileId
-  call(args: Record<string, unknown>): Promise<CallToolResult>
+  call(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>
 }
 
 // ── One Browser Surface Selects Five Isolated Identities ────────────
@@ -1245,6 +1307,24 @@ export function upstreamProcessEnv(
   return env
 }
 
+export function cyberfulOsProxyTrustEnv(
+  inherited: Readonly<Record<string, string | undefined>> = process.env,
+): Partial<Record<"CYBERFUL_OS_HTTP_PROXY" | "CYBERFUL_OS_CA_BUNDLE", string>> {
+  const zapProxy = inherited.CYBER_ZAP_PROXY_URL?.trim()
+  const caBundle = inherited.CYBERFUL_OS_CA_BUNDLE?.trim()
+  if (Boolean(zapProxy) !== Boolean(caBundle))
+    throw new Error("cyberful-os proxy and CA bundle must be configured together")
+  if (!zapProxy || !caBundle) return {}
+  if (caBundle !== CORE_PROXY_CA_BUNDLE)
+    throw new Error("cyberful-os CA bundle does not use the host-owned engagement trust path")
+  const containerProxy = new URL(zapProxy)
+  containerProxy.hostname = "host.docker.internal"
+  return {
+    CYBERFUL_OS_HTTP_PROXY: containerProxy.toString(),
+    CYBERFUL_OS_CA_BUNDLE: caBundle,
+  }
+}
+
 // ── Upstream Availability Follows Workflow Capability Policy ──────
 // The gateway connects only the built-in runtimes granted to the active workflow and
 // phase. Their clients remain owned here because tools, resources, templates,
@@ -1298,7 +1378,11 @@ export function upstreamFailureIsBlocking(
   key: "cyberful-os" | "browser" | "zap" | "ghidra",
   env: Readonly<NodeJS.ProcessEnv> = process.env,
 ) {
-  return key === "cyberful-os" || (key === "zap" && env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1")
+  return (
+    key === "cyberful-os" ||
+    (key === "zap" &&
+      (env.CYBER_ZAP_REQUIRED_UPSTREAM === "1" || env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1"))
+  )
 }
 
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
@@ -1379,12 +1463,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER = "1"
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
-        const zapProxy = process.env.CYBER_ZAP_PROXY_URL?.trim()
-        if (zapProxy) {
-          const containerProxy = new URL(zapProxy)
-          containerProxy.hostname = "host.docker.internal"
-          env.CYBERFUL_OS_HTTP_PROXY = containerProxy.toString()
-        }
+        const proxyTrust = cyberfulOsProxyTrustEnv(process.env)
+        Object.assign(env, proxyTrust)
         const ownership = await Process.run(
           [
             "docker",
@@ -1409,6 +1489,15 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           maxOutputBytes: 64 * 1024,
         })
         if (mount.code !== 0) throw new Error(`cyberful-os workspace mount is unavailable: ${container}`)
+        if (proxyTrust.CYBERFUL_OS_CA_BUNDLE) {
+          const trust = await Process.run(["docker", "exec", container, "test", "-r", proxyTrust.CYBERFUL_OS_CA_BUNDLE], {
+            abort: AbortSignal.timeout(30_000),
+            timeout: 1_000,
+            nothrow: true,
+            maxOutputBytes: 64 * 1024,
+          })
+          if (trust.code !== 0) throw new Error("cyberful-os engagement CA bundle is not readable")
+        }
       }
       pendingTransport = new StdioClientTransport({
         command: cmd,
@@ -1448,8 +1537,9 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           // still finite when an upstream stalls. Both timeout fields match so
           // no hidden outer deadline aborts a call earlier than its policy.
           // ──────────────────────────────────────────────────────────────
-          call: async (a) => {
+          call: async (a, signal) => {
             const result = await client.callTool({ name: t.name, arguments: a }, CallToolResultSchema, {
+              signal,
               timeout: 600_000,
               maxTotalTimeout: 600_000,
             })
@@ -1499,6 +1589,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           ),
         )
       if (upstreamFailureIsBlocking(key, failurePolicyEnvironment)) {
+        await recordRequiredUpstreamFailure({
+          code: `${key}_startup_failed`,
+          detail: `Required ${key} MCP upstream failed during gateway startup.`,
+        })
         if (cleanupFailures.length === 0) throw error
         throw new AggregateError([error, ...cleanupFailures], "required MCP upstream failed startup and cleanup")
       }
@@ -1602,6 +1696,7 @@ export async function createGatewayServer(opts?: {
     engagementPolicy: Boolean(
       workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
+    targetCooldown: liveTargetResearch,
   }
   const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
@@ -1628,6 +1723,16 @@ export async function createGatewayServer(opts?: {
   const engagementPolicy =
     workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
   let engagementPolicySetThisPhase = false
+  const targetCooldown = localTools.some((tool) => tool.name === TARGET_COOLDOWN_TOOL_NAME)
+    ? new TargetCooldownController()
+    : undefined
+  const cveDictionary = localTools.some((tool) => tool.name === CVE_DICTIONARY_TOOL_DEF.name)
+    ? await CveDictionaryTool.create({
+        workarea: workareaRoot,
+        phase,
+        hypotheses,
+      })
+    : undefined
   const ghidraEvidence =
     workareaRoot && phase && policy.allows("ghidra") ? new GhidraEvidenceRecorder(workareaRoot, phase) : undefined
   const server = new Server(
@@ -1664,6 +1769,8 @@ export async function createGatewayServer(opts?: {
       ...(hypotheses ? [() => hypotheses.close()] : []),
       ...(ghidraEvidence ? [() => ghidraEvidence.close()] : []),
       ...(codeGraph ? [() => codeGraph.close()] : []),
+      ...(cveDictionary ? [async () => cveDictionary.close()] : []),
+      ...(targetCooldown ? [async () => targetCooldown.close()] : []),
     ]))
   server.onclose = async () => {
     await closeUpstreams().catch((error) => log.error("phase gateway cleanup failed", { error }))
@@ -1682,6 +1789,8 @@ export async function createGatewayServer(opts?: {
           // never from a model-selected path or hand-authored structured file.
           await codeGraph.handle("code_finding", { action: "export" })
         } catch (error) {
+          if (error instanceof HypothesisRegistryError)
+            return text({ error: error.toolError(args) }, true)
           return text(
             { error: `terminal finding export failed: ${error instanceof Error ? error.message : String(error)}` },
             true,
@@ -1809,9 +1918,59 @@ export async function createGatewayServer(opts?: {
       })
       continue
     }
+    if (name === CVE_DICTIONARY_TOOL_DEF.name && cveDictionary) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await cveDictionary.handle(args))
+        } catch (error) {
+          return text(
+            {
+              error: {
+                code: "CVE_DICTIONARY_FAILED",
+                path: "cve_dictionary",
+                expected: "a valid action against the pinned offline snapshot",
+                receivedType: Array.isArray(args) ? "array" : typeof args,
+                retryable: true,
+                hint: error instanceof Error ? error.message : String(error),
+              },
+            },
+            true,
+          )
+        }
+      })
+      continue
+    }
+    if (name === TARGET_COOLDOWN_TOOL_NAME && targetCooldown) {
+      tools.register(definition, async (args, context) => {
+        try {
+          return text(await targetCooldown.run(args, enforcedEngagementPolicy, context.signal))
+        } catch (error) {
+          return text(
+            {
+              error: {
+                code: "TARGET_COOLDOWN_REJECTED",
+                path: TARGET_COOLDOWN_TOOL_NAME,
+                expected:
+                  "one authorized origin that was responsive before at least two consecutive failures with no HTTP status",
+                receivedType: Array.isArray(args) ? "array" : typeof args,
+                retryable: false,
+                hint: error instanceof Error ? error.message : String(error),
+              },
+            },
+            true,
+          )
+        }
+      })
+      continue
+    }
     if (name === TEST_OBJECT_TOOL_DEF.name && testObjects) {
       tools.register(definition, async (args) => {
         try {
+          if (args.action === "recover") {
+            if (args._cyberful_host !== true)
+              return text({ error: "test_object recovery is host-only" }, true)
+            return text({ objects: await testObjects.recover(args.fromRunID) })
+          }
           if (args.action === "list") return text({ objects: await testObjects.list() })
           if (args.action !== "transition")
             return text({ error: "test_object action must be transition or list" }, true)
@@ -1851,15 +2010,26 @@ export async function createGatewayServer(opts?: {
           const policyResult = engagementPolicy.prepare(args)
           const proxyUrl = process.env.CYBER_ZAP_PROXY_URL?.trim()
           const apiKey = process.env.CYBER_ZAP_API_KEY?.trim()
-          if (!proxyUrl || !apiKey)
+          if (!proxyUrl || !apiKey) {
+            await recordRequiredUpstreamFailure({
+              code: "zap_runtime_inactive",
+              detail: "Required OWASP ZAP was inactive while enforcing the engagement policy.",
+            })
             return text({ error: "engagement HTTP policy requires an active ZAP runtime" }, true)
+          }
           const enforcement = await applyEngagementRateLimit(policyResult as EngagementPolicy, { proxyUrl, apiKey })
           await engagementPolicy.commit(policyResult)
           enforcedEngagementPolicy = policyResult
           engagementPolicySetThisPhase = true
           return text({ policy: policyResult, enforcement })
         } catch (error) {
-          if (error instanceof ZapRateLimitInstallError) return text(error.toolResult(), true)
+          if (error instanceof ZapRateLimitInstallError) {
+            await recordRequiredUpstreamFailure({
+              code: error.validationCode ?? error.zapCode ?? error.kind,
+              detail: "Required OWASP ZAP failed while enforcing the engagement policy.",
+            })
+            return text(error.toolResult(), true)
+          }
           return text({ error: error instanceof Error ? error.message : String(error) }, true)
         }
       })
@@ -1897,11 +2067,12 @@ export async function createGatewayServer(opts?: {
     tools: [...tools.definitions(), ...upstreamDefinitions],
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, context) => {
     const sessionID = boundSession()
     const name = req.params.name
     const args = req.params.arguments ?? {}
-    const local = tools.call(name, args, { sessionID })
+    if (name !== TARGET_COOLDOWN_TOOL_NAME) await targetCooldown?.wait(context.signal)
+    const local = tools.call(name, args, { sessionID, signal: context.signal })
     if (local) {
       const result = await local
       return result
@@ -1928,7 +2099,7 @@ export async function createGatewayServer(opts?: {
     const startedAt = performance.now()
     try {
       const result = annotateBrowserProfile(
-        annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments),
+        annotateAdjustments(await upstream.call(adjusted.args, context.signal), adjusted.adjustments),
         upstream.browserProfile,
       )
       if (circuit) await observeCaptchaCircuit(circuit, name, result)
@@ -1978,6 +2149,17 @@ export async function createGatewayServer(opts?: {
         .catch((error) => log.warn("could not record completed phase tool call", { tool: name, error }))
       return redacted
     } catch (error) {
+      const requiredUpstream =
+        upstream.capability === "zap"
+          ? ("zap" as const)
+          : upstream.capability === "isolated-exec"
+            ? ("cyberful-os" as const)
+            : undefined
+      if (requiredUpstream && upstreamFailureIsBlocking(requiredUpstream))
+        await recordRequiredUpstreamFailure({
+          code: `${requiredUpstream}_transport_failed`,
+          detail: `Required ${requiredUpstream} MCP upstream failed during a phase tool call.`,
+        })
       const egress = EgressObservation.observe(name, resolvedArgs, { content: [] })
       await usage
         .record({

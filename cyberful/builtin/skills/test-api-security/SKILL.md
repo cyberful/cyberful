@@ -33,8 +33,7 @@ Verify issuer, audience, client, tenant, subject, token type, delegation, and as
 
 Treat upstream APIs, webhooks, feeds, files, schemas, and service responses as untrusted according to their compromise and drift model. Validate data, enforce timeouts and size limits, constrain redirects and outbound destinations, isolate credentials, handle partial or malicious responses, and prevent upstream content from entering interpreters.
 
-Read [references/rest-rpc-patterns.md](references/rest-rpc-patterns.md) for protocol-specific checks.
-Use [references/field-heuristics.md](references/field-heuristics.md) to pursue cross-layer differentials, hidden operations, and high-yield chain conditions after the baseline inventory is stable.
+Read [references/rest-rpc-patterns.md](references/rest-rpc-patterns.md) for protocol-specific checks. Use [references/field-heuristics.md](references/field-heuristics.md) to pursue cross-layer differentials, hidden operations, and high-yield chain conditions after the baseline inventory is stable.
 
 ## Evidence standard
 

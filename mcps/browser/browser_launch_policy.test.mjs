@@ -44,7 +44,12 @@ describe("browser launch network policy", () => {
     for (const feature of PATCHRIGHT_DISABLED_FEATURES_ARG.slice("--disable-features=".length).split(",")) {
       expect(disabledFeatures.has(feature)).toBe(true)
     }
-    for (const backgroundFeature of ["NetworkTimeServiceQuerying", "AimServerRequestOnStartupEnabled"]) {
+    for (const backgroundFeature of [
+      "NetworkTimeServiceQuerying",
+      "SafeBrowsingHashPrefixRealTimeLookups",
+      "SafeBrowsingHashPrefixRealTimeLookupsSamplePing",
+      "AimServerRequestOnStartupEnabled",
+    ]) {
       expect(disabledFeatures.has(backgroundFeature)).toBe(true)
     }
   })

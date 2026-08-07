@@ -1,8 +1,8 @@
 /* ── Cyberful Documentation Theme ────────────────────────────────
- * Gives the Material site a crisp product-docs identity with restrained color,
- * high-contrast navigation, reusable content surfaces, and a responsive home
- * page. All typography is local and the stylesheet performs no network work.
- * → docs-overrides/main.html — supplies the announcement markup styled here.
+ * Defines local typography, navigation, and content styles for the Material
+ * documentation theme without loading fonts or other assets from the network.
+ * → docs/overrides/main.html — supplies the site announcement.
+ * → docs/overrides/partials/header.html — supplies the linked site name.
  * @docs/development/release.md
  * ───────────────────────────────────────────────────────────────── */
 
@@ -170,17 +170,12 @@ body {
   right: 0.75rem;
   top: 50%;
   transform: translateY(-50%);
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    transform 150ms ease;
   width: 1.5rem;
 }
 
 .md-banner__inner > .md-banner__button:hover {
   background: rgb(255 255 255 / 24%);
   border-color: rgb(255 255 255 / 75%);
-  transform: translateY(-50%) scale(1.04);
 }
 
 .md-banner__inner > .md-banner__button:focus-visible {
@@ -203,8 +198,8 @@ body {
 }
 
 .cyberful-announcement__badge {
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgb(255 255 255 / 18%);
+  border: 1px solid rgb(255 255 255 / 35%);
   border-radius: 999px;
   font-size: 0.58rem;
   font-weight: 760;
@@ -217,7 +212,7 @@ body {
   color: white;
   font-weight: 720;
   text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.52);
+  text-decoration-color: rgb(255 255 255 / 52%);
   text-underline-offset: 0.18em;
 }
 
@@ -339,9 +334,13 @@ body {
   margin-top: 0;
 }
 
+.md-container:has(.cyberful-home) > .md-footer {
+  display: none;
+}
+
 .md-content__inner:has(> .cyberful-home) {
   margin: 0;
-  padding: 0 0 5rem;
+  padding: 0;
 }
 
 .md-content__inner:has(> .cyberful-home) > .md-content__button,
@@ -520,15 +519,13 @@ body {
     radial-gradient(circle at 78% 28%, color-mix(in srgb, var(--cyberful-blue) 18%, transparent), transparent 34%),
     radial-gradient(circle at 65% 6%, color-mix(in srgb, var(--cyberful-lime) 38%, transparent), transparent 29%);
   background-size: 3rem 3rem, 3rem 3rem, auto, auto;
-  border: 0;
   border-radius: 0 0 1.6rem 1.6rem;
-  display: grid;
-  gap: clamp(0.5rem, 2vw, 2rem);
-  grid-template-columns: minmax(0, 0.98fr) minmax(24rem, 1.02fr);
+  box-sizing: border-box;
+  display: flex;
   margin: 0;
-  min-height: min(46rem, calc(100svh - 7rem));
+  min-height: clamp(30rem, calc(100svh - 8.75rem), 46rem);
   overflow: hidden;
-  padding: clamp(2.2rem, 4vw, 3.6rem) clamp(1.5rem, 4vw, 4rem);
+  padding: clamp(1.6rem, 2.8svh, 2.5rem) 0.75rem clamp(3.6rem, 6svh, 5rem);
   position: relative;
 }
 
@@ -550,7 +547,7 @@ body {
   align-items: flex-start;
   display: flex;
   flex-direction: column;
-  padding: 0;
+  max-width: 46rem;
 }
 
 .cyberful-eyebrow {
@@ -609,336 +606,6 @@ body {
   width: 0.3rem;
 }
 
-.md-typeset .cyberful-cli-visual {
-  align-self: center;
-  display: grid;
-  margin: 0;
-  min-width: 0;
-  place-items: center;
-  position: relative;
-  width: 100%;
-}
-
-.cyberful-cli-visual::before {
-  background: radial-gradient(circle, color-mix(in srgb, var(--cyberful-blue) 15%, transparent), transparent 68%);
-  content: "";
-  inset: 5% 0;
-  position: absolute;
-}
-
-.cyberful-cli-visual img {
-  display: block;
-  filter: drop-shadow(0 2rem 3.2rem rgb(4 8 16 / 22%));
-  height: auto;
-  max-width: 39rem;
-  position: relative;
-  width: 100%;
-  z-index: 1;
-}
-
-.cyberful-home-section {
-  margin: 4.8rem 0;
-  padding: 0 clamp(1.1rem, 2vw, 2rem);
-}
-
-.cyberful-section-heading {
-  align-items: end;
-  display: flex;
-  gap: 2rem;
-  justify-content: space-between;
-  margin: 0 0 1.4rem;
-}
-
-.md-typeset .cyberful-section-heading h2 {
-  font-size: clamp(1.75rem, 3.3vw, 2.7rem);
-  font-weight: 620;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  margin: 0;
-}
-
-.cyberful-section-heading p {
-  color: var(--cyberful-muted);
-  margin: 0;
-  max-width: 29rem;
-}
-
-.cyberful-section-heading--editorial {
-  align-items: end;
-  margin-bottom: 1.8rem;
-}
-
-.cyberful-section-kicker {
-  color: var(--cyberful-blue);
-  display: block;
-  font-size: 0.56rem;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-  margin-bottom: 0.6rem;
-  text-transform: uppercase;
-}
-
-.cyberful-workflow-grid {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.cyberful-workflow-card {
-  background: color-mix(in srgb, var(--cyberful-panel) 88%, var(--md-default-bg-color));
-  border: 1px solid var(--cyberful-line);
-  border-radius: 1rem;
-  color: var(--md-default-fg-color) !important;
-  display: flex;
-  flex-direction: column;
-  min-height: 16rem;
-  overflow: hidden;
-  padding: 1.4rem;
-  position: relative;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
-}
-
-.cyberful-workflow-card::before {
-  background: var(--cyberful-blue);
-  content: "";
-  height: 0.18rem;
-  inset: 0 100% auto 0;
-  position: absolute;
-  transition: inset 220ms ease;
-}
-
-.cyberful-workflow-card:hover {
-  border-color: color-mix(in srgb, var(--cyberful-blue) 48%, var(--cyberful-line));
-  box-shadow: 0 1.1rem 2.8rem rgb(16 21 34 / 10%);
-  transform: translateY(-3px);
-}
-
-.cyberful-workflow-card:hover::before {
-  inset: 0 0 auto 0;
-}
-
-.cyberful-workflow-card__meta {
-  color: var(--cyberful-blue);
-  font-size: 0.54rem;
-  font-weight: 760;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.md-typeset .cyberful-workflow-card h3 {
-  font-size: 1.65rem;
-  font-weight: 620;
-  letter-spacing: -0.035em;
-  margin: 1.5rem 0 0.55rem;
-}
-
-.cyberful-workflow-card p {
-  color: var(--cyberful-muted);
-  line-height: 1.62;
-  margin: 0;
-}
-
-.cyberful-workflow-card__chain {
-  border-top: 1px solid var(--cyberful-line);
-  color: var(--cyberful-muted);
-  font-size: 0.54rem;
-  margin-top: auto;
-  padding-top: 0.8rem;
-}
-
-.cyberful-card-grid {
-  display: grid;
-  gap: 0.8rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.cyberful-card {
-  background: var(--cyberful-panel);
-  border: 1px solid var(--cyberful-line);
-  border-radius: var(--cyberful-radius);
-  color: var(--md-default-fg-color) !important;
-  display: block;
-  min-height: 11.5rem;
-  padding: 1.35rem;
-  position: relative;
-  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
-}
-
-.cyberful-card:hover {
-  border-color: color-mix(in srgb, var(--cyberful-blue) 54%, var(--cyberful-line));
-  box-shadow: 0 0.8rem 2rem rgba(16, 21, 34, 0.1);
-  transform: translateY(-2px);
-}
-
-.cyberful-card__number {
-  align-items: center;
-  background: var(--cyberful-lime);
-  border-radius: 0.45rem;
-  color: #17210a;
-  display: inline-flex;
-  font-size: 0.62rem;
-  font-weight: 820;
-  height: 1.55rem;
-  justify-content: center;
-  width: 1.55rem;
-}
-
-.cyberful-card h3 {
-  margin: 0.85rem 0 0.3rem;
-}
-
-.cyberful-card p {
-  color: var(--cyberful-muted);
-  line-height: 1.55;
-  margin: 0;
-  max-width: 34rem;
-}
-
-.cyberful-card__arrow {
-  color: var(--cyberful-blue);
-  font-size: 1rem;
-  position: absolute;
-  right: 1rem;
-  top: 1rem;
-}
-
-.cyberful-workflow {
-  background: #111827;
-  border: 1px solid #2b3548;
-  border-radius: 1.2rem;
-  color: white;
-  margin: 5rem clamp(1.1rem, 2vw, 2rem);
-  overflow: hidden;
-  padding: clamp(1.6rem, 4vw, 3rem);
-}
-
-.cyberful-workflow__header {
-  align-items: center;
-  display: flex;
-  gap: 1rem;
-  justify-content: space-between;
-}
-
-.cyberful-workflow__header h2 {
-  color: white;
-  font-size: clamp(1.65rem, 3vw, 2.5rem);
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  margin: 0;
-}
-
-.cyberful-workflow__header a {
-  color: var(--cyberful-lime);
-  font-weight: 720;
-}
-
-.cyberful-phases {
-  display: grid;
-  gap: 0.45rem;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin-top: 2rem;
-}
-
-.cyberful-phase {
-  background: #192235;
-  border: 1px solid #303b50;
-  border-radius: 0.55rem;
-  color: #c8d1df;
-  font-size: 0.63rem;
-  padding: 0.85rem 0.7rem;
-}
-
-.cyberful-phase span {
-  color: #6f7e95;
-  display: block;
-  font-size: 0.46rem;
-  margin-bottom: 0.22rem;
-}
-
-.cyberful-phase:first-child,
-.cyberful-phase:last-child {
-  border-color: color-mix(in srgb, var(--cyberful-lime) 58%, #303b50);
-  color: var(--cyberful-lime);
-}
-
-.cyberful-safety {
-  align-items: flex-start;
-  background: color-mix(in srgb, var(--cyberful-lime) 30%, var(--md-default-bg-color));
-  border: 1px solid color-mix(in srgb, var(--cyberful-lime) 65%, var(--cyberful-line));
-  border-radius: var(--cyberful-radius);
-  display: flex;
-  gap: 0.8rem;
-  margin: 4.5rem clamp(1.1rem, 2vw, 2rem);
-  padding: 1.15rem 1.25rem;
-}
-
-.cyberful-safety__mark {
-  background: var(--cyberful-lime);
-  border-radius: 999px;
-  color: #17210a;
-  flex: 0 0 auto;
-  font-weight: 850;
-  height: 1.45rem;
-  line-height: 1.45rem;
-  text-align: center;
-  width: 1.45rem;
-}
-
-.cyberful-safety p {
-  margin: 0;
-}
-
-.cyberful-home-section--deep {
-  margin-bottom: 0;
-}
-
-.cyberful-deep-grid {
-  display: grid;
-  gap: 0.65rem;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.cyberful-deep-grid a {
-  border-top: 1px solid var(--cyberful-line);
-  color: var(--md-default-fg-color) !important;
-  display: grid;
-  min-height: 9rem;
-  padding: 1rem 2rem 0.5rem 0;
-  position: relative;
-}
-
-.cyberful-deep-grid strong,
-.cyberful-deep-grid span {
-  display: block;
-}
-
-.cyberful-deep-grid strong {
-  font-family: var(--cyberful-serif);
-  font-size: 1.05rem;
-  font-weight: 620;
-  line-height: 1.15;
-}
-
-.cyberful-deep-grid span {
-  color: var(--cyberful-muted);
-  font-size: 0.6rem;
-  line-height: 1.55;
-}
-
-.cyberful-deep-grid i {
-  color: var(--cyberful-blue);
-  font-style: normal;
-  position: absolute;
-  right: 0.25rem;
-  top: 0.85rem;
-  transition: transform 150ms ease;
-}
-
-.cyberful-deep-grid a:hover i {
-  transform: translateX(0.2rem);
-}
-
 @media screen and (max-width: 76.234375em) {
   .md-header {
     color: var(--md-default-fg-color);
@@ -952,23 +619,13 @@ body {
 }
 
 @media screen and (max-width: 60em) {
+  .md-grid {
+    width: auto;
+  }
+
   .cyberful-hero {
-    grid-template-columns: 1fr;
     min-height: auto;
-  }
-
-  .cyberful-cli-visual img {
-    max-width: 30rem;
-  }
-
-  .cyberful-workflow-grid,
-  .cyberful-card-grid,
-  .cyberful-deep-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .cyberful-phases {
-    grid-template-columns: repeat(3, 1fr);
+    padding: 2.2rem 0.75rem 2.8rem;
   }
 }
 
@@ -986,53 +643,13 @@ body {
   }
 
   .cyberful-hero {
-    border-left: 0;
     border-radius: 0 0 1.15rem 1.15rem;
-    border-right: 0;
-    padding: 2.2rem 1rem 2.6rem;
   }
 
   .md-typeset .cyberful-hero h1 {
     font-size: clamp(2.45rem, 13vw, 3.25rem);
     line-height: 0.95;
     max-width: none;
-  }
-
-  .md-typeset .cyberful-cli-visual {
-    margin-top: 1rem;
-  }
-
-  .cyberful-home-section {
-    margin: 3.6rem 0;
-    padding: 0 0.8rem;
-  }
-
-  .cyberful-workflow {
-    margin: 3.8rem 0.8rem;
-  }
-
-  .cyberful-safety {
-    margin: 3.6rem 0.8rem;
-  }
-
-  .cyberful-workflow-grid,
-  .cyberful-card-grid,
-  .cyberful-deep-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .cyberful-workflow-card {
-    min-height: 14rem;
-  }
-
-  .cyberful-section-heading,
-  .cyberful-workflow__header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .cyberful-phases {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1041,8 +658,6 @@ body {
     scroll-behavior: auto;
   }
 
-  .cyberful-card,
-  .cyberful-workflow-card,
   .md-typeset .md-button {
     transition: none;
   }

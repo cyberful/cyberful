@@ -62,6 +62,16 @@ server.setRequestHandler(ListToolsRequestSchema, (request) => {
         inputSchema: objectSchema,
       },
       {
+        name: "target_cooldown",
+        description: "Exercise phase budget suspension.",
+        inputSchema: objectSchema,
+      },
+      {
+        name: "test_object",
+        description: "Exercise host-owned child ledger recovery.",
+        inputSchema: { type: "object" as const, additionalProperties: true, properties: {} },
+      },
+      {
         name: "filtered",
         description: "Must never enter the Pi catalog.",
         inputSchema: objectSchema,
@@ -87,6 +97,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
     return {
       content: [{ type: "text" as const, text: `handoff: ${value}` }],
     }
+  if (request.params.name === "target_cooldown")
+    return {
+      content: [{ type: "text" as const, text: `cooldown: ${value}` }],
+    }
+  if (request.params.name === "test_object") {
+    const fromRunID = request.params.arguments?.fromRunID
+    const hostOwned = request.params.arguments?._cyberful_host === true
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            objects:
+              hostOwned && typeof fromRunID === "string"
+                ? [
+                    {
+                      id: `object-${fromRunID}`,
+                      kind: "temporary_record",
+                      label: "fixture record",
+                      state: "cleaned",
+                      phase: "exploit",
+                      evidencePath: "raw/evidence/fixture.json",
+                      evidenceExists: false,
+                    },
+                  ]
+                : [],
+          }),
+        },
+      ],
+    }
+  }
   if (request.params.name === "question") {
     const requestedSchema = approvalElicitationSchema(questions)
     if (value === "invalid-schema") requestedSchema.required = []

@@ -1,6 +1,6 @@
 // ── Phase Budget Clock Tests ────────────────────────────────────
-// Verifies overlapping suspension accounting, retry caps, and exact effective
-//   deadline compensation for the phase-owned active-execution clock.
+// Verifies overlapping approval, retry, and target-cooldown accounting plus
+//   exact effective deadline compensation for the phase-owned clock.
 // → cyberful/src/subsystem/phase-budget-clock.ts — owns the behavior under test.
 // ─────────────────────────────────────────────────────────────────
 
@@ -86,6 +86,7 @@ describe("PhaseBudgetClock", () => {
       retryCompensationCapMs: 900_000,
       initialApprovalWaitMs: 2_000,
       initialRetryWaitMs: 12_000,
+      initialTargetCooldownWaitMs: 180_000,
       initialRetryCompensationMs: 10_000,
       now: () => now,
     })
@@ -95,6 +96,7 @@ describe("PhaseBudgetClock", () => {
       pausedMs: 0,
       approvalWaitMs: 2_000,
       retryWaitMs: 12_000,
+      targetCooldownWaitMs: 180_000,
       retryCompensationMs: 10_000,
     })
 
@@ -107,6 +109,33 @@ describe("PhaseBudgetClock", () => {
       pausedMs: 5_000,
       retryWaitMs: 17_000,
       retryCompensationMs: 15_000,
+    })
+    clock.close()
+  })
+
+  test("pauses for target cooldown and counts overlap with provider retry only once", () => {
+    let now = 0
+    const clock = SubsystemPhaseBudgetClock.create({
+      deadlineAt: 20_000,
+      retryCompensationCapMs: 30_000,
+      now: () => now,
+    })
+
+    const cooldown = clock.suspend("target_cooldown")
+    now = 2_000
+    const retry = clock.suspend("provider_retry")
+    now = 5_000
+    retry()
+    now = 7_000
+    cooldown()
+
+    expect(clock.snapshot()).toMatchObject({
+      pending: false,
+      pausedMs: 7_000,
+      targetCooldownWaitMs: 7_000,
+      retryWaitMs: 3_000,
+      retryCompensationMs: 3_000,
+      deadlineAt: 27_000,
     })
     clock.close()
   })

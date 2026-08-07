@@ -34,6 +34,8 @@ const PATCHRIGHT_DISABLED_BROWSER_FEATURES = Object.freeze([
 const DISABLED_BROWSER_FEATURES = Object.freeze([
   ...PATCHRIGHT_DISABLED_BROWSER_FEATURES,
   "NetworkTimeServiceQuerying",
+  "SafeBrowsingHashPrefixRealTimeLookups",
+  "SafeBrowsingHashPrefixRealTimeLookupsSamplePing",
   "AimEnabled",
   "AimServerEligibilityEnabled",
   "AimServerRequestOnStartupEnabled",

@@ -1542,15 +1542,13 @@ export function Prompt(props: PromptProps) {
                     {(item) => (
                       <text wrapMode="none">
                         <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>R</span>
-                        <span style={{ fg: theme.textMuted }}>&gt;</span>
                         <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>
-                          {` i:${item().root.input} c:${item().root.cached} g:${item().root.generated} `}
+                          {` ${item().root.input}/${item().root.cached}/${item().root.generated} `}
                         </span>
-                        <span style={{ fg: theme.textMuted }}>|</span>
+                        <span style={{ fg: theme.textMuted }}>·</span>
                         <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>{" S"}</span>
-                        <span style={{ fg: theme.textMuted }}>&gt;</span>
                         <span style={{ fg: tint(theme.textMuted, theme.text, 0.35) }}>
-                          {` i:${item().subagents.input} c:${item().subagents.cached} g:${item().subagents.generated}`}
+                          {` ${item().subagents.input}/${item().subagents.cached}/${item().subagents.generated}`}
                         </span>
                       </text>
                     )}

@@ -32,6 +32,7 @@ import { AgentPromptCompiler, type PromptManifest } from "./prompt-compiler"
 import { PiSkills, type SkillRegistry } from "./pi-skills"
 import { SubsystemPiAgent } from "./pi-agent"
 import type { AgentRunResult } from "./agent-subsystem"
+import { RunStateArtifact } from "./run-state-artifact"
 
 export interface PhaseSpec {
   phase: string
@@ -59,6 +60,7 @@ export interface PhaseSpec {
   budgetCarry?: {
     readonly approvalWaitMs: number
     readonly retryWaitMs: number
+    readonly targetCooldownWaitMs: number
     readonly phaseExtensionMs: number
   }
   abort?: AbortSignal
@@ -85,7 +87,7 @@ export interface PhaseHandoff {
   snapshot?: HandoffSnapshotV2
 }
 
-export type PhaseFailureSource = "provider" | "contract" | "lifecycle"
+export type PhaseFailureSource = "provider" | "contract" | "lifecycle" | "upstream"
 
 export interface PhaseFailure {
   readonly phase: string
@@ -93,6 +95,7 @@ export interface PhaseFailure {
   readonly class: string
   readonly code?: string
   readonly detail: string
+  readonly retryable?: boolean
 }
 
 export interface PhaseResult {
@@ -113,6 +116,7 @@ export interface PhaseResult {
   // Non-execution waits are excluded from durationMs and extend deadlineAt by their union.
   approvalWaitMs?: number
   retryWaitMs?: number
+  targetCooldownWaitMs?: number
   retryCompensationMs?: number
   retryCompensationCapMs?: number
   retryCompensationCapReached?: boolean
@@ -191,6 +195,10 @@ export interface PhaseDeps {
   discoverSkills: (roots: readonly string[]) => Promise<SkillRegistry>
   // Reads budgets.json. Injected so budget resolution remains testable.
   readFile: (filePath: string) => Promise<string>
+  // Reads the private gateway's first required-upstream failure marker. Kept
+  // separate from workarea/config reads so small test adapters cannot
+  // accidentally synthesize a marker for every phase.
+  readUpstreamFailureSignal?: (filePath: string) => Promise<string>
   // Shells may materialize heredocs before the command runs. Production creates their private temporary
   // directory inside the already-authorized workarea so this preparation cannot escape the sandbox.
   ensureDirectory: (directory: string) => Promise<void>
@@ -223,6 +231,20 @@ export interface PhaseDeps {
   // Host-owned structured tools are bound to the active session and phase. They
   // travel through the subsystem protocol without entering the phase gateway.
   dynamicTools?: readonly DynamicTool[]
+  createRunState?: (input: {
+    readonly workarea: string
+    readonly workflow: string
+    readonly phase: string
+    readonly attempt: number
+    readonly deadlineAt: number
+  }) => Pick<RunStateArtifact, "start" | "fail">
+  // Runs immediately before a phase owner and private gateway are created.
+  // Host runtimes use it to attest and recover required upstream services.
+  preparePhase?: (input: {
+    readonly phase: string
+    readonly attempt: number
+    readonly signal?: AbortSignal
+  }) => Promise<{ readonly warnings?: readonly string[]; readonly env?: Readonly<Record<string, string>> }>
 }
 
 function errorDetail(error: unknown) {
@@ -272,6 +294,7 @@ export function defaultDeps(): PhaseDeps {
     loadSettings: Settings.load,
     discoverSkills: (roots) => PiSkills.discover({ roots }),
     readFile: (filePath) => readFile(filePath, "utf8"),
+    readUpstreamFailureSignal: (filePath) => readFile(filePath, "utf8"),
     ensureDirectory: (directory) =>
       ensureWorkareaDirectory(path.dirname(directory), path.basename(directory)).then(() => {}),
     fileExists: pathExists,
@@ -314,6 +337,7 @@ export function defaultDeps(): PhaseDeps {
         },
       }
     },
+    createRunState: (input) => new RunStateArtifact(input),
   }
 }
 
@@ -372,6 +396,7 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
       humanWaitMs: result.approvalWaitMs ?? 0,
       retryWaitMs: result.retryWaitMs ?? 0,
       providerWaitMs: result.retryWaitMs ?? 0,
+      targetCooldownWaitMs: result.targetCooldownWaitMs ?? 0,
       retryCompensationMs: result.retryCompensationMs ?? 0,
       phaseExtensionMs: result.retryCompensationMs ?? 0,
       retryCompensationCapMs: result.retryCompensationCapMs ?? 0,
@@ -785,6 +810,61 @@ function processTermination(result: SubsystemCli.RunResult): SubsystemCli.RunTer
   return result.exitCode === 0 ? "completed" : "subsystem_failed"
 }
 
+async function readRequiredUpstreamFailure(
+  reader: PhaseDeps["readUpstreamFailureSignal"],
+  signalPath: string,
+  spec: PhaseSpec,
+): Promise<{ readonly value?: PhaseFailure; readonly warning?: string }> {
+  if (!reader) return {}
+  try {
+    const parsed: unknown = JSON.parse(await reader(signalPath))
+    if (
+      !isRecord(parsed) ||
+      parsed.version !== 1 ||
+      parsed.phase !== spec.phase ||
+      parsed.source !== "upstream" ||
+      parsed.class !== "required_upstream_unavailable" ||
+      typeof parsed.detail !== "string" ||
+      parsed.detail.length === 0 ||
+      parsed.detail.length > 500 ||
+      parsed.retryable !== true ||
+      (parsed.code !== undefined && (typeof parsed.code !== "string" || parsed.code.length > 100))
+    )
+      return {
+        value: {
+          phase: spec.phase,
+          source: "upstream",
+          class: "required_upstream_unavailable",
+          detail: "A required phase upstream failed, but its private causal record was invalid.",
+          retryable: true,
+        },
+        warning: "The required-upstream failure signal failed host validation.",
+      }
+    return {
+      value: {
+        phase: spec.phase,
+        source: "upstream",
+        class: "required_upstream_unavailable",
+        ...(typeof parsed.code === "string" ? { code: parsed.code } : {}),
+        detail: parsed.detail,
+        retryable: true,
+      },
+    }
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return {}
+    return {
+      value: {
+        phase: spec.phase,
+        source: "upstream",
+        class: "required_upstream_unavailable",
+        detail: "A required phase upstream failed, but its private causal record could not be read.",
+        retryable: true,
+      },
+      warning: `Could not read the required-upstream failure signal: ${errorDetail(error)}`,
+    }
+  }
+}
+
 // ── One Primary Failure Owns The Terminal Explanation ────────────
 // A provider error often causes missing output and handoff evidence downstream.
 // Rendering every consequence as an equal warning obscures the initiating fault.
@@ -796,6 +876,7 @@ function processTermination(result: SubsystemCli.RunResult): SubsystemCli.RunTer
 function phaseFailure(input: {
   readonly spec: PhaseSpec
   readonly run: SubsystemCli.RunResult
+  readonly upstreamFailure?: PhaseFailure
   readonly termination: SubsystemCli.RunTermination
   readonly deliverable?: string
   readonly deliverableExists: boolean
@@ -805,6 +886,7 @@ function phaseFailure(input: {
   readonly readinessWarning?: string
   readonly summary: string
 }): PhaseFailure | undefined {
+  if (input.upstreamFailure) return input.upstreamFailure
   const provider = input.run.failure
   if (provider)
     return {
@@ -813,6 +895,15 @@ function phaseFailure(input: {
       class: provider.kind,
       ...(provider.providerCode ? { code: provider.providerCode } : {}),
       detail: provider.detail ?? `The configured provider ended the phase with ${provider.kind}.`,
+      retryable: provider.retryable,
+    }
+  if (input.termination === "spawn_failed")
+    return {
+      phase: input.spec.phase,
+      source: "lifecycle",
+      class: "spawn_failed",
+      code: String(input.run.exitCode),
+      detail: input.run.failureReason ?? "The phase runtime failed before the worker could start.",
     }
   if (!input.deliverableExists && input.deliverable)
     return {
@@ -884,6 +975,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     deadlineAt: result.deadlineAt,
     approvalWaitMs: result.approvalWaitMs,
     retryWaitMs: result.retryWaitMs,
+    targetCooldownWaitMs: result.targetCooldownWaitMs,
     retryCompensationMs: result.retryCompensationMs,
     retryCompensationCapMs: result.retryCompensationCapMs,
     retryCompensationCapReached: result.retryCompensationCapReached,
@@ -946,6 +1038,8 @@ function failedBeforeSpawn(input: {
   termination: "budget_exhausted" | "spawn_failed"
   detail: string
   budgetWarnings: string[]
+  phaseFailure?: PhaseFailure
+  recoveryPolicy?: PhaseResult["recoveryPolicy"]
 }): PhaseResult {
   return {
     phase: input.spec.phase,
@@ -960,7 +1054,10 @@ function failedBeforeSpawn(input: {
     effectiveLimitMs: input.effectiveLimitMs,
     deadlineAt: input.deadlineAt,
     warnings: [...input.budgetWarnings],
-    ...(input.termination === "spawn_failed"
+    ...(input.recoveryPolicy ? { recoveryPolicy: input.recoveryPolicy } : {}),
+    ...(input.phaseFailure
+      ? { phaseFailure: input.phaseFailure }
+      : input.termination === "spawn_failed"
       ? {
           phaseFailure: {
             phase: input.spec.phase,
@@ -1052,6 +1149,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const beforeSetup = now()
   const initialDeadline = beforeSetup + attemptLimitMs
   const initialEffectiveLimitMs = attemptLimitMs
+  const setupState = deps.createRunState?.({
+    workarea: spec.workareaCwd,
+    workflow: spec.workflow ?? SubsystemPhase.workflowOf(spec.phase) ?? "unknown",
+    phase: spec.phase,
+    attempt: spec.attempt ?? 1,
+    deadlineAt: initialDeadline,
+  })
+  await setupState?.start()
 
   const promptSetup = await (async () => {
     const settingsDirectory = spec.settingsDirectory ?? process.cwd()
@@ -1067,6 +1172,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     (error) => ({ ok: false as const, error }),
   )
   if (!promptSetup.ok) {
+    await setupState?.fail({ termination: "spawn_failed", failure: { class: "phase_setup_failed" } })
     const result = failedBeforeSpawn({
       spec,
       deps,
@@ -1084,6 +1190,53 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     return result
   }
 
+  const retryPolicy = Settings.retryPolicy(promptSetup.value.settings)
+  const phaseRecoveryPolicy = Settings.phaseRecoveryPolicy(promptSetup.value.settings)
+  const recoveryPolicy: NonNullable<PhaseResult["recoveryPolicy"]> = {
+    enabled: phaseRecoveryPolicy.enabled,
+    maxRestarts: phaseRecoveryPolicy.max_restarts,
+    useFallbackProvider: phaseRecoveryPolicy.use_fallback_provider,
+    fallbackConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+  }
+  const prepared = await (deps.preparePhase
+    ? deps.preparePhase({ phase: spec.phase, attempt: spec.attempt ?? 1, signal: spec.abort })
+    : Promise.resolve({ warnings: [] as readonly string[], env: {} as Readonly<Record<string, string>> })).then(
+    (value) => ({ ok: true as const, value }),
+    (error) => ({ ok: false as const, error }),
+  )
+  if (!prepared.ok) {
+    const candidate = prepared.error
+    const retryable = isRecord(candidate) && candidate.retryable === true
+    const kind = isRecord(candidate) && typeof candidate.kind === "string"
+      ? candidate.kind
+      : "required_upstream_unavailable"
+    const result = failedBeforeSpawn({
+      spec,
+      deps,
+      startedAt: beforeSetup,
+      limitMs,
+      effectiveLimitMs: initialEffectiveLimitMs,
+      deadlineAt: initialDeadline,
+      termination: "spawn_failed",
+      detail: `Required phase upstream failed preflight: ${errorDetail(candidate)}`,
+      budgetWarnings,
+      recoveryPolicy,
+      phaseFailure: {
+        phase: spec.phase,
+        source: "upstream",
+        class: kind,
+        code: "127",
+        detail: `Required phase upstream failed preflight: ${errorDetail(candidate)}`,
+        retryable,
+      },
+    })
+    await setupState?.fail({ termination: "spawn_failed", failure: { class: kind } })
+    await persistStatusOnly(spec, result, deps)
+    return result
+  }
+  budgetWarnings.push(...(prepared.value.warnings ?? []))
+  const phaseEnvironment = { ...spec.env, ...prepared.value.env }
+
   const safeRunKey = spec.sessionID.replace(/[^a-zA-Z0-9_.-]/g, "-")
   // Signal files outlive their subprocess briefly, so every attempt gets a nonce. A gateway from a timed-out
   // attempt can never write into a retried phase's handoff or PID path.
@@ -1091,12 +1244,13 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const phaseRootRunID = `run_${randomUUID()}`
   const handoffPath = spec.handoff ? path.join(os.tmpdir(), `expert-phase-handoff-${signalKey}.json`) : undefined
   const gatewayPidPath = path.join(os.tmpdir(), `expert-phase-gateway-pid-${signalKey}.json`)
-  const retryPolicy = Settings.retryPolicy(promptSetup.value.settings)
+  const upstreamFailurePath = path.join(os.tmpdir(), `expert-phase-upstream-failure-${signalKey}.json`)
   const budgetClock = SubsystemPhaseBudgetClock.create({
     deadlineAt: initialDeadline,
     retryCompensationCapMs: retryPolicy.max_phase_extension_minutes * 60_000,
     initialApprovalWaitMs: spec.budgetCarry?.approvalWaitMs,
     initialRetryWaitMs: spec.budgetCarry?.retryWaitMs,
+    initialTargetCooldownWaitMs: spec.budgetCarry?.targetCooldownWaitMs,
     initialRetryCompensationMs: spec.budgetCarry?.phaseExtensionMs,
     now,
   })
@@ -1113,7 +1267,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     proxy: true,
     phase: spec.phase,
     env: {
-      ...spec.env,
+      ...phaseEnvironment,
       CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: spec.workareaCwd,
       CYBERFUL_SUBSYSTEM_LABEL: spec.phase,
       ...(spec.transcriptPath ? { CYBERFUL_SUBSYSTEM_SESSION_LOG_ROOT: path.dirname(spec.transcriptPath) } : {}),
@@ -1122,6 +1276,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       ...(spec.sourceRoot ? { CYBERFUL_SUBSYSTEM_SOURCE_ROOT: spec.sourceRoot } : {}),
     },
     pidSignalPath: gatewayPidPath,
+    upstreamFailureSignalPath: upstreamFailurePath,
     questionEnabled: Boolean(askQuestion),
     circuitBreakerPath: engagementCircuitBreakerPath,
     ...(handoffPath
@@ -1140,6 +1295,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     await deps.ensureDirectory(shellTemporaryDirectory)
     if (handoffPath) await deps.removeFile?.(handoffPath)
     await deps.removeFile?.(gatewayPidPath)
+    await deps.removeFile?.(upstreamFailurePath)
   } catch (error) {
     const setupCleanupWarning = await operationWarning(
       "Could not remove the phase runtime directory after setup failed",
@@ -1378,6 +1534,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const budgetSnapshot = budgetClock.snapshot()
   const approvalWaitMs = Math.round(budgetSnapshot.approvalWaitMs)
   const retryWaitMs = Math.round(budgetSnapshot.retryWaitMs)
+  const targetCooldownWaitMs = Math.round(budgetSnapshot.targetCooldownWaitMs)
   const retryCompensationMs = Math.round(budgetSnapshot.retryCompensationMs)
   const pausedMs = Math.round(budgetSnapshot.pausedMs)
   budgetClock.close()
@@ -1399,13 +1556,23 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const primaryHandoff = handoffPath
     ? await readHandoff(deps.readFile, handoffPath, spec)
     : ({ value: undefined, warning: undefined, missing: false } as const)
+  const primaryUpstreamFailure = await readRequiredUpstreamFailure(
+    deps.readUpstreamFailureSignal,
+    upstreamFailurePath,
+    spec,
+  )
   lifecycleWarnings.push(
+    ...(primaryUpstreamFailure.warning ? [primaryUpstreamFailure.warning] : []),
     ...(await operationWarnings([
       [
         "Could not remove the phase handoff signal",
         handoffPath && removeFile ? () => removeFile(handoffPath) : undefined,
       ],
       ["Could not remove the phase gateway PID signal", removeFile ? () => removeFile(gatewayPidPath) : undefined],
+      [
+        "Could not remove the required-upstream failure signal",
+        removeFile ? () => removeFile(upstreamFailurePath) : undefined,
+      ],
     ])),
   )
   const primarySummary = primaryRun.agentResult?.output ?? deps.subsystem.extractResultText(primaryRun.stdout)
@@ -1468,6 +1635,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     deliverable !== undefined &&
     deliverableExists &&
     !manifestWarning &&
+    !primaryUpstreamFailure.value &&
     gatewayExited
   const synthesizedHandoff: PhaseHandoff | undefined = canSynthesizeBudgetHandoff
     ? {
@@ -1520,6 +1688,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     deliverableExists &&
     !manifestWarning &&
     gatewayExited &&
+    !primaryUpstreamFailure.value &&
     !handoffWarning &&
     !readinessWarning
   const primaryFailure = ok
@@ -1527,6 +1696,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     : phaseFailure({
         spec,
         run: primaryRun,
+        upstreamFailure: primaryUpstreamFailure.value,
         termination: rawTermination,
         deliverable,
         deliverableExists,
@@ -1569,6 +1739,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     deadlineAt: Math.round(budgetSnapshot.deadlineAt),
     approvalWaitMs,
     retryWaitMs,
+    targetCooldownWaitMs,
     retryCompensationMs,
     retryCompensationCapMs: budgetSnapshot.retryCompensationCapMs,
     retryCompensationCapReached: budgetSnapshot.retryCompensationCapReached,

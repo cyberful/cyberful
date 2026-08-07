@@ -10,6 +10,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { connectPiMcp } from "./pi-mcp"
+import { SubsystemPhaseBudgetClock, type SuspensionCause } from "./phase-budget-clock"
 import { RUNTIME_DIAGNOSTICS_PATH, RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
 import type { SubsystemMcpServer } from "./subsystem"
 
@@ -45,8 +46,21 @@ describe("Pi MCP worker bridge", () => {
         handoffAuthorized: false,
         isToolAllowed: (name) => name !== "echo" || childEchoAllowed,
       })
-      expect(rootTools.map((tool) => tool.name)).toEqual(["echo", "failure", "question", "handoff"])
-      expect(childTools.map((tool) => tool.name)).toEqual(["echo", "failure", "question"])
+      expect(rootTools.map((tool) => tool.name)).toEqual([
+        "echo",
+        "failure",
+        "target_cooldown",
+        "test_object",
+        "question",
+        "handoff",
+      ])
+      expect(childTools.map((tool) => tool.name)).toEqual([
+        "echo",
+        "failure",
+        "target_cooldown",
+        "test_object",
+        "question",
+      ])
 
       const rootEcho = rootTools.find((tool) => tool.name === "echo")
       const rootHandoff = rootTools.find((tool) => tool.name === "handoff")
@@ -102,6 +116,56 @@ describe("Pi MCP worker bridge", () => {
       const firstClose = bridge.close()
       expect(bridge.close()).toBe(firstClose)
       await firstClose
+    }
+  })
+
+  test("recovers a delegated test-object ledger through the hidden host action", async () => {
+    const bridge = await connectPiMcp(fixtureServer(), { cwd: import.meta.dir })
+    try {
+      expect(await bridge.recoverTestObjects({ fromRunID: "child-7" })).toEqual([
+        {
+          id: "object-child-7",
+          kind: "temporary_record",
+          label: "fixture record",
+          state: "cleaned",
+          phase: "exploit",
+          evidencePath: "raw/evidence/fixture.json",
+          evidenceExists: false,
+        },
+      ])
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  test("suspends the shared phase budget only for target cooldown calls", async () => {
+    const observed: string[] = []
+    const clock = SubsystemPhaseBudgetClock.create({
+      deadlineAt: Date.now() + 60_000,
+      retryCompensationCapMs: 30_000,
+    })
+    const budgetClock = {
+      ...clock,
+      wait: async <T>(cause: SuspensionCause, operation: () => Promise<T>) => {
+        observed.push(cause)
+        return clock.wait(cause, operation)
+      },
+    }
+    const bridge = await connectPiMcp(fixtureServer(), { cwd: import.meta.dir, budgetClock })
+    try {
+      const tools = bridge.toolsFor({ handoffAuthorized: false, isToolAllowed: () => true })
+      const echo = tools.find((tool) => tool.name === "echo")
+      const cooldown = tools.find((tool) => tool.name === "target_cooldown")
+      expect(echo).toBeDefined()
+      expect(cooldown).toBeDefined()
+
+      await echo!.execute("ordinary-call", { value: "ordinary" })
+      await cooldown!.execute("cooldown-call", { value: "wait" })
+
+      expect(observed).toEqual(["target_cooldown"])
+    } finally {
+      await bridge.close()
+      clock.close()
     }
   })
 

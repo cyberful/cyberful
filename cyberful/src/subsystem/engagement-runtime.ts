@@ -1,15 +1,19 @@
 // ── Unified Engagement Runtime Ownership ─────────────────────────
-// Starts and owns the single cyberful-os container shared by every phase, with
-//   optional ZAP and Ghidra services selected before Docker creates it.
+// Starts the core tooling role plus a dedicated ZAP role and owns both across
+//   phase gateways, explicit recovery, and terminal session cleanup.
 // → cyberful/src/session/prompt.ts — scopes this owner to one workflow run.
 // → mcps/cyberful-os/runtime_supervisor.py — supervises the in-container services.
 // @docs/concepts/execution-model.md
 // @docs/runtimes/cyberful-os.md
 // ─────────────────────────────────────────────────────────────────
 
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
+import os from "node:os"
+import path from "node:path"
+import { chmod, lstat, mkdtemp, readFile, rm } from "node:fs/promises"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js"
 import {
   cyberGhidraBridgeCommand,
   cyberGhidraStartupTimeoutSeconds,
@@ -26,9 +30,24 @@ import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { BoundedByteTail } from "@/util/bounded-output"
 import { dockerOwnershipLabels } from "@/util/container-ownership"
+import { isRecord } from "@/util/record"
+import { appendWorkareaFile, ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import { SubsystemContainer } from "./container"
-import { applyEngagementRateLimit, readEngagementPolicy } from "./gateway/engagement-policy"
-import { localTargetWarning, parsePublishedPort, spkiFromCertificate } from "./zap/runtime"
+import {
+  applyEngagementRateLimit,
+  readEngagementPolicy,
+  type EngagementPolicy,
+} from "./gateway/engagement-policy"
+import {
+  attestProxyCertificate,
+  CORE_PROXY_CA_BUNDLE,
+  CORE_PROXY_CA_CERTIFICATE,
+  CORE_PROXY_TRUST_DIRECTORY,
+  CORE_SYSTEM_CA_BUNDLE,
+  localTargetWarning,
+  parsePublishedPort,
+  type ProxyCertificateAttestation,
+} from "./zap/runtime"
 
 const log = Log.create({ service: "engagement-runtime" })
 const DOCKER_COMMAND_TIMEOUT_MS = 60_000
@@ -36,13 +55,58 @@ const DOCKER_OUTPUT_LIMIT_BYTES = 128 * 1024
 const DOCKER_KILL_GRACE_MS = 1_000
 const BRIDGE_PREFLIGHT_TIMEOUT_MS = 30_000
 const BRIDGE_DIAGNOSTIC_LIMIT_BYTES = 64 * 1024
+const REQUIRED_DOCKER_MEMORY_BYTES = 10_000_000_000
+const ZAP_LIFECYCLE_PATH = "raw/operations/zap-runtime.jsonl"
+const ZAP_RUNTIME_RELATIVE_PATH = "raw/zap/runtime"
+const ZAP_TRUST_RELATIVE_PATH = "raw/zap/trust"
+const MAX_SYSTEM_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 
 export interface EngagementRuntime {
   readonly container: string
+  readonly containers: readonly string[]
+  readonly zapContainer?: string
   readonly env: Record<string, string>
   readonly degraded: boolean
   readonly warnings: readonly string[]
+  readonly preparePhase: (input: {
+    readonly phase: string
+    readonly attempt: number
+    readonly signal?: AbortSignal
+  }) => Promise<{ readonly warnings: readonly string[]; readonly env: Readonly<Record<string, string>> }>
   readonly stop: () => Promise<void>
+}
+
+export class RequiredUpstreamUnavailableError extends Error {
+  readonly kind = "required_upstream_unavailable"
+  readonly retryable = true
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "RequiredUpstreamUnavailableError"
+  }
+}
+
+export function requiresZapUpstream(
+  workflow: string,
+  policy?: Pick<EngagementPolicy, "global_http_rps">,
+) {
+  return (
+    workflow === "pentest" ||
+    workflow === "bug-bounty" ||
+    (policy?.global_http_rps !== null && policy?.global_http_rps !== undefined)
+  )
+}
+
+type ZapAttestationStage = "api" | "ca" | "mcp" | "rate_limit" | "supervisor"
+
+class ZapAttestationStageError extends Error {
+  readonly stage: ZapAttestationStage
+
+  constructor(stage: ZapAttestationStage, cause: unknown) {
+    super(`ZAP ${stage} attestation failed`, { cause })
+    this.name = "ZapAttestationStageError"
+    this.stage = stage
+  }
 }
 
 interface DockerOptions {
@@ -58,6 +122,10 @@ interface BridgeProbeInput {
   readonly requiredTools: readonly string[]
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
+}
+
+interface ProxyTrustAttestation extends ProxyCertificateAttestation {
+  readonly bundleSha256: string
 }
 
 function secret() {
@@ -85,6 +153,211 @@ async function docker(command: string[], options: DockerOptions = {}) {
   const stderr = result.stderr.toString("utf8").trim()
   if (result.code !== 0) throw new Error(`${command.slice(0, 3).join(" ")} exited ${result.code}: ${stderr}`)
   return result.stdout.toString("utf8").trim()
+}
+
+export function zapCoreIsolationMounts(trustPath: string) {
+  return [
+    "--mount",
+    `type=tmpfs,destination=/workspace/${ZAP_RUNTIME_RELATIVE_PATH},tmpfs-size=1048576,tmpfs-mode=0700`,
+    "--mount",
+    `type=bind,source=${trustPath},target=/workspace/${ZAP_TRUST_RELATIVE_PATH},readonly`,
+    "--mount",
+    `type=bind,source=${trustPath},target=${CORE_PROXY_TRUST_DIRECTORY},readonly`,
+  ]
+}
+
+function sha256(value: Uint8Array | string) {
+  return createHash("sha256").update(value).digest("hex")
+}
+
+function zapStateScope(sessionID: string) {
+  return sha256(sessionID).slice(0, 32)
+}
+
+async function regularTrustFile(filePath: string) {
+  const info = await lstat(filePath)
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("proxy trust material must be a regular file")
+  const value = await readFile(filePath)
+  if (value.byteLength === 0 || value.byteLength > MAX_SYSTEM_CA_BUNDLE_BYTES)
+    throw new Error("proxy trust material has an invalid size")
+  if (value.includes(Buffer.from("PRIVATE KEY")))
+    throw new Error("proxy trust material unexpectedly contains private key material")
+  return value
+}
+
+async function copyCoreSystemCaBundle(container: string, signal?: AbortSignal) {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "cyberful-proxy-trust-"))
+  const temporaryBundle = path.join(temporaryDirectory, "ca-certificates.crt")
+  try {
+    await docker(["docker", "cp", `${container}:${CORE_SYSTEM_CA_BUNDLE}`, temporaryBundle], { signal })
+    const value = await regularTrustFile(temporaryBundle)
+    if (!value.includes(Buffer.from("-----BEGIN CERTIFICATE-----")))
+      throw new Error("core system CA bundle contains no certificates")
+    return value
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+}
+
+async function verifyCoreProxyTrust(input: {
+  readonly bundleSha256: string
+  readonly container: string
+  readonly publicCertificatePem: string
+  readonly trustPath: string
+  readonly signal?: AbortSignal
+}) {
+  const publicCertificatePath = path.join(input.trustPath, "root-ca-public.pem")
+  const bundlePath = path.join(input.trustPath, "ca-bundle.pem")
+  const [publicCertificate, bundle] = await Promise.all([
+    regularTrustFile(publicCertificatePath),
+    regularTrustFile(bundlePath),
+  ])
+  if (publicCertificate.toString("utf8") !== input.publicCertificatePem)
+    throw new Error("public proxy CA file does not match the attested certificate")
+  if (sha256(bundle) !== input.bundleSha256) throw new Error("proxy CA bundle digest changed")
+  if (!bundle.includes(publicCertificate)) throw new Error("proxy CA bundle does not contain the attested certificate")
+  await docker(
+    [
+      "docker",
+      "exec",
+      input.container,
+      "openssl",
+      "verify",
+      "-CAfile",
+      CORE_PROXY_CA_BUNDLE,
+      CORE_PROXY_CA_CERTIFICATE,
+    ],
+    { signal: input.signal },
+  )
+}
+
+async function installCoreProxyTrust(input: {
+  readonly certificate: ProxyCertificateAttestation
+  readonly container: string
+  readonly expected?: ProxyTrustAttestation
+  readonly signal?: AbortSignal
+  readonly trustRelativePath: string
+  readonly trustPath: string
+  readonly workarea: string
+}): Promise<ProxyTrustAttestation> {
+  const canonicalTrustPath = await ensureWorkareaDirectory(input.workarea, input.trustRelativePath)
+  if (canonicalTrustPath !== input.trustPath)
+    throw new Error("proxy trust directory changed from its engagement-owned canonical path")
+  if (
+    input.expected?.fingerprint256 === input.certificate.fingerprint256 &&
+    input.expected.spki === input.certificate.spki
+  ) {
+    try {
+      await verifyCoreProxyTrust({
+        bundleSha256: input.expected.bundleSha256,
+        container: input.container,
+        publicCertificatePem: input.certificate.certificatePem,
+        trustPath: input.trustPath,
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
+      return input.expected
+    } catch (error) {
+      input.signal?.throwIfAborted()
+      log.warn("engagement proxy trust material failed verification; regenerating once", {
+        error: errorMessage(error),
+      })
+    }
+  }
+
+  const systemBundle = await copyCoreSystemCaBundle(input.container, input.signal)
+  const separator = systemBundle.at(-1) === 0x0a ? "" : "\n"
+  const combined = Buffer.concat([
+    systemBundle,
+    Buffer.from(separator),
+    Buffer.from(input.certificate.certificatePem),
+  ])
+  if (combined.includes(Buffer.from("PRIVATE KEY")))
+    throw new Error("combined proxy CA bundle unexpectedly contains private key material")
+  const bundleSha256 = sha256(combined)
+  await replaceWorkareaFile(input.workarea, `${input.trustRelativePath}/root-ca-public.pem`, input.certificate.certificatePem, {
+    mode: 0o600,
+  })
+  await replaceWorkareaFile(input.workarea, `${input.trustRelativePath}/ca-bundle.pem`, combined, { mode: 0o600 })
+  await verifyCoreProxyTrust({
+    bundleSha256,
+    container: input.container,
+    publicCertificatePem: input.certificate.certificatePem,
+    trustPath: input.trustPath,
+    ...(input.signal ? { signal: input.signal } : {}),
+  })
+  return { ...input.certificate, bundleSha256 }
+}
+
+function proxyTrustLifecycle(attestation: ProxyTrustAttestation) {
+  return {
+    ca_bundle_attested: true,
+    ca_bundle_sha256: attestation.bundleSha256,
+    ca_fingerprint_sha256: attestation.fingerprint256,
+    ca_spki_sha256: attestation.spki,
+  }
+}
+
+export function dockerMemoryAllocationWarning(source: string) {
+  if (!/^\d+$/.test(source)) throw new Error("Docker returned a non-decimal memory total")
+  const available = Number(source)
+  if (!Number.isSafeInteger(available) || available <= 0) throw new Error("Docker returned an invalid memory total")
+  if (available >= REQUIRED_DOCKER_MEMORY_BYTES) return
+  return `Docker has ${(available / 1024 ** 3).toFixed(1)} GiB available; Cyberful requires at least 10 GB of RAM dedicated to Docker for stable security runtimes.`
+}
+
+async function dockerMemoryWarning(signal?: AbortSignal) {
+  try {
+    const source = await docker(["docker", "info", "--format", "{{.MemTotal}}"], { signal })
+    return dockerMemoryAllocationWarning(source)
+  } catch (error) {
+    signal?.throwIfAborted()
+    return `Cyberful could not attest the Docker memory allocation (at least 10 GB dedicated to Docker is required): ${errorMessage(error)}`
+  }
+}
+
+interface ZapSupervisorState {
+  readonly status: string
+  readonly exitCode?: number
+  readonly signal?: number
+  readonly restartCount: number
+  readonly sessionGeneration: number
+  readonly memoryEvents: Readonly<Record<string, number>>
+}
+
+function parseZapSupervisorState(value: unknown): ZapSupervisorState {
+  if (!isRecord(value) || typeof value.status !== "string")
+    throw new Error("ZAP supervisor state is malformed")
+  const integer = (candidate: unknown, fallback = 0) =>
+    typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : fallback
+  const events: Record<string, number> = {}
+  if (isRecord(value.memory_events))
+    for (const [name, count] of Object.entries(value.memory_events))
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) events[name] = count
+  return {
+    status: value.status,
+    ...(typeof value.exit_code === "number" ? { exitCode: value.exit_code } : {}),
+    ...(typeof value.signal === "number" ? { signal: value.signal } : {}),
+    restartCount: integer(value.restart_count),
+    sessionGeneration: integer(value.session_generation, 1),
+    memoryEvents: events,
+  }
+}
+
+async function readZapSupervisorState(container: string, signal?: AbortSignal) {
+  const source = await docker(["docker", "exec", container, "cat", "/run/cyberful/zap.json"], { signal })
+  return parseZapSupervisorState(JSON.parse(source))
+}
+
+async function appendZapLifecycle(
+  workarea: string,
+  row: Record<string, unknown>,
+) {
+  await appendWorkareaFile(
+    workarea,
+    ZAP_LIFECYCLE_PATH,
+    `${JSON.stringify({ version: 1, timestamp: new Date().toISOString(), ...row })}\n`,
+    { mode: 0o600 },
+  )
 }
 
 function sleep(ms: number, signal?: AbortSignal) {
@@ -120,7 +393,7 @@ async function waitForContainer(container: string, signal?: AbortSignal) {
     if (state === "true") return
     await sleep(250, signal)
   }
-  throw new Error("the unified engagement container did not become ready")
+  throw new Error(`engagement container '${container}' did not become ready`)
 }
 
 async function waitForZapApi(input: {
@@ -154,7 +427,7 @@ async function waitForZapApi(input: {
       ...(input.signal ? { signal: input.signal } : {}),
       timeoutMs: Math.max(1, Math.min(DOCKER_COMMAND_TIMEOUT_MS, remainingMs)),
     })
-    if (running !== "true") throw new Error("the unified engagement container exited during ZAP startup")
+    if (running !== "true") throw new Error("the dedicated ZAP container exited during API startup")
     const retryDelayMs = Math.min(500, input.deadline - Date.now())
     if (retryDelayMs > 0) await sleep(retryDelayMs, input.signal)
   }
@@ -178,19 +451,19 @@ async function waitForGhidra(container: string, signal?: AbortSignal) {
     )
     if (result.code === 0) return
     const running = await docker(["docker", "inspect", "--format", "{{.State.Running}}", container], { signal })
-    if (running !== "true") throw new Error("the unified engagement container exited during Ghidra startup")
+    if (running !== "true") throw new Error("the core engagement container exited during Ghidra startup")
     await sleep(500, signal)
   }
   throw new Error(`timed out after ${cyberGhidraStartupTimeoutSeconds()}s waiting for the Ghidra JVM`)
 }
 
-async function certificateSpki(proxyUrl: string, apiKey: string, signal?: AbortSignal) {
+async function proxyCertificate(proxyUrl: string, apiKey: string, signal?: AbortSignal) {
   const response = await fetch(`${proxyUrl}/OTHER/core/other/rootcert/?apikey=${encodeURIComponent(apiKey)}`, {
     headers: { Host: "zap" },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error(`ZAP root CA export returned HTTP ${response.status}`)
-  return spkiFromCertificate(new Uint8Array(await response.arrayBuffer()))
+  return attestProxyCertificate(new Uint8Array(await response.arrayBuffer()))
 }
 
 async function probeBridge(input: BridgeProbeInput) {
@@ -222,6 +495,14 @@ async function probeBridge(input: BridgeProbeInput) {
     const names = new Set(tools.tools.map((tool) => tool.name))
     for (const required of input.requiredTools)
       if (!names.has(required)) throw new Error(`${input.name} MCP is missing required tool ${required}`)
+    if (input.name === "zap") {
+      const version = await client.callTool(
+        { name: "zap_version", arguments: {} },
+        CallToolResultSchema,
+        { timeout: requestTimeoutMs, maxTotalTimeout: requestTimeoutMs },
+      )
+      if (version.isError) throw new Error("ZAP MCP zap_version health check failed")
+    }
   } catch (error) {
     const detail = diagnostics.text().trim()
     throw new Error(detail ? `${errorMessage(error)}\n${input.name} bridge stderr:\n${detail}` : errorMessage(error), {
@@ -274,7 +555,7 @@ async function waitForZapBridge(input: {
       ...(input.signal ? { signal: input.signal } : {}),
       timeoutMs: Math.max(1, Math.min(DOCKER_COMMAND_TIMEOUT_MS, remainingMs)),
     })
-    if (running !== "true") throw new Error("the unified engagement container exited during ZAP MCP startup")
+    if (running !== "true") throw new Error("the dedicated ZAP container exited during MCP startup")
     const retryDelayMs = Math.min(500, input.deadline - Date.now())
     if (retryDelayMs > 0) await sleep(retryDelayMs, input.signal)
   }
@@ -300,7 +581,7 @@ async function verifyCore(container: string, signal?: AbortSignal) {
 // Code Audit starts this same image with Docker networking disabled and never
 // starts ZAP. Live-target workflows publish only ZAP's proxy on host loopback.
 // No phase may mutate those choices later, so sequential gateways reconnect to
-// one stable container without offline/online suffixes or privilege escalation.
+// stable engagement roles without phase-local privilege escalation.
 // The workarea remains writable by design; Ghidra alone also receives its store.
 // ─────────────────────────────────────────────────────────────────
 export async function startEngagement(input: {
@@ -321,31 +602,53 @@ export async function startEngagement(input: {
   input.signal?.throwIfAborted()
   const codeAudit = input.workflow === "code-audit"
   const policy = await readEngagementPolicy(input.workarea)
+  const zapRequired = requiresZapUpstream(input.workflow, policy)
   const zapEnabled = !codeAudit && shouldEnableCyberZap()
   const ghidraEnabled = Boolean(input.ghidraStore) && shouldEnableCyberGhidra()
-  if (!zapEnabled && policy?.global_http_rps !== null && policy?.global_http_rps !== undefined)
-    throw new Error("OWASP ZAP cannot be disabled while the engagement defines a global HTTP rate limit")
 
   const apiKey = zapEnabled ? secret() : undefined
   const zapMcpKey = zapEnabled ? secret() : undefined
   const ghidraMcpKey = ghidraEnabled ? secret() : undefined
-  const serviceEnv = {
-    CYBERFUL_ZAP_ENABLED: zapEnabled ? "1" : "0",
+  const coreServiceEnv = {
+    CYBERFUL_ZAP_ENABLED: "0",
     CYBERFUL_GHIDRA_ENABLED: ghidraEnabled ? "1" : "0",
-    ...(apiKey ? { CYBER_ZAP_API_KEY: apiKey } : {}),
-    ...(zapMcpKey ? { CYBER_ZAP_MCP_KEY: zapMcpKey } : {}),
     ...(ghidraMcpKey ? { CYBER_GHIDRA_MCP_KEY: ghidraMcpKey } : {}),
   }
   const identity = runtimeIdentity()
-  const published = cyberZapProxyPort() ? `127.0.0.1:${cyberZapProxyPort()}:8080` : "127.0.0.1::8080"
-  const ownershipLabels = dockerOwnershipLabels({
+  const zapContainer = `${input.container}-zap`
+  const containers = zapEnabled ? [input.container, zapContainer] : [input.container]
+  let published = cyberZapProxyPort() ? `127.0.0.1:${cyberZapProxyPort()}:8080` : "127.0.0.1::8080"
+  let publishedPort: number | undefined
+  let sessionGeneration = 1
+  const coreOwnershipLabels = dockerOwnershipLabels({
     managed: "engagement",
     runtime: "cyberful-os",
     session: input.sessionID,
   })
+  const zapOwnershipLabels = dockerOwnershipLabels({
+    managed: "engagement",
+    runtime: "cyberful-zap",
+    session: input.sessionID,
+  })
+  const zapScope = zapStateScope(input.sessionID)
+  const zapRuntimeRelativePath = `${ZAP_RUNTIME_RELATIVE_PATH}/${zapScope}`
+  const zapTrustRelativePath = `${ZAP_TRUST_RELATIVE_PATH}/${zapScope}`
+  const zapRuntimePath = zapEnabled
+    ? await ensureWorkareaDirectory(input.workarea, zapRuntimeRelativePath)
+    : undefined
+  const zapTrustPath = zapEnabled
+    ? await ensureWorkareaDirectory(input.workarea, zapTrustRelativePath)
+    : undefined
+  if (zapRuntimePath && zapTrustPath)
+    await Promise.all([chmod(zapRuntimePath, 0o700), chmod(zapTrustPath, 0o700)])
 
-  SubsystemContainer.remember(input.container)
-  await SubsystemContainer.reap(input.container)
+  for (const container of containers) {
+    SubsystemContainer.remember(container)
+    await SubsystemContainer.reap(container)
+  }
+  const warnings: string[] = []
+  const memoryWarning = await dockerMemoryWarning(input.signal)
+  if (memoryWarning) warnings.push(memoryWarning)
   try {
     await docker(
       [
@@ -360,17 +663,15 @@ export async function startEngagement(input: {
         input.container,
         "--workdir",
         "/workspace",
-        ...ownershipLabels.flatMap((label) => ["--label", label]),
+        ...coreOwnershipLabels.flatMap((label) => ["--label", label]),
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_PTRACE",
+        "--oom-score-adj=250",
         "--pids-limit=2048",
         ...(codeAudit ? ["--network", "none"] : ["--add-host", "host.docker.internal:host-gateway"]),
-        ...(zapEnabled ? ["--publish", published] : []),
         "--mount",
         `type=bind,source=${input.workarea},target=/workspace`,
-        ...(zapEnabled
-          ? ["--mount", `type=bind,source=${input.workarea},target=/zap/wrk`]
-          : []),
+        ...(zapTrustPath ? zapCoreIsolationMounts(zapTrustPath) : []),
         ...(ghidraEnabled && input.ghidraStore
           ? ["--mount", `type=bind,source=${input.ghidraStore},target=/ghidra/store`]
           : []),
@@ -378,15 +679,15 @@ export async function startEngagement(input: {
         `CYBERFUL_RUNTIME_UID=${identity.uid}`,
         "--env",
         `CYBERFUL_RUNTIME_GID=${identity.gid}`,
-        ...Object.keys(serviceEnv).flatMap((name) => ["--env", name]),
+        ...Object.keys(coreServiceEnv).flatMap((name) => ["--env", name]),
         cyberfulOsImage(),
       ],
-      { env: serviceEnv, signal: input.signal },
+      { env: coreServiceEnv, signal: input.signal },
     )
     await waitForContainer(input.container, input.signal)
     await verifyCore(input.container, input.signal)
   } catch (error) {
-    await SubsystemContainer.remove(input.container).catch((cleanupError) => {
+    await Promise.all(containers.map((container) => SubsystemContainer.remove(container))).catch((cleanupError) => {
       throw new AggregateError([error, cleanupError], "unified engagement runtime startup and cleanup failed")
     })
     throw error
@@ -394,78 +695,356 @@ export async function startEngagement(input: {
 
   const env: Record<string, string> = {
     CYBERFUL_OS_CONTAINER: input.container,
+    ...(zapEnabled ? { CYBERFUL_ZAP_RUNTIME_CONTAINER: zapContainer } : {}),
     CYBERFUL_OS_IMAGE: cyberfulOsImage(),
     CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER: "1",
     ...(policy?.global_http_rps !== null && policy?.global_http_rps !== undefined
       ? { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" }
       : {}),
   }
-  const warnings: string[] = []
-  let degraded = false
+  let degraded = Boolean(memoryWarning)
   let proxyUrl: string | undefined
+  let expectedTrust: ProxyTrustAttestation | undefined
+  let zapOperational = false
+
+  const runZapContainer = async (generation: number, signal?: AbortSignal) => {
+    if (!apiKey || !zapMcpKey || !zapRuntimePath) throw new Error("ZAP runtime inputs are unavailable")
+    const zapEnv = {
+      CYBERFUL_ZAP_ENABLED: "1",
+      CYBERFUL_GHIDRA_ENABLED: "0",
+      CYBER_ZAP_API_KEY: apiKey,
+      CYBER_ZAP_MCP_KEY: zapMcpKey,
+      CYBER_ZAP_SESSION_GENERATION: String(generation),
+    }
+    await docker(
+      [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--pull=never",
+        "--name",
+        zapContainer,
+        "--hostname",
+        zapContainer,
+        "--workdir",
+        "/zap/wrk",
+        ...zapOwnershipLabels.flatMap((label) => ["--label", label]),
+        "--pids-limit=1024",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        "--publish",
+        publishedPort === undefined ? published : `127.0.0.1:${publishedPort}:8080`,
+        "--mount",
+        `type=bind,source=${input.workarea},target=/zap/wrk`,
+        "--mount",
+        `type=bind,source=${zapRuntimePath},target=/var/lib/cyberful/zap`,
+        "--env",
+        `CYBERFUL_RUNTIME_UID=${identity.uid}`,
+        "--env",
+        `CYBERFUL_RUNTIME_GID=${identity.gid}`,
+        ...Object.keys(zapEnv).flatMap((name) => ["--env", name]),
+        cyberfulOsImage(),
+      ],
+      { env: zapEnv, signal },
+    )
+    await waitForContainer(zapContainer, signal)
+    const nextPort = parsePublishedPort(
+      await docker(["docker", "port", zapContainer, "8080/tcp"], { signal }),
+    )
+    publishedPort ??= nextPort
+    if (nextPort !== publishedPort) throw new Error("ZAP did not retain its host proxy port")
+    proxyUrl = `http://127.0.0.1:${publishedPort}`
+  }
+
+  const attestZap = async (options: { readonly allowCaRotation?: boolean; readonly signal?: AbortSignal } = {}) => {
+    const signal = options.signal
+    if (!apiKey || !zapMcpKey || !proxyUrl || !zapTrustPath)
+      throw new Error("ZAP runtime has no active trust endpoint")
+    const activeProxyUrl = proxyUrl
+    const startupTimeoutSeconds = cyberZapStartupTimeoutSeconds()
+    const deadline = Date.now() + startupTimeoutSeconds * 1000
+    const attest = async <T>(stage: ZapAttestationStage, operation: () => Promise<T>): Promise<T> => {
+      try {
+        return await operation()
+      } catch (error) {
+        signal?.throwIfAborted()
+        throw new ZapAttestationStageError(stage, error)
+      }
+    }
+    await attest("api", () =>
+      waitForZapApi({
+        apiKey,
+        container: zapContainer,
+        deadline,
+        proxyUrl: activeProxyUrl,
+        startupTimeoutSeconds,
+        ...(signal ? { signal } : {}),
+      }),
+    )
+    const zapReadyEnv = {
+      ...env,
+      CYBER_ZAP_READY: "1",
+      CYBER_ZAP_API_KEY: apiKey,
+      CYBER_ZAP_MCP_KEY: zapMcpKey,
+      CYBER_ZAP_PROXY_URL: activeProxyUrl,
+      CYBER_ZAP_WORKAREA: input.workarea,
+      CYBER_ZAP_REQUIRED_UPSTREAM: "1",
+    }
+    await attest("mcp", () =>
+      waitForZapBridge({
+        command: cyberZapBridgeCommand(zapContainer),
+        container: zapContainer,
+        deadline,
+        env: zapReadyEnv,
+        startupTimeoutSeconds,
+        ...(signal ? { signal } : {}),
+      }),
+    )
+    let state = await attest("supervisor", () => readZapSupervisorState(zapContainer, signal))
+    while (state.status === "starting" && Date.now() < deadline) {
+      await sleep(250, signal)
+      state = await attest("supervisor", () => readZapSupervisorState(zapContainer, signal))
+    }
+    if (state.status !== "ready")
+      throw new ZapAttestationStageError("supervisor", new Error(`ZAP supervisor state is ${state.status}`))
+    await attest("rate_limit", () =>
+      applyEngagementRateLimit(policy, { proxyUrl: activeProxyUrl, apiKey, ...(signal ? { signal } : {}) }),
+    )
+    const trust = await attest("ca", async () => {
+      const certificate = await proxyCertificate(activeProxyUrl, apiKey, signal)
+      const changed =
+        expectedTrust !== undefined &&
+        (expectedTrust.spki !== certificate.spki || expectedTrust.fingerprint256 !== certificate.fingerprint256)
+      if (changed && !options.allowCaRotation)
+        throw new Error("ZAP CA certificate changed without an authorized session reset")
+      return installCoreProxyTrust({
+        certificate,
+        container: input.container,
+        expected: expectedTrust,
+        trustRelativePath: zapTrustRelativePath,
+        trustPath: zapTrustPath,
+        workarea: input.workarea,
+        ...(signal ? { signal } : {}),
+      })
+    })
+    const readyEnv = { ...zapReadyEnv, CYBERFUL_OS_CA_BUNDLE: CORE_PROXY_CA_BUNDLE }
+    sessionGeneration = state.sessionGeneration
+    Object.assign(env, readyEnv, {
+      ...(shouldChainBrowserThroughZap()
+        ? { CYBER_BROWSER_PROXY: activeProxyUrl, CYBER_BROWSER_PROXY_CA_SPKI: trust.spki }
+        : {}),
+    })
+    return { state, trust }
+  }
 
   if (zapEnabled && apiKey && zapMcpKey) {
     try {
-      const startupTimeoutSeconds = cyberZapStartupTimeoutSeconds()
-      const startupDeadline = Date.now() + startupTimeoutSeconds * 1000
-      proxyUrl = `http://127.0.0.1:${parsePublishedPort(
-        await docker(["docker", "port", input.container, "8080/tcp"], { signal: input.signal }),
-      )}`
-      await waitForZapApi({
-        apiKey,
-        container: input.container,
-        deadline: startupDeadline,
-        proxyUrl,
-        startupTimeoutSeconds,
-        ...(input.signal ? { signal: input.signal } : {}),
-      })
-      const readyEnv = {
-        CYBER_ZAP_READY: "1",
-        CYBER_ZAP_API_KEY: apiKey,
-        CYBER_ZAP_MCP_KEY: zapMcpKey,
-        CYBER_ZAP_PROXY_URL: proxyUrl,
-        CYBER_ZAP_WORKAREA: input.workarea,
-      }
-      await waitForZapBridge({
-        command: cyberZapBridgeCommand(input.container),
-        container: input.container,
-        deadline: startupDeadline,
-        env: { ...env, ...readyEnv },
-        startupTimeoutSeconds,
-        ...(input.signal ? { signal: input.signal } : {}),
-      })
-      if (policy)
-        await applyEngagementRateLimit(policy, {
-          proxyUrl,
-          apiKey,
-          ...(input.signal ? { signal: input.signal } : {}),
-        })
-      const spki = await certificateSpki(proxyUrl, apiKey, input.signal)
-      Object.assign(env, {
-        ...readyEnv,
-        ...(shouldChainBrowserThroughZap() ? { CYBER_BROWSER_PROXY: proxyUrl, CYBER_BROWSER_PROXY_CA_SPKI: spki } : {}),
+      await runZapContainer(sessionGeneration, input.signal)
+      const attestation = await attestZap({ allowCaRotation: true, signal: input.signal })
+      expectedTrust = attestation.trust
+      zapOperational = true
+      await appendZapLifecycle(input.workarea, {
+        event: "startup_ready",
+        container: zapContainer,
+        status: attestation.state.status,
+        restart_count: attestation.state.restartCount,
+        session_generation: attestation.state.sessionGeneration,
+        memory_events: attestation.state.memoryEvents,
+        ...proxyTrustLifecycle(attestation.trust),
+        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
       })
       const targetWarning = localTargetWarning(input.objective ?? "")
       if (targetWarning) warnings.push(targetWarning)
     } catch (error) {
       input.signal?.throwIfAborted()
+      const state = await readZapSupervisorState(zapContainer, input.signal).catch(() => undefined)
       input.onDiagnostic?.({
         component: "zap",
         severity: "error",
         errorClass: error instanceof Error ? error.name || "ZapStartupError" : "ZapStartupError",
         message: errorMessage(error),
       })
-      if (policy?.global_http_rps !== null && policy?.global_http_rps !== undefined) {
-        await SubsystemContainer.remove(input.container)
-        throw new Error(`OWASP ZAP is required by the global HTTP rate limit: ${errorMessage(error)}`, {
-          cause: error,
-        })
-      }
+      await appendZapLifecycle(input.workarea, {
+        event: "startup_failed",
+        container: zapContainer,
+        ...(state
+          ? {
+              status: state.status,
+              exit_code: state.exitCode,
+              signal: state.signal,
+              restart_count: state.restartCount,
+              session_generation: state.sessionGeneration,
+              memory_events: state.memoryEvents,
+            }
+          : { status: "unreachable" }),
+        error_class: error instanceof Error ? error.name : "ZapStartupError",
+        ...(error instanceof ZapAttestationStageError ? { failure_stage: error.stage } : {}),
+      })
       degraded = true
-      const warning = `OWASP ZAP unavailable; browser traffic will use the direct fallback: ${errorMessage(error)}`
+      const warning = zapRequired
+        ? `OWASP ZAP failed startup attestation; target phases remain blocked until bounded preflight recovery succeeds: ${errorMessage(error)}`
+        : `OWASP ZAP unavailable; browser traffic will use the direct fallback: ${errorMessage(error)}`
       warnings.push(warning)
-      env.CYBER_BROWSER_PROXY_WARNING = warning
+      if (!zapRequired) {
+        await SubsystemContainer.remove(zapContainer).catch(() => undefined)
+        env.CYBER_BROWSER_PROXY_WARNING = warning
+      }
     }
+  }
+
+  const preparePhase: EngagementRuntime["preparePhase"] = async ({ phase, attempt, signal }) => {
+    if (!zapEnabled) {
+      if (zapRequired)
+        throw new RequiredUpstreamUnavailableError(
+          "required OWASP ZAP upstream is disabled for a live-target workflow",
+        )
+      return { warnings: [], env: {} }
+    }
+    const phaseWarnings: string[] = []
+    try {
+      const attestation = await attestZap({ signal })
+      expectedTrust = attestation.trust
+      await appendZapLifecycle(input.workarea, {
+        event: "phase_preflight_ready",
+        phase,
+        attempt,
+        container: zapContainer,
+        status: attestation.state.status,
+        restart_count: attestation.state.restartCount,
+        session_generation: attestation.state.sessionGeneration,
+        memory_events: attestation.state.memoryEvents,
+        ...proxyTrustLifecycle(attestation.trust),
+        ca_spki_changed: false,
+        ca_certificate_changed: false,
+        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
+      })
+      zapOperational = true
+      return { warnings: phaseWarnings, env: { ...env } }
+    } catch (initialError) {
+      signal?.throwIfAborted()
+      const state = await readZapSupervisorState(zapContainer, signal).catch(() => undefined)
+      await appendZapLifecycle(input.workarea, {
+        event: "phase_preflight_failed",
+        phase,
+        attempt,
+        container: zapContainer,
+        ...(state
+          ? {
+              status: state.status,
+              exit_code: state.exitCode,
+              signal: state.signal,
+              restart_count: state.restartCount,
+              session_generation: state.sessionGeneration,
+              memory_events: state.memoryEvents,
+            }
+          : { status: "unreachable" }),
+        error_class: initialError instanceof Error ? initialError.name : "ZapPreflightError",
+        ...(initialError instanceof ZapAttestationStageError ? { failure_stage: initialError.stage } : {}),
+      })
+    }
+
+    const recover = async (mode: "preserve" | "reset") => {
+      const running = await docker(["docker", "inspect", "--format", "{{.State.Running}}", zapContainer], {
+        signal,
+      }).catch(() => "false")
+      if (running === "true") {
+        const previous = await readZapSupervisorState(zapContainer, signal)
+        await docker(["docker", "kill", "--signal", mode === "preserve" ? "USR1" : "USR2", zapContainer], {
+          signal,
+        })
+        const recoveryDeadline = Date.now() + 15_000
+        let restarted = await readZapSupervisorState(zapContainer, signal)
+        while (
+          Date.now() < recoveryDeadline &&
+          (restarted.restartCount <= previous.restartCount ||
+            (mode === "reset" && restarted.sessionGeneration <= previous.sessionGeneration))
+        ) {
+          await sleep(100, signal)
+          restarted = await readZapSupervisorState(zapContainer, signal)
+        }
+        if (
+          restarted.restartCount <= previous.restartCount ||
+          (mode === "reset" && restarted.sessionGeneration <= previous.sessionGeneration)
+        )
+          throw new Error(`ZAP supervisor did not acknowledge the explicit ${mode} recovery`)
+      } else {
+        await SubsystemContainer.remove(zapContainer).catch(() => undefined)
+        if (mode === "reset") sessionGeneration += 1
+        await runZapContainer(sessionGeneration, signal)
+      }
+      const previousTrust = expectedTrust
+      const attestation = await attestZap({ allowCaRotation: mode === "reset", signal })
+      const spkiChanged = previousTrust !== undefined && previousTrust.spki !== attestation.trust.spki
+      const certificateChanged =
+        previousTrust !== undefined && previousTrust.fingerprint256 !== attestation.trust.fingerprint256
+      expectedTrust = attestation.trust
+      if (mode === "reset" && (spkiChanged || certificateChanged))
+        await appendZapLifecycle(input.workarea, {
+          event: "ca_rotation_authorized",
+          phase,
+          attempt,
+          ...proxyTrustLifecycle(attestation.trust),
+          ca_spki_changed: spkiChanged,
+          ca_certificate_changed: certificateChanged,
+        })
+      await appendZapLifecycle(input.workarea, {
+        event: "phase_recovery_ready",
+        phase,
+        attempt,
+        container: zapContainer,
+        recovery_mode: mode,
+        status: attestation.state.status,
+        restart_count: attestation.state.restartCount,
+        session_generation: attestation.state.sessionGeneration,
+        memory_events: attestation.state.memoryEvents,
+        ...proxyTrustLifecycle(attestation.trust),
+        ca_spki_changed: spkiChanged,
+        ca_certificate_changed: certificateChanged,
+        continuity_reset: mode === "reset",
+        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
+      })
+      return attestation
+    }
+
+    try {
+      await recover("preserve")
+      zapOperational = true
+      phaseWarnings.push("OWASP ZAP was recovered before this phase with its persistent session preserved.")
+    } catch (preserveError) {
+      signal?.throwIfAborted()
+      await appendZapLifecycle(input.workarea, {
+        event: "phase_recovery_failed",
+        phase,
+        attempt,
+        container: zapContainer,
+        recovery_mode: "preserve",
+        error_class: preserveError instanceof Error ? preserveError.name : "ZapRecoveryError",
+        ...(preserveError instanceof ZapAttestationStageError ? { failure_stage: preserveError.stage } : {}),
+      })
+      try {
+        await recover("reset")
+        zapOperational = true
+        const warning = "OWASP ZAP recovery required a new visible session generation; prior proxy history may be incomplete."
+        phaseWarnings.push(warning)
+        warnings.push(warning)
+      } catch (resetError) {
+        await appendZapLifecycle(input.workarea, {
+          event: "phase_recovery_failed",
+          phase,
+          attempt,
+          container: zapContainer,
+          recovery_mode: "reset",
+          error_class: resetError instanceof Error ? resetError.name : "ZapRecoveryError",
+          ...(resetError instanceof ZapAttestationStageError ? { failure_stage: resetError.stage } : {}),
+        })
+        throw new RequiredUpstreamUnavailableError(
+          `required OWASP ZAP upstream is unavailable after bounded recovery: ${errorMessage(resetError)}`,
+          { cause: new AggregateError([preserveError, resetError], "ZAP recovery attempts failed") },
+        )
+      }
+    }
+    return { warnings: phaseWarnings, env: { ...env } }
   }
 
   if (ghidraEnabled && ghidraMcpKey) {
@@ -500,16 +1079,28 @@ export async function startEngagement(input: {
       await fetch(`${proxyUrl}/JSON/core/action/shutdown/?apikey=${encodeURIComponent(apiKey)}`, {
         headers: { Host: "zap" },
         signal: AbortSignal.timeout(2_000),
-      }).catch((error) => log.warn("ZAP graceful shutdown failed; removing unified runtime", { error }))
-    await SubsystemContainer.remove(input.container)
+      }).catch((error) => log.warn("ZAP graceful shutdown failed; removing engagement runtimes", { error }))
+    const removals = await Promise.allSettled(containers.map((container) => SubsystemContainer.remove(container)))
+    const failures = removals.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+    if (failures.length > 0) throw new AggregateError(failures, "one or more engagement runtimes failed to stop")
   }
-  log.info("unified engagement runtime ready", {
+  log.info("engagement runtimes ready", {
     container: input.container,
+    zapContainer: zapOperational ? zapContainer : undefined,
     codeAudit,
     zap: env.CYBER_ZAP_READY === "1",
     ghidra: env.CYBER_GHIDRA_READY === "1",
   })
-  return { container: input.container, env, degraded, warnings, stop }
+  return {
+    container: input.container,
+    containers,
+    ...(zapOperational ? { zapContainer } : {}),
+    env,
+    degraded,
+    warnings,
+    preparePhase,
+    stop,
+  }
 }
 
 export * as SubsystemEngagementRuntime from "./engagement-runtime"

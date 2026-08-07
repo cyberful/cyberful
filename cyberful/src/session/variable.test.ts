@@ -47,7 +47,9 @@ describe("SessionVariable", () => {
     const context = SessionVariable.systemContext([summary])
 
     expect(context).toContain("admin_jwt")
-    expect(context).toContain("{{var:name}}")
+    expect(context).toContain("{{var:<saved-name>}}")
+    expect(context).toContain("[session-variable:<saved-name>]")
+    expect(context).not.toContain("{{var:name}}")
     expect(context).not.toContain(token)
   })
 
@@ -55,7 +57,9 @@ describe("SessionVariable", () => {
     const context = SessionVariable.systemContext([])
 
     expect(context).toContain("Session variable store:")
-    expect(context).toContain("{{var:name}}")
+    expect(context).toContain("{{var:<saved-name>}}")
+    expect(context).toContain("[session-variable:<saved-name>]")
+    expect(context).not.toContain("{{var:name}}")
     expect(context).toContain("<session_variables>\n- No session variables saved yet.\n</session_variables>")
   })
 
@@ -266,6 +270,23 @@ describe("SessionVariable", () => {
       SessionVariable.resolveToolArguments(
         "write",
         { filePath: "/w/{{var:missing}}.md", content: "ok" },
+        () => undefined,
+      ),
+    ).toThrow(SessionVariable.MissingTemplateVariableError)
+  })
+
+  test("resolveToolArguments: neutral narrative markers do not become missing shell variables", () => {
+    const { args } = SessionVariable.resolveToolArguments(
+      "shell",
+      { command: "printf '%s\\n' '[session-variable:admin_password]'" },
+      () => undefined,
+    )
+
+    expect(args.command).toBe("printf '%s\\n' '[session-variable:admin_password]'")
+    expect(() =>
+      SessionVariable.resolveToolArguments(
+        "shell",
+        { command: "printf '%s\\n' '{{var:admin_password}}'" },
         () => undefined,
       ),
     ).toThrow(SessionVariable.MissingTemplateVariableError)

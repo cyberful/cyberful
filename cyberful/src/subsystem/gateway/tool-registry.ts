@@ -19,6 +19,7 @@ export type GatewayToolDefinition = {
 
 export type GatewayToolContext = {
   sessionID: SessionID
+  signal: AbortSignal
 }
 
 export type GatewayToolHandler = (

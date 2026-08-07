@@ -54,12 +54,23 @@ describe("engagement policy", () => {
   })
 
   test("installs one groupBy=rule ZAP budget across exact and wildcard hosts", async () => {
-    let requested: URL | undefined
+    const requested: URL[] = []
     let requestHeaders: Headers | undefined
     const fetch = spyOn(globalThis, "fetch").mockImplementation(
       (async (input, init) => {
-        requested = new URL(String(input))
+        const url = new URL(String(input))
+        requested.push(url)
         requestHeaders = new Headers(init?.headers)
+        if (url.pathname.endsWith("getRateLimitRules/"))
+          return new Response(
+            JSON.stringify({
+              getRateLimitRules:
+                requested.length === 1
+                  ? [{ description: "Cyberful engagement global HTTP budget" }]
+                  : [{ description: "Cyberful engagement global HTTP budget", requestsPerSecond: 4 }],
+            }),
+            { status: 200 },
+          )
         return new Response('{"Result":"OK"}', { status: 200 })
       }) as typeof globalThis.fetch,
     )
@@ -74,10 +85,16 @@ describe("engagement policy", () => {
         },
         { proxyUrl: "http://127.0.0.1:49152", apiKey: "private-test-key" },
       )
-      expect(requested?.pathname).toBe("/JSON/network/action/addRateLimitRule/")
-      expect(requested?.searchParams.get("groupBy")).toBe("rule")
-      expect(requested?.searchParams.get("requestsPerSecond")).toBe("4")
-      expect(requested?.searchParams.get("matchString")).toContain("app\\.example\\.test")
+      expect(requested.map((url) => url.pathname)).toEqual([
+        "/JSON/network/view/getRateLimitRules/",
+        "/JSON/network/action/removeRateLimitRule/",
+        "/JSON/network/action/addRateLimitRule/",
+        "/JSON/network/view/getRateLimitRules/",
+      ])
+      const installed = requested[2]
+      expect(installed?.searchParams.get("groupBy")).toBe("rule")
+      expect(installed?.searchParams.get("requestsPerSecond")).toBe("4")
+      expect(installed?.searchParams.get("matchString")).toContain("app\\.example\\.test")
       expect(requestHeaders?.get("host")).toBe("zap")
     } finally {
       fetch.mockRestore()
@@ -124,6 +141,37 @@ describe("engagement policy", () => {
       })
       expect(JSON.stringify(output)).not.toContain(apiKey)
       expect(JSON.stringify(output)).not.toContain("app.example.test")
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
+  test("reports a sanitized local validation shape without mislabeling it as a ZAP code", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ unexpectedRegistry: [{ secret: "must-not-cross" }] }), { status: 200 }),
+    )
+    try {
+      let failure: unknown
+      try {
+        await applyEngagementRateLimit(undefined, {
+          proxyUrl: "http://127.0.0.1:49152",
+          apiKey: "private-test-key",
+        })
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(ZapRateLimitInstallError)
+      const output = (failure as ZapRateLimitInstallError).toolResult()
+      expect(output).toMatchObject({
+        code: "zap_rate_limit_install_failed",
+        validation_code: "invalid_rule_registry",
+        response_shape: {
+          type: "object",
+          fields: { unexpectedRegistry: "array(1)" },
+        },
+      })
+      expect(output).not.toHaveProperty("zap_code")
+      expect(JSON.stringify(output)).not.toContain("must-not-cross")
     } finally {
       fetch.mockRestore()
     }

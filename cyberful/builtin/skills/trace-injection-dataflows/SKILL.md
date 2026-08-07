@@ -21,8 +21,7 @@ Include second-order data, batch jobs, logs later parsed by tools, templates sto
 
 Determine whether parameterization, safe API, allowlist, contextual encoding, typed builder, sandbox, or structural separation dominates every reachable path. A sanitizer is valid only for the exact interpreter context and after the final decoding or canonicalization step.
 
-Read [references/taint-proof.md](references/taint-proof.md) for audit and evidence rules.
-Use [references/field-heuristics.md](references/field-heuristics.md) for multi-parser, second-order, identifier, and blind-flow differentials.
+Read [references/taint-proof.md](references/taint-proof.md) for audit and evidence rules. Use [references/field-heuristics.md](references/field-heuristics.md) for multi-parser, second-order, identifier, and blind-flow differentials.
 
 ## Test minimally
 

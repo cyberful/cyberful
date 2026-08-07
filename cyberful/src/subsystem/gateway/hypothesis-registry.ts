@@ -131,6 +131,64 @@ interface HostActor {
   readonly kind: "root" | "subagent" | "fallback"
 }
 
+export class HypothesisRegistryError extends Error {
+  readonly path = "hypothesis"
+  readonly retryable = true
+
+  constructor(
+    readonly code: "HYPOTHESIS_NOT_FOUND" | "HYPOTHESIS_TRANSITION_INVALID",
+    message: string,
+    readonly context: {
+      readonly revision: number
+      readonly currentState?: string
+      readonly requestedState?: string
+      readonly allowedStates?: readonly string[]
+      readonly availableIDs?: readonly string[]
+    },
+  ) {
+    super(message)
+    this.name = "HypothesisRegistryError"
+  }
+
+  toolError(received: unknown) {
+    return {
+      code: this.code,
+      path: this.path,
+      expected: "an existing hypothesis id and a permitted advertised state transition",
+      receivedType: Array.isArray(received) ? "array" : received === null ? "null" : typeof received,
+      retryable: this.retryable,
+      hint: this.message,
+      revision: this.context.revision,
+      ...(this.context.currentState ? { current_state: this.context.currentState } : {}),
+      ...(this.context.requestedState ? { requested_state: this.context.requestedState } : {}),
+      ...(this.context.allowedStates ? { allowed_states: this.context.allowedStates } : {}),
+      ...(this.context.availableIDs ? { available_ids: this.context.availableIDs } : {}),
+    }
+  }
+}
+
+function missingHypothesis(registry: Registry, id: string) {
+  return new HypothesisRegistryError("HYPOTHESIS_NOT_FOUND", `hypothesis '${id}' does not exist`, {
+    revision: registry.revision,
+    availableIDs: registry.hypotheses.map((item) => item.id).slice(0, 50),
+  })
+}
+
+function invalidHypothesisTransition(
+  registry: Registry,
+  previous: Hypothesis,
+  requestedState: string,
+  allowedStates: readonly string[],
+  message: string,
+) {
+  return new HypothesisRegistryError("HYPOTHESIS_TRANSITION_INVALID", message, {
+    revision: registry.revision,
+    currentState: previous.state,
+    requestedState,
+    allowedStates,
+  })
+}
+
 function emptyRegistry(): Registry {
   return {
     version: 1,
@@ -408,8 +466,9 @@ export class HypothesisRegistry {
 
   async get(value: unknown) {
     const id = identifier(value, "hypothesis id")
-    const hypothesis = (await this.#read()).hypotheses.find((candidate) => candidate.id === id)
-    if (!hypothesis) throw new Error(`hypothesis '${id}' does not exist`)
+    const registry = await this.#read()
+    const hypothesis = registry.hypotheses.find((candidate) => candidate.id === id)
+    if (!hypothesis) throw missingHypothesis(registry, id)
     return hypothesis
   }
 
@@ -452,6 +511,24 @@ export class HypothesisRegistry {
         (hypothesis) => hypothesis.workflow === this.#workflow && hypothesis.phase === this.#phase,
       ),
     }
+  }
+
+  attachEvidenceReference(hypothesisId: unknown, evidenceReference: unknown) {
+    if (this.#readOnly) throw new Error("hypothesis registry is read-only in this phase")
+    const id = identifier(hypothesisId, "hypothesis id")
+    const reference = boundedText(evidenceReference, "hypothesis evidence reference", 8_192)
+    return this.#mutate((registry) => {
+      const index = registry.hypotheses.findIndex((hypothesis) => hypothesis.id === id)
+      if (index < 0) throw missingHypothesis(registry, id)
+      const previous = registry.hypotheses[index]!
+      if (previous.evidence_refs.includes(reference)) return { registry, result: previous, changed: false }
+      if (previous.evidence_refs.length >= 50)
+        throw new Error(`hypothesis '${id}' already contains the maximum of 50 evidence references`)
+      const hypotheses = [...registry.hypotheses]
+      const updated = { ...previous, evidence_refs: [...previous.evidence_refs, reference] }
+      hypotheses[index] = updated
+      return { registry: { ...registry, hypotheses }, result: updated }
+    })
   }
 
   close() {
@@ -524,7 +601,7 @@ export class HypothesisRegistry {
     return this.#mutate((registry) => {
       const id = identifier(args.id, "hypothesis id")
       const index = registry.hypotheses.findIndex((item) => item.id === id)
-      if (index < 0) throw new Error(`hypothesis '${id}' does not exist`)
+      if (index < 0) throw missingHypothesis(registry, id)
       const previous = registry.hypotheses[index]!
       const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
@@ -532,7 +609,11 @@ export class HypothesisRegistry {
         EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState) &&
         previous.state !== "TESTING"
       )
-        throw new Error(
+        throw invalidHypothesisTransition(
+          registry,
+          previous,
+          nextState,
+          ["TESTING"],
           `hypothesis '${id}' must enter TESTING before an executed ${nextState} disposition`,
         )
       if (
@@ -541,7 +622,11 @@ export class HypothesisRegistry {
         previous.state !== "SUSPECTED" &&
         previous.state !== "CONFIRMED"
       )
-        throw new Error(
+        throw invalidHypothesisTransition(
+          registry,
+          previous,
+          nextState,
+          ["OPEN", "SUSPECTED", "CONFIRMED"],
           `hypothesis '${id}' cannot enter TESTING from ${previous.state}; queued work must use reopen`,
         )
       const evidence = textArray(args.evidence, "hypothesis evidence", 50)
@@ -630,11 +715,15 @@ export class HypothesisRegistry {
     return this.#mutate((registry) => {
       const id = identifier(args.id, "hypothesis id")
       const index = registry.hypotheses.findIndex((item) => item.id === id)
-      if (index < 0) throw new Error(`hypothesis '${id}' does not exist`)
+      if (index < 0) throw missingHypothesis(registry, id)
       const previous = registry.hypotheses[index]!
       const actor = hostActor(args._cyberful_actor)
       if (previous.state !== "QUEUED" || previous.next_phase !== this.#phase)
-        throw new Error(
+        throw invalidHypothesisTransition(
+          registry,
+          previous,
+          "TESTING",
+          ["QUEUED for the active phase"],
           `hypothesis '${id}' cannot reopen in '${this.#phase}'; current state is ${previous.state}` +
             (previous.next_phase ? ` and queued phase is '${previous.next_phase}'` : ""),
         )

@@ -35,6 +35,7 @@ import { SessionCommand } from "./cli/cmd/session"
 import { ApprovalCommand } from "./cli/cmd/approval"
 import { AuthCommand } from "./cli/cmd/auth"
 import { BrowserCommand, browserProfileCommandKind, invalidBrowserProfileMessage } from "./cli/cmd/browser"
+import { CveDictionaryCommand } from "./cli/cmd/cve-dictionary"
 import { bootstrapConfigReady } from "./bootstrap-config"
 import { bootstrapBrowserReady } from "./bootstrap-browser"
 import { GATEWAY_ARGV } from "./subsystem/gateway/config"
@@ -222,6 +223,7 @@ const cli = yargs(args)
   .command(ApprovalCommand)
   .command(AuthCommand)
   .command(BrowserCommand)
+  .command(CveDictionaryCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

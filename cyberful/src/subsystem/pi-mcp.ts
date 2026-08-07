@@ -1,6 +1,6 @@
 // ── Pi Worker MCP Bridge ─────────────────────────────────────────
 // Owns the single private-gateway MCP connection used by one in-process Pi owner,
-// projects approved tools, and routes human elicitation to the host selector.
+// projects approved tools, and coordinates host-owned non-execution waits.
 // → cyberful/src/subsystem/subsystem.ts — defines the host-owned MCP descriptor.
 // → cyberful/src/subsystem/gateway/config.ts — creates private phase gateways.
 // → cyberful/src/subsystem/runtime-diagnostics.ts — retains sanitized gateway observations.
@@ -22,10 +22,14 @@ import {
 } from "./human-question"
 import type { SubsystemMcpServer } from "./subsystem"
 import type { RuntimeDiagnosticInput, RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
+import type { Controller as PhaseBudgetClock } from "./phase-budget-clock"
+import type { RecoveredTestObject } from "./agent-subsystem"
 
 const LIST_TIMEOUT_MS = 20_000
 const TOOL_TIMEOUT_MS = 600_000
 const HANDOFF_TOOL_NAME = "handoff"
+const TARGET_COOLDOWN_TOOL_NAME = "target_cooldown"
+const TEST_OBJECT_TOOL_NAME = "test_object"
 
 type ToolArguments = Record<string, unknown>
 type ToolParameters = TUnsafe<ToolArguments>
@@ -44,6 +48,7 @@ export interface PiMcpConnectOptions {
   readonly isToolAllowed?: (name: string) => boolean
   readonly askQuestion?: AskHuman
   readonly diagnostics?: RuntimeDiagnosticRecorder
+  readonly budgetClock?: PhaseBudgetClock
 }
 
 export interface PiMcpRunToolPolicy {
@@ -64,6 +69,7 @@ export interface PiMcpBridge {
     readonly actor: NonNullable<PiMcpRunToolPolicy["actor"]>
     readonly reason: "phase_recovery" | "child_finished"
   }): Promise<ReadonlyArray<{ readonly id: string; readonly nextStep?: string }>>
+  recoverTestObjects(input: { readonly fromRunID: string }): Promise<readonly RecoveredTestObject[]>
   close(): Promise<void>
 }
 
@@ -354,7 +360,7 @@ function piTool(
       if (!isGloballyAuthorized(definition.name, connectOptions) || !isRunAuthorized(definition.name, runPolicy))
         throw new Error(`MCP tool ${definition.name} is not authorized for this agent run`)
       const arguments_ =
-        definition.name === "hypothesis" && runPolicy.actor
+        (definition.name === "hypothesis" || definition.name === TEST_OBJECT_TOOL_NAME) && runPolicy.actor
           ? {
               ...params,
               _cyberful_host: undefined,
@@ -363,12 +369,17 @@ function piTool(
           : params
       let result: McpCallResult
       try {
-        result = await client.callTool({ name: definition.name, arguments: arguments_ }, undefined, {
-          signal,
-          timeout: TOOL_TIMEOUT_MS,
-          maxTotalTimeout: TOOL_TIMEOUT_MS,
-          resetTimeoutOnProgress: true,
-        })
+        const call = () =>
+          client.callTool({ name: definition.name, arguments: arguments_ }, undefined, {
+            signal,
+            timeout: TOOL_TIMEOUT_MS,
+            maxTotalTimeout: TOOL_TIMEOUT_MS,
+            resetTimeoutOnProgress: true,
+          })
+        result =
+          definition.name === TARGET_COOLDOWN_TOOL_NAME && connectOptions.budgetClock
+            ? await connectOptions.budgetClock.wait("target_cooldown", call)
+            : await call()
       } catch (error) {
         connectOptions.diagnostics?.record({
           component: diagnosticComponent(
@@ -482,6 +493,69 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
           ]
         : [],
     )
+  }
+
+  async recoverTestObjects(input: { readonly fromRunID: string }): Promise<readonly RecoveredTestObject[]> {
+    const definition = this.definitions.find((candidate) => candidate.name === TEST_OBJECT_TOOL_NAME)
+    if (!definition) return []
+    if (this.closing) throw new Error(`MCP bridge ${this.serverName} is closed`)
+    const result = await this.client.callTool(
+      {
+        name: definition.name,
+        arguments: {
+          action: "recover",
+          fromRunID: input.fromRunID,
+          _cyberful_host: true,
+        },
+      },
+      undefined,
+      {
+        timeout: TOOL_TIMEOUT_MS,
+        maxTotalTimeout: TOOL_TIMEOUT_MS,
+      },
+    )
+    if (!("toolResult" in result) && result.isError)
+      throw new Error(toolErrorText(result.content, result.structuredContent))
+    const text = convertContent(result).find(
+      (item): item is Extract<PiToolContent, { type: "text" }> => item.type === "text",
+    )?.text
+    if (!text) return []
+    const parsed: unknown = JSON.parse(text)
+    if (!isRecord(parsed) || !Array.isArray(parsed.objects)) return []
+    const states = new Set([
+      "planned",
+      "not_created",
+      "created",
+      "oracle_checked",
+      "cleanup_attempted",
+      "cleaned",
+      "residual",
+    ])
+    return parsed.objects.flatMap((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.id !== "string" ||
+        typeof item.kind !== "string" ||
+        typeof item.label !== "string" ||
+        typeof item.state !== "string" ||
+        !states.has(item.state) ||
+        typeof item.phase !== "string"
+      )
+        return []
+      return [
+        {
+          id: item.id,
+          kind: item.kind,
+          label: item.label,
+          state: item.state as RecoveredTestObject["state"],
+          phase: item.phase,
+          ...(typeof item.evidencePath === "string" ? { evidencePath: item.evidencePath } : {}),
+          ...(typeof item.evidenceExists === "boolean" ? { evidenceExists: item.evidenceExists } : {}),
+          ...(typeof item.note === "string" ? { note: item.note } : {}),
+          ...(typeof item.residualReason === "string" ? { residualReason: item.residualReason } : {}),
+        },
+      ]
+    })
   }
 
   // Normal completion, cancellation, and worker shutdown may converge here.

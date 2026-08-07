@@ -65,5 +65,8 @@ describe("gateway phase policy", () => {
     expect(brief.hypothesisResearch).toBe(true)
     expect(brief.allows("browser")).toBe(true)
     expect(brief.allows("zap")).toBe(false)
+    expect(brief.allows("cve-dictionary")).toBe(true)
+    expect(gatewayPhasePolicy({ workflow: "code-audit", phase: "report" }).allows("cve-dictionary")).toBe(true)
+    expect(gatewayPhasePolicy({ workflow: "ask", phase: "ask" }).allows("cve-dictionary")).toBe(true)
   })
 })

@@ -1,8 +1,6 @@
 # Foundry operations
 
-Cyberful pins Forge, Cast, Anvil, and Chisel to Foundry `v1.7.1`. Foundry may
-download the exact Solidity compiler required by the project. Its compiler and
-tool cache is engagement-local and is reused between phases until cleanup.
+Cyberful pins Forge, Cast, Anvil, and Chisel to Foundry `v1.7.1`. Foundry may download the exact Solidity compiler required by the project. Its compiler and tool cache is engagement-local and is reused between phases until cleanup.
 
 ## Build and focused tests
 
@@ -14,9 +12,7 @@ forge test --match-path 'test/Relevant*.t.sol' -vvv
 forge test --match-test testSpecificBehavior -vvvv
 ```
 
-Respect `foundry.toml`, remappings, profiles, and the project's chosen compiler.
-Do not silently upgrade dependencies or rewrite lockfiles before reproducing the
-original build.
+Respect `foundry.toml`, remappings, profiles, and the project's chosen compiler. Do not silently upgrade dependencies or rewrite lockfiles before reproducing the original build.
 
 ## Fuzz and invariants
 
@@ -27,8 +23,7 @@ forge test --match-test testFuzz_Target --fuzz-runs 10000 --fuzz-seed 0x2a -vvvv
 forge test --match-contract TargetInvariant --invariant-runs 256 --invariant-depth 64 -vvvv
 ```
 
-Record the exact seed and run count for a result that supports a finding. A
-single counterexample is useful only if the same command reproduces it.
+Record the exact seed and run count for a result that supports a finding. A single counterexample is useful only if the same command reproduces it.
 
 ## Managed RPC and snapshots
 
@@ -40,17 +35,10 @@ cast call "$TARGET" 'owner()(address)' --rpc-url "$RPC_URL"
 forge test --fork-url "$RPC_URL" --fork-block-number "$FORK_BLOCK" -vvvv
 ```
 
-Prefer `evm_lab` named snapshots over ad hoc snapshot bookkeeping because the
-host records their lifecycle across phases. The tool refreshes a snapshot after
-revert so it can be used again.
+Prefer `evm_lab` named snapshots over ad hoc snapshot bookkeeping because the host records their lifecycle across phases. The tool refreshes a snapshot after revert so it can be used again.
 
 ## Traces and state evidence
 
-Use `-vvvv` for detailed Forge traces. For a local transaction, retain its local
-hash and save the smallest useful trace or decoded state comparison to a
-workarea file. Cast supports direct calls, sends, receipts, transaction traces,
-storage reads, and ABI decoding; use the subcommand that makes the state or call
-path auditable rather than archiving every RPC response.
+Use `-vvvv` for detailed Forge traces. For a local transaction, retain its local hash and save the smallest useful trace or decoded state comparison to a workarea file. Cast supports direct calls, sends, receipts, transaction traces, storage reads, and ABI decoding; use the subcommand that makes the state or call path auditable rather than archiving every RPC response.
 
-Never treat a successful local write as authority to write to a public network.
-The applicable program policy and `MISSION.md` remain the scope boundary.
+Never treat a successful local write as authority to write to a public network. The applicable program policy and `MISSION.md` remain the scope boundary.

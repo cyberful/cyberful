@@ -64,6 +64,9 @@ describe("run-state artifact", () => {
       const releaseRetry = budgetClock.suspend("provider_retry")
       clockNow += 2_000
       releaseRetry()
+      const releaseCooldown = budgetClock.suspend("target_cooldown")
+      clockNow += 3_000
+      releaseCooldown()
       await state.observe({
         type: "provider_retry",
         runID: "run-1",
@@ -78,6 +81,7 @@ describe("run-state artifact", () => {
       await state.observe({
         type: "run_finished",
         runID: "run-1",
+        role: "root",
         termination: "provider_failed",
         failure: { kind: "timeout", providerCode: "23", retryable: true },
         usage: { input: 100, output: 20, reasoning: 10, cacheRead: 0, cacheWrite: 0 },
@@ -94,14 +98,25 @@ describe("run-state artifact", () => {
         state: "closed_with_cleanup_errors",
         removed: ["expert-removed"],
         remaining: ["expert-survivor"],
+        terminal: {
+          phase: "hacker",
+          outcome: "failed",
+          termination: "spawn_failed",
+          failure: { source: "upstream", class: "required_upstream_unavailable" },
+        },
       })
       const artifact = JSON.parse(
         await readFile(path.join(workarea, "raw/operations/run-state.json"), "utf8"),
       )
       expect(artifact).toMatchObject({
         workflow: "pentest",
-        phase: "recon",
+        phase: "hacker",
+        status: "failed",
+        session_outcome: "failed",
+        termination: "spawn_failed",
+        failure: { source: "upstream", class: "required_upstream_unavailable" },
         retry_wait_ms: 2_000,
+        target_cooldown_wait_ms: 3_000,
         retry_compensation_ms: 2_000,
         retry_compensation_cap_ms: 30_000,
         retry_compensation_cap_reached: false,

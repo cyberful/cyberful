@@ -1012,6 +1012,10 @@ export const layer = Layer.effect(
               }
             : {}),
         })
+      let prepareEngagementPhase: NonNullable<SubsystemPhaseRunner.PhaseDeps["preparePhase"]> = async () => ({
+        warnings: [],
+        env: {},
+      })
       const runPhaseStreaming = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
         const run = {}
         activePhaseRuns.add(run)
@@ -1022,6 +1026,7 @@ export const layer = Layer.effect(
           )
           return await SubsystemPhaseRunner.runPhase(spec, {
             ...SubsystemPhaseRunner.defaultDeps(),
+            preparePhase: (input) => prepareEngagementPhase(input),
             dynamicTools:
               spec.phase === "report"
                 ? [
@@ -1128,6 +1133,7 @@ export const layer = Layer.effect(
               effectiveLimitMs: result.effectiveLimitMs,
               deadlineAt: result.deadlineAt,
               approvalWaitMs: result.approvalWaitMs,
+              targetCooldownWaitMs: result.targetCooldownWaitMs,
               exitCode: result.exitCode,
               failure: result.phaseFailure,
               subsystemFailure: result.subsystemFailure,
@@ -1281,6 +1287,7 @@ export const layer = Layer.effect(
           await diagnostics.close().catch(() => undefined)
         }
       })
+      prepareEngagementPhase = engagementRuntime.preparePhase
       const engagementEvm = SubsystemPhase.hasCapability(workflow, "evm-lab")
         ? yield* Effect.promise(async () => {
             try {
@@ -1299,6 +1306,7 @@ export const layer = Layer.effect(
           ? `${objective}\n\n## Runtime warning\n${runtimeWarnings.join("\n")}\nContinue within scope using the remaining tools.`
           : objective
       let findingRunStatus: Exclude<FindingRegistry.RunStatus, "RUNNING"> = "FAILED"
+      let terminalOutcome: SubsystemOrchestrator.AdvanceOutcome | undefined
       const outcome = yield* SubsystemOrchestrator.runAndAdvance(
         {
           sessionID: session.id,
@@ -1328,6 +1336,11 @@ export const layer = Layer.effect(
       ).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {
+            terminalOutcome = result
+          }),
+        ),
+        Effect.tap((result) =>
+          Effect.sync(() => {
             findingRunStatus = result.terminal ? "COMPLETED" : "BLOCKED"
           }),
         ),
@@ -1339,13 +1352,25 @@ export const layer = Layer.effect(
         Effect.ensuring(
           Effect.promise(async () => {
             try {
-              const cleanup = await SubsystemContainer.removeSession(session.id, [container])
+              const cleanup = await SubsystemContainer.removeSession(session.id, engagementRuntime.containers)
               await SubsystemRunStateArtifact.recordTerminalCleanup({
                 workarea: workareaCwd,
                 sessionID: session.id,
                 state: "closed",
                 removed: cleanup.removed,
                 remaining: cleanup.remaining,
+                ...(terminalOutcome
+                  ? {
+                      terminal: {
+                        ...(terminalOutcome.haltedAt ?? terminalOutcome.ranPhases.at(-1)
+                          ? { phase: terminalOutcome.haltedAt ?? terminalOutcome.ranPhases.at(-1) }
+                          : {}),
+                        outcome: terminalOutcome.outcome,
+                        ...(terminalOutcome.termination ? { termination: terminalOutcome.termination } : {}),
+                        ...(terminalOutcome.failure ? { failure: terminalOutcome.failure } : {}),
+                      },
+                    }
+                  : {}),
               })
             } catch (error) {
               const removed =
@@ -1355,13 +1380,25 @@ export const layer = Layer.effect(
               const remaining =
                 error instanceof SubsystemContainer.SessionContainerCleanupError
                   ? error.remaining
-                  : [container]
+                  : [...engagementRuntime.containers]
               await SubsystemRunStateArtifact.recordTerminalCleanup({
                 workarea: workareaCwd,
                 sessionID: session.id,
                 state: "closed_with_cleanup_errors",
                 removed,
                 remaining,
+                ...(terminalOutcome
+                  ? {
+                      terminal: {
+                        ...(terminalOutcome.haltedAt ?? terminalOutcome.ranPhases.at(-1)
+                          ? { phase: terminalOutcome.haltedAt ?? terminalOutcome.ranPhases.at(-1) }
+                          : {}),
+                        outcome: terminalOutcome.outcome,
+                        ...(terminalOutcome.termination ? { termination: terminalOutcome.termination } : {}),
+                        ...(terminalOutcome.failure ? { failure: terminalOutcome.failure } : {}),
+                      },
+                    }
+                  : {}),
               }).catch((stateError) => {
                 throw new AggregateError(
                   [error, stateError],
@@ -1595,6 +1632,7 @@ export const layer = Layer.effect(
           effectiveLimitMs: result.effectiveLimitMs,
           deadlineAt: result.deadlineAt,
           approvalWaitMs: result.approvalWaitMs,
+          targetCooldownWaitMs: result.targetCooldownWaitMs,
           exitCode: result.exitCode,
           failure: result.phaseFailure,
           warnings: result.warnings,

@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
@@ -282,7 +282,7 @@ function toolCall(call: CapturedCall, name: string, arguments_: Record<string, u
   })
 }
 
-function codexSecurityBlock(call: CapturedCall): AssistantMessage {
+function codexSecurityBlock(call: CapturedCall, code = "cyberPolicy"): AssistantMessage {
   return assistant(call, [], {
     stopReason: "error",
     errorMessage: "Provider rejected this request.",
@@ -290,7 +290,7 @@ function codexSecurityBlock(call: CapturedCall): AssistantMessage {
       {
         type: "provider_failure",
         timestamp: call.ordinal,
-        error: { code: "cyberPolicy", message: "redacted" },
+        error: { code, message: "redacted" },
       },
     ],
   })
@@ -504,6 +504,8 @@ interface RootSpecOptions {
   readonly closeoutReserveMs?: number
   readonly childMaxRuntimeMs?: number
   readonly abort?: AbortSignal
+  readonly recoverHypothesisOwnership?: AgentRunSpec["recoverHypothesisOwnership"]
+  readonly recoverTestObjects?: AgentRunSpec["recoverTestObjects"]
 }
 
 function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
@@ -524,6 +526,10 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     workarea: options.workarea ?? "/tmp/cyberful-pi-agent-test",
     tools: options.tools ?? [],
     ...(options.gatewayTools ? { gatewayTools: () => options.gatewayTools! } : {}),
+    ...(options.recoverHypothesisOwnership
+      ? { recoverHypothesisOwnership: options.recoverHypothesisOwnership }
+      : {}),
+    ...(options.recoverTestObjects ? { recoverTestObjects: options.recoverTestObjects } : {}),
     skills: SKILLS,
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
@@ -2207,6 +2213,46 @@ describe("Pi complete root and main-route subagent runs", () => {
 })
 
 describe("Pi proactive and automatic fallback admission", () => {
+  test("normalizes Codex cyber_policy and completes one automatic fallback", async () => {
+    const provider = new InMemoryProvider((call) => {
+      if (call.provider === FALLBACK_PROVIDER) return assistant(call, "fallback verified the blocked operation")
+      if (
+        call.messages.some(
+          (message) => message.role === "toolResult" && message.toolName === "host_fallback_delegation",
+        )
+      )
+        return assistant(call, "main route resumed after snake-case fallback")
+      return codexSecurityBlock(call, "cyber_policy")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "snake-case-security-fallback-root",
+        objective: "exercise the structured Codex snake-case policy signal",
+      }),
+    )
+
+    const result = await run.result
+    const events = fallbackEvents(await collectEvents(run))
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "main route resumed after snake-case fallback",
+      fallbackAdmissions: 0,
+      fallbackDescendants: 1,
+    })
+    expect(provider.calls.map((call) => call.provider)).toEqual([
+      MAIN_PROVIDER,
+      FALLBACK_PROVIDER,
+      MAIN_PROVIDER,
+    ])
+    expect(events.map(({ state, reason, quotaExempt }) => ({ state, reason, quotaExempt }))).toEqual([
+      { state: "requested", reason: "cyberPolicy", quotaExempt: true },
+      { state: "approved", reason: undefined, quotaExempt: true },
+      { state: "completed", reason: undefined, quotaExempt: true },
+    ])
+  })
+
   test("audits host-policy denials and rolls back an unstarted proactive admission", async () => {
     const provider = new InMemoryProvider((call) => {
       if (call.provider === FALLBACK_PROVIDER) return assistant(call, "fallback should not start")
@@ -2789,18 +2835,6 @@ describe("Pi AgentRun steering and cancellation", () => {
         return { content: [{ type: "text", text: "unexpected shell execution" }], details: {} }
       },
     }
-    const writeOutput: AgentTool<typeof EMPTY_PARAMETERS> = {
-      name: "workarea_write_auth",
-      label: "Write delegated auth evidence",
-      description: "Write the bounded delegated auth result inside the test workarea.",
-      parameters: EMPTY_PARAMETERS,
-      execute: async () => {
-        const destination = path.join(workarea, outputArtifact)
-        await mkdir(path.dirname(destination), { recursive: true })
-        await writeFile(destination, "auth closeout complete\n")
-        return { content: [{ type: "text", text: "durable output written" }], details: {} }
-      },
-    }
     const provider = new InMemoryProvider(async (call) => {
       const role = runRole(call)
       const results = toolResultCount(call)
@@ -2822,7 +2856,17 @@ describe("Pi AgentRun steering and cancellation", () => {
         return assistant(call, [], { stopReason: "aborted" })
       }
       if (results === 0) return toolCall(call, "shell", {})
-      if (results === 1) return toolCall(call, "workarea_write_auth", {})
+      if (results === 1)
+        return toolCall(call, "workarea_write", {
+          path: "raw/delegations/wrong.md",
+          content: "must not be written\n",
+        })
+      if (results === 2)
+        return toolCall(call, "workarea_write", {
+          path: outputArtifact,
+          content: "auth closeout complete\n",
+        })
+      if (results === 3) return toolCall(call, "workarea_read", { path: outputArtifact })
       return assistant(call, "child reconciled its durable output")
     })
     const runtime = subsystem(provider)
@@ -2830,11 +2874,11 @@ describe("Pi AgentRun steering and cancellation", () => {
       rootSpec(runtime.models, {
         id: "child-closeout-root",
         objective: "retain phase ownership while the child closes out",
-        tools: [blockedShell, writeOutput],
+        tools: [blockedShell],
         workarea,
         deadlineAt: Date.now() + 2_000,
-        closeoutReserveMs: 100,
-        childMaxRuntimeMs: 180,
+        closeoutReserveMs: 200,
+        childMaxRuntimeMs: 300,
       }),
     )
 
@@ -2851,11 +2895,128 @@ describe("Pi AgentRun steering and cancellation", () => {
       ),
     ).toBeTrue()
     expect(await readFile(path.join(workarea, outputArtifact), "utf8")).toBe("auth closeout complete\n")
+    await expect(readFile(path.join(workarea, "raw/delegations/wrong.md"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    })
     const childCloseout = provider.calls.find(
       (call) => runRole(call) === "subagent" &&
         userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT")),
     )
     expect(userTexts(childCloseout!).join("\n")).toContain(outputArtifact)
+    const childAfterArtifactRead = provider.calls.find(
+      (call) => runRole(call) === "subagent" && toolResultCount(call) === 4,
+    )
+    expect(childAfterArtifactRead).toBeDefined()
+    expect(
+      childAfterArtifactRead!.messages
+        .filter((message) => message.role === "toolResult")
+        .map((message) => textContent(message.content))
+        .join("\n"),
+    ).toContain("auth closeout complete")
+  })
+
+  test("preserves a budget-exhausted child's public summary and test-object ledger for the root", async () => {
+    const workarea = await temporaryWorkarea()
+    const partialProbe: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "partial_probe",
+      label: "Partial child probe",
+      description: "Record one completed child operation before its next provider turn is interrupted.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({ content: [{ type: "text", text: "partial evidence retained" }], details: {} }),
+    }
+    const provider = new InMemoryProvider((call) => {
+      const results = toolResultCount(call)
+      if (runRole(call) === "root") {
+        if (results === 0)
+          return toolCall(call, "delegate_task", {
+            task: "preserve partial child evidence under a bounded budget",
+            expected_result: "return partial evidence to the root",
+            output_artifact: "raw/delegations/partial.md",
+          })
+        return assistant(call, "root recovered the interrupted child")
+      }
+      if (results === 0) {
+        const request = toolCall(call, "partial_probe", {})
+        return {
+          ...request,
+          content: [
+            { type: "text", text: "Verified partial child summary without private reasoning." },
+            ...request.content,
+          ],
+        }
+      }
+      return new Promise((resolve) => {
+        const cancelled = () =>
+          resolve(assistant(call, [], { stopReason: "aborted", errorMessage: "Child budget expired." }))
+        if (call.signal?.aborted) cancelled()
+        else call.signal?.addEventListener("abort", cancelled, { once: true })
+      })
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "child-recovery-root",
+        objective: "recover a child interrupted by its own budget",
+        tools: [partialProbe],
+        workarea,
+        deadlineAt: Date.now() + 2_000,
+        childMaxRuntimeMs: 80,
+        recoverTestObjects: async ({ fromRunID }) => [
+          {
+            id: `object-${fromRunID}`,
+            kind: "temporary_record",
+            label: "bounded child record",
+            state: "oracle_checked",
+            phase: "exploit",
+            evidencePath: "raw/evidence/missing-child.json",
+            evidenceExists: false,
+          },
+        ],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const childFinished = events.find(
+      (event): event is Extract<AgentEvent, { type: "run_finished" }> =>
+        event.type === "run_finished" && event.role === "subagent",
+    )
+    const rootRecoveryCall = provider.calls.find(
+      (call) => runRole(call) === "root" && toolResultCount(call) === 1,
+    )
+    const recoveredText = rootRecoveryCall?.messages
+      .filter((message) => message.role === "toolResult")
+      .map((message) => textContent(message.content))
+      .join("\n")
+    const summaryPath = childFinished?.recoverySummary?.path
+
+    expect(result).toMatchObject({ termination: "completed", output: "root recovered the interrupted child" })
+    expect(childFinished).toMatchObject({
+      parentID: "child-recovery-root",
+      role: "subagent",
+      termination: "budget_exhausted",
+      recoveredTestObjects: [
+        {
+          state: "oracle_checked",
+          evidencePath: "raw/evidence/missing-child.json",
+          evidenceExists: false,
+        },
+      ],
+      recoverySummary: {
+        termination: "budget_exhausted",
+        narrative: "Verified partial child summary without private reasoning.",
+      },
+    })
+    expect(recoveredText).toContain("Automatic pre-abort summary (budget_exhausted)")
+    expect(recoveredText).toContain("Verified partial child summary without private reasoning.")
+    expect(recoveredText).toContain("missing evidence 'raw/evidence/missing-child.json'")
+    expect(summaryPath).toStartWith("raw/operations/delegated-run-summaries/")
+    expect(JSON.parse(await readFile(path.join(workarea, summaryPath!), "utf8"))).toMatchObject({
+      runID: childFinished?.runID,
+      parentRunID: "child-recovery-root",
+      role: "subagent",
+      termination: "budget_exhausted",
+    })
   })
 
   test("enforces a cumulative output-token budget across provider turns", async () => {

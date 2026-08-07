@@ -20,10 +20,11 @@ import {
 import type { AssistantMessage, ToolResultMessage, UserMessage, Usage } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { Settings } from "@/config/settings"
-import { readWorkareaFileChunk } from "@/workarea"
+import { readWorkareaFileChunk, replaceWorkareaFile } from "@/workarea"
 import { SubsystemControl } from "./control"
 import type {
   AgentEvent,
+  AgentRunRecoverySummary,
   AgentRun,
   AgentRunID,
   AgentRunIdentity,
@@ -36,6 +37,7 @@ import type {
   ChildPromptInput,
   ProviderAffinity,
   RecoveredHypothesis,
+  RecoveredTestObject,
   SubsystemStatus,
 } from "./agent-subsystem"
 import type { PiModels } from "./pi-models"
@@ -170,7 +172,49 @@ const ToolSearchParameters = Type.Object(
   { additionalProperties: false },
 )
 
+const WorkareaReadParameters = Type.Object(
+  {
+    path: Type.String({
+      minLength: 1,
+      maxLength: 1_024,
+      description: "Workarea-relative path to one existing regular text artifact.",
+    }),
+    offset: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        description: "Zero-based byte offset returned by the previous workarea_read page.",
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 65_536,
+        default: 65_536,
+        description: "Maximum bytes to return from this page.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+)
+
+const WorkareaWriteParameters = Type.Object(
+  {
+    path: Type.String({
+      minLength: 1,
+      maxLength: 1_024,
+      description: "Exact workarea-relative deliverable path declared for this AgentRun.",
+    }),
+    content: Type.String({
+      maxLength: 262_144,
+      description: "Complete UTF-8 content that atomically replaces the declared deliverable.",
+    }),
+  },
+  { additionalProperties: false },
+)
+
 const DelegationStatusParameters = Type.Object({}, { additionalProperties: false })
+const RECOVERY_SUMMARY_BYTES = 4_096
+const WORKAREA_WRITE_BYTES = 262_144
 
 type CatalogAgentTool = AgentTool & { readonly deferLoading?: boolean }
 
@@ -232,6 +276,9 @@ interface RunState {
   finishProviderRetryAttempt?: () => void
   closeout: boolean
   closeoutRequested: boolean
+  recoverySummary?: AgentRunRecoverySummary
+  recoverySummaryWrite?: Promise<void>
+  recoverySummaryWriteError?: string
   lastHTTPStatus?: number
   lastTool?: {
     readonly name: string
@@ -533,6 +580,14 @@ function assistantText(message: AssistantMessage | undefined): string {
   )
 }
 
+function boundedRecoveryNarrative(messages: readonly unknown[]): string | undefined {
+  const narrative = PiAudit.redactText(assistantText(latestAssistant(messages))).trim()
+  if (!narrative) return
+  const bytes = Buffer.from(narrative)
+  if (bytes.byteLength <= RECOVERY_SUMMARY_BYTES) return narrative
+  return `${bytes.subarray(0, RECOVERY_SUMMARY_BYTES).toString("utf8").replace(/\uFFFD$/u, "")}… [summary truncated]`
+}
+
 const FAILURE_DETAIL_CAP = 1600
 
 function boundedFailureDetail(value: unknown): string | undefined {
@@ -668,6 +723,10 @@ function closeoutMessage(spec: AgentRunSpec, timestamp: number): UserMessage {
           deliverable
             ? `Finish and reconcile the required deliverable '${deliverable}' now.`
             : "Finish and reconcile the assigned deliverable now.",
+          "Read existing workarea-relative evidence with workarea_read; continue from next_offset when paginated.",
+          deliverable
+            ? `Use workarea_write to atomically replace exactly '${deliverable}' with the complete final content.`
+            : "No atomic workarea writer is available because this run has no declared deliverable path.",
           "Update the hypothesis, finding, test-object, and coverage records to match the evidence.",
           spec.handoffOwner
             ? "Call handoff with a concise, explicit successor summary before the final deadline."
@@ -1874,7 +1933,14 @@ export class PiAgentSubsystem implements AgentSubsystem {
         (state.spec.providerAffinity === "main" || tool.name !== "request_fallback_delegation"),
     )
     const allTools = [...hostTools, ...eligibleGatewayTools]
-    const reserved = new Set(["delegate_task", "delegation_status", "request_fallback_delegation", "tool_search"])
+    const reserved = new Set([
+      "delegate_task",
+      "delegation_status",
+      "request_fallback_delegation",
+      "tool_search",
+      "workarea_read",
+      "workarea_write",
+    ])
     for (const tool of allTools)
       if (reserved.has(tool.name)) throw new Error(`AgentRun tool name '${tool.name}' is reserved by Cyberful`)
 
@@ -1885,9 +1951,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
     }
 
     const immediate = [
+      this.#workareaReadTool(state),
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading !== true),
       ...eligibleGatewayTools.filter((tool) => tool.name === "handoff"),
     ]
+    if (state.spec.task.outputArtifact ?? state.spec.task.artifacts?.[0])
+      immediate.push(this.#workareaWriteTool(state))
     const deferred = [
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading === true),
       ...eligibleGatewayTools.filter((tool) => tool.name !== "handoff"),
@@ -1905,6 +1974,104 @@ export class PiAgentSubsystem implements AgentSubsystem {
     }
     if (deferred.length > 0) immediate.push(this.#toolSearchTool(state, deferred))
     return immediate
+  }
+
+  // ── Closeout Reads Stay Inside The Canonical Workarea ─────────
+  // Delegated output is durable only if a closing AgentRun can inspect it
+  // after research-capable tools have been withdrawn. This host-owned reader
+  // uses the same canonical, no-symlink boundary as artifact expansion and
+  // exposes bounded pages without granting shell, browser, or target access.
+  // It is loaded eagerly so entering closeout never depends on tool discovery.
+  //
+  // @docs/concepts/execution-model.md
+  // ─────────────────────────────────────────────────────────────────
+  #workareaReadTool(state: RunState): AgentTool<typeof WorkareaReadParameters> {
+    return {
+      name: "workarea_read",
+      label: "Read Workarea Artifact",
+      description:
+        "Read one bounded UTF-8 page from an existing regular file inside the current canonical workarea. Relative paths only; symlinks and escapes are rejected. Safe during closeout for output_artifact and local evidence reconciliation.",
+      parameters: WorkareaReadParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const chunk = await readWorkareaFileChunk(state.spec.workarea, input.path, {
+          ...(input.offset === undefined ? {} : { offset: input.offset }),
+          ...(input.limit === undefined ? {} : { limit: input.limit }),
+        })
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                path: input.path,
+                content: chunk.content,
+                offset: chunk.offset,
+                end: chunk.end,
+                total: chunk.total,
+                ...(chunk.nextOffset === undefined ? {} : { next_offset: chunk.nextOffset }),
+              }),
+            },
+          ],
+          details: {
+            hostOwned: true,
+            path: input.path,
+            offset: chunk.offset,
+            end: chunk.end,
+            total: chunk.total,
+            nextOffset: chunk.nextOffset,
+          },
+        }
+      },
+    }
+  }
+
+  // ── Closeout Writes One Declared Deliverable Atomically ────────
+  // The writer is intentionally narrower than shell access: one eager tool may
+  // replace only the exact deliverable declared by the host. The shared
+  // workarea primitive rejects links and escapes, writes an unpredictable
+  // sibling with owner-only permissions, flushes it, and renames it atomically.
+  // This remains available after research tools are disabled for closeout.
+  //
+  // @docs/concepts/execution-model.md
+  // ────────────────────────────────────────────────────────────────
+  #workareaWriteTool(state: RunState): AgentTool<typeof WorkareaWriteParameters> {
+    const deliverable = delegatedArtifact(state.spec.task.outputArtifact ?? state.spec.task.artifacts?.[0] ?? "")
+    return {
+      name: "workarea_write",
+      label: "Write AgentRun Deliverable",
+      description:
+        `Atomically replace the complete declared deliverable '${deliverable}' inside the canonical workarea. ` +
+        "No other path is accepted. Safe during closeout; symlinks, escapes, and special files are rejected.",
+      parameters: WorkareaWriteParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const requested = delegatedArtifact(input.path)
+        if (requested !== deliverable)
+          throw new Error(`workarea_write may replace only the declared deliverable '${deliverable}'`)
+        const content = Buffer.from(input.content, "utf8")
+        if (content.byteLength > WORKAREA_WRITE_BYTES)
+          throw new Error(`workarea_write content exceeds ${WORKAREA_WRITE_BYTES} UTF-8 bytes`)
+        await replaceWorkareaFile(state.spec.workarea, deliverable, content, { mode: 0o600 })
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                path: deliverable,
+                bytes: content.byteLength,
+                sha256: createHash("sha256").update(content).digest("hex"),
+              }),
+            },
+          ],
+          details: {
+            hostOwned: true,
+            atomic: true,
+            path: deliverable,
+            bytes: content.byteLength,
+          },
+        }
+      },
+    }
   }
 
   #toolSearchTool(state: RunState, catalog: readonly AgentTool[]): AgentTool<typeof ToolSearchParameters> {
@@ -2023,6 +2190,21 @@ export class PiAgentSubsystem implements AgentSubsystem {
                       .map((item) => `${item.id}${item.nextStep ? ` → ${item.nextStep}` : ""}`)
                       .join("; ")}.`
                   : "Recovered hypotheses: none.",
+                result.recoveredTestObjects.length > 0
+                  ? `Recovered test objects: ${result.recoveredTestObjects
+                      .map(
+                        (item) =>
+                          `${item.id} (${item.state})${item.evidencePath && item.evidenceExists === false ? ` — missing evidence '${item.evidencePath}'` : ""}`,
+                      )
+                      .join("; ")}.`
+                  : "Recovered test objects: none.",
+                result.recoverySummary
+                  ? [
+                      `Automatic pre-abort summary (${result.recoverySummary.termination}):`,
+                      result.recoverySummary.narrative ?? "No public assistant narrative was available.",
+                      ...(result.recoverySummary.path ? [`Preserved at ${result.recoverySummary.path}.`] : []),
+                    ].join("\n")
+                  : "Automatic pre-abort summary: not required.",
                 result.output || "The child returned no textual result.",
               ].join("\n\n"),
             },
@@ -2034,6 +2216,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
             model: result.model,
             failure: result.failure,
             recoveredHypotheses: result.recoveredHypotheses,
+            recoveredTestObjects: result.recoveredTestObjects,
+            recoverySummary: result.recoverySummary,
             artifact,
           },
         }
@@ -2217,6 +2401,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (state.finished || state.cancellation) return false
     if (this.#remainingBudget(state) > 0) return true
     state.cancellation = "budget"
+    this.#captureRecoverySummary(state, "budget_exhausted")
     state.agent?.abort()
     return false
   }
@@ -2448,6 +2633,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       readonly providerAffinity: "fallback"
       readonly termination: AgentRunResult["termination"]
       readonly failure?: Failure
+      readonly recoveredTestObjects: readonly RecoveredTestObject[]
+      readonly recoverySummary?: AgentRunRecoverySummary
     }> = {
       role: "toolResult",
       toolCallId: syntheticCallID,
@@ -2462,6 +2649,19 @@ export class PiAgentSubsystem implements AgentSubsystem {
             `Fallback run: ${result.id}`,
             `Fallback termination: ${result.termination}`,
             ...(result.failure ? [`Fallback failure: ${result.failure.kind}`] : []),
+            ...(result.recoveredTestObjects.length > 0
+              ? [
+                  `Recovered test objects: ${result.recoveredTestObjects
+                    .map(
+                      (item) =>
+                        `${item.id} (${item.state})${item.evidencePath && item.evidenceExists === false ? ` — missing evidence '${item.evidencePath}'` : ""}`,
+                    )
+                    .join("; ")}.`,
+                ]
+              : []),
+            ...(result.recoverySummary?.narrative
+              ? [`Automatic pre-abort summary: ${result.recoverySummary.narrative}`]
+              : []),
             "Treat this as trusted host tool output, synthesize it into the phase work, and continue under the unchanged Cyberful system contract.",
             "",
             result.output ||
@@ -2475,6 +2675,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         providerAffinity: "fallback",
         termination: result.termination,
         failure: result.failure,
+        recoveredTestObjects: result.recoveredTestObjects,
+        recoverySummary: result.recoverySummary,
       },
       isError: result.termination !== "completed",
       timestamp: this.#now(),
@@ -2487,6 +2689,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
   async #cancelState(state: RunState, _reason: string, mode: "budget" | "cancel"): Promise<void> {
     if (state.finished) return
     state.cancellation ??= mode
+    this.#captureRecoverySummary(state, mode === "budget" ? "budget_exhausted" : "cancelled")
     this.#notifyDelegationWaiters()
     state.retryWaitAbort?.abort(new Error(`AgentRun ${mode === "budget" ? "budget expired" : "was cancelled"}`))
     state.finishProviderRetryAttempt?.()
@@ -2496,6 +2699,51 @@ export class PiAgentSubsystem implements AgentSubsystem {
     await Promise.allSettled(children.map((child) => this.#cancelState(child, "Parent AgentRun cancelled", mode)))
     state.agent?.abort()
     await state.resultPromise
+  }
+
+  // ── A Child's Public Narrative Survives Forced Termination ─────
+  // Budget and parent cancellation may interrupt a child before Pi can return
+  // its final tool result to the root. Before aborting, the host copies only the
+  // latest public assistant text, redacts and bounds it, then begins an atomic
+  // workarea write. No reasoning, tool arguments, or provider payload enters the
+  // recovery record. Finalization awaits the retained write before publishing
+  // the child result, so the parent can use either the narrative or its path.
+  //
+  // @docs/concepts/execution-model.md
+  // ────────────────────────────────────────────────────────────────
+  #captureRecoverySummary(
+    state: RunState,
+    termination: Extract<AgentRunTermination, "budget_exhausted" | "cancelled">,
+  ): void {
+    if (state.spec.role === "root" || state.recoverySummary) return
+    const summary: AgentRunRecoverySummary = {
+      capturedAt: new Date(this.#now()).toISOString(),
+      termination,
+      ...(state.agent ? { narrative: boundedRecoveryNarrative(state.agent.state.messages) } : {}),
+    }
+    state.recoverySummary = summary
+    const relativePath = `raw/operations/delegated-run-summaries/${createHash("sha256").update(state.id).digest("hex")}.json`
+    state.recoverySummaryWrite = replaceWorkareaFile(
+      state.spec.workarea,
+      relativePath,
+      `${JSON.stringify({
+        version: 1,
+        runID: state.id,
+        parentRunID: state.spec.parentID,
+        role: state.spec.role,
+        ...summary,
+      })}\n`,
+      { mode: 0o600 },
+    ).then(
+      () => {
+        state.recoverySummary = { ...summary, path: relativePath }
+      },
+      (error: unknown) => {
+        state.recoverySummaryWriteError = boundedFailureDetail(
+          error instanceof Error ? error.message : String(error),
+        )
+      },
+    )
   }
 
   #observePiEvent(state: RunState, event: PiAgentEvent): void {
@@ -2779,6 +3027,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       const remaining = state.timerRemainingMs ?? 0
       if (remaining <= 0) {
         state.cancellation = "budget"
+        this.#captureRecoverySummary(state, "budget_exhausted")
         state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
         return
@@ -2800,6 +3049,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         }
         state.timerRemainingMs = 0
         state.cancellation ??= "budget"
+        this.#captureRecoverySummary(state, "budget_exhausted")
         state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
       }, timerDurationMs)
@@ -2814,6 +3064,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (state.spec.abort) {
       const abort = () => {
         state.cancellation ??= "cancel"
+        this.#captureRecoverySummary(state, "cancelled")
         state.retryWaitAbort?.abort(new Error("AgentRun was cancelled"))
         state.finishProviderRetryAttempt?.()
         state.agent?.abort()
@@ -3088,6 +3339,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
       failure = auditedFailure(failure)
       const termination = terminationFor(state, failure)
       const finalContextLimits = this.#contextLimits(state)
+      await state.recoverySummaryWrite
+      if (state.recoverySummaryWriteError)
+        this.#emitActivity(state, {
+          kind: "status",
+          text: `Automatic pre-abort summary persistence failed: ${state.recoverySummaryWriteError}`,
+        })
       let recoveredHypotheses: readonly RecoveredHypothesis[] = []
       if (state.spec.role !== "root" && state.spec.recoverHypothesisOwnership) {
         let ancestor = state.spec.parentID ? this.#states.get(state.spec.parentID) : undefined
@@ -3120,6 +3377,36 @@ export class PiAgentSubsystem implements AgentSubsystem {
                 .map((item) => item.id)
                 .join(", ")}.`,
             })
+        }
+      }
+      let recoveredTestObjects: readonly RecoveredTestObject[] = []
+      if (state.spec.role !== "root" && state.spec.recoverTestObjects) {
+        recoveredTestObjects = await state.spec.recoverTestObjects({ fromRunID: state.id }).catch((error) => {
+          this.#emitActivity(state, {
+            kind: "status",
+            text: `Test-object ledger recovery failed: ${boundedFailureDetail(
+              error instanceof Error ? error.message : String(error),
+            )}`,
+          })
+          return []
+        })
+        if (recoveredTestObjects.length > 0) {
+          const missingEvidence = recoveredTestObjects.filter(
+            (item) => item.evidencePath && item.evidenceExists === false,
+          )
+          this.#emitActivity(state, {
+            kind: "status",
+            text: [
+              `Test-object ledger recovered for the parent: ${recoveredTestObjects.map((item) => item.id).join(", ")}.`,
+              ...(missingEvidence.length > 0
+                ? [
+                    `Missing referenced evidence: ${missingEvidence
+                      .map((item) => `${item.id} → ${item.evidencePath}`)
+                      .join(", ")}.`,
+                  ]
+                : []),
+            ].join(" "),
+          })
         }
       }
       const result: AgentRunResult = {
@@ -3166,6 +3453,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         fallbackAdmissions: state.fallbackAdmissions,
         fallbackDescendants: state.fallbackDescendants,
         recoveredHypotheses,
+        recoveredTestObjects,
+        ...(state.recoverySummary ? { recoverySummary: state.recoverySummary } : {}),
       }
       state.finished = true
       this.#emitActivity(state, {
@@ -3185,6 +3474,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       this.#emit(state, {
         type: "run_finished",
         runID: state.id,
+        ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
+        role: state.spec.role,
         termination,
         ...(failure ? { failure } : {}),
         usage: state.cumulativeUsage,
@@ -3194,6 +3485,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         fallbackDescendants: state.fallbackDescendants,
         toolCalls: state.toolCalls,
         recoveredHypotheses,
+        recoveredTestObjects,
+        ...(state.recoverySummary ? { recoverySummary: state.recoverySummary } : {}),
       })
       state.resolveResult(result)
       state.queue.close()

@@ -84,10 +84,11 @@ export type CompletionArtifact = DeepMutable<Schema.Schema.Type<typeof Completio
 
 export const CompletionFailure = Schema.Struct({
   phase: Schema.String,
-  source: Schema.Literals(["provider", "contract", "lifecycle"]),
+  source: Schema.Literals(["provider", "contract", "lifecycle", "upstream"]),
   class: Schema.String,
   code: Schema.optional(Schema.String),
   detail: Schema.String,
+  retryable: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "CompletionFailure" })
 export type CompletionFailure = DeepMutable<Schema.Schema.Type<typeof CompletionFailure>>
 

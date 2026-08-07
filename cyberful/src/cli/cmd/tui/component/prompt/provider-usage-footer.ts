@@ -16,8 +16,7 @@ export function compactTokenCount(value: number, locale = "it-IT"): string {
           ? { divisor: 1_000, suffix: "K" }
           : { divisor: 1, suffix: "" }
   return `${new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
+    maximumSignificantDigits: 3,
   }).format(normalized / scale.divisor)}${scale.suffix}`
 }
 
@@ -39,7 +38,7 @@ export function providerUsageFooter(
     generated: compactTokenCount(numeric(view.subagents.generated), locale),
   }
   const text =
-    `R> i:${root.input} c:${root.cached} g:${root.generated} | ` +
-    `S> i:${subagents.input} c:${subagents.cached} g:${subagents.generated}`
+    `R ${root.input}/${root.cached}/${root.generated} · ` +
+    `S ${subagents.input}/${subagents.cached}/${subagents.generated}`
   return { root, subagents, text }
 }

@@ -196,10 +196,11 @@ export type CompletionArtifact = {
 
 export type CompletionFailure = {
   phase: string
-  source: "provider" | "contract" | "lifecycle"
+  source: "provider" | "contract" | "lifecycle" | "upstream"
   class: string
   code?: string
   detail: string
+  retryable?: boolean
 }
 
 export type CompletionPart = {

@@ -1,12 +1,12 @@
 // ── Phase Budget Clock ──────────────────────────────────────────
-// Owns one phase's active-execution deadline, overlapping approval and retry
-//   suspensions, retry compensation cap, and closeout timing projection.
+// Owns one phase's active-execution deadline, overlapping approval, target
+//   cooldown, and retry suspensions plus closeout timing projection.
 // → cyberful/src/subsystem/phase-runner.ts — creates one clock per phase.
 // → cyberful/src/subsystem/pi-agent.ts — pauses AgentRun timers through this clock.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 
-export type SuspensionCause = "approval" | "provider_retry"
+export type SuspensionCause = "approval" | "provider_retry" | "target_cooldown"
 
 export interface Snapshot {
   readonly pending: boolean
@@ -16,6 +16,7 @@ export interface Snapshot {
   readonly pausedMs: number
   readonly approvalWaitMs: number
   readonly retryWaitMs: number
+  readonly targetCooldownWaitMs: number
   readonly retryCompensationMs: number
   readonly retryCompensationCapMs: number
   readonly retryCompensationCapReached: boolean
@@ -36,28 +37,31 @@ interface Options {
   readonly retryCompensationCapMs: number
   readonly initialApprovalWaitMs?: number
   readonly initialRetryWaitMs?: number
+  readonly initialTargetCooldownWaitMs?: number
   readonly initialRetryCompensationMs?: number
   readonly now?: () => number
 }
 
 // ── Overlapping Waits Extend The Deadline Only Once ─────────────
-// A provider retry and a human approval can overlap, as can several delegated
-// retries. The clock accumulates the union of all effective suspension
-// intervals for its deadline while retaining per-cause durations for audit.
-// Retry time stops extending the deadline at its configured cap; approval time
-// remains suspended because it is outside autonomous execution control.
+// A provider retry, human approval, and target cooldown can overlap, as can
+// several delegated retries. The clock accumulates the union of all effective
+// suspension intervals for its deadline while retaining per-cause durations
+// for audit. Retry time stops extending the deadline at its configured cap;
+// approval and target cooldown remain suspended because neither is productive
+// autonomous execution time.
 //
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 export function create(options: Options): Controller {
   const now = options.now ?? Date.now
   const listeners = new Set<(snapshot: Snapshot) => void>()
-  const counts: Record<SuspensionCause, number> = { approval: 0, provider_retry: 0 }
+  const counts: Record<SuspensionCause, number> = { approval: 0, provider_retry: 0, target_cooldown: 0 }
   const retryCompensationCapMs = Math.max(0, options.retryCompensationCapMs)
   let lastObservedAt = now()
   let totalPausedMs = 0
   let approvalWaitMs = Math.max(0, options.initialApprovalWaitMs ?? 0)
   let retryWaitMs = Math.max(0, options.initialRetryWaitMs ?? 0)
+  let targetCooldownWaitMs = Math.max(0, options.initialTargetCooldownWaitMs ?? 0)
   let retryCompensationMs = Math.min(
     retryCompensationCapMs,
     Math.max(0, options.initialRetryCompensationMs ?? 0),
@@ -74,9 +78,10 @@ export function create(options: Options): Controller {
         ? Math.min(elapsedMs, Math.max(0, retryCompensationCapMs - retryCompensationMs))
         : 0
     if (counts.provider_retry > 0) retryWaitMs += elapsedMs
-    if (counts.approval > 0) {
+    if (counts.approval > 0) approvalWaitMs += elapsedMs
+    if (counts.target_cooldown > 0) targetCooldownWaitMs += elapsedMs
+    if (counts.approval > 0 || counts.target_cooldown > 0) {
       totalPausedMs += elapsedMs
-      approvalWaitMs += elapsedMs
     } else if (retryCreditMs > 0) {
       totalPausedMs += retryCreditMs
     }
@@ -88,15 +93,16 @@ export function create(options: Options): Controller {
     advance()
     const retryEffective =
       counts.provider_retry > 0 && retryCompensationMs < retryCompensationCapMs
-    const pending = counts.approval > 0 || retryEffective
+    const pending = counts.approval > 0 || counts.target_cooldown > 0 || retryEffective
     return {
       pending,
-      count: counts.approval + counts.provider_retry,
+      count: counts.approval + counts.provider_retry + counts.target_cooldown,
       causes: { ...counts },
       deadlineAt: options.deadlineAt + totalPausedMs,
       pausedMs: totalPausedMs,
       approvalWaitMs,
       retryWaitMs,
+      targetCooldownWaitMs,
       retryCompensationMs,
       retryCompensationCapMs,
       retryCompensationCapReached:
@@ -159,6 +165,7 @@ export function create(options: Options): Controller {
     const value = current()
     if (cause === "approval") return value.approvalWaitMs
     if (cause === "provider_retry") return value.retryWaitMs
+    if (cause === "target_cooldown") return value.targetCooldownWaitMs
     return value.pausedMs
   }
   const close = () => {

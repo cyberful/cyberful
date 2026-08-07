@@ -13,7 +13,6 @@ on:
     paths:
       - .github/workflows/docs.yml
       - docs/**
-      - docs-overrides/**
       - docs-requirements.txt
       - mkdocs.yml
   workflow_dispatch:

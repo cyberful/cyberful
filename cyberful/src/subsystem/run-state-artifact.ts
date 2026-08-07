@@ -33,11 +33,18 @@ export class RunStateArtifact {
   readonly #workarea: string
   readonly #workflow: string
   readonly #phase: string
+  readonly #attempt: number
   readonly #deadlineAt: number
   readonly #budgetClock?: PhaseBudgetClock
   readonly #closeoutReserveMs: number
   readonly #actors = new Map<string, ActorState>()
   #mode: "work" | "closeout" = "work"
+
+  #status: "starting" | "running" | "completed" | "failed" = "starting"
+
+  #termination?: string
+
+  #failure?: unknown
   #lastProgressAt = new Date().toISOString()
   #retry?: {
     readonly run_id: string
@@ -56,6 +63,7 @@ export class RunStateArtifact {
     readonly workarea: string
     readonly workflow: string
     readonly phase: string
+    readonly attempt?: number
     readonly deadlineAt: number
     readonly budgetClock?: PhaseBudgetClock
     readonly closeoutReserveMs?: number
@@ -63,15 +71,29 @@ export class RunStateArtifact {
     this.#workarea = input.workarea
     this.#workflow = input.workflow
     this.#phase = input.phase
+    this.#attempt = input.attempt ?? 1
     this.#deadlineAt = input.deadlineAt
     this.#budgetClock = input.budgetClock
     this.#closeoutReserveMs = input.closeoutReserveMs ?? 0
+  }
+
+  start() {
+    return this.#persist()
+  }
+
+  fail(input: { readonly termination: string; readonly failure?: unknown }) {
+    this.#status = "failed"
+    this.#termination = input.termination
+    this.#failure = input.failure
+    this.#lastProgressAt = new Date().toISOString()
+    return this.#persist()
   }
 
   observe(event: AgentEvent) {
     const now = new Date().toISOString()
     if (event.type === "activity" && event.activity.kind === "reasoning") return Promise.resolve()
     if (event.type === "run_started") {
+      this.#status = "running"
       this.#actors.set(event.runID, {
         id: event.runID,
         ...(event.parentID ? { parent_id: event.parentID } : {}),
@@ -131,6 +153,11 @@ export class RunStateArtifact {
         ...(event.failure ? { failure: event.failure } : {}),
       })
       this.#lastProgressAt = now
+      if (!previous?.parent_id) {
+        this.#status = event.termination === "completed" ? "completed" : "failed"
+        this.#termination = event.termination
+        this.#failure = event.failure
+      }
     }
     return this.#persist()
   }
@@ -151,6 +178,10 @@ export class RunStateArtifact {
             version: 1,
             workflow: this.#workflow,
             phase: this.#phase,
+            attempt: this.#attempt,
+            status: this.#status,
+            ...(this.#termination ? { termination: this.#termination } : {}),
+            ...(this.#failure ? { failure: this.#failure } : {}),
             mode: this.#mode,
             deadline_at: new Date(deadlineAt).toISOString(),
             budget_remaining_ms: Math.max(0, deadlineAt - Date.now()),
@@ -163,6 +194,7 @@ export class RunStateArtifact {
                   human_wait_ms: Math.round(budget.approvalWaitMs),
                   retry_wait_ms: Math.round(budget.retryWaitMs),
                   provider_wait_ms: Math.round(budget.retryWaitMs),
+                  target_cooldown_wait_ms: Math.round(budget.targetCooldownWaitMs),
                   retry_compensation_ms: Math.round(budget.retryCompensationMs),
                   phase_extension_ms: Math.round(budget.retryCompensationMs),
                   retry_compensation_cap_ms: budget.retryCompensationCapMs,
@@ -201,6 +233,12 @@ export async function recordTerminalCleanup(input: {
   readonly state: "closed" | "closed_with_cleanup_errors"
   readonly removed: readonly string[]
   readonly remaining: readonly string[]
+  readonly terminal?: {
+    readonly phase?: string
+    readonly outcome: "success" | "warning" | "blocked" | "failed"
+    readonly termination?: string
+    readonly failure?: unknown
+  }
 }): Promise<void> {
   const chunk = await readWorkareaFileChunk(input.workarea, RUN_STATE_PATH)
   if (chunk.nextOffset !== undefined) throw new Error("run-state artifact is too large for terminal cleanup update")
@@ -220,6 +258,18 @@ export async function recordTerminalCleanup(input: {
         ...decoded,
         session_id: input.sessionID,
         session_status: input.state,
+        ...(input.terminal
+          ? {
+              ...(input.terminal.phase ? { phase: input.terminal.phase } : {}),
+              status:
+                input.terminal.outcome === "success" || input.terminal.outcome === "warning"
+                  ? "completed"
+                  : input.terminal.outcome,
+              session_outcome: input.terminal.outcome,
+              ...(input.terminal.termination ? { termination: input.terminal.termination } : {}),
+              ...(input.terminal.failure ? { failure: input.terminal.failure } : {}),
+            }
+          : {}),
         cleanup: {
           state: input.state === "closed" ? "completed" : "failed",
           removed: [...input.removed],

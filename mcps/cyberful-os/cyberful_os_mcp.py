@@ -20,6 +20,7 @@ import selectors
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -64,7 +65,9 @@ MAX_ENV_VALUE_BYTES = 32 * 1024
 DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
-PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY",)
+PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY", "CYBERFUL_OS_CA_BUNDLE")
+CORE_PROXY_TRUST_DIRECTORY = "/run/cyberful/proxy-trust"
+MAX_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 NO_TELEMETRY_ENV = {
     "DISABLE_UPDATE_CHECK": "true",
     "DO_NOT_TRACK": "1",
@@ -351,10 +354,36 @@ def docker_environment() -> dict[str, str]:
 # This protects every dedicated tool and the shell fallback at one boundary.
 # ─────────────────────────────────────────────────────────────────────
 
+def validated_ca_bundle(value: str) -> str:
+    if not os.path.isabs(value):
+        raise ValueError("cyberful-os CA bundle must be absolute")
+    info = os.lstat(value)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise ValueError("cyberful-os CA bundle must be a regular file")
+    trust_directory = os.path.realpath(CORE_PROXY_TRUST_DIRECTORY)
+    resolved = os.path.realpath(value)
+    if os.path.commonpath((trust_directory, resolved)) != trust_directory:
+        raise ValueError("cyberful-os CA bundle must stay inside the engagement trust directory")
+    if info.st_size <= 0 or info.st_size > MAX_CA_BUNDLE_BYTES:
+        raise ValueError("cyberful-os CA bundle has an invalid size")
+    with open(value, "rb") as handle:
+        content = handle.read(MAX_CA_BUNDLE_BYTES + 1)
+    if len(content) > MAX_CA_BUNDLE_BYTES or b"-----BEGIN CERTIFICATE-----" not in content:
+        raise ValueError("cyberful-os CA bundle contains no bounded certificate chain")
+    if b"PRIVATE KEY" in content:
+        raise ValueError("cyberful-os CA bundle contains private key material")
+    return value
+
+
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
-    next_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
-    proxy = next_env.pop("CYBERFUL_OS_HTTP_PROXY", None)
-    if proxy:
+    next_env = normalize_extra_env(extra_env) or {}
+    host_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
+    proxy = host_env.get("CYBERFUL_OS_HTTP_PROXY")
+    ca_bundle = host_env.get("CYBERFUL_OS_CA_BUNDLE")
+    if bool(proxy) != bool(ca_bundle):
+        raise ValueError("cyberful-os proxy and CA bundle must be configured together")
+    if proxy and ca_bundle:
+        trusted_bundle = validated_ca_bundle(ca_bundle)
         next_env.update({
             "HTTP_PROXY": proxy,
             "HTTPS_PROXY": proxy,
@@ -362,9 +391,14 @@ def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
             "https_proxy": proxy,
             "NO_PROXY": "127.0.0.1,localhost",
             "no_proxy": "127.0.0.1,localhost",
+            "SSL_CERT_FILE": trusted_bundle,
+            "CURL_CA_BUNDLE": trusted_bundle,
+            "REQUESTS_CA_BUNDLE": trusted_bundle,
+            "GIT_SSL_CAINFO": trusted_bundle,
+            "GIT_SSL_NO_VERIFY": "false",
+            "PIP_CERT": trusted_bundle,
+            "NODE_EXTRA_CA_CERTS": trusted_bundle,
         })
-    if extra_env:
-        next_env.update(normalize_extra_env(extra_env) or {})
     next_env.update(NO_TELEMETRY_ENV)
     return next_env
 

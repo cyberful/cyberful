@@ -12,6 +12,8 @@ export interface GatewayOptions {
   phase?: string
   // Host-owned gateway PID registration path.
   pidSignalPath?: string
+  // Host-owned first-failure signal for a required runtime upstream.
+  upstreamFailureSignalPath?: string
   // Host-owned handoff request, required artifact, and expected successor.
   handoff?: { phase: string; successor?: string; signalPath: string; artifact?: string }
   // Exposes native MCP elicitation for blocking human questions.
@@ -33,6 +35,14 @@ function browserRuntimeEnv(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(process.env).filter(
       (entry): entry is [string, string] => entry[0].startsWith("CYBER_BROWSER_") && entry[1] !== undefined,
+    ),
+  )
+}
+
+function cveDictionaryRuntimeEnv(): Record<string, string> {
+  return Object.fromEntries(
+    ["CYBERFUL_CVE_DICTIONARY_HOME", "CYBERFUL_CVE_DICTIONARY_PATH"].flatMap((key) =>
+      process.env[key] === undefined ? [] : [[key, process.env[key]!]],
     ),
   )
 }
@@ -87,12 +97,16 @@ export function gatewayMcpServer(sessionID: string, opts?: GatewayOptions): Subs
     },
     privateEnv: {
       ...browserRuntimeEnv(),
+      ...cveDictionaryRuntimeEnv(),
       ...(opts?.env ?? {}),
       ...ownershipRuntimeEnv(),
       CYBERFUL_SUBSYSTEM_SESSION: sessionID,
       ...(phase ? { CYBERFUL_SUBSYSTEM_PHASE: phase } : {}),
       ...(opts?.proxy ? { CYBERFUL_SUBSYSTEM_GATEWAY_PROXY: "1" } : {}),
       ...(opts?.pidSignalPath ? { CYBERFUL_SUBSYSTEM_GATEWAY_PID_PATH: opts.pidSignalPath } : {}),
+      ...(opts?.upstreamFailureSignalPath
+        ? { CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH: opts.upstreamFailureSignalPath }
+        : {}),
       ...(opts?.questionEnabled ? { CYBERFUL_SUBSYSTEM_QUESTION_ENABLED: "1" } : {}),
       ...(opts?.circuitBreakerPath ? { CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH: opts.circuitBreakerPath } : {}),
       ...(opts?.handoff

@@ -35,13 +35,17 @@ describe("runtime diagnostics", () => {
         attempt: 2,
       })
       const input = {
-        component: "zap" as const,
-        profile: "phase-gateway",
-        stage: "connect" as const,
+        component: "agent" as const,
+        runID: "run-child-7",
+        parentRunID: "run-root-1",
+        role: "subagent" as const,
+        termination: "budget_exhausted" as const,
+        profile: "budget_exhausted",
+        stage: "provider" as const,
         severity: "error" as const,
-        errorClass: "ConnectionError",
-        code: "ECONNREFUSED",
-        message: "http://zap:8080 ConnectionError cookie=session-secret",
+        errorClass: "AgentRunFailure",
+        code: "budget_exhausted",
+        message: "AgentRun budget expired cookie=session-secret",
       }
       recorder.record(input)
       recorder.record(input)
@@ -53,10 +57,15 @@ describe("runtime diagnostics", () => {
         .map((line) => JSON.parse(line))
       expect(rows.at(-1)).toMatchObject({
         version: 2,
-        component: "zap",
+        component: "agent",
+        runID: "run-child-7",
+        parentRunID: "run-root-1",
+        role: "subagent",
+        termination: "budget_exhausted",
+        profile: "budget_exhausted",
         phase: "recon",
         attempt: 2,
-        errorClass: "ConnectionError",
+        errorClass: "AgentRunFailure",
         outcome: "runtime_failure",
         blocking: false,
         count: 2,
