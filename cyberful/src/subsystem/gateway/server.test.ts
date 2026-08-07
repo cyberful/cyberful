@@ -315,9 +315,9 @@ describe("expert-gateway workflow capability policy", () => {
     expect(() => cyberfulOsProxyTrustEnv({ CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152" })).toThrow(
       "configured together",
     )
-    expect(() =>
-      cyberfulOsProxyTrustEnv({ CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem" }),
-    ).toThrow("configured together")
+    expect(() => cyberfulOsProxyTrustEnv({ CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem" })).toThrow(
+      "configured together",
+    )
     expect(() =>
       cyberfulOsProxyTrustEnv({
         CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
@@ -475,6 +475,37 @@ describe("expert-gateway workflow capability policy", () => {
         "cve_dictionary",
         "hypothesis",
       ])
+
+      process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
+      process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+      process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = directory
+      const usageServer = await createGatewayServer({ upstreams: [] })
+      const [usageClientTransport, usageServerTransport] = InMemoryTransport.createLinkedPair()
+      await usageServer.connect(usageServerTransport)
+      const usageClient = new Client({ name: "local-tool-usage-test", version: "0" })
+      await usageClient.connect(usageClientTransport)
+      try {
+        const failedDictionary = await usageClient.callTool({
+          name: "cve_dictionary",
+          arguments: { action: "search", query: "raw-query-must-not-enter-csv" },
+          _meta: {
+            "io.cyberful/tool-actor": {
+              runID: "recon-child-1",
+              role: "subagent",
+              parentRunID: "recon-root-1",
+              toolCallID: "cve-call-1",
+            },
+          },
+        })
+        expect(failedDictionary.isError).toBe(true)
+      } finally {
+        await usageClient.close()
+        await usageServer.closeGateway()
+      }
+      const usageCsv = await readFile(path.join(directory, "raw", "operations", "tool-usage.csv"), "utf8")
+      expect(usageCsv).toContain("recon-child-1,subagent,recon-root-1,cve-call-1,cve_dictionary,search")
+      expect(usageCsv).not.toContain("raw-query-must-not-enter-csv")
+      expect(usageCsv).toMatch(/cve_dictionary,search,[0-9]+,error,0,[a-f0-9]{64}/)
     } finally {
       if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
       else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
@@ -629,11 +660,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     await client.connect(clientTransport)
     try {
       const controller = new AbortController()
-      const call = client.callTool(
-        { name: "slow", arguments: {} },
-        CallToolResultSchema,
-        { signal: controller.signal },
-      )
+      const call = client.callTool({ name: "slow", arguments: {} }, CallToolResultSchema, { signal: controller.signal })
       await started
       controller.abort(new Error("test timeout"))
 
@@ -708,10 +735,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
     process.env.CYBERFUL_SUBSYSTEM_PHASE = "brief"
     process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = "/tmp"
-    const upstream = (
-      name: string,
-      capability: UpstreamTool["capability"],
-    ): UpstreamTool => ({
+    const upstream = (name: string, capability: UpstreamTool["capability"]): UpstreamTool => ({
       def: { name, inputSchema: { type: "object", properties: {} } },
       capability,
       call: async () => ({ content: [{ type: "text", text: "unused" }] }),
@@ -981,17 +1005,15 @@ describe("expert-gateway handoff tool", () => {
       expect(blocked.isError).toBe(true)
       expect(errorContent(blocked).message).toContain("engagement_policy")
 
-      fetch.mockImplementation(
-        (async (input) =>
-          new URL(String(input)).pathname.endsWith("getRateLimitRules/")
-            ? new Response(
-                JSON.stringify({
-                  getRateLimitRules: [{ description: "Cyberful engagement global HTTP budget" }],
-                }),
-                { status: 200 },
-              )
-            : new Response('{"Result":"OK"}', { status: 200 })) as typeof globalThis.fetch,
-      )
+      fetch.mockImplementation((async (input) =>
+        new URL(String(input)).pathname.endsWith("getRateLimitRules/")
+          ? new Response(
+              JSON.stringify({
+                getRateLimitRules: [{ description: "Cyberful engagement global HTTP budget" }],
+              }),
+              { status: 200 },
+            )
+          : new Response('{"Result":"OK"}', { status: 200 })) as typeof globalThis.fetch)
       const installed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
       expect(installed.isError).not.toBe(true)
       expect(jsonContent(installed)).toMatchObject({

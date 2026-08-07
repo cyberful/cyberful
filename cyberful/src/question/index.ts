@@ -70,6 +70,8 @@ export type Tool = Schema.Schema.Type<typeof Tool>
 export const Request = Schema.Struct({
   id: QuestionID,
   sessionID: SessionID,
+  presentation: Schema.Literals(["pending", "presented"]),
+  presentedAt: Schema.optional(Schema.Int),
   questions: Schema.Array(Info).annotate({
     description: "Questions to ask",
   }),
@@ -98,8 +100,15 @@ const Rejected = Schema.Struct({
   requestID: QuestionID,
 }).annotate({ identifier: "QuestionRejected" })
 
+const Presented = Schema.Struct({
+  sessionID: SessionID,
+  requestID: QuestionID,
+  presentedAt: Schema.Int,
+}).annotate({ identifier: "QuestionPresented" })
+
 export const Event = {
   Asked: EventDefinition.define("question.asked", Request),
+  Presented: EventDefinition.define("question.presented", Presented),
   Replied: EventDefinition.define("question.replied", Replied),
   Rejected: EventDefinition.define("question.rejected", Rejected),
 }
@@ -114,9 +123,18 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
   requestID: QuestionID,
 }) {}
 
+export class NotPresentedError extends Schema.TaggedErrorClass<NotPresentedError>()(
+  "Question.NotPresentedError",
+  { requestID: QuestionID },
+) {
+  override get message() {
+    return `Question request has not completed its presentation guard: ${this.requestID}`
+  }
+}
+
 interface PendingEntry {
   info: Request
-  presentedAt?: number
+  presentedMonotonicAt?: number
 }
 
 interface State {
@@ -134,8 +152,9 @@ export interface Interface {
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<void, NotFoundError>
-  readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
+  }) => Effect.Effect<void, NotFoundError | NotPresentedError>
+  readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError | NotPresentedError>
+  readonly present: (requestID: QuestionID) => Effect.Effect<Request, NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -166,6 +185,7 @@ export const layer = Layer.effect(
       const info: Request = {
         id,
         sessionID: input.sessionID,
+        presentation: "pending",
         questions: input.questions,
         tool: input.tool,
       }
@@ -178,8 +198,8 @@ export const layer = Layer.effect(
       // event, so a TUI and an external CLI always resolve the same request ID.
       // Both writers compete for one exclusive response file; this owner consumes
       // that decision, publishes the normal bus event, and resumes the phase.
-      // Cancellation removes both files and retracts only a question that was
-      // actually visible, so a dead phase cannot authorize a later execution.
+      // Cancellation removes both files and retracts every published request,
+      // so a dead phase cannot authorize a later execution or remain in a TUI.
       // ─────────────────────────────────────────────────────────────────
       return yield* Effect.ensuring(
         Effect.gen(function* () {
@@ -194,7 +214,6 @@ export const layer = Layer.effect(
             }),
           )
           yield* events.publish(Event.Asked, info)
-          entry.presentedAt = performance.now()
           published = true
           const decision = yield* Effect.promise((signal) => mailbox.wait(String(id), signal))
           if (pending.get(id) !== entry) return yield* new RejectedError()
@@ -227,6 +246,31 @@ export const layer = Layer.effect(
       )
     })
 
+    // ── Presentation Is Acknowledged By A Real Consumer ──────────
+    // Publishing an event proves only that the control plane accepted it; a TUI
+    // can be disconnected, bootstrapping, or rendering another session. The first
+    // idempotent presentation acknowledgement starts the interaction guard using
+    // monotonic time and publishes wall-clock metadata for reconnecting clients.
+    // Until then, HTTP replies fail explicitly and cannot masquerade as input to
+    // a prompt the operator never saw.
+    // ─────────────────────────────────────────────────────────────────
+    const present = Effect.fn("Question.present")(function* (requestID: QuestionID) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const entry = pending.get(requestID)
+      if (!entry) return yield* new NotFoundError({ requestID })
+      if (entry.info.presentation === "presented") return entry.info
+
+      const presentedAt = Date.now()
+      entry.presentedMonotonicAt = performance.now()
+      entry.info = { ...entry.info, presentation: "presented", presentedAt }
+      yield* events.publish(Event.Presented, {
+        sessionID: entry.info.sessionID,
+        requestID,
+        presentedAt,
+      })
+      return entry.info
+    })
+
     const reply = Effect.fn("Question.reply")(function* (input: {
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
@@ -237,9 +281,12 @@ export const layer = Layer.effect(
         log.warn("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      if (entry.presentedAt === undefined || !questionInteractionReady(entry.presentedAt, performance.now())) {
-        log.warn("ignored reply before question presentation floor", { requestID: input.requestID })
-        return
+      if (
+        entry.presentedMonotonicAt === undefined ||
+        !questionInteractionReady(entry.presentedMonotonicAt, performance.now())
+      ) {
+        log.warn("rejected reply before question presentation floor", { requestID: input.requestID })
+        return yield* new NotPresentedError({ requestID: input.requestID })
       }
       log.info("replied", { requestID: input.requestID, answers: input.answers })
       yield* Effect.promise(() => mailbox.answer(String(input.requestID), input.answers))
@@ -252,9 +299,12 @@ export const layer = Layer.effect(
         log.warn("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      if (entry.presentedAt === undefined || !questionInteractionReady(entry.presentedAt, performance.now())) {
-        log.warn("ignored rejection before question presentation floor", { requestID })
-        return
+      if (
+        entry.presentedMonotonicAt === undefined ||
+        !questionInteractionReady(entry.presentedMonotonicAt, performance.now())
+      ) {
+        log.warn("rejected dismissal before question presentation floor", { requestID })
+        return yield* new NotPresentedError({ requestID })
       }
       log.info("rejected", { requestID })
       yield* Effect.promise(() => mailbox.reject(String(requestID)))
@@ -265,7 +315,7 @@ export const layer = Layer.effect(
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    return Service.of({ ask, present, reply, reject, list })
   }),
 )
 

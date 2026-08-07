@@ -13,7 +13,7 @@ agent:
   subagents:
     enabled: true
     provider: openai-codex
-    reasoning_effort: high
+    reasoning_effort: [xhigh, medium]
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2
@@ -72,9 +72,9 @@ At least one provider and a valid `main_provider` are required. Provider and mod
 
 ## Subagent route, reasoning, and identity
 
-`agent.subagents.provider` names an existing route and `agent.subagents.reasoning_effort` selects the child reasoning profile. New settings explicitly use `openai-codex` with `high`, resolving to `openai-codex/gpt-5.6-sol` in the generated default. Older settings use an available `openai-codex` route; if none exists they inherit `main_provider` with a runtime warning. An unavailable configured route fails explicitly.
+`agent.subagents.provider` names an existing route and `agent.subagents.reasoning_effort` is the unordered allowlist of child reasoning profiles. `medium` is mandatory and is the default when `delegate_task` omits its optional `reasoning_effort`; the direct parent may select another allowed level for each delegation, including nested ones. The tool recommends `medium` for bounded evidence collection and `xhigh` for ambiguous exploration, synthesis, or complex exploit chains. Duplicate or unsupported allowlist entries are rejected, and a disallowed request fails before it consumes quota or starts a child. The generated default is `[xhigh, medium]`. Version 1 scalar settings migrate in place: `xhigh` becomes `[xhigh, medium]`, `high` becomes `[high, medium]`, and `medium` becomes `[medium]`. Older settings use an available `openai-codex` route; if none exists they inherit `main_provider` with a runtime warning. An unavailable configured route fails explicitly.
 
-Fallback-affine descendants remain on the fallback provider but keep the child reasoning profile. Scope, persona, tools, traffic policy, workarea, and the single phase budget remain inherited from the parent.
+Fallback-affine descendants remain on the fallback provider but keep the parent-selected child reasoning request. Each child records `selection_source: parent | default`, requested effort, and the effective level after provider clamping. Scope, persona, tools, traffic policy, workarea, and the single phase budget remain inherited from the parent.
 
 Before spawn, the host validates or deterministically generates an immutable short slug and one emoji. The TUI renders identities as `@{👾 api-monster}`. Terminal controls, bidi content, malformed emoji, and collisions cannot become display identities; AgentRun IDs remain the authoritative ownership keys.
 
@@ -104,9 +104,9 @@ If replacement memory is above 35% but below the hard input limit, Cyberful inst
 
 `summarizer.provider: inherit` uses the AgentRun route. A configured provider name selects an already declared route. Summarizer effort defaults to `medium` and is independent of the run's reasoning profile. There are at most three tool-free attempts: the configured route, the same route with a 50% smaller source only after a context rejection, then the active route once when it is different. The security fallback is never used.
 
-A failed generation leaves active history unchanged and latches its generation hash. Cyberful waits for a new operator message or at least 8K of new estimated context before trying again. Setting legacy `model_summary: false` keeps only deterministic result archival and emits an explicit context-exhaustion warning.
+A failed summarizer generation no longer restores oversized history. Cyberful immediately persists and installs an owner-only deterministic checkpoint containing only host-observed task, evidence, artifact, registry, completed-call, last-public-output, and bounded recent-queue state; it contains no model inference. Diagnostic events retain every summarizer attempt and the complete bounded cause. Setting legacy `model_summary: false` uses this deterministic path without invoking a summarizer.
 
-On `context_length_exceeded`, Cyberful records `min(current_limit, floor(failed_input × 0.80))`, removes only the failed assistant message, rotates in emergency mode, and retries generation once. A second context rejection terminates as `context_rotation_failed`; completed tools are not executed again and generic provider retry is not entered.
+On `context_length_exceeded`, Cyberful records `min(current_limit, floor(failed_input × 0.80))`, removes only the failed assistant message, rotates in emergency mode, and retries generation once. A second context rejection terminates as `context_rotation_failed`; completed tools are not executed again and generic provider retry is not entered. A delegated run may then start exactly one fresh child linked by `recovery_of`, using the same task, output artifact, requested reasoning, remaining budget, and deterministic checkpoint. The restart is exempt from a new `max_per_run` charge but still obeys concurrency, depth, closeout, and budget limits. If the residual budget is insufficient, the parent receives the typed failure and checkpoint instead. Root recovery remains governed by `agent.phase_recovery`.
 
 New transcripts use `context_rotation` events with `started`/`completed`/`partial`/`failed`, generation, route/model/effort, every resolved limit and its source, source/active/summarized message counts, split-turn status, before/after estimates, checkpoint attestation, and per-attempt token usage. Readers continue to accept historical `context_compaction` events. `run_started`, terminal run metadata, `raw/operations/run-state.json`, and the phase runtime manifest expose catalog, configured, operational, observed, and effective limits.
 
@@ -213,7 +213,7 @@ agent:
   subagents:
     enabled: true
     provider: openai-codex
-    reasoning_effort: high
+    reasoning_effort: [xhigh, medium]
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2

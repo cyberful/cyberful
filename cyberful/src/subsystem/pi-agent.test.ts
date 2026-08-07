@@ -28,7 +28,7 @@ import { Type } from "typebox"
 import { Settings } from "@/config/settings"
 import type { AgentEvent, AgentRun, AgentRunRole, AgentRunSpec, ProviderAffinity } from "./agent-subsystem"
 import { SubsystemPhaseBudgetClock } from "./phase-budget-clock"
-import { clearFallbackLedger, fallbackLedgerForSession, PiAgentSubsystem } from "./pi-agent"
+import { clearFallbackLedger, fallbackLedgerForSession, formatTaskCapsule, PiAgentSubsystem } from "./pi-agent"
 import type { PiModels } from "./pi-models"
 import { PiReasoning } from "./pi-reasoning"
 import type { CompiledAgentPrompt, PromptSkill, ProviderRoute } from "./prompt-compiler"
@@ -385,7 +385,7 @@ class InMemoryProvider {
   constructor(response: ResponseFactory, providerOptions: InMemoryProviderOptions = {}) {
     this.stream = async (model, context, streamOptions) => {
       const originalPayload = this.#payload(model, context, streamOptions?.reasoning)
-      const payload = await streamOptions?.onPayload?.(originalPayload, model) ?? originalPayload
+      const payload = (await streamOptions?.onPayload?.(originalPayload, model)) ?? originalPayload
       const call: CapturedCall = {
         ordinal: this.calls.length + 1,
         provider: model.provider,
@@ -414,9 +414,7 @@ class InMemoryProvider {
             stream.push({ type: "text_start", contentIndex, partial })
             for (const delta of providerOptions.textChunks(content.text)) {
               const updated = partial.content.map((item, index) =>
-                index === contentIndex && item.type === "text"
-                  ? { ...item, text: `${item.text}${delta}` }
-                  : item,
+                index === contentIndex && item.type === "text" ? { ...item, text: `${item.text}${delta}` } : item,
               )
               partial = { ...partial, content: updated }
               stream.push({ type: "text_delta", contentIndex, delta, partial })
@@ -521,14 +519,12 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     providerAffinity: "main",
     reasoning: PiReasoning.resolve("ultra", resolvedModel),
     prompt: prompt("root", "main", options.objective, true),
-    compileChildPrompt: (input) => prompt(input.role, input.providerRoute, input.task.objective, false),
+    compileChildPrompt: (input) => prompt(input.role, input.providerRoute, formatTaskCapsule(input.task), false),
     task: { objective: options.objective, expectedResult: "Return verified evidence." },
     workarea: options.workarea ?? "/tmp/cyberful-pi-agent-test",
     tools: options.tools ?? [],
     ...(options.gatewayTools ? { gatewayTools: () => options.gatewayTools! } : {}),
-    ...(options.recoverHypothesisOwnership
-      ? { recoverHypothesisOwnership: options.recoverHypothesisOwnership }
-      : {}),
+    ...(options.recoverHypothesisOwnership ? { recoverHypothesisOwnership: options.recoverHypothesisOwnership } : {}),
     ...(options.recoverTestObjects ? { recoverTestObjects: options.recoverTestObjects } : {}),
     skills: SKILLS,
     budget: {
@@ -541,7 +537,8 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     delegation: {
       enabled: true,
       provider: "main",
-      reasoningEffort: "high",
+      reasoningEfforts: ["xhigh", "medium"],
+      defaultReasoningEffort: "medium",
       maxPerRun: options.maxPerRun ?? 8,
       maxConcurrent: options.maxConcurrent ?? 8,
       maxDepth: options.maxDepth ?? 3,
@@ -685,8 +682,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(serializedEvents).not.toContain(apiKey)
     expect(serializedEvents).not.toContain("secondary-provider-secret")
     expect(
-      activityEvents(events)
-        .flatMap((event) => (event.activity.kind === "text" ? [event.activity.text] : [])),
+      activityEvents(events).flatMap((event) => (event.activity.kind === "text" ? [event.activity.text] : [])),
     ).toEqual(["Observed [REDACTED] and api_key=[REDACTED]"])
   })
 
@@ -750,8 +746,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     const provider = new InMemoryProvider((call) => {
       const results = toolResultCount(call)
       if (results === 0) return toolCall(call, "evidence_probe", { observation: "one completed request" })
-      if (call.ordinal === 2)
-        return unavailableError(call, "partial response that must not be published", "1006")
+      if (call.ordinal === 2) return unavailableError(call, "partial response that must not be published", "1006")
       return assistant(call, "recovered on the same turn")
     })
     const runtime = subsystem(provider, registry(), undefined, { random: () => 0.5 })
@@ -782,9 +777,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       { state: "succeeded", attempt: 1, delayMs: undefined },
     ])
     expect(
-      activityEvents(events).flatMap((event) =>
-        event.activity.kind === "text" ? [event.activity.text] : [],
-      ),
+      activityEvents(events).flatMap((event) => (event.activity.kind === "text" ? [event.activity.text] : [])),
     ).toEqual(["recovered on the same turn"])
   })
 
@@ -894,11 +887,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       output: "recovered",
     })
     expect(provider.calls).toHaveLength(2)
-    expect(retryEvents(events).map((event) => event.state)).toEqual([
-      "scheduled",
-      "attempting",
-      "succeeded",
-    ])
+    expect(retryEvents(events).map((event) => event.state)).toEqual(["scheduled", "attempting", "succeeded"])
   })
 
   test("does not retry when the global provider retry policy is disabled", async () => {
@@ -1126,8 +1115,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint")))
         return contextCheckpoint(call)
       const results = call.messages.filter((message) => message.role === "toolResult")
-      if (!results.some((message) => message.toolName === "evidence_dump"))
-        return toolCall(call, "evidence_dump", {})
+      if (!results.some((message) => message.toolName === "evidence_dump")) return toolCall(call, "evidence_dump", {})
       if (!results.some((message) => message.toolName === "small_checkpoint"))
         return toolCall(call, "small_checkpoint", {})
       return assistant(call, "continued after proactive context compaction")
@@ -1160,16 +1148,16 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(projectedText).toContain("Historical tool result virtualized")
     expect(
       textContent(
-        provider.calls[3]?.messages.find((message) => message.role === "toolResult" && message.toolName === "evidence_dump")
-          ?.content ?? [],
+        provider.calls[3]?.messages.find(
+          (message) => message.role === "toolResult" && message.toolName === "evidence_dump",
+        )?.content ?? [],
       ),
     ).toContain("Historical tool result virtualized")
     expect(relativePath).toStartWith("raw/context-tool-results/")
     expect(rotationEvents(events).map((event) => event.state)).toEqual(["started", "completed"])
     expect(
       activityEvents(events).filter(
-        (event) =>
-          event.activity.kind === "status" && event.activity.text.includes('"contextCompaction"'),
+        (event) => event.activity.kind === "status" && event.activity.text.includes('"contextCompaction"'),
       ),
     ).toHaveLength(1)
     expect(rotationEvents(events).at(-1)).toMatchObject({
@@ -1300,11 +1288,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       output: "continued after alternate-route summary",
     })
     expect(executions).toBe(1)
-    expect(provider.calls.map((call) => call.provider)).toEqual([
-      MAIN_PROVIDER,
-      FALLBACK_PROVIDER,
-      MAIN_PROVIDER,
-    ])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER, MAIN_PROVIDER])
     expect(rotationEvents(await collectEvents(run)).at(-1)).toMatchObject({
       state: "completed",
       summarizerProvider: FALLBACK_PROVIDER,
@@ -1377,11 +1361,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       MAIN_PROVIDER,
     ])
     const attempts = rotationEvents(await collectEvents(run)).at(-1)?.attempts ?? []
-    expect(attempts.map((attempt) => attempt.outcome)).toEqual([
-      "context_error",
-      "context_error",
-      "completed",
-    ])
+    expect(attempts.map((attempt) => attempt.outcome)).toEqual(["context_error", "context_error", "completed"])
     expect(attempts[1]?.sourceMessages).toBeLessThan(attempts[0]?.sourceMessages ?? 0)
   })
 
@@ -1513,9 +1493,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         hardInputTokens: expect.any(Number),
       },
     })
-    expect(events.at(-1)?.estimatedTokensAfter).toBeLessThanOrEqual(
-      events.at(-1)?.limits.targetTokens ?? 0,
-    )
+    expect(events.at(-1)?.estimatedTokensAfter).toBeLessThanOrEqual(events.at(-1)?.limits.targetTokens ?? 0)
     expect(events.at(-1)?.summarizedMessages).toBeGreaterThan(0)
   })
 
@@ -1581,9 +1559,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         .join("\n"),
     ).not.toContain("discarded context-error partial")
 
-    const followupRuntime = subsystem(
-      new InMemoryProvider((call) => assistant(call, "observed route limit inherited")),
-    )
+    const followupRuntime = subsystem(new InMemoryProvider((call) => assistant(call, "observed route limit inherited")))
     const followup = await followupRuntime.subsystem.start(
       rootSpec(followupRuntime.models, {
         id: "observed-context-followup",
@@ -1643,10 +1619,78 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
     expect(executions).toBe(1)
     expect(provider.calls).toHaveLength(4)
-    expect(rotationEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
-      "started",
-      "completed",
-    ])
+    expect(rotationEvents(await collectEvents(run)).map((event) => event.state)).toEqual(["started", "completed"])
+  })
+
+  test("restarts one failed subagent from its checkpoint without consuming another run quota", async () => {
+    const workarea = await temporaryWorkarea()
+    let pressureExecutions = 0
+    const pressureTool: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "context_pressure_probe",
+      label: "Create context pressure",
+      description: "Return one large completed result for context recovery testing.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        pressureExecutions++
+        return {
+          content: [{ type: "text", text: "preserved-pressure-evidence-".repeat(2_000) }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      const users = userTexts(call).join("\n")
+      if (users.includes("Create a loss-aware continuity checkpoint")) {
+        const checkpoint = contextCheckpoint(call)
+        const body = JSON.parse(textContent(checkpoint.content))
+        body.working_notes = "host-observed-continuity-".repeat(300)
+        return assistant(call, JSON.stringify(body))
+      }
+      if (call.system.includes("AgentRun role: root")) {
+        if (toolResultCount(call) === 0)
+          return toolCall(call, "delegate_task", {
+            task: "finish the bounded recovery probe",
+            expected_result: "return a concrete recovered result",
+            output_artifact: "raw/recovery/probe.md",
+            reasoning_effort: "xhigh",
+          })
+        return assistant(call, "root received the recovered child result")
+      }
+      if (users.includes("Host-owned context recovery of AgentRun")) {
+        if (!users.includes("Do not automatically replay completed tool calls"))
+          throw new Error("Recovery child did not receive the host checkpoint contract")
+        return assistant(call, "fresh child completed from the preserved checkpoint")
+      }
+      if (toolResultCount(call) === 0) return toolCall(call, "context_pressure_probe", {})
+      return contextLengthError(call)
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "subagent-context-restart",
+        objective: "delegate one task that requires context recovery",
+        workarea,
+        maxPerRun: 1,
+        tools: [pressureTool],
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "root received the recovered child result",
+    })
+    const starts = startedEvents(await collectEvents(run)).filter((event) => event.role === "subagent")
+    expect(starts).toHaveLength(2)
+    expect(starts[0]).toMatchObject({
+      reasoningEffort: "xhigh",
+      reasoningSelection: "parent",
+    })
+    expect(starts[1]).toMatchObject({
+      recoveryOf: starts[0]?.runID,
+      reasoningEffort: "xhigh",
+      reasoningSelection: "parent",
+    })
+    expect(pressureExecutions).toBe(1)
   })
 
   test("reports failed compaction and keeps the original result when artifact persistence is unavailable", async () => {
@@ -1724,12 +1768,13 @@ describe("Pi complete root and main-route subagent runs", () => {
     const provider = new InMemoryProvider((call) => {
       if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint"))) {
         summaries++
-        return assistant(call, "{\"malformed\":true}")
+        return assistant(call, '{"malformed":true}')
       }
-      const toolNames = call.messages.flatMap((message) =>
-        message.role === "toolResult" ? [message.toolName] : [],
-      )
-      if (!toolNames.includes("first_checkpoint"))
+      const toolNames = call.messages.flatMap((message) => (message.role === "toolResult" ? [message.toolName] : []))
+      const deterministicCheckpoint = userTexts(call).join("\n")
+      const firstCompleted =
+        toolNames.includes("first_checkpoint") || deterministicCheckpoint.includes('"name":"first_checkpoint"')
+      if (!firstCompleted)
         return assistant(
           call,
           [
@@ -1741,8 +1786,7 @@ describe("Pi complete root and main-route subagent runs", () => {
           ],
           { stopReason: "toolUse" },
         )
-      if (!toolNames.includes("second_checkpoint"))
-        return toolCall(call, "second_checkpoint", {})
+      if (!toolNames.includes("second_checkpoint")) return toolCall(call, "second_checkpoint", {})
       return assistant(call, "continued without looping the failed summary")
     })
     const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
@@ -1764,10 +1808,12 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(summaries).toBe(1)
     expect(firstExecutions).toBe(1)
     expect(secondExecutions).toBe(1)
-    expect(rotationEvents(await collectEvents(run)).map((event) => event.state)).toEqual([
-      "started",
-      "failed",
-    ])
+    const rotations = rotationEvents(await collectEvents(run))
+    expect(rotations.map((event) => event.state)).toEqual(["started", "partial"])
+    expect(rotations.at(-1)).toMatchObject({
+      reason: "summary_failed",
+      checkpoint: { path: expect.stringContaining("deterministic") },
+    })
   })
 
   test("keeps MCP schemas out of the first payload and loads only searched tools", async () => {
@@ -2001,6 +2047,7 @@ describe("Pi complete root and main-route subagent runs", () => {
             output_artifact: "raw/delegations/parser.md",
             display_name: "api-monster",
             emoji: "👾",
+            reasoning_effort: "xhigh",
           })
         if (results === 1) return toolCall(call, "handoff", {})
         return assistant(call, "root complete")
@@ -2079,6 +2126,8 @@ describe("Pi complete root and main-route subagent runs", () => {
       },
     ])
     expect(started[1]?.identity).toEqual({ displayName: "api-monster", emoji: "👾" })
+    expect(started[1]).toMatchObject({ reasoningEffort: "xhigh", reasoningSelection: "parent" })
+    expect(started[2]).toMatchObject({ reasoningEffort: "medium", reasoningSelection: "default" })
     expect(started[2]?.identity).toMatchObject({
       displayName: expect.stringMatching(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
       emoji: expect.any(String),
@@ -2094,19 +2143,13 @@ describe("Pi complete root and main-route subagent runs", () => {
       delegatedLifecycle
         .filter((event) => event.activity.kind === "agent" && event.activity.actor.id === "child-1")
         .every(
-          (event) =>
-            event.activity.kind === "agent" &&
-            event.activity.actor.sourceCallID === `${MAIN_PROVIDER}-tool-1`,
+          (event) => event.activity.kind === "agent" && event.activity.actor.sourceCallID === `${MAIN_PROVIDER}-tool-1`,
         ),
     ).toBeTrue()
     expect(
       delegatedLifecycle
         .filter((event) => event.activity.kind === "agent" && event.activity.actor.id === "child-2")
-        .every(
-          (event) =>
-            event.activity.kind === "agent" &&
-            typeof event.activity.actor.sourceCallID === "string",
-        ),
+        .every((event) => event.activity.kind === "agent" && typeof event.activity.actor.sourceCallID === "string"),
     ).toBeTrue()
 
     const nestedCalls = provider.calls.filter((call) => firstObjective(call).includes("verify nested evidence"))
@@ -2137,6 +2180,34 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(deniedHandoff).toMatchObject({ role: "toolResult", toolName: "handoff", isError: true })
     expect(deniedHandoff?.role === "toolResult" ? textContent(deniedHandoff.content) : "").toContain(
       "Tool handoff not found",
+    )
+  })
+
+  test("rejects a child effort outside the host allowlist without consuming a start", async () => {
+    const provider = new InMemoryProvider((call) => {
+      if (toolResultCount(call) === 0)
+        return toolCall(call, "delegate_task", {
+          task: "collect one bounded evidence item",
+          expected_result: "return the evidence",
+          output_artifact: "raw/delegations/rejected-effort.md",
+          reasoning_effort: "high",
+        })
+      return assistant(call, "root handled the explicit denial")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "reasoning-denial-root",
+        objective: "request a disallowed child reasoning effort",
+      }),
+    )
+
+    const result = await run.result
+    expect(result).toMatchObject({ termination: "completed", childRunIDs: [] })
+    const toolResult = provider.calls[1]?.messages.find((message) => message.role === "toolResult")
+    expect(toolResult).toMatchObject({ role: "toolResult", toolName: "delegate_task", isError: true })
+    expect(toolResult?.role === "toolResult" ? textContent(toolResult.content) : "").toContain(
+      "must be equal to one of the allowed values",
     )
   })
 
@@ -2241,11 +2312,7 @@ describe("Pi proactive and automatic fallback admission", () => {
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([
-      MAIN_PROVIDER,
-      FALLBACK_PROVIDER,
-      MAIN_PROVIDER,
-    ])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER, MAIN_PROVIDER])
     expect(events.map(({ state, reason, quotaExempt }) => ({ state, reason, quotaExempt }))).toEqual([
       { state: "requested", reason: "cyberPolicy", quotaExempt: true },
       { state: "approved", reason: undefined, quotaExempt: true },
@@ -2613,11 +2680,7 @@ describe("Pi complete fallback AgentRuns", () => {
       fallbackAdmissions: 0,
       fallbackDescendants: 1,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([
-      MAIN_PROVIDER,
-      FALLBACK_PROVIDER,
-      MAIN_PROVIDER,
-    ])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER, MAIN_PROVIDER])
     expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(1)
     expect(fallbackEvents(events).map(({ state, quotaExempt, reason }) => ({ state, quotaExempt, reason }))).toEqual([
       { state: "requested", quotaExempt: true, reason: "cyberPolicy" },
@@ -2664,9 +2727,7 @@ describe("Pi complete fallback AgentRuns", () => {
 
     const result = await run.result
     const events = await collectEvents(run)
-    const resumedMain = provider.calls.find(
-      (call) => call.provider === MAIN_PROVIDER && toolResultCount(call) > 0,
-    )
+    const resumedMain = provider.calls.find((call) => call.provider === MAIN_PROVIDER && toolResultCount(call) > 0)
     const hostResult = resumedMain?.messages.find(
       (message) => message.role === "toolResult" && message.toolName === "host_fallback_delegation",
     )
@@ -2890,7 +2951,9 @@ describe("Pi AgentRun steering and cancellation", () => {
     expect(closeoutEvents(events)).toHaveLength(0)
     expect(
       activityEvents(events).some(
-        (event) => event.runID !== "child-closeout-root" && event.activity.kind === "status" &&
+        (event) =>
+          event.runID !== "child-closeout-root" &&
+          event.activity.kind === "status" &&
           event.activity.text.startsWith("AgentRun mode: closeout"),
       ),
     ).toBeTrue()
@@ -2899,8 +2962,8 @@ describe("Pi AgentRun steering and cancellation", () => {
       code: "ENOENT",
     })
     const childCloseout = provider.calls.find(
-      (call) => runRole(call) === "subagent" &&
-        userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT")),
+      (call) =>
+        runRole(call) === "subagent" && userTexts(call).some((text) => text.includes("HOST-OWNED AGENTRUN CLOSEOUT")),
     )
     expect(userTexts(childCloseout!).join("\n")).toContain(outputArtifact)
     const childAfterArtifactRead = provider.calls.find(
@@ -2981,9 +3044,7 @@ describe("Pi AgentRun steering and cancellation", () => {
       (event): event is Extract<AgentEvent, { type: "run_finished" }> =>
         event.type === "run_finished" && event.role === "subagent",
     )
-    const rootRecoveryCall = provider.calls.find(
-      (call) => runRole(call) === "root" && toolResultCount(call) === 1,
-    )
+    const rootRecoveryCall = provider.calls.find((call) => runRole(call) === "root" && toolResultCount(call) === 1)
     const recoveredText = rootRecoveryCall?.messages
       .filter((message) => message.role === "toolResult")
       .map((message) => textContent(message.content))

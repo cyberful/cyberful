@@ -343,6 +343,8 @@ function coreProxyEnvironment(runtime: EngagementRuntime) {
     PIP_CERT: bundle,
     NODE_EXTRA_CA_CERTS: bundle,
     NODE_USE_ENV_PROXY: "1",
+    BUNDLE_SSL_CA_CERT: bundle,
+    BUNDLE_SSL_VERIFY_MODE: "1",
   }
 }
 

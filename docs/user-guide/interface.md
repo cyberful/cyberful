@@ -38,6 +38,8 @@ Near the bottom edge, the welcome screen shows a compact dark translucent panel 
 
 After submission, Cyberful moves the prompt into the session view. The session feed shows user messages, assistant output, tool activity, and workflow status. The composer remains available for the next prompt or for steering an active turn, while dialogs and full-screen feature views use higher overlay layers than prompt autocomplete.
 
+A blocking request opens a persistent `WAITING_FOR_HUMAN` panel that does not depend on feed scroll. It aggregates pending requests from the complete root-and-descendant task family, shows their count, takes explicit focus, and emits a notification. The TUI acknowledges a request only after this panel is actually mounted; the 250-millisecond guard against carried input starts then. Session bootstrap and reconnection rebuild the panel from the durable question list, so a missed live event cannot make a subagent request invisible.
+
 When an eligible live target enters `target_cooldown`, one persistent activity card shows the authorized origin, a live countdown, the observed transport failure, the number of consecutive failures, and the agent's bounded evidence summary. The card states that new phase tool executions are paused while agents remain allocated and already-running calls finish naturally. It updates in place rather than adding timeline rows each second, then changes to a resume notice with the one-health-check rule when the cooldown completes.
 
 ## Findings sidebar

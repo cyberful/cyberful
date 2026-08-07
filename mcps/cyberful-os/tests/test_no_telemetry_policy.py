@@ -42,6 +42,8 @@ class NoTelemetryEnvironmentTest(unittest.TestCase):
                         "HTTPS_PROXY": "http://caller.invalid/",
                         "CURL_CA_BUNDLE": "/tmp/caller.pem",
                         "GIT_SSL_NO_VERIFY": "true",
+                        "BUNDLE_SSL_CA_CERT": "/tmp/caller-bundler.pem",
+                        "BUNDLE_SSL_VERIFY_MODE": "0",
                     }
                 )
 
@@ -55,9 +57,12 @@ class NoTelemetryEnvironmentTest(unittest.TestCase):
             "GIT_SSL_CAINFO",
             "PIP_CERT",
             "NODE_EXTRA_CA_CERTS",
+            "BUNDLE_SSL_CA_CERT",
         ):
             self.assertEqual(inherited[name], str(bundle))
         self.assertEqual(inherited["GIT_SSL_NO_VERIFY"], "false")
+        self.assertEqual(inherited["NODE_USE_ENV_PROXY"], "1")
+        self.assertEqual(inherited["BUNDLE_SSL_VERIFY_MODE"], "1")
 
     def test_proxy_and_bundle_are_an_indivisible_host_owned_pair(self) -> None:
         with mock.patch.dict(

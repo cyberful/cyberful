@@ -52,6 +52,7 @@ def report() -> dict[str, object]:
     )
     files = {
         "runtime_supervisor": Path("/opt/cyberful/runtime-supervisor"),
+        "tls_canary": Path("/opt/cyberful/tls-canary"),
         "zap": Path("/zap/zap-x.sh"),
         "zap_distribution": Path("/zap", f"zap-{os.environ.get('CYBERFUL_ZAP_VERSION', '')}.jar"),
         "zap_bridge": Path("/opt/cyberful/zap/zap_bridge.mjs"),
@@ -61,7 +62,21 @@ def report() -> dict[str, object]:
     }
     commands = {
         name: shutil.which(name) or ""
-        for name in ("firefox-esr", "node", "tini", "Xvfb", "xvfb-run", "xauth", "file")
+        for name in (
+            "bundle",
+            "curl",
+            "file",
+            "firefox-esr",
+            "gem",
+            "git",
+            "node",
+            "openssl",
+            "ruby",
+            "tini",
+            "Xvfb",
+            "xvfb-run",
+            "xauth",
+        )
     }
     missing = [name for name, path in files.items() if not path.is_file()]
     missing.extend(name for name, path in commands.items() if not path)
@@ -106,6 +121,9 @@ def report() -> dict[str, object]:
         ),
         "supervisor_syntax": command_succeeds(
             [sys.executable, "-m", "py_compile", "/opt/cyberful/runtime-supervisor"]
+        ),
+        "tls_canary_syntax": command_succeeds(
+            [sys.executable, "-m", "py_compile", "/opt/cyberful/tls-canary"]
         ),
     }
     missing.extend(name.replace("_", "-") for name, passed in checks.items() if not passed)

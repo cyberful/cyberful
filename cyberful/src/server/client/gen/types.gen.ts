@@ -29,6 +29,7 @@ export type Event =
   | EventPtyExited
   | EventPtyDeleted
   | EventQuestionAsked
+  | EventQuestionPresented
   | EventQuestionReplied
   | EventQuestionRejected
   | EventSessionVariableUpdated
@@ -554,11 +555,19 @@ export type QuestionTool = {
 export type QuestionRequest = {
   id: string
   sessionID: string
+  presentation: "pending" | "presented"
+  presentedAt?: number
   /**
    * Questions to ask
    */
   questions: Array<QuestionInfo>
   tool?: QuestionTool
+}
+
+export type QuestionPresented = {
+  sessionID: string
+  requestID: string
+  presentedAt: number
 }
 
 export type QuestionAnswer = Array<string>
@@ -691,6 +700,7 @@ export type GlobalEvent = {
     | EventPtyExited
     | EventPtyDeleted
     | EventQuestionAsked
+    | EventQuestionPresented
     | EventQuestionReplied
     | EventQuestionRejected
     | EventSessionVariableUpdated
@@ -973,6 +983,12 @@ export type PtyForbiddenError = {
 
 export type QuestionNotFoundError = {
   _tag: "QuestionNotFoundError"
+  requestID: string
+  message: string
+}
+
+export type QuestionNotPresentedError = {
+  _tag: "QuestionNotPresentedError"
   requestID: string
   message: string
 }
@@ -1801,6 +1817,12 @@ export type EventQuestionAsked = {
   id: string
   type: "question.asked"
   properties: QuestionRequest
+}
+
+export type EventQuestionPresented = {
+  id: string
+  type: "question.presented"
+  properties: QuestionPresented
 }
 
 export type EventQuestionReplied = {
@@ -3521,6 +3543,39 @@ export type QuestionListResponses = {
 
 export type QuestionListResponse = QuestionListResponses[keyof QuestionListResponses]
 
+export type QuestionPresentedData = {
+  body?: never
+  path: {
+    requestID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/question/{requestID}/presented"
+}
+
+export type QuestionPresentedErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * QuestionNotFoundError
+   */
+  404: QuestionNotFoundError
+}
+
+export type QuestionPresentedError = QuestionPresentedErrors[keyof QuestionPresentedErrors]
+
+export type QuestionPresentedResponses = {
+  /**
+   * Question presentation acknowledged
+   */
+  200: QuestionRequest
+}
+
+export type QuestionPresentedResponse = QuestionPresentedResponses[keyof QuestionPresentedResponses]
+
 export type QuestionReplyData = {
   body?: {
     /**
@@ -3546,6 +3601,10 @@ export type QuestionReplyErrors = {
    * QuestionNotFoundError
    */
   404: QuestionNotFoundError
+  /**
+   * QuestionNotPresentedError
+   */
+  409: QuestionNotPresentedError
 }
 
 export type QuestionReplyError = QuestionReplyErrors[keyof QuestionReplyErrors]
@@ -3579,6 +3638,10 @@ export type QuestionRejectErrors = {
    * QuestionNotFoundError
    */
   404: QuestionNotFoundError
+  /**
+   * QuestionNotPresentedError
+   */
+  409: QuestionNotPresentedError
 }
 
 export type QuestionRejectError = QuestionRejectErrors[keyof QuestionRejectErrors]

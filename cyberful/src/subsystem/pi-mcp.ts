@@ -27,9 +27,12 @@ import type { RecoveredTestObject } from "./agent-subsystem"
 
 const LIST_TIMEOUT_MS = 20_000
 const TOOL_TIMEOUT_MS = 600_000
+const HUMAN_WAIT_HEARTBEAT_MS = 30_000
+const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HANDOFF_TOOL_NAME = "handoff"
 const TARGET_COOLDOWN_TOOL_NAME = "target_cooldown"
 const TEST_OBJECT_TOOL_NAME = "test_object"
+const HUMAN_WAIT_TOOL_NAMES = new Set(["question", "source_import"])
 
 type ToolArguments = Record<string, unknown>
 type ToolParameters = TUnsafe<ToolArguments>
@@ -58,6 +61,7 @@ export interface PiMcpRunToolPolicy {
     readonly runID: string
     readonly displayName: string
     readonly kind: "root" | "subagent" | "fallback"
+    readonly parentID?: string
   }
 }
 
@@ -131,10 +135,7 @@ function diagnosticComponent(message: string): "gateway" | "zap" | "browser" | "
 
 function classifyGatewayStderr(
   message: string,
-): Pick<
-  RuntimeDiagnosticInput,
-  "stage" | "severity" | "errorClass" | "code" | "outcome" | "blocking"
-> {
+): Pick<RuntimeDiagnosticInput, "stage" | "severity" | "errorClass" | "code" | "outcome" | "blocking"> {
   const line = message.trim()
   if (/^(?:\[[^\]\r\n]{1,80}\]\s+)?stdio server started$/iu.test(line))
     return {
@@ -157,7 +158,10 @@ function classifyGatewayStderr(
       severity: "info",
       errorClass: "GatewayLifecycle",
     }
-  const declaredLevel = line.slice(0, 160).match(/\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b/iu)?.[1]?.toUpperCase()
+  const declaredLevel = line
+    .slice(0, 160)
+    .match(/\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b/iu)?.[1]
+    ?.toUpperCase()
   if (declaredLevel === "TRACE" || declaredLevel === "DEBUG" || declaredLevel === "INFO")
     return {
       stage: "startup",
@@ -313,6 +317,22 @@ function installElicitationHandler(client: Client, askQuestion: AskHuman | undef
 
     const signal = AbortSignal.any([context.signal, lifecycleSignal])
     if (signal.aborted) return { action: "cancel" as const }
+    const progressToken = request.params._meta?.progressToken
+    const heartbeat =
+      progressToken === undefined
+        ? undefined
+        : setInterval(() => {
+            void context
+              .sendNotification({
+                method: "notifications/progress",
+                params: {
+                  progressToken,
+                  progress: Date.now(),
+                  message: "Waiting for human input",
+                },
+              })
+              .catch(() => undefined)
+          }, HUMAN_WAIT_HEARTBEAT_MS)
     try {
       const answers = await askQuestion(questions, signal)
       if (signal.aborted) return { action: "cancel" as const }
@@ -331,6 +351,8 @@ function installElicitationHandler(client: Client, askQuestion: AskHuman | undef
         }
       if (signal.aborted) return { action: "cancel" as const }
       throw error instanceof Error ? error : new Error(String(error))
+    } finally {
+      if (heartbeat) clearInterval(heartbeat)
     }
   })
 }
@@ -355,7 +377,7 @@ function piTool(
     label: definition.title ?? definition.annotations?.title ?? definition.name,
     description: definition.description ?? `Call the ${definition.name} Cyberful gateway tool.`,
     parameters: Unsafe<ToolArguments>(definition.inputSchema),
-    execute: async (_toolCallID, params, signal) => {
+    execute: async (toolCallID, params, signal) => {
       if (isClosed()) throw new Error(`MCP bridge ${serverName} is closed`)
       if (!isGloballyAuthorized(definition.name, connectOptions) || !isRunAuthorized(definition.name, runPolicy))
         throw new Error(`MCP tool ${definition.name} is not authorized for this agent run`)
@@ -369,13 +391,55 @@ function piTool(
           : params
       let result: McpCallResult
       try {
-        const call = () =>
-          client.callTool({ name: definition.name, arguments: arguments_ }, undefined, {
-            signal,
-            timeout: TOOL_TIMEOUT_MS,
-            maxTotalTimeout: TOOL_TIMEOUT_MS,
-            resetTimeoutOnProgress: true,
-          })
+        const call = () => {
+          if (HUMAN_WAIT_TOOL_NAMES.has(definition.name))
+            return client.callTool(
+              {
+                name: definition.name,
+                arguments: arguments_,
+                _meta: runPolicy.actor
+                  ? {
+                      "io.cyberful/tool-actor": {
+                        runID: runPolicy.actor.runID,
+                        role: runPolicy.actor.kind,
+                        ...(runPolicy.actor.parentID ? { parentRunID: runPolicy.actor.parentID } : {}),
+                        toolCallID,
+                      },
+                    }
+                  : undefined,
+              },
+              undefined,
+              {
+                signal,
+                timeout: HUMAN_WAIT_REQUEST_TIMEOUT_MS,
+                resetTimeoutOnProgress: true,
+                onprogress: () => undefined,
+              },
+            )
+          return client.callTool(
+            {
+              name: definition.name,
+              arguments: arguments_,
+              _meta: runPolicy.actor
+                ? {
+                    "io.cyberful/tool-actor": {
+                      runID: runPolicy.actor.runID,
+                      role: runPolicy.actor.kind,
+                      ...(runPolicy.actor.parentID ? { parentRunID: runPolicy.actor.parentID } : {}),
+                      toolCallID,
+                    },
+                  }
+                : undefined,
+            },
+            undefined,
+            {
+              signal,
+              timeout: TOOL_TIMEOUT_MS,
+              maxTotalTimeout: TOOL_TIMEOUT_MS,
+              resetTimeoutOnProgress: true,
+            },
+          )
+        }
         result =
           definition.name === TARGET_COOLDOWN_TOOL_NAME && connectOptions.budgetClock
             ? await connectOptions.budgetClock.wait("target_cooldown", call)

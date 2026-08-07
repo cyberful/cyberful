@@ -79,15 +79,10 @@ export interface RunInput {
 const activeWorkers = new Set<PiAgentSubsystem>()
 export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
-function recordAgentDiagnostic(
-  event: AgentEvent,
-  diagnostics: RuntimeDiagnosticRecorder,
-): void {
+function recordAgentDiagnostic(event: AgentEvent, diagnostics: RuntimeDiagnosticRecorder): void {
   if (event.type === "context_rotation") {
     if (event.state === "started" || event.state === "completed") return
-    const blocking =
-      event.state === "failed" &&
-      event.reason === "active_tail_too_large"
+    const blocking = event.state === "failed" && event.reason === "active_tail_too_large"
     diagnostics.record({
       component: "agent",
       profile: event.model,
@@ -95,10 +90,7 @@ function recordAgentDiagnostic(
       severity: blocking ? "error" : event.state === "failed" ? "warning" : "info",
       errorClass: "ContextRotation",
       ...(event.reason ? { code: event.reason } : {}),
-      outcome:
-        event.reason === "active_tail_too_large"
-          ? "capacity_failure"
-          : "context_rotation",
+      outcome: event.reason === "active_tail_too_large" ? "capacity_failure" : "context_rotation",
       blocking,
       message: [
         `Context rotation ${event.state}.`,
@@ -139,10 +131,7 @@ function recordAgentDiagnostic(
     severity: "error",
     errorClass: "AgentRunFailure",
     code,
-    outcome:
-      event.failure?.kind === "capacity"
-        ? "capacity_failure"
-        : "runtime_failure",
+    outcome: event.failure?.kind === "capacity" ? "capacity_failure" : "runtime_failure",
     blocking: event.role === "root",
     message: `AgentRun terminated with ${profile}${
       event.failure?.providerCode ? ` (${event.failure.providerCode})` : ""
@@ -422,6 +411,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
             runID: run.id,
             displayName: run.identity?.displayName ?? run.role,
             kind: run.role,
+            ...(run.parentID ? { parentID: run.parentID } : {}),
           },
         }),
       recoverHypothesisOwnership: (request) =>
@@ -442,7 +432,8 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       delegation: {
         enabled: input.settings.agent.subagents.enabled,
         provider: subagentPolicy.provider,
-        reasoningEffort: subagentPolicy.reasoning_effort,
+        reasoningEfforts: subagentPolicy.reasoning_efforts,
+        defaultReasoningEffort: subagentPolicy.default_reasoning_effort,
         maxPerRun: input.settings.agent.subagents.max_per_run,
         maxConcurrent: input.settings.agent.subagents.max_concurrent,
         maxDepth: input.settings.agent.subagents.max_depth,
@@ -559,9 +550,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     }
     await diagnostics
       .close()
-      .catch((error) =>
-        emitObservabilityFailure(onEvent, rootID, "runtime_diagnostics_close_failed", error),
-      )
+      .catch((error) => emitObservabilityFailure(onEvent, rootID, "runtime_diagnostics_close_failed", error))
     await diagnosticQueue.catch((error) =>
       emitObservabilityFailure(onEvent, rootID, "runtime_diagnostic_projection_failed", error),
     )

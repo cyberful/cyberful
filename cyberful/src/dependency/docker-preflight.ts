@@ -8,12 +8,7 @@
 import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { isRecord } from "@/util/record"
-import {
-  cyberfulOsBuildCommand,
-  cyberfulOsDir,
-  cyberfulOsImage,
-  validateUnifiedRuntimeEnvironment,
-} from "./config"
+import { cyberfulOsBuildCommand, cyberfulOsDir, cyberfulOsImage, validateUnifiedRuntimeEnvironment } from "./config"
 
 const log = Log.create({ service: "docker-preflight" })
 const DOCKER_COMMAND_TIMEOUT_MS = 30_000
@@ -108,6 +103,23 @@ async function reapOrphanedManagedContainers() {
     if (code === 0) removed++
     else log.warn("failed to remove orphaned managed container", { container, code })
   }
+  const networks = (await runText(["docker", "network", "ls", "--quiet", "--filter", "label=org.cyberful.managed"]))
+    .split("\n")
+    .filter(Boolean)
+  for (const network of networks) {
+    const owner = await runText([
+      "docker",
+      "network",
+      "inspect",
+      "--format",
+      '{{ index .Labels "org.cyberful.owner-pid" }}',
+      network,
+    ])
+    if (processIsAlive(owner)) continue
+    const code = await runExitCode(["docker", "network", "rm", network])
+    if (code === 0) removed++
+    else log.warn("failed to remove orphaned managed network", { network, code })
+  }
   return removed
 }
 
@@ -137,8 +149,7 @@ export async function runDockerPreflight(): Promise<void> {
   line(`  ${green("✓")} Docker daemon reachable`)
 
   const reaped = await reapOrphanedManagedContainers()
-  if (reaped > 0)
-    line(`  ${green("✓")} removed ${reaped} orphaned Cyberful container${reaped === 1 ? "" : "s"}`)
+  if (reaped > 0) line(`  ${green("✓")} removed ${reaped} orphaned Cyberful Docker resource${reaped === 1 ? "" : "s"}`)
 
   const image = cyberfulOsImage()
   const verify = ["docker", "run", "--rm", "--entrypoint", "/opt/cyberful/runtime-attestation", image]
@@ -185,7 +196,7 @@ export async function runDockerPreflight(): Promise<void> {
     "image",
     "inspect",
     "--format",
-    "{{.Os}}/{{.Architecture}} {{join .RepoDigests \",\"}}",
+    '{{.Os}}/{{.Architecture}} {{join .RepoDigests ","}}',
     image,
   ])
   line(`  ${green("✓")} unified runtime ready ${dim(`(${image}${identity ? `; ${identity}` : ""})`)}`)

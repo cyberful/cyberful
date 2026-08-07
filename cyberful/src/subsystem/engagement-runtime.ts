@@ -33,11 +33,7 @@ import { dockerOwnershipLabels } from "@/util/container-ownership"
 import { isRecord } from "@/util/record"
 import { appendWorkareaFile, ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import { SubsystemContainer } from "./container"
-import {
-  applyEngagementRateLimit,
-  readEngagementPolicy,
-  type EngagementPolicy,
-} from "./gateway/engagement-policy"
+import { applyEngagementRateLimit, readEngagementPolicy, type EngagementPolicy } from "./gateway/engagement-policy"
 import {
   attestProxyCertificate,
   CORE_PROXY_CA_BUNDLE,
@@ -61,6 +57,8 @@ const ZAP_RUNTIME_RELATIVE_PATH = "raw/zap/runtime"
 const ZAP_TRUST_RELATIVE_PATH = "raw/zap/trust"
 const ZAP_TRUST_ATTESTATION_FILE = "attestation.json"
 const MAX_SYSTEM_CA_BUNDLE_BYTES = 2 * 1024 * 1024
+const TLS_CANARY_PORT = 8443
+const TLS_CANARY_TIMEOUT_MS = 20_000
 
 export interface EngagementRuntime {
   readonly container: string
@@ -87,10 +85,7 @@ export class RequiredUpstreamUnavailableError extends Error {
   }
 }
 
-export function requiresZapUpstream(
-  workflow: string,
-  policy?: Pick<EngagementPolicy, "global_http_rps">,
-) {
+export function requiresZapUpstream(workflow: string, policy?: Pick<EngagementPolicy, "global_http_rps">) {
   return (
     workflow === "pentest" ||
     workflow === "bug-bounty" ||
@@ -98,7 +93,7 @@ export function requiresZapUpstream(
   )
 }
 
-type ZapAttestationStage = "api" | "ca" | "mcp" | "rate_limit" | "supervisor"
+type ZapAttestationStage = "api" | "ca" | "mcp" | "rate_limit" | "supervisor" | "tls_canary"
 
 class ZapAttestationStageError extends Error {
   readonly stage: ZapAttestationStage
@@ -161,6 +156,382 @@ async function docker(command: string[], options: DockerOptions = {}) {
   const stderr = result.stderr.toString("utf8").trim()
   if (result.code !== 0) throw new Error(`${command.slice(0, 3).join(" ")} exited ${result.code}: ${stderr}`)
   return result.stdout.toString("utf8").trim()
+}
+
+async function dockerResult(command: string[], options: DockerOptions = {}) {
+  const deadline = AbortSignal.timeout(options.timeoutMs ?? DOCKER_COMMAND_TIMEOUT_MS)
+  const abort = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline
+  return Process.run(command, {
+    env: dockerEnv(options.env ?? {}),
+    abort,
+    timeout: DOCKER_KILL_GRACE_MS,
+    nothrow: true,
+    maxOutputBytes: DOCKER_OUTPUT_LIMIT_BYTES,
+  })
+}
+
+async function removeDockerNetwork(name: string, signal?: AbortSignal) {
+  const result = await dockerResult(["docker", "network", "rm", name], { signal })
+  if (result.code !== 0 && !result.stderr.toString("utf8").includes("No such network"))
+    throw new Error(`docker network rm exited ${result.code}`)
+}
+
+interface TlsClientDiagnostic {
+  readonly client: string
+  readonly present: boolean
+  readonly bundle_sha256: string
+  readonly ca_spki_sha256: string
+  readonly outcome: "ok" | "failed" | "skipped"
+  readonly exit_class: "ok" | "client_absent" | "client_nonzero" | "tls_trust_failure" | "proxy_observation_missing"
+  readonly error_code?: string
+  readonly cause?: string
+}
+
+function tlsFailureClass(stderr: string): Pick<TlsClientDiagnostic, "exit_class" | "cause"> {
+  if (/certificate|self[- ]signed|issuer|verify failed|unable to get local/i.test(stderr))
+    return { exit_class: "tls_trust_failure", cause: "the client rejected the attested proxy certificate chain" }
+  return { exit_class: "client_nonzero", cause: "the client exited nonzero during the private HTTPS canary" }
+}
+
+async function zapCanaryMessageCount(input: {
+  readonly apiKey: string
+  readonly canaryOrigin: string
+  readonly proxyUrl: string
+  readonly signal?: AbortSignal
+}) {
+  const endpoint = new URL("/JSON/core/view/messages/", input.proxyUrl)
+  endpoint.searchParams.set("apikey", input.apiKey)
+  endpoint.searchParams.set("baseurl", input.canaryOrigin)
+  endpoint.searchParams.set("start", "0")
+  endpoint.searchParams.set("count", "9999")
+  const response = await fetch(endpoint, {
+    headers: { Host: "zap" },
+    signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000),
+  })
+  if (!response.ok) throw new Error(`ZAP canary history returned HTTP ${response.status}`)
+  const body: unknown = await response.json()
+  return isRecord(body) && Array.isArray(body.messages) ? body.messages.length : 0
+}
+
+async function deleteZapCanaryHistory(input: {
+  readonly apiKey: string
+  readonly canaryOrigin: string
+  readonly proxyUrl: string
+  readonly signal?: AbortSignal
+}) {
+  const endpoint = new URL("/JSON/core/action/deleteSiteNode/", input.proxyUrl)
+  endpoint.searchParams.set("apikey", input.apiKey)
+  endpoint.searchParams.set("url", input.canaryOrigin)
+  const response = await fetch(endpoint, {
+    headers: { Host: "zap" },
+    signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000),
+  })
+  if (!response.ok) throw new Error(`ZAP canary cleanup returned HTTP ${response.status}`)
+}
+
+async function waitForTlsCanary(container: string, signal?: AbortSignal) {
+  const deadline = Date.now() + TLS_CANARY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const result = await dockerResult(["docker", "exec", container, "test", "-f", "/tmp/cyberful-tls-canary.ready"], {
+      signal,
+      timeoutMs: 3_000,
+    })
+    if (result.code === 0) return
+    await sleep(100, signal)
+  }
+  throw new Error("private TLS canary did not become ready")
+}
+
+async function verifyTlsClientCanary(input: {
+  readonly apiKey: string
+  readonly bundleSha256: string
+  readonly canaryContainer: string
+  readonly caSpki: string
+  readonly container: string
+  readonly network: string
+  readonly ownershipLabels: readonly string[]
+  readonly proxyUrl: string
+  readonly signal?: AbortSignal
+  readonly workarea: string
+  readonly phase?: string
+  readonly attempt?: number
+}) {
+  const canaryOrigin = `https://${input.canaryContainer}:${TLS_CANARY_PORT}`
+  const canaryScratch = `/tmp/cyberful-tls-canary-${randomBytes(8).toString("hex")}`
+  const proxy = new URL(input.proxyUrl)
+  proxy.hostname = "host.docker.internal"
+  const environment = {
+    HTTP_PROXY: proxy.toString(),
+    HTTPS_PROXY: proxy.toString(),
+    http_proxy: proxy.toString(),
+    https_proxy: proxy.toString(),
+    NO_PROXY: "127.0.0.1,localhost",
+    no_proxy: "127.0.0.1,localhost",
+    SSL_CERT_FILE: CORE_PROXY_CA_BUNDLE,
+    CURL_CA_BUNDLE: CORE_PROXY_CA_BUNDLE,
+    REQUESTS_CA_BUNDLE: CORE_PROXY_CA_BUNDLE,
+    GIT_SSL_CAINFO: CORE_PROXY_CA_BUNDLE,
+    GIT_SSL_NO_VERIFY: "false",
+    PIP_CERT: CORE_PROXY_CA_BUNDLE,
+    NODE_EXTRA_CA_CERTS: CORE_PROXY_CA_BUNDLE,
+    NODE_USE_ENV_PROXY: "1",
+    BUNDLE_SSL_CA_CERT: CORE_PROXY_CA_BUNDLE,
+    BUNDLE_SSL_VERIFY_MODE: "1",
+    BUNDLE_GEMFILE: `${canaryScratch}/Gemfile`,
+    BUNDLE_USER_CACHE: `${canaryScratch}/bundler-cache`,
+    BUNDLE_USER_CONFIG: `${canaryScratch}/bundler-config`,
+    BUNDLE_USER_PLUGIN: `${canaryScratch}/bundler-plugin`,
+  }
+  const nodeScript = [
+    'const http=require("http"),tls=require("tls"),fs=require("fs"),u=new URL(process.argv[1]),p=new URL(process.env.HTTPS_PROXY);',
+    'const req=http.request({host:p.hostname,port:p.port,method:"CONNECT",path:u.host});',
+    'req.on("connect",(_r,s)=>{const t=tls.connect({socket:s,servername:u.hostname,ca:fs.readFileSync(process.env.NODE_EXTRA_CA_CERTS)},()=>{t.write(`GET ${u.pathname} HTTP/1.1\\r\\nHost: ${u.host}\\r\\nConnection: close\\r\\n\\r\\n`)});t.on("data",()=>{});t.on("end",()=>process.exit(0));t.on("error",e=>{console.error(e.code||e.message);process.exit(1)})});',
+    'req.on("error",e=>{console.error(e.code||e.message);process.exit(1)});req.end();',
+  ].join("")
+  const gemfileScript =
+    'File.write(ARGV.fetch(0), "source " + ARGV.fetch(1).inspect + "\\ngem \\\"cyberful-canary\\\", \\\"= 0.0.0\\\"\\n")'
+  const clients: ReadonlyArray<{
+    readonly name: string
+    readonly executable: string
+    readonly observeProxy?: boolean
+    readonly commands: readonly (readonly string[])[]
+  }> = [
+    {
+      name: "curl",
+      executable: "/usr/bin/curl",
+      observeProxy: true,
+      commands: [
+        ["curl", "--fail", "--silent", "--show-error", "--max-time", "10", `${canaryOrigin}/health?client=curl`],
+      ],
+    },
+    {
+      name: "openssl",
+      executable: "/usr/bin/openssl",
+      commands: [
+        [
+          "openssl",
+          "s_client",
+          "-brief",
+          "-verify_return_error",
+          "-CAfile",
+          CORE_PROXY_CA_BUNDLE,
+          "-proxy",
+          `${proxy.hostname}:${proxy.port}`,
+          "-connect",
+          `${input.canaryContainer}:${TLS_CANARY_PORT}`,
+          "-servername",
+          input.canaryContainer,
+        ],
+      ],
+    },
+    {
+      name: "git",
+      executable: "/usr/bin/git",
+      observeProxy: true,
+      commands: [["git", "-c", "http.sslVerify=true", "ls-remote", `${canaryOrigin}/git/canary.git`]],
+    },
+    {
+      name: "python-requests",
+      executable: "/opt/cyberful-os-venv/bin/python",
+      observeProxy: true,
+      commands: [
+        [
+          "/opt/cyberful-os-venv/bin/python",
+          "-c",
+          "import requests,sys; response=requests.get(sys.argv[1], timeout=10); response.raise_for_status()",
+          `${canaryOrigin}/health?client=requests`,
+        ],
+      ],
+    },
+    {
+      name: "pip",
+      executable: "/opt/cyberful-os-venv/bin/pip",
+      observeProxy: true,
+      commands: [
+        [
+          "/opt/cyberful-os-venv/bin/pip",
+          "download",
+          "--no-deps",
+          "--disable-pip-version-check",
+          "--dest",
+          `${canaryScratch}/pip`,
+          "--index-url",
+          `${canaryOrigin}/simple`,
+          "cyberful-canary==0.0.0",
+        ],
+      ],
+    },
+    {
+      name: "node",
+      executable: "/usr/bin/node",
+      observeProxy: true,
+      commands: [["node", "-e", nodeScript, `${canaryOrigin}/health?client=node`]],
+    },
+    {
+      name: "ruby",
+      executable: "/usr/bin/ruby",
+      observeProxy: true,
+      commands: [["ruby", "-ropen-uri", "-e", "URI.open(ARGV.fetch(0)).read", `${canaryOrigin}/health?client=ruby`]],
+    },
+    {
+      name: "bundler",
+      executable: "/usr/bin/bundle",
+      observeProxy: true,
+      commands: [
+        ["ruby", "-e", gemfileScript, environment.BUNDLE_GEMFILE, `${canaryOrigin}/gems`],
+        ["bundle", "lock", "--update"],
+      ],
+    },
+  ]
+  const diagnostics: TlsClientDiagnostic[] = []
+  let operationFailure: unknown
+  const cleanupFailures: unknown[] = []
+  SubsystemContainer.remember(input.canaryContainer)
+  await SubsystemContainer.reap(input.canaryContainer)
+  try {
+    await docker(
+      [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--pull=never",
+        "--name",
+        input.canaryContainer,
+        "--hostname",
+        input.canaryContainer,
+        "--network",
+        input.network,
+        ...input.ownershipLabels.flatMap((label) => ["--label", label]),
+        "--entrypoint",
+        "/usr/bin/tini",
+        cyberfulOsImage(),
+        "--",
+        "/opt/cyberful-os-venv/bin/python",
+        "/opt/cyberful/tls-canary",
+        "--hostname",
+        input.canaryContainer,
+        "--port",
+        String(TLS_CANARY_PORT),
+      ],
+      { signal: input.signal },
+    )
+    await waitForTlsCanary(input.canaryContainer, input.signal)
+    await docker(["docker", "exec", input.container, "mkdir", "-p", canaryScratch], { signal: input.signal })
+    for (const client of clients) {
+      const present = await dockerResult(["docker", "exec", input.container, "test", "-x", client.executable], {
+        signal: input.signal,
+        timeoutMs: 3_000,
+      }).then((result) => result.code === 0)
+      if (!present) {
+        diagnostics.push({
+          client: client.name,
+          present: false,
+          bundle_sha256: input.bundleSha256,
+          ca_spki_sha256: input.caSpki,
+          outcome: "skipped",
+          exit_class: "client_absent",
+        })
+        continue
+      }
+      const before = client.observeProxy
+        ? await zapCanaryMessageCount({
+            apiKey: input.apiKey,
+            canaryOrigin,
+            proxyUrl: input.proxyUrl,
+            ...(input.signal ? { signal: input.signal } : {}),
+          })
+        : 0
+      let failed: { readonly code: number; readonly stderr: string } | undefined
+      for (const command of client.commands) {
+        const result = await dockerResult(
+          [
+            "docker",
+            "exec",
+            ...Object.entries(environment).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
+            input.container,
+            ...command,
+          ],
+          { signal: input.signal, timeoutMs: TLS_CANARY_TIMEOUT_MS },
+        )
+        if (result.code !== 0) {
+          failed = { code: result.code, stderr: result.stderr.toString("utf8") }
+          break
+        }
+      }
+      if (failed) {
+        diagnostics.push({
+          client: client.name,
+          present: true,
+          bundle_sha256: input.bundleSha256,
+          ca_spki_sha256: input.caSpki,
+          outcome: "failed",
+          ...tlsFailureClass(failed.stderr),
+          error_code: `exit_${failed.code}`,
+        })
+        continue
+      }
+      const observed =
+        !client.observeProxy ||
+        (await zapCanaryMessageCount({
+          apiKey: input.apiKey,
+          canaryOrigin,
+          proxyUrl: input.proxyUrl,
+          ...(input.signal ? { signal: input.signal } : {}),
+        })) > before
+      diagnostics.push({
+        client: client.name,
+        present: true,
+        bundle_sha256: input.bundleSha256,
+        ca_spki_sha256: input.caSpki,
+        outcome: observed ? "ok" : "failed",
+        exit_class: observed ? "ok" : "proxy_observation_missing",
+        ...(!observed
+          ? { error_code: "ZAP_HISTORY_MISS", cause: "the client succeeded without a new ZAP canary observation" }
+          : {}),
+      })
+    }
+  } catch (error) {
+    operationFailure = error
+  } finally {
+    await deleteZapCanaryHistory({
+      apiKey: input.apiKey,
+      canaryOrigin,
+      proxyUrl: input.proxyUrl,
+      ...(input.signal ? { signal: input.signal } : {}),
+    }).catch((error) => {
+      cleanupFailures.push(error)
+    })
+    const scratchCleanup = await dockerResult(["docker", "exec", input.container, "rm", "-rf", canaryScratch], {
+      signal: input.signal,
+      timeoutMs: 5_000,
+    })
+    if (scratchCleanup.code !== 0) cleanupFailures.push(new Error("private TLS canary scratch cleanup failed"))
+    await SubsystemContainer.remove(input.canaryContainer).catch((error) => cleanupFailures.push(error))
+  }
+  await appendZapLifecycle(input.workarea, {
+    event: "tls_client_canary",
+    ...(input.phase ? { phase: input.phase } : {}),
+    ...(input.attempt === undefined ? {} : { attempt: input.attempt }),
+    network: "private_engagement_network",
+    external_target_traffic: false,
+    outcome: operationFailure ? "failed" : "completed",
+    ...(operationFailure
+      ? {
+          exit_class: "canary_unavailable",
+          cause: "the private TLS canary infrastructure did not complete",
+        }
+      : {}),
+    clients: diagnostics,
+  })
+  const failed = diagnostics.filter((diagnostic) => diagnostic.outcome === "failed")
+  if (operationFailure && cleanupFailures.length > 0)
+    throw new AggregateError([operationFailure, ...cleanupFailures], "TLS client canary and cleanup failed")
+  if (operationFailure) throw new Error("TLS client canary infrastructure failed", { cause: operationFailure })
+  if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, "TLS client canary cleanup failed")
+  if (failed.length > 0)
+    throw new Error(`TLS client canary failed for ${failed.map((diagnostic) => diagnostic.client).join(", ")}`)
+  return diagnostics
 }
 
 export function zapCoreIsolationMounts(trustPath: string) {
@@ -229,9 +600,7 @@ export async function readPersistedProxyTrust(trustPath: string): Promise<ProxyT
     if (isRecord(error) && error.code === "ENOENT") return undefined
     throw error
   }
-  const certificate = attestProxyCertificate(
-    await regularTrustFile(path.join(trustPath, "root-ca-public.pem")),
-  )
+  const certificate = attestProxyCertificate(await regularTrustFile(path.join(trustPath, "root-ca-public.pem")))
   if (certificate.fingerprint256 !== persisted.fingerprint256 || certificate.spki !== persisted.spki)
     throw new Error("persisted proxy trust identity does not match its public certificate")
   return { ...certificate, bundleSha256: persisted.bundleSha256 }
@@ -342,17 +711,18 @@ async function installCoreProxyTrust(input: {
 
   const systemBundle = await copyCoreSystemCaBundle(input.container, input.signal)
   const separator = systemBundle.at(-1) === 0x0a ? "" : "\n"
-  const combined = Buffer.concat([
-    systemBundle,
-    Buffer.from(separator),
-    Buffer.from(input.certificate.certificatePem),
-  ])
+  const combined = Buffer.concat([systemBundle, Buffer.from(separator), Buffer.from(input.certificate.certificatePem)])
   if (combined.includes(Buffer.from("PRIVATE KEY")))
     throw new Error("combined proxy CA bundle unexpectedly contains private key material")
   const bundleSha256 = sha256(combined)
-  await replaceWorkareaFile(input.workarea, `${input.trustRelativePath}/root-ca-public.pem`, input.certificate.certificatePem, {
-    mode: 0o600,
-  })
+  await replaceWorkareaFile(
+    input.workarea,
+    `${input.trustRelativePath}/root-ca-public.pem`,
+    input.certificate.certificatePem,
+    {
+      mode: 0o600,
+    },
+  )
   await replaceWorkareaFile(input.workarea, `${input.trustRelativePath}/ca-bundle.pem`, combined, { mode: 0o600 })
   await verifyCoreProxyTrust({
     bundleSha256,
@@ -407,8 +777,7 @@ interface ZapSupervisorState {
 }
 
 function parseZapSupervisorState(value: unknown): ZapSupervisorState {
-  if (!isRecord(value) || typeof value.status !== "string")
-    throw new Error("ZAP supervisor state is malformed")
+  if (!isRecord(value) || typeof value.status !== "string") throw new Error("ZAP supervisor state is malformed")
   const integer = (candidate: unknown, fallback = 0) =>
     typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : fallback
   const events: Record<string, number> = {}
@@ -430,10 +799,7 @@ async function readZapSupervisorState(container: string, signal?: AbortSignal) {
   return parseZapSupervisorState(JSON.parse(source))
 }
 
-async function appendZapLifecycle(
-  workarea: string,
-  row: Record<string, unknown>,
-) {
+async function appendZapLifecycle(workarea: string, row: Record<string, unknown>) {
   await appendWorkareaFile(
     workarea,
     ZAP_LIFECYCLE_PATH,
@@ -578,11 +944,10 @@ async function probeBridge(input: BridgeProbeInput) {
     for (const required of input.requiredTools)
       if (!names.has(required)) throw new Error(`${input.name} MCP is missing required tool ${required}`)
     if (input.name === "zap") {
-      const version = await client.callTool(
-        { name: "zap_version", arguments: {} },
-        CallToolResultSchema,
-        { timeout: requestTimeoutMs, maxTotalTimeout: requestTimeoutMs },
-      )
+      const version = await client.callTool({ name: "zap_version", arguments: {} }, CallToolResultSchema, {
+        timeout: requestTimeoutMs,
+        maxTotalTimeout: requestTimeoutMs,
+      })
       if (version.isError) throw new Error("ZAP MCP zap_version health check failed")
     }
   } catch (error) {
@@ -647,16 +1012,10 @@ async function waitForZapBridge(input: {
 }
 
 async function verifyCore(container: string, signal?: AbortSignal) {
-  await docker(
-    [
-      "docker",
-      "exec",
-      container,
-      "/opt/cyberful-os-venv/bin/python",
-      "/opt/cyberful/runtime-attestation",
-    ],
-    { signal, timeoutMs: 120_000 },
-  )
+  await docker(["docker", "exec", container, "/opt/cyberful-os-venv/bin/python", "/opt/cyberful/runtime-attestation"], {
+    signal,
+    timeoutMs: 120_000,
+  })
 }
 
 // ── Network Authority Is Fixed At Container Creation ────────────
@@ -712,17 +1071,14 @@ export async function startEngagement(input: {
     runtime: "cyberful-zap",
     session: input.sessionID,
   })
+  const network = `${input.container.slice(0, 40)}-${zapStateScope(input.sessionID).slice(0, 12)}-net`
+  const tlsCanaryContainer = `${input.container.slice(0, 40)}-${zapStateScope(input.sessionID).slice(0, 12)}-tls`
   const zapScope = zapStateScope(input.sessionID)
   const zapRuntimeRelativePath = `${ZAP_RUNTIME_RELATIVE_PATH}/${zapScope}`
   const zapTrustRelativePath = `${ZAP_TRUST_RELATIVE_PATH}/${zapScope}`
-  const zapRuntimePath = zapEnabled
-    ? await ensureWorkareaDirectory(input.workarea, zapRuntimeRelativePath)
-    : undefined
-  const zapTrustPath = zapEnabled
-    ? await ensureWorkareaDirectory(input.workarea, zapTrustRelativePath)
-    : undefined
-  if (zapRuntimePath && zapTrustPath)
-    await Promise.all([chmod(zapRuntimePath, 0o700), chmod(zapTrustPath, 0o700)])
+  const zapRuntimePath = zapEnabled ? await ensureWorkareaDirectory(input.workarea, zapRuntimeRelativePath) : undefined
+  const zapTrustPath = zapEnabled ? await ensureWorkareaDirectory(input.workarea, zapTrustRelativePath) : undefined
+  if (zapRuntimePath && zapTrustPath) await Promise.all([chmod(zapRuntimePath, 0o700), chmod(zapTrustPath, 0o700)])
   let persistedProxyTrust: ProxyTrustAttestation | undefined
   if (zapTrustPath)
     try {
@@ -737,6 +1093,19 @@ export async function startEngagement(input: {
     SubsystemContainer.remember(container)
     await SubsystemContainer.reap(container)
   }
+  await removeDockerNetwork(network, input.signal).catch(() => undefined)
+  await docker(
+    [
+      "docker",
+      "network",
+      "create",
+      "--driver",
+      "bridge",
+      ...coreOwnershipLabels.flatMap((label) => ["--label", label]),
+      network,
+    ],
+    { signal: input.signal },
+  )
   const warnings: string[] = []
   const memoryWarning = await dockerMemoryWarning(input.signal)
   if (memoryWarning) warnings.push(memoryWarning)
@@ -752,6 +1121,8 @@ export async function startEngagement(input: {
         input.container,
         "--hostname",
         input.container,
+        "--network",
+        network,
         "--workdir",
         "/workspace",
         ...coreOwnershipLabels.flatMap((label) => ["--label", label]),
@@ -781,6 +1152,7 @@ export async function startEngagement(input: {
     await Promise.all(containers.map((container) => SubsystemContainer.remove(container))).catch((cleanupError) => {
       throw new AggregateError([error, cleanupError], "unified engagement runtime startup and cleanup failed")
     })
+    await removeDockerNetwork(network, input.signal).catch(() => undefined)
     throw error
   }
 
@@ -818,6 +1190,8 @@ export async function startEngagement(input: {
         zapContainer,
         "--hostname",
         zapContainer,
+        "--network",
+        network,
         "--workdir",
         "/zap/wrk",
         ...zapOwnershipLabels.flatMap((label) => ["--label", label]),
@@ -840,18 +1214,22 @@ export async function startEngagement(input: {
       { env: zapEnv, signal },
     )
     await waitForContainer(zapContainer, signal)
-    const nextPort = parsePublishedPort(
-      await docker(["docker", "port", zapContainer, "8080/tcp"], { signal }),
-    )
+    const nextPort = parsePublishedPort(await docker(["docker", "port", zapContainer, "8080/tcp"], { signal }))
     publishedPort ??= nextPort
     if (nextPort !== publishedPort) throw new Error("ZAP did not retain its host proxy port")
     proxyUrl = `http://127.0.0.1:${publishedPort}`
   }
 
-  const attestZap = async (options: { readonly allowCaRotation?: boolean; readonly signal?: AbortSignal } = {}) => {
+  const attestZap = async (
+    options: {
+      readonly allowCaRotation?: boolean
+      readonly signal?: AbortSignal
+      readonly phase?: string
+      readonly attempt?: number
+    } = {},
+  ) => {
     const signal = options.signal
-    if (!apiKey || !zapMcpKey || !proxyUrl || !zapTrustPath)
-      throw new Error("ZAP runtime has no active trust endpoint")
+    if (!apiKey || !zapMcpKey || !proxyUrl || !zapTrustPath) throw new Error("ZAP runtime has no active trust endpoint")
     const activeProxyUrl = proxyUrl
     const startupTimeoutSeconds = cyberZapStartupTimeoutSeconds()
     const deadline = Date.now() + startupTimeoutSeconds * 1000
@@ -919,6 +1297,22 @@ export async function startEngagement(input: {
         ...(signal ? { signal } : {}),
       })
     })
+    await attest("tls_canary", () =>
+      verifyTlsClientCanary({
+        apiKey,
+        bundleSha256: trust.bundleSha256,
+        canaryContainer: tlsCanaryContainer,
+        caSpki: trust.spki,
+        container: input.container,
+        network,
+        ownershipLabels: coreOwnershipLabels,
+        proxyUrl: activeProxyUrl,
+        workarea: input.workarea,
+        ...(options.phase ? { phase: options.phase } : {}),
+        ...(options.attempt === undefined ? {} : { attempt: options.attempt }),
+        ...(signal ? { signal } : {}),
+      }),
+    )
     const readyEnv = { ...zapReadyEnv, CYBERFUL_OS_CA_BUNDLE: CORE_PROXY_CA_BUNDLE }
     sessionGeneration = state.sessionGeneration
     Object.assign(env, readyEnv, {
@@ -987,14 +1381,12 @@ export async function startEngagement(input: {
   const preparePhase: EngagementRuntime["preparePhase"] = async ({ phase, attempt, signal }) => {
     if (!zapEnabled) {
       if (zapRequired)
-        throw new RequiredUpstreamUnavailableError(
-          "required OWASP ZAP upstream is disabled for a live-target workflow",
-        )
+        throw new RequiredUpstreamUnavailableError("required OWASP ZAP upstream is disabled for a live-target workflow")
       return { warnings: [], env: {} }
     }
     const phaseWarnings: string[] = []
     try {
-      const attestation = await attestZap({ signal })
+      const attestation = await attestZap({ phase, attempt, signal })
       expectedTrust = attestation.trust
       await appendZapLifecycle(input.workarea, {
         event: "phase_preflight_ready",
@@ -1065,7 +1457,7 @@ export async function startEngagement(input: {
         await runZapContainer(sessionGeneration, signal)
       }
       const previousTrust = expectedTrust
-      const attestation = await attestZap({ allowCaRotation: mode === "reset", signal })
+      const attestation = await attestZap({ allowCaRotation: mode === "reset", phase, attempt, signal })
       const spkiChanged = previousTrust !== undefined && previousTrust.spki !== attestation.trust.spki
       const certificateChanged =
         previousTrust !== undefined && previousTrust.fingerprint256 !== attestation.trust.fingerprint256
@@ -1116,7 +1508,8 @@ export async function startEngagement(input: {
       try {
         await recover("reset")
         zapOperational = true
-        const warning = "OWASP ZAP recovery required a new visible session generation; prior proxy history may be incomplete."
+        const warning =
+          "OWASP ZAP recovery required a new visible session generation; prior proxy history may be incomplete."
         phaseWarnings.push(warning)
         warnings.push(warning)
       } catch (resetError) {
@@ -1172,7 +1565,10 @@ export async function startEngagement(input: {
         signal: AbortSignal.timeout(2_000),
       }).catch((error) => log.warn("ZAP graceful shutdown failed; removing engagement runtimes", { error }))
     const removals = await Promise.allSettled(containers.map((container) => SubsystemContainer.remove(container)))
-    const failures = removals.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+    const networkRemoval = await Promise.allSettled([removeDockerNetwork(network)])
+    const failures = [...removals, ...networkRemoval].flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    )
     if (failures.length > 0) throw new AggregateError(failures, "one or more engagement runtimes failed to stop")
   }
   log.info("engagement runtimes ready", {

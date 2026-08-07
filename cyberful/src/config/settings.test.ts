@@ -70,7 +70,8 @@ describe("Settings", () => {
     expect(Settings.retryPolicy(settings)).toEqual(Settings.DEFAULT_RETRY)
     expect(Settings.subagentPolicy(settings)).toEqual({
       provider: "openai-codex",
-      reasoning_effort: "high",
+      reasoning_efforts: ["xhigh", "medium"],
+      default_reasoning_effort: "medium",
       source: "configured",
     })
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
@@ -108,7 +109,9 @@ describe("Settings", () => {
     expect(first.agent.retry).toBeUndefined()
     expect(Settings.retryPolicy(first)).toEqual(Settings.DEFAULT_RETRY)
     expect(await readFile(filePath, "utf8")).toBe(
-      text.replace("  subsystem: pi\n", "  subsystem: pi\n  reasoning_effort: ultra\n"),
+      text
+        .replace("  subsystem: pi\n", "  subsystem: pi\n  reasoning_effort: ultra\n")
+        .replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [xhigh, medium]\n"),
     )
   })
 
@@ -122,7 +125,9 @@ describe("Settings", () => {
     await writeFile(filePath, configured)
 
     expect(Settings.reasoningEffort(await Settings.load(directory))).toBe("xhigh")
-    expect(await readFile(filePath, "utf8")).toBe(configured)
+    expect(await readFile(filePath, "utf8")).toBe(
+      configured.replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [xhigh, medium]\n"),
+    )
     expect(() =>
       Settings.parse(configured.replace("reasoning_effort: xhigh", "reasoning_effort: extreme")),
     ).toThrow(/agent\.reasoning_effort/)
@@ -196,19 +201,21 @@ describe("Settings", () => {
     const dedicated = Settings.parse(
       validSettings().replace(
         "    enabled: true\n",
-        "    enabled: true\n    provider: main\n    reasoning_effort: medium\n",
+        "    enabled: true\n    provider: main\n    reasoning_effort: [xhigh, medium]\n",
       ),
     )
     expect(Settings.subagentPolicy(dedicated)).toEqual({
       provider: "main",
-      reasoning_effort: "medium",
+      reasoning_efforts: ["xhigh", "medium"],
+      default_reasoning_effort: "medium",
       source: "configured",
     })
 
     const legacy = Settings.parse(validSettings())
     expect(Settings.subagentPolicy(legacy)).toMatchObject({
       provider: "main",
-      reasoning_effort: "high",
+      reasoning_efforts: ["xhigh", "medium"],
+      default_reasoning_effort: "medium",
       source: "main-provider-fallback",
       warning: expect.stringContaining("inherit"),
     })
@@ -221,6 +228,42 @@ describe("Settings", () => {
         ),
       ),
     ).toThrow(/subagents\.provider references unconfigured provider/)
+  })
+
+  test("migrates scalar child reasoning and rejects ambiguous allowlists", async () => {
+    const directory = await temporaryDirectory()
+    const filePath = path.join(directory, "settings.yaml")
+    const scalar = validSettings().replace(
+      "    enabled: true\n",
+      "    enabled: true\n    reasoning_effort: xhigh # legacy\n",
+    )
+    await writeFile(filePath, scalar)
+
+    const settings = await Settings.load(directory)
+    expect(Settings.subagentPolicy(settings)).toMatchObject({
+      reasoning_efforts: ["xhigh", "medium"],
+      default_reasoning_effort: "medium",
+    })
+    expect(await readFile(filePath, "utf8")).toContain(
+      "    reasoning_effort: [xhigh, medium] # legacy",
+    )
+
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "    enabled: true\n",
+          "    enabled: true\n    reasoning_effort: [xhigh]\n",
+        ),
+      ),
+    ).toThrow("must include medium")
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "    enabled: true\n",
+          "    enabled: true\n    reasoning_effort: [medium, medium]\n",
+        ),
+      ),
+    ).toThrow("must not contain duplicates")
   })
 
   test("accepts a conservative context compaction threshold and rejects unsafe percentages", () => {

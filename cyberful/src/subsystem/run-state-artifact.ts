@@ -16,11 +16,13 @@ const RUN_STATE_PATH = "raw/operations/run-state.json"
 interface ActorState {
   readonly id: string
   readonly parent_id?: string
+  readonly recovery_of?: string
   readonly role?: string
   readonly provider?: string
   readonly model?: string
   readonly reasoning_effort?: string
   readonly effective_reasoning_effort?: string
+  readonly reasoning_selection?: "parent" | "default"
   readonly context?: Extract<AgentEvent, { type: "run_started" }>["context"]
   readonly status: "running" | "completed" | "failed"
   readonly last_activity_at: string
@@ -97,11 +99,13 @@ export class RunStateArtifact {
       this.#actors.set(event.runID, {
         id: event.runID,
         ...(event.parentID ? { parent_id: event.parentID } : {}),
+        ...(event.recoveryOf ? { recovery_of: event.recoveryOf } : {}),
         role: event.role,
         provider: event.provider,
         model: event.model,
         reasoning_effort: event.reasoningEffort,
         effective_reasoning_effort: event.effectiveReasoningEffort,
+        ...(event.reasoningSelection ? { reasoning_selection: event.reasoningSelection } : {}),
         context: event.context,
         status: "running",
         last_activity_at: now,
@@ -138,6 +142,7 @@ export class RunStateArtifact {
       this.#actors.set(event.runID, {
         id: event.runID,
         ...(previous?.parent_id ? { parent_id: previous.parent_id } : {}),
+        ...(previous?.recovery_of ? { recovery_of: previous.recovery_of } : {}),
         ...(previous?.role ? { role: previous.role } : {}),
         ...(previous?.provider ? { provider: previous.provider } : {}),
         ...(previous?.model ? { model: previous.model } : {}),
@@ -145,6 +150,7 @@ export class RunStateArtifact {
         ...(previous?.effective_reasoning_effort
           ? { effective_reasoning_effort: previous.effective_reasoning_effort }
           : {}),
+        ...(previous?.reasoning_selection ? { reasoning_selection: previous.reasoning_selection } : {}),
         ...(previous?.context ? { context: previous.context } : {}),
         status: event.termination === "completed" ? "completed" : "failed",
         last_activity_at: now,
@@ -213,7 +219,10 @@ export class RunStateArtifact {
         { mode: 0o600 },
       ).then(() => undefined),
     )
-    this.#queue = pending.then(() => undefined, () => undefined)
+    this.#queue = pending.then(
+      () => undefined,
+      () => undefined,
+    )
     return pending
   }
 }

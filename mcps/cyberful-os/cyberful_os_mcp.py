@@ -398,6 +398,9 @@ def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
             "GIT_SSL_NO_VERIFY": "false",
             "PIP_CERT": trusted_bundle,
             "NODE_EXTRA_CA_CERTS": trusted_bundle,
+            "NODE_USE_ENV_PROXY": "1",
+            "BUNDLE_SSL_CA_CERT": trusted_bundle,
+            "BUNDLE_SSL_VERIFY_MODE": "1",
         })
     next_env.update(NO_TELEMETRY_ENV)
     return next_env

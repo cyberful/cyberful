@@ -66,6 +66,34 @@ export interface SemanticProjection {
   }
 }
 
+export interface DeterministicContextCheckpoint {
+  readonly task: {
+    readonly objective: string
+    readonly expectedResult?: string
+    readonly context?: string
+    readonly artifacts: readonly string[]
+    readonly outputArtifact?: string
+  }
+  readonly preservedArtifacts: readonly {
+    readonly path: string
+    readonly sha256?: string
+  }[]
+  readonly hypothesisIDs: readonly string[]
+  readonly testObjectIDs: readonly string[]
+  readonly completedToolCalls: readonly {
+    readonly id: string
+    readonly name: string
+    readonly isError: boolean
+  }[]
+  readonly lastPublicOutput?: string
+  readonly recentQueue: readonly {
+    readonly role: AgentMessage["role"]
+    readonly timestamp?: number
+    readonly toolCallID?: string
+    readonly toolName?: string
+  }[]
+}
+
 export interface RotationHistory {
   readonly messages: AgentMessage[]
   readonly activeMessages: number
@@ -78,22 +106,14 @@ export function validateRotationHistory(messages: readonly AgentMessage[]): void
   for (const [index, message] of messages.entries()) {
     if (message.role === "toolResult") {
       if (!pending.delete(message.toolCallId))
-        throw new Error(
-          `rotated context contains an orphan tool result at message ${index}`,
-        )
+        throw new Error(`rotated context contains an orphan tool result at message ${index}`)
       continue
     }
     if (pending.size > 0)
-      throw new Error(
-        `rotated context omits ${pending.size} tool result(s) before message ${index}`,
-      )
-    pending =
-      message.role === "assistant"
-        ? new Set(toolCallIDs(message))
-        : new Set<string>()
+      throw new Error(`rotated context omits ${pending.size} tool result(s) before message ${index}`)
+    pending = message.role === "assistant" ? new Set(toolCallIDs(message)) : new Set<string>()
   }
-  if (pending.size > 0)
-    throw new Error(`rotated context ends with ${pending.size} incomplete tool call(s)`)
+  if (pending.size > 0) throw new Error(`rotated context ends with ${pending.size} incomplete tool call(s)`)
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -102,30 +122,18 @@ function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
     : undefined
 }
 
-function boundedString(
-  value: unknown,
-  label: string,
-  maximum: number,
-  sanitize: (text: string) => string,
-): string {
+function boundedString(value: unknown, label: string, maximum: number, sanitize: (text: string) => string): string {
   if (typeof value !== "string") throw new Error(`semantic checkpoint '${label}' must be text`)
   const normalized = sanitize(value).trim()
   if (!normalized) throw new Error(`semantic checkpoint '${label}' must not be empty`)
-  if (normalized.length > maximum)
-    throw new Error(`semantic checkpoint '${label}' exceeds ${maximum} characters`)
+  if (normalized.length > maximum) throw new Error(`semantic checkpoint '${label}' exceeds ${maximum} characters`)
   return normalized
 }
 
-function stringList(
-  value: unknown,
-  label: string,
-  sanitize: (text: string) => string,
-): readonly string[] {
+function stringList(value: unknown, label: string, sanitize: (text: string) => string): readonly string[] {
   if (!Array.isArray(value) || value.length > MAX_STATE_ITEMS)
     throw new Error(`semantic checkpoint '${label}' must be a bounded array`)
-  return value.map((item, index) =>
-    boundedString(item, `${label}[${index}]`, MAX_STATE_STRING_CHARS, sanitize),
-  )
+  return value.map((item, index) => boundedString(item, `${label}[${index}]`, MAX_STATE_STRING_CHARS, sanitize))
 }
 
 function referencedList(
@@ -150,16 +158,12 @@ function referencedList(
   })
 }
 
-function decisionList(
-  value: unknown,
-  sanitize: (text: string) => string,
-): readonly DecisionState[] {
+function decisionList(value: unknown, sanitize: (text: string) => string): readonly DecisionState[] {
   if (!Array.isArray(value) || value.length > MAX_STATE_ITEMS)
     throw new Error("semantic checkpoint 'structured_state.decisions' must be a bounded array")
   return value.map((item, index) => {
     const entry = record(item)
-    if (!entry)
-      throw new Error(`semantic checkpoint 'structured_state.decisions[${index}]' must be an object`)
+    if (!entry) throw new Error(`semantic checkpoint 'structured_state.decisions[${index}]' must be an object`)
     return {
       decision: boundedString(
         entry.decision,
@@ -210,19 +214,12 @@ export function parseModelCheckpoint(input: {
   const evidenceRefs = stringList(state.evidence_refs, "structured_state.evidence_refs", input.sanitize)
   for (const [index, reference] of evidenceRefs.entries())
     if (!sourceText.includes(reference))
-      throw new Error(
-        `semantic checkpoint 'structured_state.evidence_refs[${index}]' is not present in source context`,
-      )
+      throw new Error(`semantic checkpoint 'structured_state.evidence_refs[${index}]' is not present in source context`)
 
   return {
     working_notes: boundedString(root.working_notes, "working_notes", MAX_NOTES_CHARS, input.sanitize),
     structured_state: {
-      objective: boundedString(
-        state.objective,
-        "structured_state.objective",
-        MAX_STATE_STRING_CHARS,
-        input.sanitize,
-      ),
+      objective: boundedString(state.objective, "structured_state.objective", MAX_STATE_STRING_CHARS, input.sanitize),
       phase: boundedString(state.phase, "structured_state.phase", 256, input.sanitize),
       current_state: boundedString(
         state.current_state,
@@ -237,12 +234,7 @@ export function parseModelCheckpoint(input: {
       ),
       decisions: decisionList(state.decisions, input.sanitize),
       verified_facts: stringList(state.verified_facts, "structured_state.verified_facts", input.sanitize),
-      hypotheses: referencedList(
-        state.hypotheses,
-        "structured_state.hypotheses",
-        sourceText,
-        input.sanitize,
-      ),
+      hypotheses: referencedList(state.hypotheses, "structured_state.hypotheses", sourceText, input.sanitize),
       findings: referencedList(state.findings, "structured_state.findings", sourceText, input.sanitize),
       tests_completed: stringList(state.tests_completed, "structured_state.tests_completed", input.sanitize),
       tests_pending: stringList(state.tests_pending, "structured_state.tests_pending", input.sanitize),
@@ -251,11 +243,7 @@ export function parseModelCheckpoint(input: {
         "structured_state.activities_completed",
         input.sanitize,
       ),
-      activities_open: stringList(
-        state.activities_open,
-        "structured_state.activities_open",
-        input.sanitize,
-      ),
+      activities_open: stringList(state.activities_open, "structured_state.activities_open", input.sanitize),
       blockers: stringList(state.blockers, "structured_state.blockers", input.sanitize),
       errors_and_failed_attempts: stringList(
         state.errors_and_failed_attempts,
@@ -373,6 +361,57 @@ export async function persistModelCheckpoint(input: {
   }
 }
 
+// ── Deterministic Recovery Contains No Model Inference ──────────
+// When semantic summarization is unavailable, the host persists only exact task
+// fields, completed tool identities, durable artifact references, observed
+// ledger IDs, the last public output, and a role-only recent queue. The file is
+// owner-only and can safely seed either the current run or one fresh recovery
+// child without treating generated interpretation as fact.
+// ─────────────────────────────────────────────────────────────────
+export async function persistDeterministicCheckpoint(input: {
+  readonly checkpoint: DeterministicContextCheckpoint
+  readonly workarea: string
+  readonly runID: string
+  readonly generation: number
+  readonly sourceMessageCount: number
+  readonly sourceEstimatedTokens: number
+}): Promise<SemanticProjection> {
+  const checkpointJson = JSON.stringify(input.checkpoint)
+  const sha256 = createHash("sha256").update(checkpointJson).digest("hex")
+  const run = createHash("sha256").update(input.runID).digest("hex").slice(0, 16)
+  const path = `${ARTIFACT_ROOT}/${run}/${input.generation}-deterministic-${sha256.slice(0, 20)}.json`
+  const artifact = {
+    version: 1,
+    kind: "deterministic",
+    generation: input.generation,
+    createdAt: new Date().toISOString(),
+    sourceMessageCount: input.sourceMessageCount,
+    sourceEstimatedTokens: input.sourceEstimatedTokens,
+    sha256,
+    checkpoint: input.checkpoint,
+  }
+  await replaceWorkareaFile(input.workarea, path, `${JSON.stringify(artifact, null, 2)}\n`, {
+    mode: 0o600,
+  })
+  return {
+    sourceMessageCount: input.sourceMessageCount,
+    artifact: { path, sha256 },
+    message: {
+      role: "user",
+      timestamp: Date.now(),
+      content: [
+        HOST_CHECKPOINT_PREFIX,
+        `Deterministic checkpoint: ${path}`,
+        `SHA-256: ${sha256}`,
+        "This checkpoint contains host-observed continuity data only. It has no model-authored inference.",
+        "Do not automatically replay completed tool calls; inspect preserved artifacts and continue only pending work.",
+        "",
+        checkpointJson,
+      ].join("\n"),
+    },
+  }
+}
+
 export function projectSemanticContext(
   messages: readonly AgentMessage[],
   projection: SemanticProjection | undefined,
@@ -383,17 +422,13 @@ export function projectSemanticContext(
 
 function isHostCheckpoint(message: AgentMessage): boolean {
   return (
-    message.role === "user" &&
-    typeof message.content === "string" &&
-    message.content.startsWith(HOST_CHECKPOINT_PREFIX)
+    message.role === "user" && typeof message.content === "string" && message.content.startsWith(HOST_CHECKPOINT_PREFIX)
   )
 }
 
 function toolCallIDs(message: AgentMessage): readonly string[] {
   if (message.role !== "assistant") return []
-  return message.content.flatMap((item) =>
-    item.type === "toolCall" ? [item.id] : [],
-  )
+  return message.content.flatMap((item) => (item.type === "toolCall" ? [item.id] : []))
 }
 
 function validCutPoint(message: AgentMessage): boolean {

@@ -45,6 +45,12 @@ describe("Pi MCP worker bridge", () => {
       const childTools = bridge.toolsFor({
         handoffAuthorized: false,
         isToolAllowed: (name) => name !== "echo" || childEchoAllowed,
+        actor: {
+          runID: "child-run-1",
+          parentID: "root-run-1",
+          displayName: "child",
+          kind: "subagent",
+        },
       })
       expect(rootTools.map((tool) => tool.name)).toEqual([
         "echo",
@@ -94,6 +100,15 @@ describe("Pi MCP worker bridge", () => {
         isError: false,
       })
       expect(JSON.stringify(result)).not.toContain(PRIVATE_VALUE)
+      expect((await childEcho!.execute("call-meta", { value: "actor-meta" })).content[0]).toEqual({
+        type: "text",
+        text: JSON.stringify({
+          runID: "child-run-1",
+          role: "subagent",
+          parentRunID: "root-run-1",
+          toolCallID: "call-meta",
+        }),
+      })
       await expect(childFailure!.execute("call-2", { value: "bad" })).rejects.toThrow("fixture failure: bad")
       expect(await rootHandoff!.execute("call-handoff", { value: "verify" })).toEqual({
         content: [{ type: "text", text: "handoff: verify" }],

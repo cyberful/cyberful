@@ -248,8 +248,27 @@ export function Session() {
     ].toSorted((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)),
   )
   const questions = createMemo(() => {
-    if (session()?.parentID && directChildren().length === 0) return []
-    return children().flatMap((x) => sync.data.question[x.id] ?? [])
+    const current = session()
+    if (!current) return []
+    const sessions = new Map(sync.data.session.map((candidate) => [candidate.id, candidate]))
+    let root = current
+    while (root.parentID) {
+      const parent = sessions.get(root.parentID)
+      if (!parent) break
+      root = parent
+    }
+    const family = new Set([root.id])
+    for (let changed = true; changed; ) {
+      changed = false
+      for (const candidate of sessions.values()) {
+        if (!candidate.parentID || !family.has(candidate.parentID) || family.has(candidate.id)) continue
+        family.add(candidate.id)
+        changed = true
+      }
+    }
+    return [...family]
+      .toSorted()
+      .flatMap((sessionID) => sync.data.question[sessionID] ?? [])
   })
   const visible = createMemo(() => !session()?.parentID && questions().length === 0)
   const disabled = createMemo(() => questions().length > 0)
@@ -1256,7 +1275,7 @@ export function Session() {
               </box>
               <box flexShrink={0}>
                 <Show when={questions().length > 0}>
-                  <QuestionPrompt request={questions()[0]} />
+                  <QuestionPrompt request={questions()[0]} pendingCount={questions().length} />
                 </Show>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />

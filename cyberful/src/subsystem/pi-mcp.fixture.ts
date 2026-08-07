@@ -36,6 +36,12 @@ const questions: HumanQuestion[] = [
   },
 ]
 
+function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined
+}
+
 server.setRequestHandler(ListToolsRequestSchema, (request) => {
   if (request.params?.cursor === "second-page")
     return {
@@ -158,6 +164,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
       isError: true,
       content: [{ type: "text" as const, text: "unknown fixture tool" }],
     }
+  if (value === "actor-meta") {
+    const actor = record(request.params._meta)?.["io.cyberful/tool-actor"]
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(actor) }],
+    }
+  }
   return {
     content: [
       { type: "text" as const, text: `echo: ${value}` },

@@ -23,9 +23,17 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
   try {
     const recorder = new ToolUsageRecorder()
     await recorder.record({
+      agent_run_id: "run-exploit-1",
+      agent_role: "subagent",
+      parent_run_id: "run-root-1",
+      tool_call_id: "call-1",
       tool: "nuclei",
+      tool_action: "search",
       duration_ms: 420,
       outcome: "ok",
+      result_count: 3,
+      argument_digest: "a".repeat(64),
+      hypothesis_id: "H-SSRF",
       peak_rps: 5,
       bytes_out: 900,
       marker_attested: true,
@@ -52,8 +60,9 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     await recorder.close()
 
     const csv = await readFile(path.join(root, "raw", "operations", "tool-usage.csv"), "utf8")
-    expect(csv).toContain("time_iso,phase,agent,tool,duration_ms,outcome")
-    expect(csv).toContain("exploit,exploit,nuclei,420,ok,5,900,true")
+    expect(csv).toContain("time_iso,phase,agent,agent_run_id,agent_role,parent_run_id,tool_call_id,tool,tool_action")
+    expect(csv).toContain("exploit,exploit,run-exploit-1,subagent,run-root-1,call-1,nuclei,search,420,ok,3")
+    expect(csv).toContain(`${"a".repeat(64)},H-SSRF`)
     expect(csv).toContain("api.example.test,POST,403,/v1/:id")
     expect(csv).toContain("512,1,0,3000,cyberful-os/docker-direct,observed,false")
     expect(csv).not.toContain("decision")

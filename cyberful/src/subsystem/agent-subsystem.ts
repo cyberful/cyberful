@@ -54,7 +54,8 @@ export interface AgentRunBudget {
 export interface DelegationLimits {
   readonly enabled: boolean
   readonly provider: string
-  readonly reasoningEffort: Settings.ReasoningEffort
+  readonly reasoningEfforts: readonly Settings.ReasoningEffort[]
+  readonly defaultReasoningEffort: Settings.ReasoningEffort
   readonly maxPerRun: number
   readonly maxConcurrent: number
   readonly maxDepth: number
@@ -91,7 +92,14 @@ export interface RecoveredTestObject {
   readonly id: string
   readonly kind: string
   readonly label: string
-  readonly state: "planned" | "not_created" | "created" | "oracle_checked" | "cleanup_attempted" | "cleaned" | "residual"
+  readonly state:
+    | "planned"
+    | "not_created"
+    | "created"
+    | "oracle_checked"
+    | "cleanup_attempted"
+    | "cleaned"
+    | "residual"
   readonly phase: string
   readonly evidencePath?: string
   readonly evidenceExists?: boolean
@@ -118,6 +126,7 @@ export interface AgentRunSpec {
   readonly role: AgentRunRole
   readonly parentID?: AgentRunID
   readonly sourceCallID?: string
+  readonly recoveryOf?: AgentRunID
   readonly identity?: AgentRunIdentity
   readonly phaseRootID?: AgentRunID
   readonly depth: number
@@ -126,6 +135,7 @@ export interface AgentRunSpec {
   readonly context: ModelContextCapacity
   readonly providerAffinity: ProviderAffinity
   readonly reasoning: ReasoningPlan
+  readonly reasoningSelection?: "parent" | "default"
   readonly prompt: CompiledAgentPrompt
   readonly compileChildPrompt: (input: ChildPromptInput) => CompiledAgentPrompt
   readonly task: AgentTaskCapsule
@@ -149,9 +159,7 @@ export interface AgentRunSpec {
     }
     readonly reason: "phase_recovery" | "child_finished"
   }) => Promise<readonly RecoveredHypothesis[]>
-  readonly recoverTestObjects?: (input: {
-    readonly fromRunID: AgentRunID
-  }) => Promise<readonly RecoveredTestObject[]>
+  readonly recoverTestObjects?: (input: { readonly fromRunID: AgentRunID }) => Promise<readonly RecoveredTestObject[]>
   readonly skills: readonly PromptSkill[]
   readonly budget: AgentRunBudget
   readonly abort?: AbortSignal
@@ -166,6 +174,7 @@ export type AgentEvent =
       readonly type: "run_started"
       readonly runID: AgentRunID
       readonly parentID?: AgentRunID
+      readonly recoveryOf?: AgentRunID
       readonly phaseRootID: AgentRunID
       readonly role: AgentRunRole
       readonly provider: string
@@ -174,6 +183,7 @@ export type AgentEvent =
       readonly identity?: AgentRunIdentity
       readonly reasoningEffort: Settings.ReasoningEffort
       readonly effectiveReasoningEffort: ReasoningPlan["effective"]
+      readonly reasoningSelection?: "parent" | "default"
       readonly context: {
         readonly catalogContextWindow: number
         readonly configuredContextWindow?: number
@@ -306,17 +316,14 @@ export type AgentEvent =
         readonly usage?: AgentRunUsage
         readonly detail?: string
       }[]
-      readonly reason?:
-        | "target_unreachable"
-        | "active_tail_too_large"
-        | "summary_failed"
-        | "disabled_model_summary"
+      readonly reason?: "target_unreachable" | "active_tail_too_large" | "summary_failed" | "disabled_model_summary"
       readonly detail?: string
     }
   | {
       readonly type: "run_finished"
       readonly runID: AgentRunID
       readonly parentID?: AgentRunID
+      readonly recoveryOf?: AgentRunID
       readonly role: AgentRunRole
       readonly termination: AgentRunTermination
       readonly failure?: Failure
@@ -329,6 +336,10 @@ export type AgentEvent =
       readonly recoveredHypotheses?: readonly RecoveredHypothesis[]
       readonly recoveredTestObjects?: readonly RecoveredTestObject[]
       readonly recoverySummary?: AgentRunRecoverySummary
+      readonly recoveryCheckpoint?: {
+        readonly path: string
+        readonly sha256: string
+      }
     }
 
 export interface AgentRunUsage {
@@ -342,6 +353,7 @@ export interface AgentRunUsage {
 export interface AgentRunResult {
   readonly id: AgentRunID
   readonly parentID?: AgentRunID
+  readonly recoveryOf?: AgentRunID
   readonly phaseRootID: AgentRunID
   readonly role: AgentRunRole
   readonly provider: string
@@ -350,6 +362,7 @@ export interface AgentRunResult {
   readonly identity?: AgentRunIdentity
   readonly reasoningEffort: Settings.ReasoningEffort
   readonly effectiveReasoningEffort: ReasoningPlan["effective"]
+  readonly reasoningSelection?: "parent" | "default"
   readonly context: Extract<AgentEvent, { type: "run_started" }>["context"]
   readonly output: string
   readonly termination: AgentRunTermination
@@ -364,6 +377,10 @@ export interface AgentRunResult {
   readonly recoveredHypotheses: readonly RecoveredHypothesis[]
   readonly recoveredTestObjects: readonly RecoveredTestObject[]
   readonly recoverySummary?: AgentRunRecoverySummary
+  readonly recoveryCheckpoint?: {
+    readonly path: string
+    readonly sha256: string
+  }
 }
 
 export interface AgentRun {

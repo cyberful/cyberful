@@ -49,7 +49,7 @@ To install through npm and run a release:
 - at least 40 GB of free disk space;
 - at least 10 GB of RAM dedicated to Docker.
 
-ZAP, Ghidra, Python, and the offensive toolchain—including the internal Firefox/Xvfb runtime used by ZAP—are included in the runtime image. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
+ZAP, Ghidra, Python, Ruby/Bundler, and the offensive toolchain—including the internal Firefox/Xvfb runtime used by ZAP—are included in the runtime image. Before a live-target AgentRun starts, an ephemeral private-network HTTPS canary verifies that curl/OpenSSL, Git, Requests/pip, Node, and Ruby/Bundler can traverse the real ZAP proxy with the attested engagement CA; it never contacts the target or Internet. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
 
 See [What you need](https://cyberful.io/getting-started/requirements/) for the supported host platforms, release architectures, provider setup, and source development requirements.
 

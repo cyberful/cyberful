@@ -146,6 +146,7 @@ test("an external mailbox selection resumes the live question", async () => {
 
 test("immediate UI input cannot decide a question before it is visible", async () => {
   const asked = Promise.withResolvers<void>()
+  const presented = Promise.withResolvers<void>()
   const stderr = spyOn(process.stderr, "write").mockImplementation(() => true)
 
   try {
@@ -155,6 +156,7 @@ test("immediate UI input cannot decide a question before it is visible", async (
         const question = yield* Question.Service
         const unsubscribe = yield* bus.subscribeAllCallback((event) => {
           if (event.type === "question.asked") asked.resolve()
+          if (event.type === "question.presented") presented.resolve()
         })
 
         try {
@@ -177,8 +179,26 @@ test("immediate UI input cannot decide a question before it is visible", async (
           yield* Effect.promise(() => asked.promise)
           const [request] = yield* question.list()
           expect(request).toBeDefined()
-          yield* question.reply({ requestID: request!.id, answers: [["Visible"]] })
-          yield* question.reject(request!.id)
+          expect(request?.presentation).toBe("pending")
+          expect(request?.presentedAt).toBeUndefined()
+          const earlyReply = yield* question
+            .reply({ requestID: request!.id, answers: [["Visible"]] })
+            .pipe(Effect.flip)
+          const earlyReject = yield* question.reject(request!.id).pipe(Effect.flip)
+          expect(earlyReply).toBeInstanceOf(Question.NotPresentedError)
+          expect(earlyReject).toBeInstanceOf(Question.NotPresentedError)
+
+          const firstPresentation = yield* question.present(request!.id)
+          const secondPresentation = yield* question.present(request!.id)
+          yield* Effect.promise(() => presented.promise)
+          expect(firstPresentation).toEqual(secondPresentation)
+          expect(firstPresentation.presentation).toBe("presented")
+          expect(firstPresentation.presentedAt).toBeNumber()
+
+          const guardedReply = yield* question
+            .reply({ requestID: request!.id, answers: [["Visible"]] })
+            .pipe(Effect.flip)
+          expect(guardedReply).toBeInstanceOf(Question.NotPresentedError)
           yield* Effect.sleep("25 millis")
           expect(yield* question.list()).toHaveLength(1)
 
