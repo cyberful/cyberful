@@ -63,7 +63,7 @@ Use `browser_wait state="networkidle"` only when you explicitly need network qui
 
 If a navigation commits but the requested load state times out, the tool returns the current page URL/title with a warning so the agent can continue with `browser_snapshot`, `browser_wait`, or `browser_captcha_status`.
 
-Ordinary requests for one profile remain serialized. MCP cancellation bypasses that queue: a gateway timeout or caller abort immediately invalidates the active browser context, waits at most two seconds for Playwright cleanup, suppresses the stale response, and frees later requests from the blocked operation. A cleanup that still cannot settle terminates only that profile's MCP process; it cannot leave the profile queue waiting for the original operation indefinitely.
+Ordinary requests for one profile remain serialized. MCP cancellation bypasses that queue: a gateway timeout or caller abort immediately invalidates the active browser context, waits at most two seconds for Playwright cleanup, suppresses the stale response, and frees later requests from the blocked operation. A cleanup that still cannot settle terminates only that profile's MCP process; it cannot leave the profile queue waiting for the original operation indefinitely. The owning gateway then probes the quarantined generation and recreates that one profile in single-flight if its transport died. The cancelled target action is never replayed automatically.
 
 ## CAPTCHA/challenge handling
 

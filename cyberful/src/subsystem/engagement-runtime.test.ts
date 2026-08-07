@@ -5,7 +5,16 @@
 // ───────────────────────────────────────────────────────────
 
 import { expect, test } from "bun:test"
-import { dockerMemoryAllocationWarning, requiresZapUpstream, zapCoreIsolationMounts } from "./engagement-runtime"
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import {
+  dockerMemoryAllocationWarning,
+  readPersistedProxyTrust,
+  requiresZapUpstream,
+  zapCoreIsolationMounts,
+} from "./engagement-runtime"
+import { attestProxyCertificate } from "./zap/runtime"
 
 test("requires at least ten decimal gigabytes dedicated to Docker", () => {
   expect(dockerMemoryAllocationWarning("9999999999")).toContain("at least 10 GB")
@@ -30,4 +39,75 @@ test("masks private ZAP state and exposes only a read-only public trust mount to
     "--mount",
     "type=bind,source=/host/workarea/raw/zap/trust,target=/run/cyberful/proxy-trust,readonly",
   ])
+})
+
+test("reloads a durable proxy trust identity and rejects a replaced public certificate", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "cyberful-persisted-ca-"))
+  try {
+    const generate = (name: string) => {
+      const result = Bun.spawnSync(
+        [
+          "openssl",
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          `${name}.key`,
+          "-out",
+          `${name}.pem`,
+          "-days",
+          "1",
+          "-subj",
+          `/CN=${name}`,
+          "-addext",
+          "basicConstraints=critical,CA:TRUE",
+          "-addext",
+          "keyUsage=critical,keyCertSign,cRLSign",
+        ],
+        { cwd: directory, stderr: "pipe" },
+      )
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString())
+    }
+    generate("original")
+    generate("replacement")
+    const original = await readFile(path.join(directory, "original.pem"), "utf8")
+    const identity = attestProxyCertificate(Buffer.from(original))
+    await writeFile(path.join(directory, "root-ca-public.pem"), original)
+    await writeFile(
+      path.join(directory, "attestation.json"),
+      `${JSON.stringify({
+        version: 1,
+        fingerprint256: identity.fingerprint256,
+        spki: identity.spki,
+        bundleSha256: "a".repeat(64),
+      })}\n`,
+    )
+
+    expect(await readPersistedProxyTrust(directory)).toMatchObject({
+      fingerprint256: identity.fingerprint256,
+      spki: identity.spki,
+      bundleSha256: "a".repeat(64),
+    })
+    await writeFile(path.join(directory, "root-ca-public.pem"), await readFile(path.join(directory, "replacement.pem")))
+    await expect(readPersistedProxyTrust(directory)).rejects.toThrow("does not match")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("fails closed on malformed or symlinked durable proxy trust metadata", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "cyberful-invalid-persisted-ca-"))
+  try {
+    const attestation = path.join(directory, "attestation.json")
+    await writeFile(attestation, "{}\n")
+    await expect(readPersistedProxyTrust(directory)).rejects.toThrow("invalid schema")
+    await rm(attestation)
+    await writeFile(path.join(directory, "outside.json"), "{}\n")
+    await symlink(path.join(directory, "outside.json"), attestation)
+    await expect(readPersistedProxyTrust(directory)).rejects.toThrow("regular file")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

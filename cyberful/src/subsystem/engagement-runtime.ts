@@ -59,6 +59,7 @@ const REQUIRED_DOCKER_MEMORY_BYTES = 10_000_000_000
 const ZAP_LIFECYCLE_PATH = "raw/operations/zap-runtime.jsonl"
 const ZAP_RUNTIME_RELATIVE_PATH = "raw/zap/runtime"
 const ZAP_TRUST_RELATIVE_PATH = "raw/zap/trust"
+const ZAP_TRUST_ATTESTATION_FILE = "attestation.json"
 const MAX_SYSTEM_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 
 export interface EngagementRuntime {
@@ -124,7 +125,14 @@ interface BridgeProbeInput {
   readonly timeoutMs?: number
 }
 
-interface ProxyTrustAttestation extends ProxyCertificateAttestation {
+export interface ProxyTrustAttestation extends ProxyCertificateAttestation {
+  readonly bundleSha256: string
+}
+
+interface PersistedProxyTrustAttestation {
+  readonly version: 1
+  readonly fingerprint256: string
+  readonly spki: string
   readonly bundleSha256: string
 }
 
@@ -183,6 +191,69 @@ async function regularTrustFile(filePath: string) {
   if (value.includes(Buffer.from("PRIVATE KEY")))
     throw new Error("proxy trust material unexpectedly contains private key material")
   return value
+}
+
+function parsePersistedProxyTrustAttestation(value: Buffer): PersistedProxyTrustAttestation {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value.toString("utf8"))
+  } catch (error) {
+    throw new Error("persisted proxy trust attestation is not valid JSON", { cause: error })
+  }
+  if (
+    !isRecord(parsed) ||
+    parsed.version !== 1 ||
+    typeof parsed.fingerprint256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.fingerprint256) ||
+    typeof parsed.spki !== "string" ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(parsed.spki) ||
+    typeof parsed.bundleSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.bundleSha256)
+  )
+    throw new Error("persisted proxy trust attestation has an invalid schema")
+  return {
+    version: 1,
+    fingerprint256: parsed.fingerprint256,
+    spki: parsed.spki,
+    bundleSha256: parsed.bundleSha256,
+  }
+}
+
+export async function readPersistedProxyTrust(trustPath: string): Promise<ProxyTrustAttestation | undefined> {
+  let persisted: PersistedProxyTrustAttestation
+  try {
+    persisted = parsePersistedProxyTrustAttestation(
+      await regularTrustFile(path.join(trustPath, ZAP_TRUST_ATTESTATION_FILE)),
+    )
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return undefined
+    throw error
+  }
+  const certificate = attestProxyCertificate(
+    await regularTrustFile(path.join(trustPath, "root-ca-public.pem")),
+  )
+  if (certificate.fingerprint256 !== persisted.fingerprint256 || certificate.spki !== persisted.spki)
+    throw new Error("persisted proxy trust identity does not match its public certificate")
+  return { ...certificate, bundleSha256: persisted.bundleSha256 }
+}
+
+async function persistProxyTrustAttestation(input: {
+  readonly attestation: ProxyTrustAttestation
+  readonly trustRelativePath: string
+  readonly workarea: string
+}) {
+  const persisted: PersistedProxyTrustAttestation = {
+    version: 1,
+    fingerprint256: input.attestation.fingerprint256,
+    spki: input.attestation.spki,
+    bundleSha256: input.attestation.bundleSha256,
+  }
+  await replaceWorkareaFile(
+    input.workarea,
+    `${input.trustRelativePath}/${ZAP_TRUST_ATTESTATION_FILE}`,
+    `${JSON.stringify(persisted)}\n`,
+    { mode: 0o600 },
+  )
 }
 
 async function copyCoreSystemCaBundle(container: string, signal?: AbortSignal) {
@@ -255,6 +326,11 @@ async function installCoreProxyTrust(input: {
         trustPath: input.trustPath,
         ...(input.signal ? { signal: input.signal } : {}),
       })
+      await persistProxyTrustAttestation({
+        attestation: input.expected,
+        trustRelativePath: input.trustRelativePath,
+        workarea: input.workarea,
+      })
       return input.expected
     } catch (error) {
       input.signal?.throwIfAborted()
@@ -285,7 +361,13 @@ async function installCoreProxyTrust(input: {
     trustPath: input.trustPath,
     ...(input.signal ? { signal: input.signal } : {}),
   })
-  return { ...input.certificate, bundleSha256 }
+  const attestation = { ...input.certificate, bundleSha256 }
+  await persistProxyTrustAttestation({
+    attestation,
+    trustRelativePath: input.trustRelativePath,
+    workarea: input.workarea,
+  })
+  return attestation
 }
 
 function proxyTrustLifecycle(attestation: ProxyTrustAttestation) {
@@ -641,6 +723,15 @@ export async function startEngagement(input: {
     : undefined
   if (zapRuntimePath && zapTrustPath)
     await Promise.all([chmod(zapRuntimePath, 0o700), chmod(zapTrustPath, 0o700)])
+  let persistedProxyTrust: ProxyTrustAttestation | undefined
+  if (zapTrustPath)
+    try {
+      persistedProxyTrust = await readPersistedProxyTrust(zapTrustPath)
+    } catch (error) {
+      throw new RequiredUpstreamUnavailableError("persisted ZAP proxy trust failed continuity validation", {
+        cause: error,
+      })
+    }
 
   for (const container of containers) {
     SubsystemContainer.remember(container)
@@ -704,7 +795,7 @@ export async function startEngagement(input: {
   }
   let degraded = Boolean(memoryWarning)
   let proxyUrl: string | undefined
-  let expectedTrust: ProxyTrustAttestation | undefined
+  let expectedTrust = persistedProxyTrust
   let zapOperational = false
 
   const runZapContainer = async (generation: number, signal?: AbortSignal) => {
@@ -841,7 +932,7 @@ export async function startEngagement(input: {
   if (zapEnabled && apiKey && zapMcpKey) {
     try {
       await runZapContainer(sessionGeneration, input.signal)
-      const attestation = await attestZap({ allowCaRotation: true, signal: input.signal })
+      const attestation = await attestZap({ allowCaRotation: expectedTrust === undefined, signal: input.signal })
       expectedTrust = attestation.trust
       zapOperational = true
       await appendZapLifecycle(input.workarea, {

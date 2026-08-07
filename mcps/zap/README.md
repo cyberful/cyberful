@@ -4,6 +4,8 @@ These sources are copied into the unified cyberful-os image. Cyberful runs one d
 
 The runtime image is pinned to the official ZAP 2.17.0 stable OCI digest. The MCP add-on is pinned to 0.2.0 and verified with the SHA-256 published in the ZAP add-on catalog. Runtime update checks remain disabled to prevent background traffic. API file transfer and MCP history recording remain available inside the isolated runtime.
 
+Each session owns an opaque, owner-only ZAP home and private CA below `raw/zap/runtime/`. The core masks that subtree and receives only the corresponding read-only `raw/zap/trust/` directory. Its public certificate and combined bundle are accompanied by an atomic `attestation.json` containing only fingerprint, SPKI, and bundle digest. The host reloads that identity across control-plane restarts, rejects malformed or mismatched material during `preserve`, and replaces the durable anchor only after an explicit `reset` generation passes complete CA and bundle verification.
+
 The bridge exposes the complete API catalog reported by ZAP. It does not derive an origin allowlist from the prompt, filter lifecycle or security operations, disable redirects, or apply another authorization policy to official MCP tools. The active mission and agent instructions own engagement scope.
 
 The same engagement root is mounted at `/zap/wrk` in both containers. Both the official `zap_generate_report` and Cyberful's `zap_generate_workarea_report` confine output to that mount and return `engagement_root_relative_path`. The workarea wrapper includes the complete ZAP session and applies no site filter.

@@ -64,6 +64,7 @@ function requiredZapContainer(runtime: EngagementRuntime) {
 function zapHostPaths(root: string, sessionID: string) {
   const scope = createHash("sha256").update(sessionID).digest("hex").slice(0, 32)
   return {
+    attestation: path.join(root, "raw/zap/trust", scope, "attestation.json"),
     bundle: path.join(root, "raw/zap/trust", scope, "ca-bundle.pem"),
     privateCertificate: path.join(root, "raw/zap/runtime", scope, "root-ca.pem"),
     publicCertificate: path.join(root, "raw/zap/trust", scope, "root-ca-public.pem"),
@@ -687,6 +688,10 @@ describe("real headless ZAP containers", () => {
     )
     expect(publicCertificate).toContain("BEGIN CERTIFICATE")
     expect(publicCertificate).not.toContain("PRIVATE KEY")
+    const persistedAttestation = await Bun.file(zapHostPaths(workarea, sessionID).attestation).text()
+    expect(persistedAttestation).toContain('"version":1')
+    expect(persistedAttestation).not.toContain("CERTIFICATE")
+    expect(persistedAttestation).not.toContain("PRIVATE KEY")
     const systemCertificateCount = Number(
       await dockerOutput("exec", runtime.container, "grep", "-c", "BEGIN CERTIFICATE", "/etc/ssl/certs/ca-certificates.crt"),
     )
@@ -807,6 +812,49 @@ describe("real headless ZAP containers", () => {
       await rm(isolatedWorkarea, { recursive: true, force: true })
     }
   }, 240_000)
+
+  test("persists CA continuity across a host runtime restart and rotates only through reset recovery", async () => {
+    const isolatedWorkarea = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-ca-durable-integration-")),
+    )
+    const sessionID = "integration-proxy-ca-durable"
+    let runtime: EngagementRuntime | undefined
+    try {
+      runtime = await startEngagement({ sessionID, workarea: isolatedWorkarea })
+      runtimes.push(runtime)
+      const paths = zapHostPaths(isolatedWorkarea, sessionID)
+      const originalCertificate = await Bun.file(paths.publicCertificate).text()
+      const originalAttestation = await Bun.file(paths.attestation).text()
+      await runtime.stop()
+      runtimes.splice(runtimes.indexOf(runtime), 1)
+      runtime = undefined
+
+      await rm(paths.privateCertificate)
+      runtime = await startEngagement({ sessionID, workarea: isolatedWorkarea })
+      runtimes.push(runtime)
+      expect(runtime.degraded).toBe(true)
+      expect(runtime.env.CYBER_ZAP_READY).toBeUndefined()
+      expect(await Bun.file(paths.publicCertificate).text()).toBe(originalCertificate)
+      expect(await Bun.file(paths.attestation).text()).toBe(originalAttestation)
+
+      const prepared = await runtime.preparePhase({ phase: "recon", attempt: 1 })
+      expect(prepared.warnings.join(" ")).toContain("new visible session generation")
+      expect(await Bun.file(paths.publicCertificate).text()).not.toBe(originalCertificate)
+      expect(await Bun.file(paths.attestation).text()).not.toBe(originalAttestation)
+      const lifecycle = await Bun.file(path.join(isolatedWorkarea, "raw/operations/zap-runtime.jsonl")).text()
+      expect(lifecycle).toContain('"event":"startup_failed"')
+      expect(lifecycle).toContain('"failure_stage":"ca"')
+      expect(lifecycle).toContain('"recovery_mode":"preserve"')
+      expect(lifecycle).toContain('"event":"ca_rotation_authorized"')
+    } finally {
+      await runtime?.stop()
+      if (runtime) {
+        const index = runtimes.indexOf(runtime)
+        if (index >= 0) runtimes.splice(index, 1)
+      }
+      await rm(isolatedWorkarea, { recursive: true, force: true })
+    }
+  }, 300_000)
 
   test("concurrent bridges share one history while separate engagements remain isolated", async () => {
     const active: EngagementRuntime[] = []

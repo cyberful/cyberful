@@ -101,10 +101,12 @@ import {
   TARGET_COOLDOWN_TOOL_NAME,
   TargetCooldownController,
 } from "./target-cooldown"
+import { RestartableBrowserUpstream } from "./restartable-browser-upstream"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
 const log = Log.create({ service: "phase-gateway" })
+const BROWSER_CANCELLATION_SETTLE_MS = 2_250
 
 // ── Gateway Startup Rejects Unscoped Or Invalid Authority ───────────
 // A gateway may access variables for exactly one host-supplied session. Missing
@@ -1393,6 +1395,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const builtins = SubsystemUpstream.builtin()
   const out: UpstreamTool[] = []
   const clients: Client[] = []
+  const ordinaryClients = new Set<Client>()
+  const browserUpstreams: RestartableBrowserUpstream<Client>[] = []
   const ownedProcessRoots = new Set<number>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
@@ -1499,30 +1503,78 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           if (trust.code !== 0) throw new Error("cyberful-os engagement CA bundle is not readable")
         }
       }
-      pendingTransport = new StdioClientTransport({
-        command: cmd,
-        args,
-        env,
-        stderr: upstreamDiagnosticSink ? "pipe" : "inherit",
-      })
-      if (upstreamDiagnosticSink) {
-        pendingTransport.stderr?.on("data", (chunk: Buffer) => {
-          try {
-            upstreamDiagnosticSink(chunk.toString("utf8"))
-          } catch (error) {
-            log.warn("upstream diagnostic sink failed", {
-              upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
-              error,
-            })
-          }
+      let browserGeneration = 0
+      const connectClient = async (onClose: () => void = () => undefined) => {
+        const transport = new StdioClientTransport({
+          command: cmd,
+          args,
+          env,
+          stderr: upstreamDiagnosticSink ? "pipe" : "inherit",
         })
+        pendingTransport = transport
+        if (upstreamDiagnosticSink) {
+          transport.stderr?.on("data", (chunk: Buffer) => {
+            try {
+              upstreamDiagnosticSink(chunk.toString("utf8"))
+            } catch (error) {
+              log.warn("upstream diagnostic sink failed", {
+                upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+                error,
+              })
+            }
+          })
+        }
+        const client = new Client({ name: "expert-gateway", version: "0.1.0" })
+        pendingClient = client
+        const forget = () => {
+          const index = clients.indexOf(client)
+          if (index >= 0) clients.splice(index, 1)
+          ordinaryClients.delete(client)
+          onClose()
+        }
+        client.onclose = forget
+        try {
+          await client.connect(transport)
+        } catch (error) {
+          if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
+          await client.close().catch(() => undefined)
+          throw error
+        }
+        if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
+        clients.push(client)
+        if (key === "browser") {
+          browserGeneration += 1
+          if (browserGeneration > 1)
+            log.warn("restarted profile-scoped browser MCP after transport loss", {
+              browserProfile,
+              generation: browserGeneration,
+            })
+        } else {
+          ordinaryClients.add(client)
+        }
+        return { value: client, close: () => client.close() }
       }
-      pendingClient = new Client({ name: "expert-gateway", version: "0.1.0" })
-      const client = pendingClient
-      await client.connect(pendingTransport)
-      if (pendingTransport.pid !== null) ownedProcessRoots.add(pendingTransport.pid)
-      clients.push(client)
+
+      let expectedBrowserTools: string[] | undefined
+      const browserUpstream =
+        key === "browser" && browserProfile !== undefined
+          ? new RestartableBrowserUpstream<Client>({
+              cancellationGraceMs: BROWSER_CANCELLATION_SETTLE_MS,
+              connect: connectClient,
+              probe: async (client, signal) => {
+                const names = (await client.listTools(undefined, { signal })).tools.map((tool) => tool.name).sort()
+                if (expectedBrowserTools && JSON.stringify(names) !== JSON.stringify(expectedBrowserTools))
+                  throw new Error(`browser profile ${browserProfile} tool catalog changed after restart`)
+              },
+              probeTimeoutMs: 5_000,
+            })
+          : undefined
+      const client = browserUpstream ? await browserUpstream.start() : (await connectClient()).value
       const { tools } = await client.listTools()
+      if (browserUpstream) {
+        expectedBrowserTools = tools.map((tool) => tool.name).sort()
+        browserUpstreams.push(browserUpstream)
+      }
       for (const t of tools) {
         if (!phaseUpstreamToolAllowed(policy, capability, t.name)) continue
         if (browserProfile === undefined && out.some((u) => u.def.name === t.name)) continue
@@ -1538,15 +1590,20 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           // no hidden outer deadline aborts a call earlier than its policy.
           // ──────────────────────────────────────────────────────────────
           call: async (a, signal) => {
-            const result = await client.callTool({ name: t.name, arguments: a }, CallToolResultSchema, {
-              signal,
-              timeout: 600_000,
-              maxTotalTimeout: 600_000,
-            })
-            return CallToolResultSchema.parse(result)
+            const invoke = async (activeClient: Client) => {
+              const result = await activeClient.callTool({ name: t.name, arguments: a }, CallToolResultSchema, {
+                signal,
+                timeout: 600_000,
+                maxTotalTimeout: 600_000,
+              })
+              return CallToolResultSchema.parse(result)
+            }
+            return browserUpstream ? browserUpstream.call(invoke, signal) : invoke(client)
           },
         })
       }
+      pendingClient = undefined
+      pendingTransport = undefined
     } catch (error) {
       const pendingPID =
         pendingTransport?.pid !== null && pendingTransport?.pid !== undefined ? pendingTransport.pid : undefined
@@ -1614,7 +1671,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           return []
         })
       const operations = [
-        ...clients.map((client) => () => client.close()),
+        ...Array.from(ordinaryClients, (client) => () => client.close()),
+        ...browserUpstreams.map((upstream) => () => upstream.close()),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
       const operationFailures = outcomes.flatMap((outcome) =>
