@@ -134,6 +134,40 @@ class NoTelemetryEnvironmentTest(unittest.TestCase):
         self.assertEqual(inherited["AWS_PROFILE"], "engagement")
         self.assertEqual(inherited, {"AWS_PROFILE": "engagement", **cyberful_os_mcp.NO_TELEMETRY_ENV})
 
+    def test_evm_compiler_cache_is_engagement_owned_and_cannot_be_overridden(self) -> None:
+        requested = {
+            "HOME": "/root",
+            "FOUNDRY_DIR": "/root/.foundry",
+            "SVM_HOME": "/root/.svm",
+            "XDG_CACHE_HOME": "/root/.cache",
+        }
+        with mock.patch.dict(
+            cyberful_os_mcp.os.environ,
+            {
+                cyberful_os_mcp.EVM_RUNTIME_ID_ENV: "11111111-2222-4333-8444-555555555555",
+                cyberful_os_mcp.WORKAREA_ROOT_ENV: "/tmp/cyberful-workarea",
+            },
+            clear=True,
+        ):
+            inherited = cyberful_os_mcp.inherited_container_env(requested)
+
+        self.assertEqual(
+            {name: inherited[name] for name in cyberful_os_mcp.EVM_FOUNDRY_ENV},
+            cyberful_os_mcp.EVM_FOUNDRY_ENV,
+        )
+
+    def test_evm_compiler_cache_requires_a_valid_host_runtime(self) -> None:
+        with mock.patch.dict(
+            cyberful_os_mcp.os.environ,
+            {
+                cyberful_os_mcp.EVM_RUNTIME_ID_ENV: "caller-selected",
+                cyberful_os_mcp.WORKAREA_ROOT_ENV: "/tmp/cyberful-workarea",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid EVM runtime identity"):
+                cyberful_os_mcp.inherited_container_env(None)
+
 
 if __name__ == "__main__":
     unittest.main()

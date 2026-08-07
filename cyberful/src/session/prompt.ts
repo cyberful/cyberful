@@ -1291,7 +1291,11 @@ export const layer = Layer.effect(
       const engagementEvm = SubsystemPhase.hasCapability(workflow, "evm-lab")
         ? yield* Effect.promise(async () => {
             try {
-              return await SubsystemEvmRuntime.startEngagement({ sessionID: session.id, workarea: workareaCwd })
+              return await SubsystemEvmRuntime.startEngagement({
+                sessionID: session.id,
+                workarea: workareaCwd,
+                container: engagementRuntime.env.CYBERFUL_OS_CONTAINER ?? "",
+              })
             } catch (error) {
               await engagementRuntime.stop().catch((cleanupError) => {
                 throw new AggregateError([error, cleanupError], "EVM startup and engagement runtime cleanup failed")

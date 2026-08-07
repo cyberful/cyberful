@@ -7,12 +7,12 @@ Cyberful pins Forge, Cast, Anvil, and Chisel to Foundry `v1.7.1`. Foundry may do
 Run commands from the selected repository's mutable `container_path`:
 
 ```bash
-forge build
+forge build --build-info
 forge test --match-path 'test/Relevant*.t.sol' -vvv
 forge test --match-test testSpecificBehavior -vvvv
 ```
 
-Respect `foundry.toml`, remappings, profiles, and the project's chosen compiler. Do not silently upgrade dependencies or rewrite lockfiles before reproducing the original build.
+Respect `foundry.toml`, remappings, profiles, and the project's chosen compiler. Keep the decisive build-info file for `evm_evidence`; when several exist, pass its repository-relative path explicitly. Do not silently upgrade dependencies or rewrite lockfiles before reproducing the original build.
 
 ## Fuzz and invariants
 

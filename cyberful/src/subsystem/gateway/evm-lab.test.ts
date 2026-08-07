@@ -40,7 +40,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-function fixture() {
+function fixture(input: { readonly logs?: string } = {}) {
   const calls: string[][] = []
   const variables = new Map<string, string>()
   let snapshot = 0
@@ -48,6 +48,10 @@ function fixture() {
   const hooks: EvmLabHooks = {
     docker: async (args) => {
       calls.push([...args])
+      if (args[0] === "network" && args[1] === "create") return { exitCode: 0, stdout: `${args.at(-1)}\n`, stderr: "" }
+      if (args[0] === "network" && args[1] === "inspect")
+        return { exitCode: 0, stdout: `${runtime}\n`, stderr: "" }
+      if (args[0] === "network" && args[1] === "rm") return { exitCode: 0, stdout: `${args.at(-1)}\n`, stderr: "" }
       if (args[0] === "run") {
         container = String(args[args.indexOf("--name") + 1])
         return { exitCode: 0, stdout: `${container}\n`, stderr: "" }
@@ -56,13 +60,13 @@ function fixture() {
       if (args[0] === "logs")
         return {
           exitCode: 0,
-          stdout:
+          stdout: input.logs ??
             "Available Accounts\n" +
-            "(0) 0x1111111111111111111111111111111111111111\n" +
-            "(1) 0x2222222222222222222222222222222222222222\n" +
-            "Private Keys\n" +
-            `(0) 0x${"a".repeat(64)}\n` +
-            `(1) 0x${"b".repeat(64)}\n`,
+              "(0) 0x1111111111111111111111111111111111111111\n" +
+              "(1) 0x2222222222222222222222222222222222222222\n" +
+              "Private Keys\n" +
+              `(0) 0x${"a".repeat(64)}\n` +
+              `(1) 0x${"b".repeat(64)}\n`,
           stderr: "",
         }
       if (args[0] === "inspect") return { exitCode: 0, stdout: `${runtime} true\n`, stderr: "" }
@@ -119,8 +123,17 @@ describe("managed EVM lab", () => {
     const run = testRuntime.calls.find((call) => call[0] === "run") ?? []
     expect(run).toContain("127.0.0.1::8545")
     expect(run).toContain("--mnemonic-seed-unsafe")
-    expect(run).not.toContain("--network=none")
+    expect(run.slice(0, run.indexOf("cyberful-os:test"))).toContain("--entrypoint")
+    expect(run[run.indexOf("--entrypoint") + 1]).toBe("anvil")
+    expect(run.slice(run.indexOf("cyberful-os:test") + 1)).not.toContain("anvil")
+    expect(run).toContain("--read-only")
+    expect(run).toContain("HOME=/tmp")
+    expect(run).toContain("/tmp:rw,noexec,nosuid,nodev,size=64m")
+    expect(run).not.toContain("--mount")
+    expect(run).toContain("--network")
     expect(run.join(" ")).not.toContain("proxy")
+    const networkCreate = testRuntime.calls.find((call) => call[0] === "network" && call[1] === "create") ?? []
+    expect(networkCreate).toContain("com.docker.network.bridge.enable_ip_masquerade=false")
 
     expect(await handleEvmLab({ action: "status" }, testRuntime.hooks)).toMatchObject({ status: "running" })
     expect(await handleEvmLab({ action: "snapshot", name: "before-poc" }, testRuntime.hooks)).toMatchObject({
@@ -151,9 +164,37 @@ describe("managed EVM lab", () => {
     const run = testRuntime.calls.find((call) => call[0] === "run") ?? []
     expect(run).toContain("--fork-url")
     expect(run).toContain("https://secret-token@rpc.example.test/private?api_key=secret")
+    expect(run).not.toContain("--network")
     const persisted = await readFile(path.join(root, "raw", "evm", "lab.json"), "utf8")
     expect(persisted).toContain('"origin": "https://rpc.example.test/[redacted]"')
     expect(persisted).not.toContain("secret-token")
     expect(persisted).not.toContain("api_key=secret")
+  })
+
+  test("removes partial startup state and redacts a failed fork diagnostic", async () => {
+    const forkUrl = "https://rpc.example.test/private?api_key=secret"
+    const testRuntime = fixture({ logs: `fork initialization failed for ${forkUrl}\n` })
+    let failure: unknown
+    try {
+      await handleEvmLab(
+        {
+          action: "prepare",
+          mode: "fork",
+          repositories: ["contracts"],
+          fork_url: forkUrl,
+          accounts: 2,
+        },
+        testRuntime.hooks,
+      )
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    const message = failure instanceof Error ? failure.message : ""
+    expect(message).toContain("[redacted fork URL]")
+    expect(message).not.toContain("api_key=secret")
+    expect(testRuntime.calls.some((call) => call[0] === "rm" && call[1] === "--force")).toBe(true)
+    expect(testRuntime.variables.size).toBe(0)
+    expect(await Bun.file(path.join(root, "raw", "evm", "lab.json")).exists()).toBe(false)
   })
 })

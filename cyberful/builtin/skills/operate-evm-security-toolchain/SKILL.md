@@ -19,12 +19,12 @@ The managed node is a convenience, not a policy boundary. There is no RPC method
 
 ## Build and test directly
 
-Work in the returned mutable `container_path`. Start with the project's own Foundry configuration and lockfiles, then use `forge build` and the narrowest test command that exercises the hypothesis. Expand to fuzzing, invariants, verbosity, traces, or state inspection only when they add evidence.
+Work in the returned mutable `container_path`. Start with the project's own Foundry configuration and lockfiles, then use `forge build --build-info` and the narrowest test command that exercises the hypothesis. Expand to fuzzing, invariants, verbosity, traces, or state inspection only when they add evidence.
 
 Use named `evm_lab` snapshots before meaningful state mutations and revert them when comparing paths. Keep the seed, run count, compiler version, fork block, and exact command for results that may become a finding.
 
 ## Preserve the decisive evidence
 
-Write a bounded artifact in the workarea for the candidate finding, then call `evm_evidence` with `action: record`. Register only useful `test`, `trace`, `state-diff`, `fuzz`, `invariant`, or `poc` evidence. One replayable command and the minimal artifact proving impact are preferable to generic terminal output.
+Write a bounded artifact in the workarea for the candidate finding, then call `evm_evidence` with `action: record`. Supply the expected `solidity` version and pass the repository-relative `build_info` path when the project has more than one build-info file. Cyberful rejects a mismatch and records the live Foundry/image attestation. Register only useful `test`, `trace`, `state-diff`, `fuzz`, `invariant`, or `poc` evidence. One replayable command and the minimal artifact proving impact are preferable to generic terminal output.
 
 Use `evm_evidence` with `action: list` before verification or reporting. Confirm that the cited artifact, repository commit, compiler, fork block, seed/runs, and local transaction hash match the reproduced result.

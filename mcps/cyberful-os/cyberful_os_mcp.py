@@ -76,6 +76,12 @@ NO_TELEMETRY_ENV = {
     "SEMGREP_SEND_METRICS": "off",
     "SYFT_CHECK_FOR_APP_UPDATE": "false",
 }
+EVM_FOUNDRY_ENV = {
+    "HOME": "/workspace/.cyberful-evm/cache",
+    "FOUNDRY_DIR": "/workspace/.cyberful-evm/cache/.foundry",
+    "SVM_HOME": "/workspace/.cyberful-evm/cache/.svm",
+    "XDG_CACHE_HOME": "/workspace/.cyberful-evm/cache/.cache",
+}
 CURRENT_PROGRESS_TOKEN: Any | None = None
 LAST_PROGRESS_AT = 0.0
 PROGRESS_SEQUENCE = 0
@@ -83,6 +89,7 @@ STRICT_PREFLIGHT_ENV = "CYBERFUL_OS_STRICT_PREFLIGHT"
 REQUIRE_ENGAGEMENT_CONTAINER_ENV = "CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER"
 IN_CONTAINER_EXECUTION_ENV = "CYBERFUL_OS_IN_CONTAINER"
 WORKAREA_ROOT_ENV = "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
+EVM_RUNTIME_ID_ENV = "CYBERFUL_EVM_RUNTIME_ID"
 RUN_ID_ENV = "CYBERFUL_RUN_ID"
 OWNER_LABEL = "org.cyberful.run-owner"
 RUNTIME_LABEL = "org.cyberful.runtime"
@@ -346,13 +353,12 @@ def docker_environment() -> dict[str, str]:
     return next_env
 
 
-# ── Tool Calls Cannot Re-enable Background Traffic ──────────────────
-# The image disables the known update and metrics paths of its bundled tools,
-# but docker exec environment overrides take precedence over image defaults.
-# Callers may still pass provider credentials and scan configuration; the fixed
-# no-telemetry keys are reapplied last so one invocation cannot weaken policy.
-# This protects every dedicated tool and the shell fallback at one boundary.
-# ─────────────────────────────────────────────────────────────────────
+# ── Host-Owned Exec Environment Wins Over Caller Input ──────────────────────
+# Docker exec overrides the image environment, so caller configuration is
+# normalized before proxy trust, EVM compiler homes, and no-telemetry policy are
+# applied. An EVM engagement therefore cannot redirect its compiler into `/root`,
+# while every dedicated tool and the shell share the same fixed policy boundary.
+# ─────────────────────────────────────────────────────────────────────────────
 
 def validated_ca_bundle(value: str) -> str:
     if not os.path.isabs(value):
@@ -402,6 +408,17 @@ def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
             "BUNDLE_SSL_CA_CERT": trusted_bundle,
             "BUNDLE_SSL_VERIFY_MODE": "1",
         })
+    evm_runtime_id = os.environ.get(EVM_RUNTIME_ID_ENV, "").strip()
+    if evm_runtime_id:
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            evm_runtime_id,
+        ):
+            raise ValueError("cyberful-os received an invalid EVM runtime identity")
+        workarea = os.environ.get(WORKAREA_ROOT_ENV, "").strip()
+        if not workarea or not os.path.isabs(workarea):
+            raise ValueError("cyberful-os EVM compiler cache requires an absolute workarea")
+        next_env.update(EVM_FOUNDRY_ENV)
     next_env.update(NO_TELEMETRY_ENV)
     return next_env
 
