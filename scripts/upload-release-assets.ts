@@ -42,6 +42,65 @@ async function sha256(file: string) {
 type GitHubAsset = { id: number; name: string; digest?: string | null }
 type GitHubRelease = { id: number; uploadUrl: string; assets: GitHubAsset[] }
 
+function validateRelease(repository: string, tag: string, value: unknown): GitHubRelease {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("id" in value) ||
+    !Number.isSafeInteger(value.id) ||
+    Number(value.id) <= 0 ||
+    !("tag_name" in value) ||
+    value.tag_name !== tag ||
+    !("upload_url" in value) ||
+    typeof value.upload_url !== "string" ||
+    !("assets" in value) ||
+    !Array.isArray(value.assets)
+  ) {
+    throw new Error(`GitHub Release ${tag} returned an invalid release record`)
+  }
+  const uploadUrl = value.upload_url.replace(/\{\?name,label\}$/, "")
+  if (uploadUrl !== `https://uploads.github.com/repos/${repository}/releases/${value.id}/assets`) {
+    throw new Error(`GitHub Release ${tag} returned an invalid upload URL`)
+  }
+  const assets = value.assets.filter(
+    (asset): asset is GitHubAsset =>
+      typeof asset === "object" &&
+      asset !== null &&
+      "id" in asset &&
+      Number.isSafeInteger(asset.id) &&
+      Number(asset.id) > 0 &&
+      "name" in asset &&
+      typeof asset.name === "string" &&
+      (!("digest" in asset) || asset.digest === null || typeof asset.digest === "string"),
+  )
+  if (assets.length !== value.assets.length) throw new Error(`GitHub Release ${tag} returned an invalid asset record`)
+  if (new Set(assets.map((asset) => asset.name)).size !== assets.length) {
+    throw new Error(`GitHub Release ${tag} returned duplicate asset names`)
+  }
+  return { id: Number(value.id), uploadUrl, assets }
+}
+
+export function githubReleaseById(repository: string, tag: string, releaseId: number, ghExecutable = "gh") {
+  if (!Number.isSafeInteger(releaseId) || releaseId <= 0) throw new Error("GitHub Release ID must be a positive integer")
+  const lookup = Bun.spawnSync([ghExecutable, "api", `repos/${repository}/releases/${releaseId}`], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60_000,
+    maxBuffer: 16_777_216,
+  })
+  if (lookup.exitCode !== 0) {
+    const detail = new TextDecoder().decode(lookup.stderr).trim().slice(0, 2_000)
+    throw new Error(`Cannot inspect GitHub Release ${tag}${detail ? `: ${detail}` : ""}`)
+  }
+  const release = validateRelease(
+    repository,
+    tag,
+    parseJson(new TextDecoder().decode(lookup.stdout), `GitHub Release ${tag}`),
+  )
+  if (release.id !== releaseId) throw new Error(`GitHub Release ${tag} returned the wrong release ID`)
+  return release
+}
+
 // ── Draft Releases Require Authenticated List Resolution ───────────
 // GitHub's release-by-tag endpoint exposes public releases but returns 404 for
 // an authenticated draft, whose browser URL uses a temporary `untagged-*` name.
@@ -75,39 +134,12 @@ export function githubReleaseByTag(repository: string, tag: string, ghExecutable
     )
   if (matches.length === 0) return
   if (matches.length > 1) throw new Error(`GitHub returned multiple releases for ${tag}`)
-  const release = matches[0]
-  if (
-    !Number.isSafeInteger(release.id) ||
-    Number(release.id) <= 0 ||
-    typeof release.upload_url !== "string" ||
-    !Array.isArray(release.assets)
-  ) {
-    throw new Error(`GitHub Release ${tag} returned an invalid release record`)
-  }
-  const uploadUrl = release.upload_url.replace(/\{\?name,label\}$/, "")
-  if (uploadUrl !== `https://uploads.github.com/repos/${repository}/releases/${release.id}/assets`) {
-    throw new Error(`GitHub Release ${tag} returned an invalid upload URL`)
-  }
-  const assets = release.assets.filter(
-    (asset): asset is GitHubAsset =>
-      typeof asset === "object" &&
-      asset !== null &&
-      "id" in asset &&
-      Number.isSafeInteger(asset.id) &&
-      Number(asset.id) > 0 &&
-      "name" in asset &&
-      typeof asset.name === "string" &&
-      (!("digest" in asset) || asset.digest === null || typeof asset.digest === "string"),
-  )
-  if (assets.length !== release.assets.length) throw new Error(`GitHub Release ${tag} returned an invalid asset record`)
-  if (new Set(assets.map((asset) => asset.name)).size !== assets.length) {
-    throw new Error(`GitHub Release ${tag} returned duplicate asset names`)
-  }
-  return { id: Number(release.id), uploadUrl, assets } satisfies GitHubRelease
+  return validateRelease(repository, tag, matches[0])
 }
 
 if (import.meta.main) {
   const tag = argument("--tag")
+  const releaseIdArgument = argument("--release-id")
   const directoryArgument = argument("--directory")
   const repository = process.env.GITHUB_REPOSITORY?.trim()
   if (!tag || !tag.startsWith("v") || !semver.valid(tag.slice(1))) {
@@ -117,9 +149,15 @@ if (import.meta.main) {
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     throw new Error("GITHUB_REPOSITORY must be an owner/repository pair")
   }
+  const releaseId = releaseIdArgument === undefined ? undefined : Number(releaseIdArgument)
+  if (releaseId !== undefined && (!Number.isSafeInteger(releaseId) || releaseId <= 0)) {
+    throw new Error("--release-id must be a positive integer")
+  }
   const directory = path.resolve(directoryArgument)
   if (!fs.statSync(directory, { throwIfNoEntry: false })?.isDirectory()) throw new Error("--directory is required")
-  const release = githubReleaseByTag(repository, tag)
+  const release = releaseId === undefined
+    ? githubReleaseByTag(repository, tag)
+    : githubReleaseById(repository, tag, releaseId)
   if (!release) throw new Error(`GitHub Release ${tag} does not exist`)
 
   for (const entry of fs
