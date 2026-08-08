@@ -323,9 +323,9 @@ async function dockerOutput(...args: string[]) {
 }
 
 function coreProxyEnvironment(runtime: EngagementRuntime) {
-  const proxy = new URL(runtime.env.CYBER_ZAP_PROXY_URL)
-  proxy.hostname = "host.docker.internal"
-  const proxyUrl = proxy.toString()
+  const proxyContainer = runtime.env.CYBERFUL_ZAP_RUNTIME_CONTAINER
+  if (!proxyContainer) throw new Error("engagement did not expose its private ZAP container route")
+  const proxyUrl = `http://${proxyContainer}:8080/`
   const bundle = runtime.env.CYBERFUL_OS_CA_BUNDLE
   if (!bundle) throw new Error("engagement did not expose its attested core CA bundle")
   return {

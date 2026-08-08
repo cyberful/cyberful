@@ -321,16 +321,18 @@ describe("expert-gateway workflow capability policy", () => {
     expect(() =>
       cyberfulOsProxyTrustEnv({
         CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
+        CYBERFUL_ZAP_RUNTIME_CONTAINER: "cyberful-os-zap",
         CYBERFUL_OS_CA_BUNDLE: "/workspace/raw/zap/trust/ca-bundle.pem",
       }),
     ).toThrow("host-owned engagement trust path")
     expect(
       cyberfulOsProxyTrustEnv({
         CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
+        CYBERFUL_ZAP_RUNTIME_CONTAINER: "cyberful-os-zap",
         CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem",
       }),
     ).toEqual({
-      CYBERFUL_OS_HTTP_PROXY: "http://host.docker.internal:49152/",
+      CYBERFUL_OS_HTTP_PROXY: "http://cyberful-os-zap:8080/",
       CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem",
     })
   })
