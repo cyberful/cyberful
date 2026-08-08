@@ -21,10 +21,10 @@ Parameters:
     Description: Public subnet in VpcId used by both ephemeral runner launch templates
   Amd64InstanceType:
     Type: String
-    Default: c7i.xlarge
+    Default: m7i.xlarge
   Arm64InstanceType:
     Type: String
-    Default: c7g.xlarge
+    Default: m7g.xlarge
   RootVolumeSize:
     Type: Number
     Default: 160

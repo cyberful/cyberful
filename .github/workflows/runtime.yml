@@ -254,10 +254,10 @@ jobs:
           for architecture in amd64 arm64; do
             if [[ "$architecture" == amd64 ]]; then
               template_id="$AMD64_TEMPLATE_ID"
-              instance_types=(c7i.xlarge c6i.xlarge m7i.xlarge m6i.xlarge)
+              instance_types=(m7i.xlarge m6i.xlarge r7i.xlarge r6i.xlarge)
             else
               template_id="$ARM64_TEMPLATE_ID"
-              instance_types=(c7g.xlarge c6g.xlarge m7g.xlarge m6g.xlarge)
+              instance_types=(m7g.xlarge m6g.xlarge r7g.xlarge r6g.xlarge)
             fi
             [[ "$template_id" =~ ^lt-[0-9a-f]+$ ]]
 
@@ -350,6 +350,7 @@ jobs:
         run: |
           test "$(uname -m)" = "$RUNTIME_MACHINE"
           test "$(df --output=avail -B1 / | tail -n 1)" -ge 100000000000
+          test "$(docker info --format '{{.MemTotal}}')" -ge 10000000000
           docker buildx inspect --bootstrap
           if compgen -G '/proc/sys/fs/binfmt_misc/qemu-*' >/dev/null; then
             echo "QEMU/emulation is forbidden for runtime builds." >&2
