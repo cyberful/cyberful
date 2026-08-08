@@ -8,7 +8,7 @@ agent:
   subagents:
     enabled: true
     provider: openai-codex
-    reasoning_effort: high
+    reasoning_effort: [xhigh, medium]
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2

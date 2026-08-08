@@ -71,7 +71,7 @@ describe("Settings", () => {
     expect(Settings.subagentPolicy(settings)).toEqual({
       provider: "openai-codex",
       reasoning_efforts: ["xhigh", "medium"],
-      default_reasoning_effort: "medium",
+      default_reasoning_effort: "xhigh",
       source: "configured",
     })
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
@@ -207,7 +207,7 @@ describe("Settings", () => {
     expect(Settings.subagentPolicy(dedicated)).toEqual({
       provider: "main",
       reasoning_efforts: ["xhigh", "medium"],
-      default_reasoning_effort: "medium",
+      default_reasoning_effort: "xhigh",
       source: "configured",
     })
 
@@ -215,7 +215,7 @@ describe("Settings", () => {
     expect(Settings.subagentPolicy(legacy)).toMatchObject({
       provider: "main",
       reasoning_efforts: ["xhigh", "medium"],
-      default_reasoning_effort: "medium",
+      default_reasoning_effort: "xhigh",
       source: "main-provider-fallback",
       warning: expect.stringContaining("inherit"),
     })
@@ -241,26 +241,36 @@ describe("Settings", () => {
 
     const settings = await Settings.load(directory)
     expect(Settings.subagentPolicy(settings)).toMatchObject({
-      reasoning_efforts: ["xhigh", "medium"],
-      default_reasoning_effort: "medium",
+      reasoning_efforts: ["xhigh"],
+      default_reasoning_effort: "xhigh",
     })
     expect(await readFile(filePath, "utf8")).toContain(
-      "    reasoning_effort: [xhigh, medium] # legacy",
+      "    reasoning_effort: [xhigh] # legacy",
     )
 
-    expect(() =>
-      Settings.parse(
-        validSettings().replace(
-          "    enabled: true\n",
-          "    enabled: true\n    reasoning_effort: [xhigh]\n",
+    expect(
+      Settings.subagentPolicy(
+        Settings.parse(
+          validSettings().replace(
+            "    enabled: true\n",
+            "    enabled: true\n    reasoning_effort: [xhigh]\n",
+          ),
         ),
       ),
-    ).toThrow("must include medium")
+    ).toMatchObject({ reasoning_efforts: ["xhigh"], default_reasoning_effort: "xhigh" })
     expect(() =>
       Settings.parse(
         validSettings().replace(
           "    enabled: true\n",
-          "    enabled: true\n    reasoning_effort: [medium, medium]\n",
+          "    enabled: true\n    reasoning_effort: [medium]\n",
+        ),
+      ),
+    ).toThrow("must include xhigh")
+    expect(() =>
+      Settings.parse(
+        validSettings().replace(
+          "    enabled: true\n",
+          "    enabled: true\n    reasoning_effort: [xhigh, xhigh]\n",
         ),
       ),
     ).toThrow("must not contain duplicates")

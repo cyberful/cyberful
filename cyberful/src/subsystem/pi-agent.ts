@@ -123,7 +123,7 @@ function delegateTaskParameters(reasoningEfforts: readonly Settings.ReasoningEff
         Type.String({
           enum: [...reasoningEfforts],
           description:
-            "Choose one host-allowed effort for this child. Use medium for bounded evidence collection and xhigh for ambiguous multi-step exploit research. Omission always selects medium.",
+            "Choose one host-allowed effort for this child. Omission selects xhigh; request medium explicitly only for bounded evidence collection.",
         }),
       ),
     },
@@ -2255,7 +2255,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       name: "delegate_task",
       label: "Delegate Cyberful Task",
       description:
-        "Create one complete child AgentRun for a bounded subtask. The child receives the full Cyberful contract, persona, skills, and phase tools but not this transcript. Select medium for deterministic evidence work and a stronger allowed effort only for ambiguity, synthesis, or multi-step exploit reasoning.",
+        "Create one complete child AgentRun for a bounded subtask. The child receives the full Cyberful contract, persona, skills, and phase tools but not this transcript. Omission uses xhigh; select medium explicitly only for deterministic evidence work.",
       parameters,
       execute: async (callID, input, signal) => {
         const requestedReasoning = input.reasoning_effort

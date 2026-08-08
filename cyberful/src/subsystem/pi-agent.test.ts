@@ -538,7 +538,7 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
       enabled: true,
       provider: "main",
       reasoningEfforts: ["xhigh", "medium"],
-      defaultReasoningEffort: "medium",
+      defaultReasoningEffort: "xhigh",
       maxPerRun: options.maxPerRun ?? 8,
       maxConcurrent: options.maxConcurrent ?? 8,
       maxDepth: options.maxDepth ?? 3,
@@ -2127,7 +2127,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     ])
     expect(started[1]?.identity).toEqual({ displayName: "api-monster", emoji: "👾" })
     expect(started[1]).toMatchObject({ reasoningEffort: "xhigh", reasoningSelection: "parent" })
-    expect(started[2]).toMatchObject({ reasoningEffort: "medium", reasoningSelection: "default" })
+    expect(started[2]).toMatchObject({ reasoningEffort: "xhigh", reasoningSelection: "default" })
     expect(started[2]?.identity).toMatchObject({
       displayName: expect.stringMatching(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
       emoji: expect.any(String),

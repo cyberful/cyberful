@@ -55,7 +55,7 @@ const ReasoningEffort = Schema.Literals(["minimal", "low", "medium", "high", "xh
 export type ReasoningEffort = Schema.Schema.Type<typeof ReasoningEffort>
 
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "ultra"
-export const DEFAULT_SUBAGENT_REASONING_EFFORT: ReasoningEffort = "medium"
+export const DEFAULT_SUBAGENT_REASONING_EFFORT: ReasoningEffort = "xhigh"
 export const DEFAULT_SUBAGENT_REASONING_EFFORTS: readonly ReasoningEffort[] = ["xhigh", "medium"]
 
 export const DEFAULT_COMPACTION = {
@@ -318,7 +318,7 @@ function yamlReason(error: unknown) {
 
 // ── Legacy Scalar Child Reasoning Becomes An Allowlist ───────────
 // Version 1 settings historically selected one fixed child effort. The runtime
-// now accepts an allowlist while preserving `medium` as the non-negotiable
+// now accepts an allowlist while preserving `xhigh` as the non-negotiable
 // default for an omitted parent choice. Parsing normalizes the old scalar before
 // schema validation, so direct callers and files loaded before their atomic
 // textual migration observe one canonical internal representation.
@@ -566,7 +566,7 @@ async function createDefaultIfMissing(filePath: string) {
 // Runtime defaults alone would make two visually identical settings files run
 // with different assumptions across Cyberful versions. Loading an older file
 // therefore inserts the root default and rewrites the former scalar child effort
-// as an allowlist containing `medium`. Missing child policy receives the current
+// as an allowlist containing `xhigh`. Missing child policy receives the current
 // explicit default. Atomic replacement occurs only while source text is unchanged,
 // so concurrent operator edits are never overwritten by migration.
 //
