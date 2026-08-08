@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { githubReleaseByTag } from "../../scripts/upload-release-assets"
+import { githubReleaseById, githubReleaseByTag } from "../../scripts/upload-release-assets"
 
 const temporaryRoots: string[] = []
 
@@ -26,6 +26,27 @@ function fakeGitHub(pages: unknown) {
 }
 
 describe("draft release recovery", () => {
+  test("resolves the creation response ID without waiting for list visibility", () => {
+    const release = githubReleaseById(
+      "cyberful/cyberful",
+      "v0.2.0",
+      367282802,
+      fakeGitHub({
+        id: 367282802,
+        tag_name: "v0.2.0",
+        draft: true,
+        upload_url: "https://uploads.github.com/repos/cyberful/cyberful/releases/367282802/assets{?name,label}",
+        assets: [],
+      }),
+    )
+
+    expect(release).toEqual({
+      id: 367282802,
+      uploadUrl: "https://uploads.github.com/repos/cyberful/cyberful/releases/367282802/assets",
+      assets: [],
+    })
+  })
+
   test("resolves an authenticated draft by tag and stable release ID", () => {
     const release = githubReleaseByTag(
       "cyberful/cyberful",

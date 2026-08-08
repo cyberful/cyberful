@@ -463,6 +463,7 @@ jobs:
         run: >-
           bun scripts/upload-release-assets.ts
           --tag "v$RELEASE_VERSION"
+          --release-id "${{ steps.release.outputs.release_id }}"
           --directory release-assets
 
   publish-npm:
