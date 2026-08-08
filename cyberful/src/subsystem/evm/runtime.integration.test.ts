@@ -75,6 +75,7 @@ test("Bug Bounty reuses Solc offline and reaches a hardened fresh Anvil lab from
       objective: "Verify the local EVM runtime without target traffic.",
     })
     Object.assign(process.env, core.env)
+    const originalDefaultRoute = await docker(["exec", container, "ip", "route", "show", "default"])
     evm = await SubsystemEvmRuntime.startEngagement({ sessionID, workarea, container })
     Object.assign(process.env, evm.env)
     expect((await lstat(path.join(canonicalWorkarea, ".cyberful-evm", "cache"))).mode & 0o777).toBe(0o700)
@@ -122,6 +123,7 @@ test("Bug Bounty reuses Solc offline and reaches a hardened fresh Anvil lab from
     const repository = prepared.repositories[0]
     if (!repository || typeof repository.container_path !== "string")
       throw new Error("live EVM lab returned an invalid materialized repository")
+    expect(await docker(["exec", container, "ip", "route", "show", "default"])).toBe(originalDefaultRoute)
     const labContainer = `cyberful-anvil-${prepared.lab_id.slice(0, 12)}`
     stopLab = () => handleEvmLab(
       { action: "stop" },

@@ -473,8 +473,9 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
   // A host port bound to loopback cannot be reached through Docker's host gateway
   // on native Linux. Every lab therefore owns a user-defined bridge and temporarily
   // joins the engagement core to it, giving Cast a private DNS route to Anvil while
-  // retaining the separate loopback route used by the host gateway. Fresh bridges
-  // disable masquerading; fork bridges keep egress only for their selected RPC.
+  // retaining the separate loopback route used by the host gateway. A negative
+  // gateway priority keeps this secondary bridge from replacing the core's default
+  // route. Fresh bridges disable masquerading; fork bridges retain selected egress.
   // ─────────────────────────────────────────────────────────────────────────────
   const command = [
     "run",
@@ -542,7 +543,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
     await waitForRpc(hostRpcUrl, rpc)
     const containerRpcUrl = `http://${container}:8545`
     dockerOutput(
-      await docker(["network", "connect", network, coreContainer]),
+      await docker(["network", "connect", "--gw-priority=-1", network, coreContainer]),
       "Cyberful core EVM network connection",
     )
     await waitForContainerRpc(coreContainer, containerRpcUrl, chainID, docker)

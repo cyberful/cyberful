@@ -150,7 +150,13 @@ describe("managed EVM lab", () => {
     const networkCreate = testRuntime.calls.find((call) => call[0] === "network" && call[1] === "create") ?? []
     expect(networkCreate).toContain("com.docker.network.bridge.enable_ip_masquerade=false")
     const network = String(networkCreate.at(-1))
-    expect(testRuntime.calls).toContainEqual(["network", "connect", network, "cyberful-os-test"])
+    expect(testRuntime.calls).toContainEqual([
+      "network",
+      "connect",
+      "--gw-priority=-1",
+      network,
+      "cyberful-os-test",
+    ])
     expect(testRuntime.calls).toContainEqual([
       "exec",
       "cyberful-os-test",
