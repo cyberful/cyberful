@@ -38,11 +38,19 @@ describe("gateway tool registry", () => {
       },
     ])
     expect(
-      await registry.call("probe", { value: "ok" }, { sessionID: SessionID.make("ses_registry") }),
+      await registry.call("probe", { value: "ok" }, {
+        sessionID: SessionID.make("ses_registry"),
+        signal: new AbortController().signal,
+      }),
     ).toMatchObject({
       content: [{ type: "text", text: "ses_registry:ok" }],
     })
-    expect(registry.call("missing", {}, { sessionID: SessionID.make("ses_registry") })).toBeUndefined()
+    expect(
+      registry.call("missing", {}, {
+        sessionID: SessionID.make("ses_registry"),
+        signal: new AbortController().signal,
+      }),
+    ).toBeUndefined()
     expect(() => registry.register(definition, () => ({ content: [] }))).toThrow("duplicate local gateway tool")
   })
 })

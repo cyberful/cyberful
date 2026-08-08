@@ -11,6 +11,7 @@ import path from "node:path"
 import {
   HYPOTHESIS_TOOL_DEF,
   HypothesisRegistry,
+  HypothesisRegistryError,
   readHypothesisRegistryView,
 } from "./hypothesis-registry"
 
@@ -240,5 +241,39 @@ describe("hypothesis registry", () => {
       readonly properties?: { readonly state?: { readonly enum?: readonly string[] } }
     }>
     expect(alternatives.some((schema) => schema.properties?.state?.enum?.includes("TESTING"))).toBeTrue()
+  })
+
+  test("returns typed missing-id and invalid-transition reconciliation context", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      await registry.handle({
+        action: "record",
+        id: "H-TYPED-1",
+        owner: "root",
+        description: "A bounded candidate",
+        root_cause: "missing check",
+        surface: "API",
+        discriminator: "controlled differential",
+      })
+      const missing = await registry.get("H-MISSING").catch((error) => error)
+      expect(missing).toBeInstanceOf(HypothesisRegistryError)
+      expect((missing as HypothesisRegistryError).toolError({ action: "get" })).toMatchObject({
+        code: "HYPOTHESIS_NOT_FOUND",
+        revision: 1,
+        available_ids: ["H-TYPED-1"],
+      })
+      const invalid = await registry
+        .handle({ action: "update", id: "H-TYPED-1", state: "CONFIRMED", finding_id: "F-1", evidence: ["x"], reason: "x" })
+        .catch((error) => error)
+      expect(invalid).toBeInstanceOf(HypothesisRegistryError)
+      expect((invalid as HypothesisRegistryError).toolError({ action: "update" })).toMatchObject({
+        code: "HYPOTHESIS_TRANSITION_INVALID",
+        current_state: "OPEN",
+        requested_state: "CONFIRMED",
+      })
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
   })
 })

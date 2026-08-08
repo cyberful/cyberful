@@ -40,6 +40,7 @@ def run(command: list[str], timeout: int = 60, check: bool = True) -> subprocess
 
 class McpClient:
     def __init__(self, container: str, key: str) -> None:
+        self.closed = False
         self.process = subprocess.Popen(
             [
                 "docker",
@@ -59,15 +60,19 @@ class McpClient:
             errors="replace",
         )
         self.identifier = 0
-        self.request(
-            "initialize",
-            {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "ghidra-integration", "version": "0.1.0"},
-            },
-        )
-        self.notify("notifications/initialized", {})
+        try:
+            self.request(
+                "initialize",
+                {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "ghidra-integration", "version": "0.1.0"},
+                },
+            )
+            self.notify("notifications/initialized", {})
+        except BaseException:
+            self.close()
+            raise
 
     def request(self, method: str, params: dict[str, object] | None = None, timeout: int = 30) -> dict[str, object]:
         self.identifier += 1
@@ -116,8 +121,14 @@ class McpClient:
         return payload
 
     def close(self) -> None:
-        if self.process.stdin:
-            self.process.stdin.close()
+        if self.closed:
+            return
+        self.closed = True
+        if self.process.stdin and not self.process.stdin.closed:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
         try:
             self.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -127,10 +138,11 @@ class McpClient:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=3)
-        if self.process.stdout:
-            self.process.stdout.close()
-        if self.process.stderr:
-            self.process.stderr.close()
+        finally:
+            if self.process.stdout and not self.process.stdout.closed:
+                self.process.stdout.close()
+            if self.process.stderr and not self.process.stderr.closed:
+                self.process.stderr.close()
 
     def _write(self, value: object) -> None:
         stdin = self.process.stdin

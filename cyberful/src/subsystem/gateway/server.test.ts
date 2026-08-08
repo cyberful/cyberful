@@ -29,6 +29,7 @@ const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.j
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
 const { Server } = await import("@modelcontextprotocol/sdk/server/index.js")
 const {
+  CallToolResultSchema,
   GetPromptRequestSchema,
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
@@ -39,6 +40,7 @@ const {
 const {
   claimGatewayPidSignal,
   createGatewayServer,
+  cyberfulOsProxyTrustEnv,
   parentUnavailable,
   runtimeCapabilityAllowed,
   runtimeNetworkAllowed,
@@ -300,11 +302,37 @@ describe("expert-gateway variable tool", () => {
 })
 
 describe("expert-gateway workflow capability policy", () => {
-  test("makes ZAP startup blocking only when it enforces the global HTTP budget", () => {
+  test("makes ZAP startup blocking whenever the host marks it required", () => {
     expect(upstreamFailureIsBlocking("zap", {})).toBe(false)
     expect(upstreamFailureIsBlocking("ghidra", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(false)
     expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(true)
+    expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_UPSTREAM: "1" })).toBe(true)
     expect(upstreamFailureIsBlocking("cyberful-os", {})).toBe(true)
+  })
+
+  test("exposes the cyberful-os proxy and host-owned CA bundle only as a pair", () => {
+    expect(cyberfulOsProxyTrustEnv({})).toEqual({})
+    expect(() => cyberfulOsProxyTrustEnv({ CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152" })).toThrow(
+      "configured together",
+    )
+    expect(() => cyberfulOsProxyTrustEnv({ CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem" })).toThrow(
+      "configured together",
+    )
+    expect(() =>
+      cyberfulOsProxyTrustEnv({
+        CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
+        CYBERFUL_OS_CA_BUNDLE: "/workspace/raw/zap/trust/ca-bundle.pem",
+      }),
+    ).toThrow("host-owned engagement trust path")
+    expect(
+      cyberfulOsProxyTrustEnv({
+        CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
+        CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem",
+      }),
+    ).toEqual({
+      CYBERFUL_OS_HTTP_PROXY: "http://host.docker.internal:49152/",
+      CYBERFUL_OS_CA_BUNDLE: "/run/cyberful/proxy-trust/ca-bundle.pem",
+    })
   })
 
   test("keeps Code Audit offline while live-target workflows own target traffic", () => {
@@ -401,9 +429,11 @@ describe("expert-gateway workflow capability policy", () => {
 
       expect(await toolNames("pentest", "recon")).toEqual([
         "variable",
+        "cve_dictionary",
         "test_object",
         "egress_observation",
         "hypothesis",
+        "target_cooldown",
       ])
       process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = JSON.stringify({ required: true })
       expect(await toolNames("bug-bounty", "recon")).toEqual([
@@ -416,9 +446,11 @@ describe("expert-gateway workflow capability policy", () => {
         "source_snapshot",
         "evm_lab",
         "evm_evidence",
+        "cve_dictionary",
         "test_object",
         "egress_observation",
         "hypothesis",
+        "target_cooldown",
       ])
       expect(await toolNames("bug-bounty", "brief")).toEqual([
         "variable",
@@ -428,6 +460,7 @@ describe("expert-gateway workflow capability policy", () => {
         "source_read",
         "source_search",
         "source_snapshot",
+        "cve_dictionary",
         "hypothesis",
         "engagement_policy",
       ])
@@ -439,8 +472,40 @@ describe("expert-gateway workflow capability policy", () => {
         "source_search",
         "source_snapshot",
         "evm_evidence",
+        "cve_dictionary",
         "hypothesis",
       ])
+
+      process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
+      process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+      process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = directory
+      const usageServer = await createGatewayServer({ upstreams: [] })
+      const [usageClientTransport, usageServerTransport] = InMemoryTransport.createLinkedPair()
+      await usageServer.connect(usageServerTransport)
+      const usageClient = new Client({ name: "local-tool-usage-test", version: "0" })
+      await usageClient.connect(usageClientTransport)
+      try {
+        const failedDictionary = await usageClient.callTool({
+          name: "cve_dictionary",
+          arguments: { action: "search", query: "raw-query-must-not-enter-csv" },
+          _meta: {
+            "io.cyberful/tool-actor": {
+              runID: "recon-child-1",
+              role: "subagent",
+              parentRunID: "recon-root-1",
+              toolCallID: "cve-call-1",
+            },
+          },
+        })
+        expect(failedDictionary.isError).toBe(true)
+      } finally {
+        await usageClient.close()
+        await usageServer.closeGateway()
+      }
+      const usageCsv = await readFile(path.join(directory, "raw", "operations", "tool-usage.csv"), "utf8")
+      expect(usageCsv).toContain("recon-child-1,subagent,recon-root-1,cve-call-1,cve_dictionary,search")
+      expect(usageCsv).not.toContain("raw-query-must-not-enter-csv")
+      expect(usageCsv).toMatch(/cve_dictionary,search,[0-9]+,error,0,[a-f0-9]{64}/)
     } finally {
       if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
       else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
@@ -532,6 +597,10 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       // The gateway advertises its own variable tool AND the proxied upstream tool.
       const { tools } = await c.listTools()
       expect(tools.map((tool) => tool.name).sort()).toEqual(["echo", "variable"])
+      const variableTool = tools.find((tool) => tool.name === "variable")
+      expect(variableTool?.description).toContain("{{var:<saved-name>}}")
+      expect(variableTool?.description).toContain("[session-variable:<saved-name>]")
+      expect(variableTool?.description).not.toContain("{{var:name}}")
 
       await callVariable(c, { action: "set", name: "TARGET", value: "https://target.example/admin" })
       const res = await c.callTool({ name: "echo", arguments: { u: "{{var:TARGET}}" } })
@@ -554,6 +623,51 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       expect(received?.u).toBe("https://example.com/?cyberful-browser-20260715T153737785Z")
     } finally {
       await c.close()
+      await server.closeGateway()
+    }
+  })
+
+  test("forwards client cancellation to an active upstream tool", async () => {
+    let observedSignal: AbortSignal | undefined
+    let markStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const slow: UpstreamTool = {
+      def: {
+        name: "slow",
+        description: "wait until cancelled",
+        inputSchema: { type: "object", properties: {} },
+      },
+      call: async (_args, signal) => {
+        observedSignal = signal
+        markStarted?.()
+        return await new Promise<never>((_resolve, reject) => {
+          if (!signal) {
+            reject(new Error("gateway omitted the upstream cancellation signal"))
+            return
+          }
+          const abort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("cancelled"))
+          if (signal.aborted) abort()
+          else signal.addEventListener("abort", abort, { once: true })
+        })
+      },
+    }
+    const server = await createGatewayServer({ upstreams: [slow] })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "upstream-cancellation-test", version: "0" })
+    await client.connect(clientTransport)
+    try {
+      const controller = new AbortController()
+      const call = client.callTool({ name: "slow", arguments: {} }, CallToolResultSchema, { signal: controller.signal })
+      await started
+      controller.abort(new Error("test timeout"))
+
+      await expect(call).rejects.toThrow("test timeout")
+      expect(observedSignal?.aborted).toBe(true)
+    } finally {
+      await client.close()
       await server.closeGateway()
     }
   })
@@ -621,10 +735,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
     process.env.CYBERFUL_SUBSYSTEM_PHASE = "brief"
     process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = "/tmp"
-    const upstream = (
-      name: string,
-      capability: UpstreamTool["capability"],
-    ): UpstreamTool => ({
+    const upstream = (name: string, capability: UpstreamTool["capability"]): UpstreamTool => ({
       def: { name, inputSchema: { type: "object", properties: {} } },
       capability,
       call: async () => ({ content: [{ type: "text", text: "unused" }] }),
@@ -821,6 +932,7 @@ describe("expert-gateway handoff tool", () => {
   test("commits Brief policy only after ZAP enforcement and blocks handoff after a failed install", async () => {
     const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-policy-enforcement-test-")))
     const signal = path.join(dir, "handoff.json")
+    const upstreamFailureSignal = path.join(dir, "upstream-failure.json")
     const policyPath = path.join(dir, "raw", "policy", "engagement.json")
     const environment = [
       "CYBERFUL_SUBSYSTEM_PHASE",
@@ -830,6 +942,7 @@ describe("expert-gateway handoff tool", () => {
       "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR",
       "CYBERFUL_SUBSYSTEM_HANDOFF_TERMINAL",
       "CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT",
+      "CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH",
       "CYBER_ZAP_PROXY_URL",
       "CYBER_ZAP_API_KEY",
     ] as const
@@ -841,6 +954,7 @@ describe("expert-gateway handoff tool", () => {
       CYBERFUL_SUBSYSTEM_HANDOFF_PATH: signal,
       CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR: "recon",
       CYBERFUL_SUBSYSTEM_HANDOFF_ARTIFACT: "MISSION.md",
+      CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH: upstreamFailureSignal,
       CYBER_ZAP_PROXY_URL: "http://127.0.0.1:49152",
       CYBER_ZAP_API_KEY: "private-gateway-test-key",
     })
@@ -874,6 +988,14 @@ describe("expert-gateway handoff tool", () => {
         user_action_required: false,
         policy_stored: false,
       })
+      expect(JSON.parse(await readFile(upstreamFailureSignal, "utf8"))).toMatchObject({
+        version: 1,
+        phase: "brief",
+        source: "upstream",
+        class: "required_upstream_unavailable",
+        code: "internal_error",
+        retryable: true,
+      })
       await expect(readFile(policyPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
 
       const blocked = await c.callTool({
@@ -883,7 +1005,15 @@ describe("expert-gateway handoff tool", () => {
       expect(blocked.isError).toBe(true)
       expect(errorContent(blocked).message).toContain("engagement_policy")
 
-      fetch.mockResolvedValue(new Response('{"Result":"OK"}', { status: 200 }))
+      fetch.mockImplementation((async (input) =>
+        new URL(String(input)).pathname.endsWith("getRateLimitRules/")
+          ? new Response(
+              JSON.stringify({
+                getRateLimitRules: [{ description: "Cyberful engagement global HTTP budget" }],
+              }),
+              { status: 200 },
+            )
+          : new Response('{"Result":"OK"}', { status: 200 })) as typeof globalThis.fetch)
       const installed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
       expect(installed.isError).not.toBe(true)
       expect(jsonContent(installed)).toMatchObject({

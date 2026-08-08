@@ -79,15 +79,10 @@ export interface RunInput {
 const activeWorkers = new Set<PiAgentSubsystem>()
 export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
-function recordAgentDiagnostic(
-  event: AgentEvent,
-  diagnostics: RuntimeDiagnosticRecorder,
-): void {
+function recordAgentDiagnostic(event: AgentEvent, diagnostics: RuntimeDiagnosticRecorder): void {
   if (event.type === "context_rotation") {
     if (event.state === "started" || event.state === "completed") return
-    const blocking =
-      event.state === "failed" &&
-      event.reason === "active_tail_too_large"
+    const blocking = event.state === "failed" && event.reason === "active_tail_too_large"
     diagnostics.record({
       component: "agent",
       profile: event.model,
@@ -95,10 +90,7 @@ function recordAgentDiagnostic(
       severity: blocking ? "error" : event.state === "failed" ? "warning" : "info",
       errorClass: "ContextRotation",
       ...(event.reason ? { code: event.reason } : {}),
-      outcome:
-        event.reason === "active_tail_too_large"
-          ? "capacity_failure"
-          : "context_rotation",
+      outcome: event.reason === "active_tail_too_large" ? "capacity_failure" : "context_rotation",
       blocking,
       message: [
         `Context rotation ${event.state}.`,
@@ -125,21 +117,24 @@ function recordAgentDiagnostic(
     })
     return
   }
-  if (event.type !== "run_finished" || !event.failure) return
+  if (event.type !== "run_finished" || event.termination === "completed") return
+  const profile = event.failure?.kind ?? event.termination
+  const code = event.failure?.providerCode ?? event.termination
   diagnostics.record({
     component: "agent",
-    profile: event.failure.kind,
+    runID: event.runID,
+    ...(event.parentID ? { parentRunID: event.parentID } : {}),
+    role: event.role,
+    termination: event.termination,
+    profile,
     stage: "provider",
     severity: "error",
     errorClass: "AgentRunFailure",
-    ...(event.failure.providerCode ? { code: event.failure.providerCode } : {}),
-    outcome:
-      event.failure.kind === "capacity"
-        ? "capacity_failure"
-        : "runtime_failure",
-    blocking: true,
-    message: `AgentRun terminated with ${event.failure.kind}${
-      event.failure.providerCode ? ` (${event.failure.providerCode})` : ""
+    code,
+    outcome: event.failure?.kind === "capacity" ? "capacity_failure" : "runtime_failure",
+    blocking: event.role === "root",
+    message: `AgentRun terminated with ${profile}${
+      event.failure?.providerCode ? ` (${event.failure.providerCode})` : ""
     }.`,
   })
 }
@@ -342,17 +337,20 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     workarea: input.workarea,
     workflow: input.compiledPrompt.manifest.workflow,
     phase: input.compiledPrompt.manifest.phase,
+    attempt: input.attempt ?? 1,
     deadlineAt: input.deadlineAt,
     budgetClock: input.budgetClock,
     closeoutReserveMs: input.closeoutReserveMs ?? 0,
   })
   try {
+    await liveState.start()
     const credentials = new PiCredentialStore()
     const registry = createPiModels(input.settings.agent, credentials)
     bridge = await connectPiMcp(input.gateway, {
       cwd: input.workarea,
       askQuestion: input.askQuestion,
       diagnostics,
+      budgetClock: input.budgetClock,
     })
     const fallbackLedger = await durableFallbackLedgerForSession(input.sessionID)
     subsystem = new PiAgentSubsystem({
@@ -413,6 +411,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
             runID: run.id,
             displayName: run.identity?.displayName ?? run.role,
             kind: run.role,
+            ...(run.parentID ? { parentID: run.parentID } : {}),
           },
         }),
       recoverHypothesisOwnership: (request) =>
@@ -421,6 +420,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
           actor: request.to,
           reason: request.reason,
         }),
+      recoverTestObjects: (request) => bridge!.recoverTestObjects(request),
       skills: input.skills.catalog,
       budget: {
         deadlineAt: input.deadlineAt,
@@ -432,7 +432,8 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       delegation: {
         enabled: input.settings.agent.subagents.enabled,
         provider: subagentPolicy.provider,
-        reasoningEffort: subagentPolicy.reasoning_effort,
+        reasoningEfforts: subagentPolicy.reasoning_efforts,
+        defaultReasoningEffort: subagentPolicy.default_reasoning_effort,
         maxPerRun: input.settings.agent.subagents.max_per_run,
         maxConcurrent: input.settings.agent.subagents.max_concurrent,
         maxDepth: input.settings.agent.subagents.max_depth,
@@ -476,6 +477,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       agentResult: result,
     }
   } catch (error) {
+    await liveState.fail({ termination: "spawn_failed", failure: { class: "phase_startup" } })
     diagnostics.record({
       component: "gateway",
       profile: input.gateway.name,
@@ -548,9 +550,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     }
     await diagnostics
       .close()
-      .catch((error) =>
-        emitObservabilityFailure(onEvent, rootID, "runtime_diagnostics_close_failed", error),
-      )
+      .catch((error) => emitObservabilityFailure(onEvent, rootID, "runtime_diagnostics_close_failed", error))
     await diagnosticQueue.catch((error) =>
       emitObservabilityFailure(onEvent, rootID, "runtime_diagnostic_projection_failed", error),
     )

@@ -123,6 +123,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3-venv \
     ripgrep \
     ruby \
+    ruby-bundler \
     screen \
     tini \
     socat \
@@ -643,6 +644,7 @@ COPY --from=zap-bridge-build /out/zap_bridge.mjs /opt/cyberful/zap/zap_bridge.mj
 COPY ghidra/ghidra_engine.py ghidra/ghidra_mcp.py ghidra/ghidra_bridge.py ghidra/healthcheck.py /opt/cyberful/ghidra/
 COPY cyberful-os/runtime_supervisor.py /opt/cyberful/runtime-supervisor
 COPY cyberful-os/runtime_attestation.py /opt/cyberful/runtime-attestation
+COPY cyberful-os/tls_canary.py /opt/cyberful/tls-canary
 
 # ───────────────────────────────────────────────────────────────────────────
 # 14. Unified runtime contract
@@ -665,7 +667,7 @@ RUN "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
       --no-index \
       --find-links /usr/share/ghidra/Ghidra/Features/PyGhidra/pypkg/dist \
       pyghidra \
-  && chmod 0755 /usr/local/bin/cyberful-zap /opt/cyberful/runtime-supervisor /opt/cyberful/runtime-attestation \
+  && chmod 0755 /usr/local/bin/cyberful-zap /opt/cyberful/runtime-supervisor /opt/cyberful/runtime-attestation /opt/cyberful/tls-canary \
   && case "${TARGETARCH}" in \
       amd64) GHIDRA_DECOMPILER=linux_x86_64 ;; \
       arm64) GHIDRA_DECOMPILER=linux_arm_64 ;; \

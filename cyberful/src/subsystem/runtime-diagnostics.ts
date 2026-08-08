@@ -10,6 +10,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { appendWorkareaFile } from "@/workarea"
 import { PiAudit } from "./pi-audit"
+import type { AgentRunID, AgentRunRole, AgentRunTermination } from "./agent-subsystem"
 
 export const RUNTIME_DIAGNOSTICS_PATH = "raw/operations/runtime-diagnostics.jsonl"
 const RECORD_BYTES = 8 * 1024
@@ -19,6 +20,10 @@ const LABEL_BYTES = 256
 
 export interface RuntimeDiagnosticInput {
   readonly component: "agent" | "phase" | "gateway" | "zap" | "ghidra" | "browser" | "mcp"
+  readonly runID?: AgentRunID
+  readonly parentRunID?: AgentRunID
+  readonly role?: AgentRunRole
+  readonly termination?: AgentRunTermination
   readonly profile?: string
   readonly stage: "startup" | "connect" | "context" | "provider" | "tool" | "shutdown"
   readonly severity: "info" | "warning" | "error"
@@ -40,6 +45,10 @@ export interface RuntimeDiagnosticInput {
 
 export interface RuntimeDiagnosticSummary {
   readonly component: RuntimeDiagnosticInput["component"]
+  readonly runID?: AgentRunID
+  readonly parentRunID?: AgentRunID
+  readonly role?: AgentRunRole
+  readonly termination?: AgentRunTermination
   readonly profile?: string
   readonly stage: RuntimeDiagnosticInput["stage"]
   readonly severity: Exclude<RuntimeDiagnosticInput["severity"], "info">
@@ -93,6 +102,10 @@ function diagnosticLabel(value: string): string {
 function diagnosticSignature(input: RuntimeDiagnosticInput): string {
   return [
     input.component,
+    input.runID ?? "",
+    input.parentRunID ?? "",
+    input.role ?? "",
+    input.termination ?? "",
     input.profile ?? "",
     input.stage,
     input.severity,
@@ -151,6 +164,10 @@ export class RuntimeDiagnosticRecorder {
     if (input.severity !== "info")
       this.#onFirst?.({
         component: input.component,
+        ...(input.runID ? { runID: diagnosticLabel(input.runID) } : {}),
+        ...(input.parentRunID ? { parentRunID: diagnosticLabel(input.parentRunID) } : {}),
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.termination ? { termination: input.termination } : {}),
         ...(input.profile ? { profile: diagnosticLabel(input.profile) } : {}),
         stage: input.stage,
         severity: input.severity,
@@ -180,6 +197,10 @@ export class RuntimeDiagnosticRecorder {
       phase: this.#phase,
       attempt: this.#attempt,
       component: aggregate.input.component,
+      ...(aggregate.input.runID ? { runID: diagnosticLabel(aggregate.input.runID) } : {}),
+      ...(aggregate.input.parentRunID ? { parentRunID: diagnosticLabel(aggregate.input.parentRunID) } : {}),
+      ...(aggregate.input.role ? { role: aggregate.input.role } : {}),
+      ...(aggregate.input.termination ? { termination: aggregate.input.termination } : {}),
       ...(aggregate.input.profile ? { profile: diagnosticLabel(aggregate.input.profile) } : {}),
       stage: aggregate.input.stage,
       severity: aggregate.input.severity,

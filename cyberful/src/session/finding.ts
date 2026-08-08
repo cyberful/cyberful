@@ -211,12 +211,15 @@ export function dynamicTool(
       } catch (error) {
         return {
           success: false,
-          text: toolFailure(
-            "FINDING_VALIDATION_FAILED",
-            "finding",
-            error instanceof Error ? error.message : String(error),
-            input,
-          ),
+          text:
+            error instanceof FindingRegistry.FindingRegistryError
+              ? JSON.stringify({ error: error.toolError(input) })
+              : toolFailure(
+                  "FINDING_VALIDATION_FAILED",
+                  "finding",
+                  error instanceof Error ? error.message : String(error),
+                  input,
+                ),
         }
       }
     },

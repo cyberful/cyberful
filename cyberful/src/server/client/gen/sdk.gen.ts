@@ -89,6 +89,8 @@ import type {
   QuestionAnswer,
   QuestionListErrors,
   QuestionListResponses,
+  QuestionPresentedErrors,
+  QuestionPresentedResponses,
   QuestionRejectErrors,
   QuestionRejectResponses,
   QuestionReplyErrors,
@@ -1221,6 +1223,36 @@ export class Question extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
     return (options?.client ?? this.client).get<QuestionListResponses, QuestionListErrors, ThrowOnError>({
       url: "/question",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Acknowledge question presentation
+   *
+   * Record that a pending question has been mounted by an interactive client.
+   */
+  public presented<ThrowOnError extends boolean = false>(
+    parameters: {
+      requestID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<QuestionPresentedResponses, QuestionPresentedErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "requestID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<QuestionPresentedResponses, QuestionPresentedErrors, ThrowOnError>({
+      url: "/question/{requestID}/presented",
       ...options,
       ...params,
     })

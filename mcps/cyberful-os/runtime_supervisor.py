@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ── Unified Engagement Runtime Supervisor ─────────────────────────
-# Owns optional ZAP and Ghidra children inside one engagement container while
-#   leaving the privileged cyberful-os execution environment available.
+# Owns optional ZAP or Ghidra children inside a role-specific container while
+#   exposing continuous health, explicit recovery, and cgroup memory evidence.
 # → cyberful/src/subsystem/engagement-runtime.ts — supplies validated service policy.
 # @docs/runtimes/cyberful-os.md
 # ─────────────────────────────────────────────────────────────────
@@ -22,6 +22,7 @@ import urllib.request
 
 RUN_DIRECTORY = Path("/run/cyberful")
 SHUTDOWN_TIMEOUT_SECONDS = 10.0
+UNHEALTHY_THRESHOLD = 3
 VALID_BOOLEAN_VALUES = {"0": False, "1": True, "false": False, "true": True, "no": False, "yes": True}
 
 
@@ -49,6 +50,13 @@ def runtime_identity() -> tuple[int, int]:
     if not 1 <= uid <= 2_147_483_647 or not 1 <= gid <= 2_147_483_647:
         raise ValueError("runtime UID and GID must be positive 32-bit integers")
     return uid, gid
+
+
+def zap_session_generation() -> int:
+    source = os.environ.get("CYBER_ZAP_SESSION_GENERATION", "1")
+    if not source.isdecimal() or not 1 <= int(source) <= 2_147_483_647:
+        raise ValueError("CYBER_ZAP_SESSION_GENERATION must be a positive 32-bit integer")
+    return int(source)
 
 
 def service_environment(overrides: dict[str, str]) -> dict[str, str]:
@@ -109,18 +117,51 @@ def atomic_json(target: Path, payload: object) -> None:
     os.replace(temporary, target)
 
 
-def write_state(service: str, state: str, *, pid: int | None = None, exit_code: int | None = None) -> dict[str, object]:
+def memory_events(path: Path = Path("/sys/fs/cgroup/memory.events")) -> dict[str, int]:
+    """Read bounded cgroup-v2 counters without treating absence as failure."""
+    try:
+        rows = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    result: dict[str, int] = {}
+    for row in rows:
+        fields = row.split()
+        if len(fields) != 2 or not fields[1].isdecimal():
+            continue
+        if fields[0] in {"oom", "oom_kill", "oom_group_kill", "high", "max"}:
+            result[fields[0]] = int(fields[1])
+    return result
+
+
+def memory_event_delta(baseline: dict[str, int], current: dict[str, int]) -> dict[str, int]:
+    return {key: max(0, value - baseline.get(key, 0)) for key, value in current.items()}
+
+
+def write_state(
+    service: str,
+    state: str,
+    *,
+    pid: int | None = None,
+    exit_code: int | None = None,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
     payload: dict[str, object] = {"status": state}
     if pid is not None:
         payload["pid"] = pid
     if exit_code is not None:
         payload["exit_code"] = exit_code
+        if exit_code < 0:
+            payload["signal"] = -exit_code
+    if metadata:
+        payload.update(metadata)
     atomic_json(RUN_DIRECTORY / f"{service}.json", payload)
     return payload
 
 
 def write_runtime_status(services: dict[str, dict[str, object]], status: str = "running") -> None:
-    if any(service.get("status") in {"failed", "exited"} for service in services.values()):
+    if status == "running" and any(
+        service.get("status") in {"failed", "exited", "unhealthy"} for service in services.values()
+    ):
         status = "degraded"
     atomic_json(
         RUN_DIRECTORY / "status.json",
@@ -178,6 +219,38 @@ def service_is_healthy(name: str, environment: dict[str, str]) -> bool:
     return False
 
 
+def spawn_service(service: Service, generation: int) -> subprocess.Popen[bytes]:
+    environment = service.environment.copy()
+    if service.name == "zap":
+        environment["CYBER_ZAP_SESSION_GENERATION"] = str(generation)
+    return subprocess.Popen(
+        service.command,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=None,
+        stderr=None,
+        shell=False,
+        start_new_session=True,
+    )
+
+
+def terminate_child(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is not None:
+        return
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        child.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+
+
 def main() -> int:
     try:
         uid, gid = runtime_identity()
@@ -191,26 +264,32 @@ def main() -> int:
     definitions: dict[str, Service] = {}
     states: dict[str, dict[str, object]] = {}
     next_healthcheck: dict[str, float] = {}
+    health_failures: dict[str, int] = {}
+    restart_counts: dict[str, int] = {}
+    generations: dict[str, int] = {}
+    cgroup_baseline = memory_events()
     stopping = False
+    zap_restart_mode: str | None = None
 
     def request_shutdown(_signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
 
+    def request_zap_restart(signum: int, _frame: object) -> None:
+        nonlocal zap_restart_mode
+        zap_restart_mode = "preserve" if signum == signal.SIGUSR1 else "reset"
+
     signal.signal(signal.SIGINT, request_shutdown)
     signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGUSR1, request_zap_restart)
+    signal.signal(signal.SIGUSR2, request_zap_restart)
 
     for service in services:
+        generations[service.name] = zap_session_generation() if service.name == "zap" else 1
+        restart_counts[service.name] = 0
+        health_failures[service.name] = 0
         try:
-            child = subprocess.Popen(
-                service.command,
-                env=service.environment,
-                stdin=subprocess.DEVNULL,
-                stdout=None,
-                stderr=None,
-                shell=False,
-                start_new_session=True,
-            )
+            child = spawn_service(service, generations[service.name])
         except OSError as error:
             states[service.name] = write_state(service.name, "failed")
             print(f"{service.name} failed to start: {error}", file=sys.stderr)
@@ -218,29 +297,109 @@ def main() -> int:
         children[service.name] = child
         definitions[service.name] = service
         next_healthcheck[service.name] = time.monotonic()
-        states[service.name] = write_state(service.name, "starting", pid=child.pid)
+        states[service.name] = write_state(
+            service.name,
+            "starting",
+            pid=child.pid,
+            metadata={"restart_count": 0, "session_generation": generations[service.name]},
+        )
 
     write_state("runtime", "running", pid=os.getpid())
     write_runtime_status(states)
     try:
         while not stopping:
+            # Only the host may restart ZAP. SIGUSR1 preserves the named
+            # session; SIGUSR2 advances to a visibly new session generation.
+            if zap_restart_mode is not None and "zap" in definitions:
+                mode = zap_restart_mode
+                zap_restart_mode = None
+                previous = children.pop("zap", None)
+                if previous is not None:
+                    terminate_child(previous)
+                restart_counts["zap"] += 1
+                if mode == "reset":
+                    generations["zap"] += 1
+                try:
+                    child = spawn_service(definitions["zap"], generations["zap"])
+                except OSError as error:
+                    states["zap"] = write_state(
+                        "zap",
+                        "failed",
+                        metadata={
+                            "restart_count": restart_counts["zap"],
+                            "session_generation": generations["zap"],
+                            "recovery_mode": mode,
+                        },
+                    )
+                    print(f"zap explicit {mode} restart failed: {error}", file=sys.stderr)
+                else:
+                    children["zap"] = child
+                    health_failures["zap"] = 0
+                    next_healthcheck["zap"] = time.monotonic()
+                    states["zap"] = write_state(
+                        "zap",
+                        "starting",
+                        pid=child.pid,
+                        metadata={
+                            "restart_count": restart_counts["zap"],
+                            "session_generation": generations["zap"],
+                            "recovery_mode": mode,
+                        },
+                    )
+                write_runtime_status(states)
             for name, child in list(children.items()):
                 exit_code = child.poll()
                 if exit_code is None:
                     continue
-                states[name] = write_state(name, "exited", pid=child.pid, exit_code=exit_code)
+                states[name] = write_state(
+                    name,
+                    "exited",
+                    pid=child.pid,
+                    exit_code=exit_code,
+                    metadata={
+                        "restart_count": restart_counts[name],
+                        "session_generation": generations[name],
+                        "memory_events": memory_event_delta(cgroup_baseline, memory_events()),
+                    },
+                )
                 write_runtime_status(states)
                 print(f"{name} exited with status {exit_code}; automatic restart is disabled", file=sys.stderr)
                 del children[name]
                 next_healthcheck.pop(name, None)
             now = time.monotonic()
             for name, child in children.items():
-                if states[name].get("status") != "starting" or now < next_healthcheck[name]:
+                if now < next_healthcheck[name]:
                     continue
                 next_healthcheck[name] = now + 1.0
                 if service_is_healthy(name, definitions[name].environment):
-                    states[name] = write_state(name, "ready", pid=child.pid)
-                    write_runtime_status(states)
+                    health_failures[name] = 0
+                    if states[name].get("status") != "ready":
+                        states[name] = write_state(
+                            name,
+                            "ready",
+                            pid=child.pid,
+                            metadata={
+                                "restart_count": restart_counts[name],
+                                "session_generation": generations[name],
+                                "memory_events": memory_event_delta(cgroup_baseline, memory_events()),
+                            },
+                        )
+                        write_runtime_status(states)
+                else:
+                    health_failures[name] += 1
+                    if health_failures[name] >= UNHEALTHY_THRESHOLD and states[name].get("status") != "unhealthy":
+                        states[name] = write_state(
+                            name,
+                            "unhealthy",
+                            pid=child.pid,
+                            metadata={
+                                "health_failures": health_failures[name],
+                                "restart_count": restart_counts[name],
+                                "session_generation": generations[name],
+                                "memory_events": memory_event_delta(cgroup_baseline, memory_events()),
+                            },
+                        )
+                        write_runtime_status(states)
             time.sleep(0.25)
     finally:
         write_runtime_status(states, "stopping")

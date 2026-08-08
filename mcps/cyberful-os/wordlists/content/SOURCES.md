@@ -1,10 +1,6 @@
 # Content-discovery wordlists
 
-Curated, **frequency-ordered** web content-discovery lists baked into the
-cyberful-os image at `/usr/share/wordlists/cyberful-os/content/` (Dockerfile section
-11). Frequency ordering (paths sorted by how often they occur in real-world
-crawls) means common hits surface early, so a rate-capped or time-boxed scan
-finds more per request than an alphabetic list like `dirb/common.txt`.
+Curated, **frequency-ordered** web content-discovery lists baked into the cyberful-os image at `/usr/share/wordlists/cyberful-os/content/` (Dockerfile section 11). Frequency ordering (paths sorted by how often they occur in real-world crawls) means common hits surface early, so a rate-capped or time-boxed scan finds more per request than an alphabetic list like `dirb/common.txt`.
 
 | File | Purpose | Lines |
 |------|---------|-------|
@@ -15,10 +11,7 @@ finds more per request than an alphabetic list like `dirb/common.txt`.
 
 ## Provenance
 
-Source: [SecLists](https://github.com/danielmiessler/SecLists), release tag
-**`2026.1`**, under `Discovery/Web-Content/`. SecLists is MIT-licensed.
-The required notice is preserved in
-[`../SECLISTS_LICENSE.txt`](../SECLISTS_LICENSE.txt).
+Source: [SecLists](https://github.com/danielmiessler/SecLists), release tag **`2026.1`**, under `Discovery/Web-Content/`. SecLists is MIT-licensed. The required notice is preserved in [`../SECLISTS_LICENSE.txt`](../SECLISTS_LICENSE.txt).
 
 | File | Upstream path | sha256 |
 |------|---------------|--------|
@@ -27,5 +20,4 @@ The required notice is preserved in
 | `api-endpoints.txt` | `Discovery/Web-Content/api/api-endpoints.txt` | `001a97bdab2d0cd787546ca3c543c01280fe6539b3337521aabfc6c0ea0703b1` |
 | `api-objects.txt` | `Discovery/Web-Content/api/objects.txt` | `a29fb91b8ce3b1c84da17074e3d7e5c58618f82671488c3875e697a3217a0880` |
 
-To refresh, re-fetch the same paths from a newer SecLists tag and update the
-tag, line counts, and hashes above.
+To refresh, re-fetch the same paths from a newer SecLists tag and update the tag, line counts, and hashes above.

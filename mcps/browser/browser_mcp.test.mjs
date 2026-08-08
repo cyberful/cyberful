@@ -20,6 +20,7 @@ const {
   browserToolDefinitions,
   captchaAssessment,
   captureSnapshotDocument,
+  createSerialRequestDispatcher,
   envBool,
   formatSnapshot,
   handleToolCall,
@@ -111,6 +112,32 @@ describe("browser MCP input boundary", () => {
     for await (const record of boundedJsonLines(input, 8)) records.push(record)
 
     expect(records).toEqual([{ error: "input line exceeds 8 bytes" }, { line: "{}" }])
+  })
+
+  test("cancellation interrupts the active MCP request and releases the profile queue", async () => {
+    const events = []
+    const dispatcher = createSerialRequestDispatcher({
+      handle: async (message) => {
+        events.push(`start:${message.id}`)
+        if (message.id === 1) await new Promise(() => {})
+        events.push(`finish:${message.id}`)
+      },
+      onCancel: (reason) => {
+        events.push(`cancel:${reason}`)
+      },
+    })
+
+    dispatcher.dispatch({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} })
+    await Promise.resolve()
+    dispatcher.dispatch({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: 1, reason: "deadline" },
+    })
+    dispatcher.dispatch({ jsonrpc: "2.0", id: 2, method: "ping", params: {} })
+    await dispatcher.drain()
+
+    expect(events).toEqual(["start:1", "cancel:deadline", "start:2", "finish:2"])
   })
 })
 

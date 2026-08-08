@@ -99,6 +99,8 @@ export function cyberfulOsMcpCommand() {
       "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT=/workspace",
       "-e",
       "CYBERFUL_OS_HTTP_PROXY",
+      "-e",
+      "CYBERFUL_OS_CA_BUNDLE",
       engagementContainer,
       "/opt/cyberful-os-venv/bin/python",
       "/opt/cyberful-os/cyberful_os_mcp.py",
@@ -159,11 +161,10 @@ export function cyberGhidraStartupTimeoutSeconds() {
 }
 
 // ── Protocol Bridges Execute Inside The Engagement Runtime ──────
-// ZAP and Ghidra listeners remain loopback-only inside the unified container.
+// ZAP and Ghidra listeners remain loopback-only inside their engagement role.
 // A phase gateway uses docker exec for a fresh stdio process, forwarding only
-// the service credential selected by its upstream environment. Closing stdio
-// reaps that process without creating another image, network namespace, mount,
-// label, or independently owned Docker resource.
+// the selected service credential. ZAP resolves its host-owned dedicated role;
+// Ghidra resolves the core role. Closing stdio reaps only that bridge process.
 // ─────────────────────────────────────────────────────────────────
 export function cyberGhidraBridgeCommand(container = envValue("CYBERFUL_OS_CONTAINER")) {
   if (!container) return []
@@ -195,7 +196,9 @@ export function cyberBrowserZapChainEnv():
   return { CYBER_BROWSER_PROXY: proxy, CYBER_BROWSER_PROXY_CA_SPKI: spki }
 }
 
-export function cyberZapBridgeCommand(container = envValue("CYBERFUL_OS_CONTAINER")) {
+export function cyberZapBridgeCommand(
+  container = envValue("CYBERFUL_ZAP_RUNTIME_CONTAINER") ?? envValue("CYBERFUL_OS_CONTAINER"),
+) {
   if (!container) return []
   return [
     "docker",

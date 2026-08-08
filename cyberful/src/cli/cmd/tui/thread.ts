@@ -35,6 +35,9 @@ import {
   reapRunOwnedDockerResourcesSync,
   WORKER_SHUTDOWN_TIMEOUT_MS,
 } from "./thread-cleanup"
+import { dictionaryDataRoot } from "@/cve-dictionary/activation"
+import { prepareCveDictionaryModel } from "@/cve-dictionary/embedding"
+import { DICTIONARY_MODEL_ID, DICTIONARY_MODEL_REVISION } from "@/cve-dictionary/model"
 
 declare global {
   const CYBERFUL_WORKER_PATH: string
@@ -189,6 +192,20 @@ export const TuiThreadCommand = cmd({
         UI.println(
           `  ${UI.Style.TEXT_WARNING}! fallback unavailable; continuing with the main provider${UI.Style.TEXT_NORMAL}`,
         )
+      }
+      try {
+        await prepareCveDictionaryModel({
+          cacheRoot: path.join(dictionaryDataRoot(), "models"),
+        })
+        UI.println(
+          `  ${UI.Style.TEXT_SUCCESS}✓${UI.Style.TEXT_NORMAL} CVE Dictionary · ${DICTIONARY_MODEL_ID}@${DICTIONARY_MODEL_REVISION.slice(0, 12)} · verified`,
+        )
+      } catch (error) {
+        const reason = errorMessage(error)
+        UI.println(
+          `  ${UI.Style.TEXT_WARNING}!${UI.Style.TEXT_NORMAL} CVE Dictionary semantic retrieval unavailable; exact and lexical retrieval remain available`,
+        )
+        Log.Default.warn("CVE Dictionary model preflight failed", { error: reason })
       }
       UI.empty()
 

@@ -197,6 +197,70 @@ const transitions: Readonly<Record<TechnicalState, readonly TechnicalState[]>> =
   DISPROVED: ["DISPROVED", "SUSPECTED"],
 }
 
+export class FindingRegistryError extends Error {
+  readonly retryable = true
+
+  constructor(
+    readonly code: "FINDING_NOT_FOUND" | "FINDING_TRANSITION_INVALID",
+    readonly path: string,
+    message: string,
+    readonly context: {
+      readonly revision?: number
+      readonly currentState?: string
+      readonly requestedState?: string
+      readonly allowedStates?: readonly string[]
+      readonly availableIDs?: readonly string[]
+    },
+  ) {
+    super(message)
+    this.name = "FindingRegistryError"
+  }
+
+  toolError(received: unknown) {
+    return {
+      code: this.code,
+      path: this.path,
+      expected: "an existing finding id and a permitted advertised state transition",
+      receivedType: Array.isArray(received) ? "array" : received === null ? "null" : typeof received,
+      retryable: this.retryable,
+      hint: this.message,
+      ...(this.context.revision === undefined ? {} : { revision: this.context.revision }),
+      ...(this.context.currentState ? { current_state: this.context.currentState } : {}),
+      ...(this.context.requestedState ? { requested_state: this.context.requestedState } : {}),
+      ...(this.context.allowedStates ? { allowed_states: this.context.allowedStates } : {}),
+      ...(this.context.availableIDs ? { available_ids: this.context.availableIDs } : {}),
+    }
+  }
+}
+
+function missingFinding(registry: Registry, id: string) {
+  return new FindingRegistryError("FINDING_NOT_FOUND", "finding.id", `finding '${id}' does not exist`, {
+    revision: registry.revision,
+    availableIDs: registry.findings.map((item) => item.id).slice(0, 50),
+  })
+}
+
+function invalidFindingTransition(input: {
+  readonly message: string
+  readonly currentState: string
+  readonly requestedState: string
+  readonly allowedStates: readonly string[]
+  readonly revision?: number
+  readonly path?: string
+}) {
+  return new FindingRegistryError(
+    "FINDING_TRANSITION_INVALID",
+    input.path ?? "finding.state",
+    input.message,
+    {
+      ...(input.revision === undefined ? {} : { revision: input.revision }),
+      currentState: input.currentState,
+      requestedState: input.requestedState,
+      allowedStates: input.allowedStates,
+    },
+  )
+}
+
 function emptyRegistry(): Registry {
   return { schema_version: 1, revision: 0, runs: [], findings: [] }
 }
@@ -287,7 +351,13 @@ function decisions(input: Record<string, unknown>, workflow: Workflow, dispositi
   if (verificationResult !== "NOT_REVIEWED" && !verificationRationale)
     throw new Error("finding verification_rationale is required for a verification decision")
   if ((verificationResult === "SURVIVES" || verificationResult === "REVISE") && disposition.state !== "CONFIRMED")
-    throw new Error(`${verificationResult} requires a CONFIRMED technical state`)
+    throw invalidFindingTransition({
+      path: "finding.verification",
+      currentState: disposition.state,
+      requestedState: verificationResult,
+      allowedStates: ["CONFIRMED"],
+      message: `${verificationResult} requires a CONFIRMED technical state`,
+    })
   if (verificationResult === "DEMOTE" && disposition.state === "CONFIRMED")
     throw new Error("DEMOTE must move the technical state away from CONFIRMED")
 
@@ -301,7 +371,13 @@ function decisions(input: Record<string, unknown>, workflow: Workflow, dispositi
   if (submissionResult !== "NOT_ASSESSED" && !submissionRationale)
     throw new Error("finding submission_rationale is required for a submission decision")
   if (submissionResult === "SUBMISSION_READY" && disposition.state !== "CONFIRMED")
-    throw new Error("SUBMISSION_READY requires a CONFIRMED technical state")
+    throw invalidFindingTransition({
+      path: "finding.submission",
+      currentState: disposition.state,
+      requestedState: submissionResult,
+      allowedStates: ["CONFIRMED"],
+      message: "SUBMISSION_READY requires a CONFIRMED technical state",
+    })
 
   return {
     verification: {
@@ -499,7 +575,11 @@ export class Store {
   }
 
   async get(id: unknown) {
-    return findFinding(await this.read(), id)
+    const registry = await this.read()
+    const referenceID = reference(id, "finding id or alias")
+    const finding = findFinding(registry, referenceID)
+    if (!finding) throw missingFinding(registry, referenceID)
+    return finding
   }
 
   async record(input: Record<string, unknown>, runContext: RunContext, signal?: AbortSignal) {
@@ -565,7 +645,7 @@ export class Store {
     const timestamp = this.#now().toISOString()
     return this.#mutate((current) => {
       const found = findFinding(current, id)
-      if (!found) throw new Error(`finding '${id}' does not exist`)
+      if (!found) throw missingFinding(current, id)
       const previous = latestAssessed(found)
       const observation = {
         id: Identifier.create("obs", "ascending"),
@@ -604,15 +684,19 @@ export class Store {
 
     return this.#mutate((current) => {
       const found = findFinding(current, id)
-      if (!found) throw new Error(`finding '${id}' does not exist`)
+      if (!found) throw missingFinding(current, id)
       const previous = latestAssessed(found)
       const severity = requestedSeverity ?? previous?.severity
       if (!severity || severity === "UNRATED")
         throw new Error(`finding '${id}' requires a severity before it can be updated`)
       if (previous && !transitions[previous.disposition.state].includes(nextDisposition.state))
-        throw new Error(
-          `finding '${id}' cannot transition from ${previous.disposition.state} to ${nextDisposition.state}`,
-        )
+        throw invalidFindingTransition({
+          revision: current.revision,
+          currentState: previous.disposition.state,
+          requestedState: nextDisposition.state,
+          allowedStates: transitions[previous.disposition.state],
+          message: `finding '${id}' cannot transition from ${previous.disposition.state} to ${nextDisposition.state}`,
+        })
       const observation = {
         id: Identifier.create("obs", "ascending"),
         runID: runContext.runID,
@@ -645,7 +729,7 @@ export class Store {
     const timestamp = this.#now().toISOString()
     return this.#mutate((current) => {
       const found = findFinding(current, id)
-      if (!found) throw new Error(`finding '${id}' does not exist`)
+      if (!found) throw missingFinding(current, id)
       const conflict = current.findings.find((item) => item.id === alias || item.aliases.includes(alias))
       if (conflict && conflict.id !== found.id)
         throw new Error(`finding alias '${alias}' already belongs to ${conflict.id}`)

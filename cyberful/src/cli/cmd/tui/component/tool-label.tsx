@@ -8,6 +8,7 @@ import { useTheme } from "@tui/context/theme"
 
 export {
   SHELL_TOOL_ICON,
+  targetCooldownDisplay,
   toolDisplayDetails,
   toolDisplaySummary,
   toolDisplayText,

@@ -1,6 +1,6 @@
 // ── Phase Gateway MCP Server ────────────────────────────────────────────────
-// Runs the session-scoped MCP bridge for variables, handoffs, questions, usage
-// recording, and hardened proxying to browser, ZAP, Ghidra, and execution runtimes.
+// Runs the session-scoped MCP bridge for control tools, cooperative target
+// cooldowns, and hardened proxying to browser, ZAP, and execution runtimes.
 // Template resolution and response redaction keep stored secrets out of model traffic.
 // @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9,6 +9,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import path from "node:path"
 import os from "node:os"
+import { createHash } from "node:crypto"
 import { lstat, readFile, writeFile } from "node:fs/promises"
 import { SubsystemPhase } from "../phase"
 import { SubsystemBrowserCdp } from "../browser-cdp"
@@ -38,7 +39,7 @@ import { ToolUsageRecorder, type ToolUsageEvent } from "./tool-usage"
 import { ownedProcessTree, processSnapshot, reapCapturedProcessTree } from "./mcp-process-owner"
 import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
-import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry } from "./hypothesis-registry"
+import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry, HypothesisRegistryError } from "./hypothesis-registry"
 import {
   applyEngagementRateLimit,
   ENGAGEMENT_POLICY_TOOL_DEF,
@@ -64,6 +65,7 @@ import { EVM_LAB_TOOL_DEF, evmLabAvailable, handleEvmLab } from "./evm-lab"
 import { EVM_EVIDENCE_TOOL_DEF, evmEvidenceAvailable, handleEvmEvidence } from "./evm-evidence"
 import { GhidraEvidenceRecorder } from "./ghidra-evidence"
 import { evmVariableRegistryName } from "../evm/runtime"
+import { CORE_PROXY_CA_BUNDLE } from "../zap/runtime"
 import {
   CODE_GRAPH_TOOL_DEFS,
   codeGraphToolsAvailable,
@@ -91,10 +93,18 @@ import { gatewayPhasePolicy, type GatewayPhasePolicy } from "./phase-policy"
 import { GatewayToolRegistry } from "./tool-registry"
 import { FindingRegistry } from "@/finding/registry"
 import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } from "../handoff-snapshot"
+import { CVE_DICTIONARY_TOOL_DEF, CveDictionaryTool } from "./cve-dictionary-tool"
+import { TARGET_COOLDOWN_TOOL_DEF, TARGET_COOLDOWN_TOOL_NAME, TargetCooldownController } from "./target-cooldown"
+import { RestartableBrowserUpstream } from "./restartable-browser-upstream"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
 const log = Log.create({ service: "phase-gateway" })
+const BROWSER_CANCELLATION_SETTLE_MS = 2_250
+const HUMAN_WAIT_HEARTBEAT_MS = 30_000
+const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
+const HUMAN_WAIT_TOOL_NAMES = new Set(["question", SOURCE_IMPORT_TOOL_DEF.name])
+const TOOL_ACTOR_META_KEY = "io.cyberful/tool-actor"
 
 // ── Gateway Startup Rejects Unscoped Or Invalid Authority ───────────
 // A gateway may access variables for exactly one host-supplied session. Missing
@@ -107,6 +117,54 @@ function boundSession(): SessionID {
   const id = process.env.CYBERFUL_SUBSYSTEM_SESSION?.trim()
   if (!id) throw new Error("expert-gateway requires CYBERFUL_SUBSYSTEM_SESSION")
   return SessionID.make(id)
+}
+
+// ── Required-Upstream Failure Has A Host-Owned Causal Record ─────
+// A model may correctly stop without handoff after a mandatory runtime fails.
+// The gateway records the first such failure outside the workarea so the phase
+// host can classify the initiating cause instead of the downstream missing
+// handoff. Only bounded, non-secret codes and fixed descriptions cross this
+// channel; first-writer-wins preserves the earliest observed failure.
+// ─────────────────────────────────────────────────────────────────
+async function recordRequiredUpstreamFailure(input: { readonly code: string; readonly detail: string }): Promise<void> {
+  const signalPath = process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH?.trim()
+  if (!signalPath) return
+  if (!path.isAbsolute(signalPath)) {
+    log.warn("required-upstream signal path is not absolute")
+    return
+  }
+  const phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim()
+  if (!phase) {
+    log.warn("required-upstream failure had no bound phase")
+    return
+  }
+  const code = input.code
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "_")
+    .slice(0, 100)
+  const detail = input.detail
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 500)
+  try {
+    await writeFile(
+      signalPath,
+      `${JSON.stringify({
+        version: 1,
+        phase,
+        source: "upstream",
+        class: "required_upstream_unavailable",
+        code: code || "required_upstream_failure",
+        detail: detail || "A required phase upstream became unavailable.",
+        retryable: true,
+      })}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 },
+    )
+  } catch (error) {
+    if (nodeErrorCode(error) !== "EEXIST")
+      log.warn("could not record required-upstream failure", { error: nodeErrorCode(error) ?? "unknown" })
+  }
 }
 
 export async function loadPrivateGatewayEnvironment(filePath = process.env.CYBERFUL_SUBSYSTEM_ENV_PATH?.trim()) {
@@ -234,12 +292,14 @@ function liveTargetToolDefinitions(input: {
   egress: boolean
   hypothesis: boolean
   engagementPolicy: boolean
+  targetCooldown: boolean
 }) {
   return [
     ...(input.testObjects ? [TEST_OBJECT_TOOL_DEF] : []),
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
     ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
     ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
+    ...(input.targetCooldown ? [TARGET_COOLDOWN_TOOL_DEF] : []),
   ]
 }
 
@@ -250,6 +310,7 @@ function localToolDefinitions(
     egress: boolean
     hypothesis: boolean
     engagementPolicy: boolean
+    targetCooldown: boolean
   },
 ) {
   if (!policy.active) return []
@@ -260,6 +321,7 @@ function localToolDefinitions(
   const lab = policy.auditLab && auditLabAvailable() ? [AUDIT_LAB_TOOL_DEF] : []
   const evmLab = policy.evmLab && evmLabAvailable() ? [EVM_LAB_TOOL_DEF] : []
   const evmEvidence = policy.evmEvidence && evmEvidenceAvailable() ? [EVM_EVIDENCE_TOOL_DEF] : []
+  const cveDictionary = policy.allows("cve-dictionary") ? [CVE_DICTIONARY_TOOL_DEF] : []
   return [
     ...sourceImport,
     ...source,
@@ -268,6 +330,7 @@ function localToolDefinitions(
     ...lab,
     ...evmLab,
     ...evmEvidence,
+    ...cveDictionary,
     ...liveTargetToolDefinitions(input),
   ]
 }
@@ -320,6 +383,99 @@ function jsonRecord(value: string): Record<string, unknown> | undefined {
   }
 }
 
+type ToolActorUsage = Pick<ToolUsageEvent, "agent_run_id" | "agent_role" | "parent_run_id" | "tool_call_id">
+
+function boundedLedgerValue(value: unknown, maximum = 256): string | undefined {
+  if (typeof value !== "string") return
+  const result = value.trim()
+  if (!result || result.length > maximum || /[\u0000-\u001f\u007f]/.test(result)) return
+  return result
+}
+
+function toolActorUsage(meta: unknown): ToolActorUsage {
+  if (!isRecord(meta) || !isRecord(meta[TOOL_ACTOR_META_KEY])) return {}
+  const actor = meta[TOOL_ACTOR_META_KEY]
+  const runID = boundedLedgerValue(actor.runID)
+  const parentRunID = boundedLedgerValue(actor.parentRunID)
+  const toolCallID = boundedLedgerValue(actor.toolCallID)
+  const role = actor.role
+  return {
+    ...(runID ? { agent_run_id: runID } : {}),
+    ...(role === "root" || role === "subagent" || role === "fallback" ? { agent_role: role } : {}),
+    ...(parentRunID ? { parent_run_id: parentRunID } : {}),
+    ...(toolCallID ? { tool_call_id: toolCallID } : {}),
+  }
+}
+
+function digestableArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(digestableArguments)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(
+    Object.keys(value)
+      .filter((key) => !key.startsWith("_cyberful_"))
+      .toSorted()
+      .map((key) => [key, digestableArguments(value[key])]),
+  )
+}
+
+function argumentDigest(args: Record<string, unknown>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(digestableArguments(args)))
+    .digest("hex")
+}
+
+function toolAction(args: Record<string, unknown>): string | undefined {
+  const action = boundedLedgerValue(args.action, 64)
+  return action && /^[a-zA-Z0-9_.:-]+$/.test(action) ? action : undefined
+}
+
+function firstResultRecord(result: CallToolResult): Record<string, unknown> | undefined {
+  return result.content?.flatMap((content) => {
+    if (content.type !== "text") return []
+    const parsed = jsonRecord(content.text)
+    return parsed ? [parsed] : []
+  })[0]
+}
+
+function cveDictionaryResultCount(action: string | undefined, result: CallToolResult): number | undefined {
+  if (result.isError) return 0
+  const record = firstResultRecord(result)
+  if (!record || !action) return
+  if (action === "get" || action === "remember") return 1
+  const collection =
+    action === "list_remembered"
+      ? record.remembered
+      : action === "search" || action === "related"
+        ? record.results
+        : undefined
+  return Array.isArray(collection) ? collection.length : undefined
+}
+
+function callUsageMetadata(input: {
+  name: string
+  args: Record<string, unknown>
+  meta: unknown
+  result?: CallToolResult
+}): ToolUsageEvent {
+  const action = toolAction(input.args)
+  const resultCount =
+    input.name === CVE_DICTIONARY_TOOL_DEF.name && input.result
+      ? cveDictionaryResultCount(action, input.result)
+      : undefined
+  const hypothesisID =
+    input.name === CVE_DICTIONARY_TOOL_DEF.name && action === "remember"
+      ? boundedLedgerValue(input.args.hypothesis_id, 128)
+      : undefined
+  return {
+    tool: input.name,
+    ...toolActorUsage(input.meta),
+    ...(action ? { tool_action: action } : {}),
+    argument_digest: argumentDigest(input.args),
+    ...(hypothesisID ? { hypothesis_id: hypothesisID } : {}),
+    ...(resultCount !== undefined ? { result_count: resultCount } : {}),
+  }
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item: unknown) => typeof item === "string")
 }
@@ -329,8 +485,9 @@ const VARIABLE_TOOL_DEF = {
   description:
     "Read and write this session's variable store — the same store the rest of the engagement shares " +
     "across its agents. Save long, secret, or reused values (auth tokens, a target base URL, IDs, " +
-    "request bodies) here, then reference them as {{var:name}} in later tool arguments (including the " +
-    "proxied cyberful-os/browser tools) instead of pasting raw values. Actions: set | get | list | delete.",
+    "request bodies) here. For later tool arguments, replace <saved-name> in {{var:<saved-name>}} with an exact " +
+    "listed identifier. In narrative files, use [session-variable:<saved-name>] so no value is inserted. " +
+    "Actions: set | get | list | delete.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -421,6 +578,7 @@ async function handleQuestion(
   server: Server,
   circuit: CircuitBreakerConfig | undefined,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ) {
   const questions = parseHumanQuestions(args.questions)
   if (!questions) return text({ error: "question requires one to three valid questions" })
@@ -454,15 +612,23 @@ async function handleQuestion(
         },
       ]
     : questions
-  const response = await server.elicitInput({
-    mode: "form",
-    message:
-      presentedQuestions.length === 1
-        ? (presentedQuestions[0]?.question ?? "Cyberful requires a human decision.")
-        : `Cyberful requires ${presentedQuestions.length} related human decisions.`,
-    requestedSchema: approvalElicitationSchema(presentedQuestions),
-    _meta: approvalElicitationMetadata(presentedQuestions),
-  })
+  const response = await server.elicitInput(
+    {
+      mode: "form",
+      message:
+        presentedQuestions.length === 1
+          ? (presentedQuestions[0]?.question ?? "Cyberful requires a human decision.")
+          : `Cyberful requires ${presentedQuestions.length} related human decisions.`,
+      requestedSchema: approvalElicitationSchema(presentedQuestions),
+      _meta: approvalElicitationMetadata(presentedQuestions),
+    },
+    {
+      ...(signal ? { signal } : {}),
+      timeout: HUMAN_WAIT_REQUEST_TIMEOUT_MS,
+      resetTimeoutOnProgress: true,
+      onprogress: () => undefined,
+    },
+  )
   if (response.action !== "accept")
     return text({
       ok: false,
@@ -505,25 +671,31 @@ async function confirmSourceImport(
   question: boolean,
   circuit: CircuitBreakerConfig | undefined,
   request: SourceImportRequest,
+  signal?: AbortSignal,
 ) {
   if (!question) return false
   const refs = [request.checkoutRef, ...request.additionalRefs].filter(Boolean).join(", ") || "default HEAD"
-  const result = await handleQuestion(server, circuit, {
-    questions: [
-      {
-        header: "Import source",
-        question:
-          `Clone public repository '${request.repository}' from ${request.url} at ${refs} into the isolated source collection? ` +
-          `Declared submodules are ${request.submodules === "recursive" ? "included at their exact Gitlink commits" : "not included"}; ` +
-          "hooks, credentials, redirects, LFS and dependency execution stay disabled.",
-        options: [
-          { label: "Import repository", description: "Acquire and seal the displayed public Git source." },
-          { label: "Keep local only", description: "Do not make a network request; use the current local source." },
-        ],
-        custom: false,
-      },
-    ],
-  })
+  const result = await handleQuestion(
+    server,
+    circuit,
+    {
+      questions: [
+        {
+          header: "Import source",
+          question:
+            `Clone public repository '${request.repository}' from ${request.url} at ${refs} into the isolated source collection? ` +
+            `Declared submodules are ${request.submodules === "recursive" ? "included at their exact Gitlink commits" : "not included"}; ` +
+            "hooks, credentials, redirects, LFS and dependency execution stay disabled.",
+          options: [
+            { label: "Import repository", description: "Acquire and seal the displayed public Git source." },
+            { label: "Keep local only", description: "Do not make a network request; use the current local source." },
+          ],
+          custom: false,
+        },
+      ],
+    },
+    signal,
+  )
   const content = result.content[0]
   if (!content || content.type !== "text") return false
   const parsed = jsonRecord(content.text)
@@ -902,7 +1074,7 @@ export interface UpstreamTool {
   def: { name: string; description?: string; inputSchema: unknown; _meta?: unknown }
   capability?: SubsystemPhase.WorkflowCapability
   browserProfile?: BrowserProfileId
-  call(args: Record<string, unknown>): Promise<CallToolResult>
+  call(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>
 }
 
 // ── One Browser Surface Selects Five Isolated Identities ────────────
@@ -1245,6 +1417,24 @@ export function upstreamProcessEnv(
   return env
 }
 
+export function cyberfulOsProxyTrustEnv(
+  inherited: Readonly<Record<string, string | undefined>> = process.env,
+): Partial<Record<"CYBERFUL_OS_HTTP_PROXY" | "CYBERFUL_OS_CA_BUNDLE", string>> {
+  const zapProxy = inherited.CYBER_ZAP_PROXY_URL?.trim()
+  const caBundle = inherited.CYBERFUL_OS_CA_BUNDLE?.trim()
+  if (Boolean(zapProxy) !== Boolean(caBundle))
+    throw new Error("cyberful-os proxy and CA bundle must be configured together")
+  if (!zapProxy || !caBundle) return {}
+  if (caBundle !== CORE_PROXY_CA_BUNDLE)
+    throw new Error("cyberful-os CA bundle does not use the host-owned engagement trust path")
+  const containerProxy = new URL(zapProxy)
+  containerProxy.hostname = "host.docker.internal"
+  return {
+    CYBERFUL_OS_HTTP_PROXY: containerProxy.toString(),
+    CYBERFUL_OS_CA_BUNDLE: caBundle,
+  }
+}
+
 // ── Upstream Availability Follows Workflow Capability Policy ──────
 // The gateway connects only the built-in runtimes granted to the active workflow and
 // phase. Their clients remain owned here because tools, resources, templates,
@@ -1298,7 +1488,10 @@ export function upstreamFailureIsBlocking(
   key: "cyberful-os" | "browser" | "zap" | "ghidra",
   env: Readonly<NodeJS.ProcessEnv> = process.env,
 ) {
-  return key === "cyberful-os" || (key === "zap" && env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1")
+  return (
+    key === "cyberful-os" ||
+    (key === "zap" && (env.CYBER_ZAP_REQUIRED_UPSTREAM === "1" || env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1"))
+  )
 }
 
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
@@ -1309,6 +1502,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const builtins = SubsystemUpstream.builtin()
   const out: UpstreamTool[] = []
   const clients: Client[] = []
+  const ordinaryClients = new Set<Client>()
+  const browserUpstreams: RestartableBrowserUpstream<Client>[] = []
   const ownedProcessRoots = new Set<number>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
@@ -1379,12 +1574,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         env.CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER = "1"
         env.CYBERFUL_OS_STRICT_PREFLIGHT = "1"
         env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
-        const zapProxy = process.env.CYBER_ZAP_PROXY_URL?.trim()
-        if (zapProxy) {
-          const containerProxy = new URL(zapProxy)
-          containerProxy.hostname = "host.docker.internal"
-          env.CYBERFUL_OS_HTTP_PROXY = containerProxy.toString()
-        }
+        const proxyTrust = cyberfulOsProxyTrustEnv(process.env)
+        Object.assign(env, proxyTrust)
         const ownership = await Process.run(
           [
             "docker",
@@ -1409,31 +1600,91 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           maxOutputBytes: 64 * 1024,
         })
         if (mount.code !== 0) throw new Error(`cyberful-os workspace mount is unavailable: ${container}`)
+        if (proxyTrust.CYBERFUL_OS_CA_BUNDLE) {
+          const trust = await Process.run(
+            ["docker", "exec", container, "test", "-r", proxyTrust.CYBERFUL_OS_CA_BUNDLE],
+            {
+              abort: AbortSignal.timeout(30_000),
+              timeout: 1_000,
+              nothrow: true,
+              maxOutputBytes: 64 * 1024,
+            },
+          )
+          if (trust.code !== 0) throw new Error("cyberful-os engagement CA bundle is not readable")
+        }
       }
-      pendingTransport = new StdioClientTransport({
-        command: cmd,
-        args,
-        env,
-        stderr: upstreamDiagnosticSink ? "pipe" : "inherit",
-      })
-      if (upstreamDiagnosticSink) {
-        pendingTransport.stderr?.on("data", (chunk: Buffer) => {
-          try {
-            upstreamDiagnosticSink(chunk.toString("utf8"))
-          } catch (error) {
-            log.warn("upstream diagnostic sink failed", {
-              upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
-              error,
-            })
-          }
+      let browserGeneration = 0
+      const connectClient = async (onClose: () => void = () => undefined) => {
+        const transport = new StdioClientTransport({
+          command: cmd,
+          args,
+          env,
+          stderr: upstreamDiagnosticSink ? "pipe" : "inherit",
         })
+        pendingTransport = transport
+        if (upstreamDiagnosticSink) {
+          transport.stderr?.on("data", (chunk: Buffer) => {
+            try {
+              upstreamDiagnosticSink(chunk.toString("utf8"))
+            } catch (error) {
+              log.warn("upstream diagnostic sink failed", {
+                upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+                error,
+              })
+            }
+          })
+        }
+        const client = new Client({ name: "expert-gateway", version: "0.1.0" })
+        pendingClient = client
+        const forget = () => {
+          const index = clients.indexOf(client)
+          if (index >= 0) clients.splice(index, 1)
+          ordinaryClients.delete(client)
+          onClose()
+        }
+        client.onclose = forget
+        try {
+          await client.connect(transport)
+        } catch (error) {
+          if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
+          await client.close().catch(() => undefined)
+          throw error
+        }
+        if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
+        clients.push(client)
+        if (key === "browser") {
+          browserGeneration += 1
+          if (browserGeneration > 1)
+            log.warn("restarted profile-scoped browser MCP after transport loss", {
+              browserProfile,
+              generation: browserGeneration,
+            })
+        } else {
+          ordinaryClients.add(client)
+        }
+        return { value: client, close: () => client.close() }
       }
-      pendingClient = new Client({ name: "expert-gateway", version: "0.1.0" })
-      const client = pendingClient
-      await client.connect(pendingTransport)
-      if (pendingTransport.pid !== null) ownedProcessRoots.add(pendingTransport.pid)
-      clients.push(client)
+
+      let expectedBrowserTools: string[] | undefined
+      const browserUpstream =
+        key === "browser" && browserProfile !== undefined
+          ? new RestartableBrowserUpstream<Client>({
+              cancellationGraceMs: BROWSER_CANCELLATION_SETTLE_MS,
+              connect: connectClient,
+              probe: async (client, signal) => {
+                const names = (await client.listTools(undefined, { signal })).tools.map((tool) => tool.name).sort()
+                if (expectedBrowserTools && JSON.stringify(names) !== JSON.stringify(expectedBrowserTools))
+                  throw new Error(`browser profile ${browserProfile} tool catalog changed after restart`)
+              },
+              probeTimeoutMs: 5_000,
+            })
+          : undefined
+      const client = browserUpstream ? await browserUpstream.start() : (await connectClient()).value
       const { tools } = await client.listTools()
+      if (browserUpstream) {
+        expectedBrowserTools = tools.map((tool) => tool.name).sort()
+        browserUpstreams.push(browserUpstream)
+      }
       for (const t of tools) {
         if (!phaseUpstreamToolAllowed(policy, capability, t.name)) continue
         if (browserProfile === undefined && out.some((u) => u.def.name === t.name)) continue
@@ -1448,15 +1699,21 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           // still finite when an upstream stalls. Both timeout fields match so
           // no hidden outer deadline aborts a call earlier than its policy.
           // ──────────────────────────────────────────────────────────────
-          call: async (a) => {
-            const result = await client.callTool({ name: t.name, arguments: a }, CallToolResultSchema, {
-              timeout: 600_000,
-              maxTotalTimeout: 600_000,
-            })
-            return CallToolResultSchema.parse(result)
+          call: async (a, signal) => {
+            const invoke = async (activeClient: Client) => {
+              const result = await activeClient.callTool({ name: t.name, arguments: a }, CallToolResultSchema, {
+                signal,
+                timeout: 600_000,
+                maxTotalTimeout: 600_000,
+              })
+              return CallToolResultSchema.parse(result)
+            }
+            return browserUpstream ? browserUpstream.call(invoke, signal) : invoke(client)
           },
         })
       }
+      pendingClient = undefined
+      pendingTransport = undefined
     } catch (error) {
       const pendingPID =
         pendingTransport?.pid !== null && pendingTransport?.pid !== undefined ? pendingTransport.pid : undefined
@@ -1499,6 +1756,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           ),
         )
       if (upstreamFailureIsBlocking(key, failurePolicyEnvironment)) {
+        await recordRequiredUpstreamFailure({
+          code: `${key}_startup_failed`,
+          detail: `Required ${key} MCP upstream failed during gateway startup.`,
+        })
         if (cleanupFailures.length === 0) throw error
         throw new AggregateError([error, ...cleanupFailures], "required MCP upstream failed startup and cleanup")
       }
@@ -1520,7 +1781,8 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           return []
         })
       const operations = [
-        ...clients.map((client) => () => client.close()),
+        ...Array.from(ordinaryClients, (client) => () => client.close()),
+        ...browserUpstreams.map((upstream) => () => upstream.close()),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
       const operationFailures = outcomes.flatMap((outcome) =>
@@ -1602,6 +1864,7 @@ export async function createGatewayServer(opts?: {
     engagementPolicy: Boolean(
       workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
+    targetCooldown: liveTargetResearch,
   }
   const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
@@ -1628,6 +1891,16 @@ export async function createGatewayServer(opts?: {
   const engagementPolicy =
     workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
   let engagementPolicySetThisPhase = false
+  const targetCooldown = localTools.some((tool) => tool.name === TARGET_COOLDOWN_TOOL_NAME)
+    ? new TargetCooldownController()
+    : undefined
+  const cveDictionary = localTools.some((tool) => tool.name === CVE_DICTIONARY_TOOL_DEF.name)
+    ? await CveDictionaryTool.create({
+        workarea: workareaRoot,
+        phase,
+        hypotheses,
+      })
+    : undefined
   const ghidraEvidence =
     workareaRoot && phase && policy.allows("ghidra") ? new GhidraEvidenceRecorder(workareaRoot, phase) : undefined
   const server = new Server(
@@ -1664,6 +1937,8 @@ export async function createGatewayServer(opts?: {
       ...(hypotheses ? [() => hypotheses.close()] : []),
       ...(ghidraEvidence ? [() => ghidraEvidence.close()] : []),
       ...(codeGraph ? [() => codeGraph.close()] : []),
+      ...(cveDictionary ? [async () => cveDictionary.close()] : []),
+      ...(targetCooldown ? [async () => targetCooldown.close()] : []),
     ]))
   server.onclose = async () => {
     await closeUpstreams().catch((error) => log.error("phase gateway cleanup failed", { error }))
@@ -1671,7 +1946,8 @@ export async function createGatewayServer(opts?: {
 
   const tools = new GatewayToolRegistry()
   tools.register(VARIABLE_TOOL_DEF, (args, { sessionID }) => handleVariable(sessionID, args))
-  if (question) tools.register(QUESTION_TOOL_DEF, (args) => handleQuestion(server, circuit, args))
+  if (question)
+    tools.register(QUESTION_TOOL_DEF, (args, context) => handleQuestion(server, circuit, args, context.signal))
   if (handoff)
     tools.register(handoffToolDef(handoff), async (args) => {
       const breakerError = circuit ? await circuitBreakerError(circuit.filePath, "handoff") : undefined
@@ -1682,6 +1958,7 @@ export async function createGatewayServer(opts?: {
           // never from a model-selected path or hand-authored structured file.
           await codeGraph.handle("code_finding", { action: "export" })
         } catch (error) {
+          if (error instanceof HypothesisRegistryError) return text({ error: error.toolError(args) }, true)
           return text(
             { error: `terminal finding export failed: ${error instanceof Error ? error.message : String(error)}` },
             true,
@@ -1701,11 +1978,11 @@ export async function createGatewayServer(opts?: {
   for (const definition of localTools) {
     const name = definition.name
     if (name === SOURCE_IMPORT_TOOL_DEF.name) {
-      tools.register(definition, async (args) => {
+      tools.register(definition, async (args, context) => {
         try {
           return text(
             await handleSourceImport(args, {
-              confirm: (request) => confirmSourceImport(server, question, circuit, request),
+              confirm: (request) => confirmSourceImport(server, question, circuit, request, context.signal),
             }),
           )
         } catch (error) {
@@ -1809,9 +2086,58 @@ export async function createGatewayServer(opts?: {
       })
       continue
     }
+    if (name === CVE_DICTIONARY_TOOL_DEF.name && cveDictionary) {
+      tools.register(definition, async (args) => {
+        try {
+          return text(await cveDictionary.handle(args))
+        } catch (error) {
+          return text(
+            {
+              error: {
+                code: "CVE_DICTIONARY_FAILED",
+                path: "cve_dictionary",
+                expected: "a valid action against the pinned offline snapshot",
+                receivedType: Array.isArray(args) ? "array" : typeof args,
+                retryable: true,
+                hint: error instanceof Error ? error.message : String(error),
+              },
+            },
+            true,
+          )
+        }
+      })
+      continue
+    }
+    if (name === TARGET_COOLDOWN_TOOL_NAME && targetCooldown) {
+      tools.register(definition, async (args, context) => {
+        try {
+          return text(await targetCooldown.run(args, enforcedEngagementPolicy, context.signal))
+        } catch (error) {
+          return text(
+            {
+              error: {
+                code: "TARGET_COOLDOWN_REJECTED",
+                path: TARGET_COOLDOWN_TOOL_NAME,
+                expected:
+                  "one authorized origin that was responsive before at least two consecutive failures with no HTTP status",
+                receivedType: Array.isArray(args) ? "array" : typeof args,
+                retryable: false,
+                hint: error instanceof Error ? error.message : String(error),
+              },
+            },
+            true,
+          )
+        }
+      })
+      continue
+    }
     if (name === TEST_OBJECT_TOOL_DEF.name && testObjects) {
       tools.register(definition, async (args) => {
         try {
+          if (args.action === "recover") {
+            if (args._cyberful_host !== true) return text({ error: "test_object recovery is host-only" }, true)
+            return text({ objects: await testObjects.recover(args.fromRunID) })
+          }
           if (args.action === "list") return text({ objects: await testObjects.list() })
           if (args.action !== "transition")
             return text({ error: "test_object action must be transition or list" }, true)
@@ -1851,15 +2177,26 @@ export async function createGatewayServer(opts?: {
           const policyResult = engagementPolicy.prepare(args)
           const proxyUrl = process.env.CYBER_ZAP_PROXY_URL?.trim()
           const apiKey = process.env.CYBER_ZAP_API_KEY?.trim()
-          if (!proxyUrl || !apiKey)
+          if (!proxyUrl || !apiKey) {
+            await recordRequiredUpstreamFailure({
+              code: "zap_runtime_inactive",
+              detail: "Required OWASP ZAP was inactive while enforcing the engagement policy.",
+            })
             return text({ error: "engagement HTTP policy requires an active ZAP runtime" }, true)
+          }
           const enforcement = await applyEngagementRateLimit(policyResult as EngagementPolicy, { proxyUrl, apiKey })
           await engagementPolicy.commit(policyResult)
           enforcedEngagementPolicy = policyResult
           engagementPolicySetThisPhase = true
           return text({ policy: policyResult, enforcement })
         } catch (error) {
-          if (error instanceof ZapRateLimitInstallError) return text(error.toolResult(), true)
+          if (error instanceof ZapRateLimitInstallError) {
+            await recordRequiredUpstreamFailure({
+              code: error.validationCode ?? error.zapCode ?? error.kind,
+              detail: "Required OWASP ZAP failed while enforcing the engagement policy.",
+            })
+            return text(error.toolResult(), true)
+          }
           return text({ error: error instanceof Error ? error.message : String(error) }, true)
         }
       })
@@ -1869,7 +2206,6 @@ export async function createGatewayServer(opts?: {
       tools.register(definition, async (args) => {
         try {
           const observation = EgressObservation.declared(args)
-          await usage.record({ tool: name, outcome: "ok", egress_blocked: false, ...observation })
           return text({ ok: true, observation })
         } catch (error) {
           log.debug("egress observation degraded", { error })
@@ -1897,14 +2233,68 @@ export async function createGatewayServer(opts?: {
     tools: [...tools.definitions(), ...upstreamDefinitions],
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, context) => {
     const sessionID = boundSession()
     const name = req.params.name
     const args = req.params.arguments ?? {}
-    const local = tools.call(name, args, { sessionID })
+    if (name !== TARGET_COOLDOWN_TOOL_NAME) await targetCooldown?.wait(context.signal)
+    const startedAt = performance.now()
+    const local = tools.call(name, args, { sessionID, signal: context.signal })
     if (local) {
-      const result = await local
-      return result
+      const progressToken = req.params._meta?.progressToken
+      const heartbeat =
+        HUMAN_WAIT_TOOL_NAMES.has(name) && progressToken !== undefined
+          ? setInterval(() => {
+              void context
+                .sendNotification({
+                  method: "notifications/progress",
+                  params: {
+                    progressToken,
+                    progress: Date.now(),
+                    message: "Waiting for human input",
+                  },
+                })
+                .catch(() => undefined)
+            }, HUMAN_WAIT_HEARTBEAT_MS)
+          : undefined
+      try {
+        const result = await local
+        const declaredEgress =
+          name === EGRESS_OBSERVATION_TOOL_DEF.name && !result.isError
+            ? (() => {
+                try {
+                  return EgressObservation.declared(args)
+                } catch {
+                  return undefined
+                }
+              })()
+            : undefined
+        await usage
+          .record({
+            ...callUsageMetadata({ name, args, meta: req.params._meta, result }),
+            duration_ms: Math.round(performance.now() - startedAt),
+            outcome: result.isError ? "error" : "ok",
+            bytes_out: Buffer.byteLength(JSON.stringify(result)),
+            ...(result.isError ? toolFailureMetadata(result) : {}),
+            ...(declaredEgress ? { egress_blocked: false, ...declaredEgress } : {}),
+          })
+          .catch((error) => log.warn("could not record completed local phase tool call", { tool: name, error }))
+        return result
+      } catch (error) {
+        await usage
+          .record({
+            ...callUsageMetadata({ name, args, meta: req.params._meta }),
+            duration_ms: Math.round(performance.now() - startedAt),
+            outcome: "error",
+            ...transportFailureMetadata(error),
+          })
+          .catch((auditError) =>
+            log.warn("could not record failed local phase tool call", { tool: name, error: auditError }),
+          )
+        throw error
+      } finally {
+        if (heartbeat) clearInterval(heartbeat)
+      }
     }
     const candidates = byName.get(name)
     if (!candidates) return text({ error: `unknown tool ${name}` })
@@ -1925,10 +2315,9 @@ export async function createGatewayServer(opts?: {
     if (breakerError) return text({ error: breakerError }, true)
     const upstream = selected.upstream
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
-    const startedAt = performance.now()
     try {
       const result = annotateBrowserProfile(
-        annotateAdjustments(await upstream.call(adjusted.args), adjusted.adjustments),
+        annotateAdjustments(await upstream.call(adjusted.args, context.signal), adjusted.adjustments),
         upstream.browserProfile,
       )
       if (circuit) await observeCaptchaCircuit(circuit, name, result)
@@ -1963,7 +2352,7 @@ export async function createGatewayServer(opts?: {
       await coverage?.observe(result, egress)
       await usage
         .record({
-          tool: name,
+          ...callUsageMetadata({ name, args, meta: req.params._meta, result: redacted }),
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: redacted.isError ? "error" : "ok",
           bytes_out: Buffer.byteLength(JSON.stringify(redacted)),
@@ -1978,10 +2367,21 @@ export async function createGatewayServer(opts?: {
         .catch((error) => log.warn("could not record completed phase tool call", { tool: name, error }))
       return redacted
     } catch (error) {
+      const requiredUpstream =
+        upstream.capability === "zap"
+          ? ("zap" as const)
+          : upstream.capability === "isolated-exec"
+            ? ("cyberful-os" as const)
+            : undefined
+      if (requiredUpstream && upstreamFailureIsBlocking(requiredUpstream))
+        await recordRequiredUpstreamFailure({
+          code: `${requiredUpstream}_transport_failed`,
+          detail: `Required ${requiredUpstream} MCP upstream failed during a phase tool call.`,
+        })
       const egress = EgressObservation.observe(name, resolvedArgs, { content: [] })
       await usage
         .record({
-          tool: name,
+          ...callUsageMetadata({ name, args, meta: req.params._meta }),
           duration_ms: Math.round(performance.now() - startedAt),
           outcome: "error",
           ...transportFailureMetadata(error),

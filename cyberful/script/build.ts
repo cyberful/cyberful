@@ -100,6 +100,14 @@ if (new Set(targetValues).size !== targetValues.length)
   throw new Error("--target cannot contain duplicate target names")
 const requestedTargets = new Set(targetValues)
 const plugin = createSolidTransformPlugin()
+const cveDictionaryTextOnlyPlugin: Bun.BunPlugin = {
+  name: "cve-dictionary-text-only-transformers",
+  setup(builder) {
+    builder.onResolve({ filter: /^sharp$/ }, () => ({
+      path: path.join(dir, "src/cve-dictionary/sharp-text-only.ts"),
+    }))
+  },
+}
 
 // ── One Invocation Has One Build Identity ─────────────────────
 // Every target emitted by this process must embed the same identity so caches and
@@ -171,6 +179,43 @@ const allTargets: {
     avx2: false,
   },
 ]
+
+interface EmbeddedOnnxRuntimeLibrary {
+  readonly bytes: number
+  readonly sha256: string
+  readonly base64: string
+}
+
+// ── Each Binary Carries Only Its Matching ONNX Shared Libraries ───
+// Transformers.js already selects the target-specific Node-API binding while Bun
+// bundles it. The dynamic loader also needs that binding's sibling libraries;
+// resolve them through Transformers.js's pinned dependency graph and encode only
+// the non-binding files for the platform currently being compiled.
+// → cyberful/src/cve-dictionary/embedding.ts — verifies and restores these assets.
+// ─────────────────────────────────────────────────────────────────
+const transformersEntry = fileURLToPath(import.meta.resolve("@huggingface/transformers"))
+const transformersPackageRoot = path.dirname(path.dirname(transformersEntry))
+const onnxRuntimePackageRoot = fs.realpathSync(path.resolve(transformersPackageRoot, "..", "..", "onnxruntime-node"))
+
+function embeddedOnnxRuntime(item: (typeof allTargets)[number]): Record<string, EmbeddedOnnxRuntimeLibrary> {
+  const nativeDirectory = path.join(onnxRuntimePackageRoot, "bin", "napi-v3", item.os, item.arch)
+  const entries = fs.readdirSync(nativeDirectory, { withFileTypes: true })
+  const libraries: Record<string, EmbeddedOnnxRuntimeLibrary> = {}
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.name === "onnxruntime_binding.node") continue
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue
+    const content = fs.readFileSync(path.join(nativeDirectory, entry.name))
+    libraries[entry.name] = {
+      bytes: content.byteLength,
+      sha256: new Bun.CryptoHasher("sha256").update(content).digest("hex"),
+      base64: content.toString("base64"),
+    }
+  }
+  if (Object.keys(libraries).length === 0) {
+    throw new Error(`No ONNX Runtime libraries found for ${item.os}/${item.arch}`)
+  }
+  return libraries
+}
 
 const targetName = (item: (typeof allTargets)[number]) =>
   [
@@ -360,6 +405,8 @@ for (const item of targets) {
   // main binary whose required expert-gateway MCP can never start.
   // ────────────────────────────────────────────────────────────────
   const gatewayPath = "./src/subsystem/gateway/server.ts"
+  const embeddedOnnx = embeddedOnnxRuntime(item)
+  console.log(`Embedding ${Object.keys(embeddedOnnx).length} ONNX Runtime libraries for ${item.os}/${item.arch}`)
 
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
   const workerRelativePath = path.relative(dir, parserWorker).replaceAll("\\", "/")
@@ -367,7 +414,7 @@ for (const item of targets) {
   const build = await Bun.build({
     conditions: ["browser"],
     tsconfig: "./tsconfig.json",
-    plugins: [plugin],
+    plugins: [plugin, cveDictionaryTextOnlyPlugin],
     external: ["node-gyp"],
     format: "esm",
     minify: true,
@@ -406,6 +453,7 @@ for (const item of targets) {
       CYBERFUL_RUNTIME_IMAGE: JSON.stringify(process.env.CYBERFUL_RUNTIME_IMAGE?.trim() ?? ""),
       CYBERFUL_EMBEDDED_BROWSER: JSON.stringify(embeddedBrowser),
       CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedBrowserBin),
+      CYBERFUL_EMBEDDED_ONNX_RUNTIME: JSON.stringify(embeddedOnnx),
     },
   })
   if (!build.success) {

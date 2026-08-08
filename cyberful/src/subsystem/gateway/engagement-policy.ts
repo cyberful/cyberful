@@ -15,6 +15,7 @@ import { replaceWorkareaFile } from "@/workarea"
 export const ENGAGEMENT_POLICY_PATH = "raw/policy/engagement.json"
 const ZAP_API_HOST = "zap"
 const ZAP_DIAGNOSTIC_LIMIT = 300
+const RATE_LIMIT_DESCRIPTION = "Cyberful engagement global HTTP budget"
 
 export interface EngagementPolicy {
   readonly version: 1
@@ -128,6 +129,38 @@ interface ZapDiagnostic {
   readonly detail?: string
 }
 
+interface ZapValidationDiagnostic {
+  readonly code: string
+  readonly message?: string
+  readonly responseShape?: SanitizedResponseShape
+}
+
+interface SanitizedResponseShape {
+  readonly type: "array" | "boolean" | "null" | "number" | "object" | "string" | "undefined"
+  readonly length?: number
+  readonly fields?: Readonly<Record<string, string>>
+  readonly truncated?: boolean
+}
+
+function responseValueShape(value: unknown): string {
+  if (value === null) return "null"
+  if (Array.isArray(value)) return `array(${value.length})`
+  return typeof value
+}
+
+function sanitizedResponseShape(value: unknown): SanitizedResponseShape {
+  if (value === null) return { type: "null" }
+  if (Array.isArray(value)) return { type: "array", length: value.length }
+  if (!isRecord(value)) return { type: typeof value as SanitizedResponseShape["type"] }
+  const keys = Object.keys(value).sort()
+  const retained = keys.slice(0, 20)
+  return {
+    type: "object",
+    fields: Object.fromEntries(retained.map((key) => [key.slice(0, 80), responseValueShape(value[key])])),
+    ...(keys.length > retained.length ? { truncated: true } : {}),
+  }
+}
+
 function sanitizedZapText(value: unknown, apiKey: string) {
   if (typeof value !== "string") return
   const normalized = value
@@ -163,16 +196,30 @@ export class ZapRateLimitInstallError extends Error {
   readonly zapCode?: string
   readonly zapMessage?: string
   readonly zapDetail?: string
+  readonly validationCode?: string
+  readonly validationMessage?: string
+  readonly responseShape?: SanitizedResponseShape
 
-  constructor(input: { readonly httpStatus?: number; readonly diagnostic?: ZapDiagnostic }) {
+  constructor(input: {
+    readonly httpStatus?: number
+    readonly diagnostic?: ZapDiagnostic
+    readonly validation?: ZapValidationDiagnostic
+  }) {
     const status = input.httpStatus === undefined ? "transport failure" : `HTTP ${input.httpStatus}`
-    const code = input.diagnostic?.code ? `; ZAP ${input.diagnostic.code}` : ""
+    const code = input.diagnostic?.code
+      ? `; ZAP ${input.diagnostic.code}`
+      : input.validation?.code
+        ? `; Cyberful ${input.validation.code}`
+        : ""
     super(`could not install the engagement ZAP rate-limit rule (${status}${code})`)
     this.name = "ZapRateLimitInstallError"
     this.httpStatus = input.httpStatus
     this.zapCode = input.diagnostic?.code
     this.zapMessage = input.diagnostic?.message
     this.zapDetail = input.diagnostic?.detail
+    this.validationCode = input.validation?.code
+    this.validationMessage = input.validation?.message
+    this.responseShape = input.validation?.responseShape
   }
 
   toolResult() {
@@ -186,10 +233,67 @@ export class ZapRateLimitInstallError extends Error {
       ...(this.zapCode ? { zap_code: this.zapCode } : {}),
       ...(this.zapMessage ? { zap_message: this.zapMessage } : {}),
       ...(this.zapDetail ? { zap_detail: this.zapDetail } : {}),
+      ...(this.validationCode ? { validation_code: this.validationCode } : {}),
+      ...(this.validationMessage ? { validation_message: this.validationMessage } : {}),
+      ...(this.responseShape ? { response_shape: this.responseShape } : {}),
       action:
         "Record this host-runtime blocker and stop Brief without handoff. Do not retry or ask the operator to restore ZAP.",
     }
   }
+}
+
+async function zapNetworkRequest(
+  pathname: string,
+  parameters: Record<string, string>,
+  input: { readonly proxyUrl: string; readonly apiKey: string; readonly signal?: AbortSignal },
+) {
+  const endpoint = new URL(pathname, input.proxyUrl)
+  endpoint.searchParams.set("apikey", input.apiKey)
+  for (const [name, value] of Object.entries(parameters)) endpoint.searchParams.set(name, value)
+  let response: Response
+  try {
+    response = await fetch(endpoint, {
+      headers: { Host: ZAP_API_HOST },
+      signal: input.signal
+        ? AbortSignal.any([input.signal, AbortSignal.timeout(15_000)])
+        : AbortSignal.timeout(15_000),
+    })
+  } catch {
+    input.signal?.throwIfAborted()
+    throw new ZapRateLimitInstallError({ validation: { code: "transport_error" } })
+  }
+  const body = await response.text()
+  const diagnostic = zapDiagnostic(body, input.apiKey)
+  if (!response.ok || diagnostic.code)
+    throw new ZapRateLimitInstallError({ httpStatus: response.status, diagnostic })
+  try {
+    return JSON.parse(body) as unknown
+  } catch {
+    throw new ZapRateLimitInstallError({
+      httpStatus: response.status,
+      validation: { code: "invalid_json", message: "ZAP returned a non-JSON network response" },
+    })
+  }
+}
+
+function matchingRateLimitRules(value: unknown) {
+  const registry = isRecord(value)
+    ? value.getRateLimitRules === undefined
+      ? value.rateLimitRules
+      : value.getRateLimitRules
+    : undefined
+  if (!Array.isArray(registry))
+    throw new ZapRateLimitInstallError({
+      validation: {
+        code: "invalid_rule_registry",
+        message: "ZAP Network API did not return a rate-limit rule array",
+        responseShape: sanitizedResponseShape(value),
+      },
+    })
+  return registry.filter(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) && candidate.description === RATE_LIMIT_DESCRIPTION,
+  )
 }
 
 // ── One ZAP Rule Owns The Aggregate HTTP Budget ─────────────────
@@ -202,34 +306,45 @@ export class ZapRateLimitInstallError extends Error {
 // @docs/runtimes/zap.md
 // ─────────────────────────────────────────────────────────────────
 export async function applyEngagementRateLimit(
-  policy: EngagementPolicy,
+  policy: EngagementPolicy | undefined,
   input: { readonly proxyUrl: string; readonly apiKey: string; readonly signal?: AbortSignal },
 ) {
-  if (policy.global_http_rps === null) return { configured: false as const }
-  const endpoint = new URL("/JSON/network/action/addRateLimitRule/", input.proxyUrl)
-  endpoint.searchParams.set("apikey", input.apiKey)
-  endpoint.searchParams.set("description", "Cyberful engagement global HTTP budget")
-  endpoint.searchParams.set("enabled", "true")
-  endpoint.searchParams.set("matchRegex", "true")
-  endpoint.searchParams.set("matchString", rateLimitRegex(policy.authorized_http_hosts))
-  endpoint.searchParams.set("requestsPerSecond", String(policy.global_http_rps))
-  endpoint.searchParams.set("groupBy", "rule")
-  let response: Response
-  try {
-    response = await fetch(endpoint, {
-      headers: { Host: ZAP_API_HOST },
-      signal: input.signal
-        ? AbortSignal.any([input.signal, AbortSignal.timeout(15_000)])
-        : AbortSignal.timeout(15_000),
-    })
-  } catch (error) {
-    input.signal?.throwIfAborted()
-    throw new ZapRateLimitInstallError({ diagnostic: { code: "transport_error" } })
+  const existing = matchingRateLimitRules(
+    await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
+  )
+  if (existing.length > 0)
+    await zapNetworkRequest(
+      "/JSON/network/action/removeRateLimitRule/",
+      { description: RATE_LIMIT_DESCRIPTION },
+      input,
+    )
+  if (!policy || policy.global_http_rps === null) {
+    const remaining = matchingRateLimitRules(
+      await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
+    )
+    if (remaining.length !== 0)
+      throw new ZapRateLimitInstallError({ validation: { code: "rule_removal_attestation_failed" } })
+    return { configured: false as const }
   }
-  const body = await response.text()
-  const diagnostic = zapDiagnostic(body, input.apiKey)
-  if (!response.ok || diagnostic.code)
-    throw new ZapRateLimitInstallError({ httpStatus: response.status, diagnostic })
+  await zapNetworkRequest(
+    "/JSON/network/action/addRateLimitRule/",
+    {
+      description: RATE_LIMIT_DESCRIPTION,
+      enabled: "true",
+      matchRegex: "true",
+      matchString: rateLimitRegex(policy.authorized_http_hosts),
+      requestsPerSecond: String(policy.global_http_rps),
+      groupBy: "rule",
+    },
+    input,
+  )
+  const installed = matchingRateLimitRules(
+    await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
+  )
+  if (installed.length !== 1)
+    throw new ZapRateLimitInstallError({
+      validation: { code: "rule_attestation_failed", message: "expected exactly one Cyberful rate-limit rule" },
+    })
   return {
     configured: true as const,
     requests_per_second: policy.global_http_rps,

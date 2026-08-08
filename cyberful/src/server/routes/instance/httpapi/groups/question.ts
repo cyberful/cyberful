@@ -8,7 +8,7 @@ import { Question } from "@/question"
 import { QuestionID } from "@/question/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { QuestionNotFoundError } from "../errors"
+import { QuestionNotFoundError, QuestionNotPresentedError } from "../errors"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { DirectoryRoutingMiddleware, DirectoryRoutingQuery } from "../middleware/directory-routing"
@@ -35,12 +35,24 @@ export const QuestionApi = HttpApi.make("question")
             description: "Get all pending question requests across all sessions.",
           }),
         ),
+        HttpApiEndpoint.post("presented", `${root}/:requestID/presented`, {
+          params: { requestID: QuestionID },
+          query: DirectoryRoutingQuery,
+          success: described(Question.Request, "Question presentation acknowledged"),
+          error: QuestionNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "question.presented",
+            summary: "Acknowledge question presentation",
+            description: "Record that a pending question has been mounted by an interactive client.",
+          }),
+        ),
         HttpApiEndpoint.post("reply", `${root}/:requestID/reply`, {
           params: { requestID: QuestionID },
           query: DirectoryRoutingQuery,
           payload: ReplyPayload,
           success: described(Schema.Boolean, "Question answered successfully"),
-          error: [HttpApiError.BadRequest, QuestionNotFoundError],
+          error: [HttpApiError.BadRequest, QuestionNotFoundError, QuestionNotPresentedError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "question.reply",
@@ -52,7 +64,7 @@ export const QuestionApi = HttpApi.make("question")
           params: { requestID: QuestionID },
           query: DirectoryRoutingQuery,
           success: described(Schema.Boolean, "Question rejected successfully"),
-          error: [HttpApiError.BadRequest, QuestionNotFoundError],
+          error: [HttpApiError.BadRequest, QuestionNotFoundError, QuestionNotPresentedError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "question.reject",

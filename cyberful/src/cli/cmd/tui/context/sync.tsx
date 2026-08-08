@@ -466,6 +466,24 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
 
+        case "question.presented": {
+          const request = store.question[event.properties.sessionID]?.find(
+            (candidate) => candidate.id === event.properties.requestID,
+          )
+          if (!request) break
+          setStore(
+            "question",
+            event.properties.sessionID,
+            (candidate) => candidate.id === event.properties.requestID,
+            reconcile({
+              ...request,
+              presentation: "presented",
+              presentedAt: event.properties.presentedAt,
+            }),
+          )
+          break
+        }
+
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
           break

@@ -123,11 +123,14 @@ function attemptTranscript(filePath: string, attempt: number) {
 
 function recoveryObjective(phase: string, objective: string, result: PhaseResult) {
   const failure = result.subsystemFailure
+  const upstream = result.phaseFailure?.source === "upstream"
   return [
     objective,
     "",
-    `Host recovery attempt for the ${phase} phase after a retryable provider failure.`,
-    `Previous termination: ${result.termination}; provider failure: ${failure?.kind ?? "unknown"}${failure?.providerCode ? ` (${failure.providerCode})` : ""}.`,
+    `Host recovery attempt for the ${phase} phase after a retryable ${upstream ? "required-upstream" : "provider"} failure.`,
+    upstream
+      ? `Previous termination: ${result.termination}; upstream failure: ${result.phaseFailure?.class ?? "unknown"}.`
+      : `Previous termination: ${result.termination}; provider failure: ${failure?.kind ?? "unknown"}${failure?.providerCode ? ` (${failure.providerCode})` : ""}.`,
     "Continue from the existing workarea, phase checkpoint, hypothesis registry, surface coverage, and tool-usage artifacts.",
     "Before new target activity, list the current hypothesis registry and reconcile every OPEN, TESTING, QUEUED, and terminal entry.",
     "Reconcile completed calls before acting. Do not repeat an operation that may already have produced a target-side effect.",
@@ -159,6 +162,7 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
       let budgetCarry: NonNullable<PhaseSpec["budgetCarry"]> = {
         approvalWaitMs: 0,
         retryWaitMs: 0,
+        targetCooldownWaitMs: 0,
         phaseExtensionMs: 0,
       }
       const results: PhaseResult[] = []
@@ -191,13 +195,18 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         budgetCarry = {
           approvalWaitMs: Math.max(budgetCarry.approvalWaitMs, result.approvalWaitMs ?? 0),
           retryWaitMs: Math.max(budgetCarry.retryWaitMs, result.retryWaitMs ?? 0),
+          targetCooldownWaitMs: Math.max(
+            budgetCarry.targetCooldownWaitMs,
+            result.targetCooldownWaitMs ?? 0,
+          ),
           phaseExtensionMs: Math.max(budgetCarry.phaseExtensionMs, result.retryCompensationMs ?? 0),
         }
-        const retryableProviderFailure =
-          result.phaseFailure?.source === "provider" && result.subsystemFailure?.retryable === true
+        const retryableFailure =
+          (result.phaseFailure?.source === "provider" && result.subsystemFailure?.retryable === true) ||
+          (result.phaseFailure?.source === "upstream" && result.phaseFailure.retryable === true)
         if (
           result.ok ||
-          !retryableProviderFailure ||
+          !retryableFailure ||
           !policy?.enabled ||
           attempt > policy.maxRestarts ||
           remainingTimeoutMs <= 0 ||
@@ -206,7 +215,9 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           return { result, results }
         attemptObjective = recoveryObjective(phase, objective, result)
         route =
-          result.subsystemFailure?.providerCode === "active_tail_too_large"
+          result.phaseFailure?.source === "upstream"
+            ? "main"
+            : result.subsystemFailure?.providerCode === "active_tail_too_large"
             ? "main"
             : policy.useFallbackProvider && policy.fallbackConfigured
               ? "fallback"

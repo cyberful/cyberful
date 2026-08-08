@@ -12,9 +12,17 @@ const COLUMNS = [
   "time_iso",
   "phase",
   "agent",
+  "agent_run_id",
+  "agent_role",
+  "parent_run_id",
+  "tool_call_id",
   "tool",
+  "tool_action",
   "duration_ms",
   "outcome",
+  "result_count",
+  "argument_digest",
+  "hypothesis_id",
   "peak_rps",
   "bytes_out",
   "marker_attested",
@@ -41,9 +49,17 @@ const COLUMNS = [
 ] as const
 
 export interface ToolUsageEvent {
+  agent_run_id?: string
+  agent_role?: "root" | "subagent" | "fallback"
+  parent_run_id?: string
+  tool_call_id?: string
   tool: string
+  tool_action?: string
   duration_ms?: number
   outcome?: "ok" | "error" | "blocked"
+  result_count?: number
+  argument_digest?: string
+  hypothesis_id?: string
   peak_rps?: number
   bytes_out?: number
   marker_attested?: boolean

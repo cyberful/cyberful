@@ -20,6 +20,7 @@ import selectors
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -64,7 +65,9 @@ MAX_ENV_VALUE_BYTES = 32 * 1024
 DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
-PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY",)
+PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY", "CYBERFUL_OS_CA_BUNDLE")
+CORE_PROXY_TRUST_DIRECTORY = "/run/cyberful/proxy-trust"
+MAX_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 NO_TELEMETRY_ENV = {
     "DISABLE_UPDATE_CHECK": "true",
     "DO_NOT_TRACK": "1",
@@ -73,6 +76,12 @@ NO_TELEMETRY_ENV = {
     "SEMGREP_SEND_METRICS": "off",
     "SYFT_CHECK_FOR_APP_UPDATE": "false",
 }
+EVM_FOUNDRY_ENV = {
+    "HOME": "/workspace/.cyberful-evm/cache",
+    "FOUNDRY_DIR": "/workspace/.cyberful-evm/cache/.foundry",
+    "SVM_HOME": "/workspace/.cyberful-evm/cache/.svm",
+    "XDG_CACHE_HOME": "/workspace/.cyberful-evm/cache/.cache",
+}
 CURRENT_PROGRESS_TOKEN: Any | None = None
 LAST_PROGRESS_AT = 0.0
 PROGRESS_SEQUENCE = 0
@@ -80,6 +89,7 @@ STRICT_PREFLIGHT_ENV = "CYBERFUL_OS_STRICT_PREFLIGHT"
 REQUIRE_ENGAGEMENT_CONTAINER_ENV = "CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER"
 IN_CONTAINER_EXECUTION_ENV = "CYBERFUL_OS_IN_CONTAINER"
 WORKAREA_ROOT_ENV = "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT"
+EVM_RUNTIME_ID_ENV = "CYBERFUL_EVM_RUNTIME_ID"
 RUN_ID_ENV = "CYBERFUL_RUN_ID"
 OWNER_LABEL = "org.cyberful.run-owner"
 RUNTIME_LABEL = "org.cyberful.runtime"
@@ -343,18 +353,43 @@ def docker_environment() -> dict[str, str]:
     return next_env
 
 
-# ── Tool Calls Cannot Re-enable Background Traffic ──────────────────
-# The image disables the known update and metrics paths of its bundled tools,
-# but docker exec environment overrides take precedence over image defaults.
-# Callers may still pass provider credentials and scan configuration; the fixed
-# no-telemetry keys are reapplied last so one invocation cannot weaken policy.
-# This protects every dedicated tool and the shell fallback at one boundary.
-# ─────────────────────────────────────────────────────────────────────
+# ── Host-Owned Exec Environment Wins Over Caller Input ──────────────────────
+# Docker exec overrides the image environment, so caller configuration is
+# normalized before proxy trust, EVM compiler homes, and no-telemetry policy are
+# applied. An EVM engagement therefore cannot redirect its compiler into `/root`,
+# while every dedicated tool and the shell share the same fixed policy boundary.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validated_ca_bundle(value: str) -> str:
+    if not os.path.isabs(value):
+        raise ValueError("cyberful-os CA bundle must be absolute")
+    info = os.lstat(value)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise ValueError("cyberful-os CA bundle must be a regular file")
+    trust_directory = os.path.realpath(CORE_PROXY_TRUST_DIRECTORY)
+    resolved = os.path.realpath(value)
+    if os.path.commonpath((trust_directory, resolved)) != trust_directory:
+        raise ValueError("cyberful-os CA bundle must stay inside the engagement trust directory")
+    if info.st_size <= 0 or info.st_size > MAX_CA_BUNDLE_BYTES:
+        raise ValueError("cyberful-os CA bundle has an invalid size")
+    with open(value, "rb") as handle:
+        content = handle.read(MAX_CA_BUNDLE_BYTES + 1)
+    if len(content) > MAX_CA_BUNDLE_BYTES or b"-----BEGIN CERTIFICATE-----" not in content:
+        raise ValueError("cyberful-os CA bundle contains no bounded certificate chain")
+    if b"PRIVATE KEY" in content:
+        raise ValueError("cyberful-os CA bundle contains private key material")
+    return value
+
 
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
-    next_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
-    proxy = next_env.pop("CYBERFUL_OS_HTTP_PROXY", None)
-    if proxy:
+    next_env = normalize_extra_env(extra_env) or {}
+    host_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
+    proxy = host_env.get("CYBERFUL_OS_HTTP_PROXY")
+    ca_bundle = host_env.get("CYBERFUL_OS_CA_BUNDLE")
+    if bool(proxy) != bool(ca_bundle):
+        raise ValueError("cyberful-os proxy and CA bundle must be configured together")
+    if proxy and ca_bundle:
+        trusted_bundle = validated_ca_bundle(ca_bundle)
         next_env.update({
             "HTTP_PROXY": proxy,
             "HTTPS_PROXY": proxy,
@@ -362,9 +397,28 @@ def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
             "https_proxy": proxy,
             "NO_PROXY": "127.0.0.1,localhost",
             "no_proxy": "127.0.0.1,localhost",
+            "SSL_CERT_FILE": trusted_bundle,
+            "CURL_CA_BUNDLE": trusted_bundle,
+            "REQUESTS_CA_BUNDLE": trusted_bundle,
+            "GIT_SSL_CAINFO": trusted_bundle,
+            "GIT_SSL_NO_VERIFY": "false",
+            "PIP_CERT": trusted_bundle,
+            "NODE_EXTRA_CA_CERTS": trusted_bundle,
+            "NODE_USE_ENV_PROXY": "1",
+            "BUNDLE_SSL_CA_CERT": trusted_bundle,
+            "BUNDLE_SSL_VERIFY_MODE": "1",
         })
-    if extra_env:
-        next_env.update(normalize_extra_env(extra_env) or {})
+    evm_runtime_id = os.environ.get(EVM_RUNTIME_ID_ENV, "").strip()
+    if evm_runtime_id:
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            evm_runtime_id,
+        ):
+            raise ValueError("cyberful-os received an invalid EVM runtime identity")
+        workarea = os.environ.get(WORKAREA_ROOT_ENV, "").strip()
+        if not workarea or not os.path.isabs(workarea):
+            raise ValueError("cyberful-os EVM compiler cache requires an absolute workarea")
+        next_env.update(EVM_FOUNDRY_ENV)
     next_env.update(NO_TELEMETRY_ENV)
     return next_env
 

@@ -55,6 +55,8 @@ const ReasoningEffort = Schema.Literals(["minimal", "low", "medium", "high", "xh
 export type ReasoningEffort = Schema.Schema.Type<typeof ReasoningEffort>
 
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "ultra"
+export const DEFAULT_SUBAGENT_REASONING_EFFORT: ReasoningEffort = "xhigh"
+export const DEFAULT_SUBAGENT_REASONING_EFFORTS: readonly ReasoningEffort[] = ["xhigh", "medium"]
 
 export const DEFAULT_COMPACTION = {
   enabled: true,
@@ -98,7 +100,8 @@ export interface RetryPolicy {
 
 export interface SubagentPolicy {
   readonly provider: string
-  readonly reasoning_effort: ReasoningEffort
+  readonly reasoning_efforts: readonly ReasoningEffort[]
+  readonly default_reasoning_effort: ReasoningEffort
   readonly source: "configured" | "openai-codex-default" | "main-provider-fallback"
   readonly warning?: string
 }
@@ -145,7 +148,7 @@ export const Info = Schema.Struct({
     subagents: Schema.Struct({
       enabled: Schema.Boolean,
       provider: Schema.optional(ProviderName),
-      reasoning_effort: Schema.optional(ReasoningEffort),
+      reasoning_effort: Schema.optional(Schema.Array(ReasoningEffort)),
       max_per_run: PositiveInt,
       max_concurrent: PositiveInt,
       max_depth: PositiveInt,
@@ -211,7 +214,7 @@ agent:
   subagents:
     enabled: true
     provider: openai-codex
-    reasoning_effort: high
+    reasoning_effort: [xhigh, medium]
     max_per_run: 5
     max_concurrent: 5
     max_depth: 2
@@ -313,6 +316,34 @@ function yamlReason(error: unknown) {
   return error.reason.replace(/\s+/g, " ").trim()
 }
 
+// ── Legacy Scalar Child Reasoning Becomes An Allowlist ───────────
+// Version 1 settings historically selected one fixed child effort. The runtime
+// now accepts an allowlist while preserving `xhigh` as the non-negotiable
+// default for an omitted parent choice. Parsing normalizes the old scalar before
+// schema validation, so direct callers and files loaded before their atomic
+// textual migration observe one canonical internal representation.
+//
+// @docs/user-guide/settings.md
+// ─────────────────────────────────────────────────────────────────
+function normalizeLegacySubagentReasoning(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.agent) || !isRecord(value.agent.subagents)) return value
+  const effort = value.agent.subagents.reasoning_effort
+  if (typeof effort !== "string") return value
+  return {
+    ...value,
+    agent: {
+      ...value.agent,
+      subagents: {
+        ...value.agent.subagents,
+        reasoning_effort:
+          effort === DEFAULT_SUBAGENT_REASONING_EFFORT
+            ? [DEFAULT_SUBAGENT_REASONING_EFFORT]
+            : [effort, DEFAULT_SUBAGENT_REASONING_EFFORT],
+      },
+    },
+  }
+}
+
 function decode(value: unknown, filePath: string): Info {
   rejectInlineSecrets(value, filePath)
   const decoded = Schema.decodeUnknownExit(Info)(value, {
@@ -392,6 +423,17 @@ function validateRouting(settings: Info, filePath: string): Info {
       `agent.subagents.provider references unconfigured provider "${subagentProvider}"`,
     ])
   }
+  const subagentReasoning = settings.agent.subagents.reasoning_effort
+  if (subagentReasoning) {
+    if (!subagentReasoning.includes(DEFAULT_SUBAGENT_REASONING_EFFORT)) {
+      throw new InvalidError(filePath, [
+        `agent.subagents.reasoning_effort must include ${DEFAULT_SUBAGENT_REASONING_EFFORT}`,
+      ])
+    }
+    if (new Set(subagentReasoning).size !== subagentReasoning.length) {
+      throw new InvalidError(filePath, ["agent.subagents.reasoning_effort must not contain duplicates"])
+    }
+  }
 
   for (const [providerName, provider] of Object.entries(settings.agent.providers)) {
     if (provider.base_url === undefined) continue
@@ -426,23 +468,27 @@ export function retryPolicy(settings: Info): RetryPolicy {
 
 export function subagentPolicy(settings: Info): SubagentPolicy {
   const configured = settings.agent.subagents.provider
+  const reasoningEfforts = settings.agent.subagents.reasoning_effort ?? DEFAULT_SUBAGENT_REASONING_EFFORTS
   if (configured) {
     return {
       provider: configured,
-      reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+      reasoning_efforts: reasoningEfforts,
+      default_reasoning_effort: DEFAULT_SUBAGENT_REASONING_EFFORT,
       source: "configured",
     }
   }
   if (settings.agent.providers["openai-codex"]) {
     return {
       provider: "openai-codex",
-      reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+      reasoning_efforts: reasoningEfforts,
+      default_reasoning_effort: DEFAULT_SUBAGENT_REASONING_EFFORT,
       source: "openai-codex-default",
     }
   }
   return {
     provider: settings.agent.main_provider,
-    reasoning_effort: settings.agent.subagents.reasoning_effort ?? "high",
+    reasoning_efforts: reasoningEfforts,
+    default_reasoning_effort: DEFAULT_SUBAGENT_REASONING_EFFORT,
     source: "main-provider-fallback",
     warning:
       "agent.subagents.provider is not configured and route openai-codex is unavailable; subagents inherit agent.main_provider",
@@ -483,7 +529,7 @@ export function parse(text: string, source = SETTINGS_FILENAME): Info {
   } catch (error) {
     throw new YamlError(source, yamlReason(error))
   }
-  return validateRouting(decode(value, source), source)
+  return validateRouting(decode(normalizeLegacySubagentReasoning(value), source), source)
 }
 
 // ── First-Run Creation Never Replaces Operator Configuration ────
@@ -516,13 +562,13 @@ async function createDefaultIfMissing(filePath: string) {
   }
 }
 
-// ── Existing Settings Gain The Explicit Reasoning Default ───────
+// ── Existing Settings Gain Explicit Reasoning Contracts ─────────
 // Runtime defaults alone would make two visually identical settings files run
 // with different assumptions across Cyberful versions. Loading an older file
-// therefore inserts the new key inside its existing agent block while retaining
-// comments, ordering, and every operator-owned value. The atomic replacement is
-// attempted only while the source text is unchanged; concurrent edits cause a
-// bounded reread instead of overwriting a newer document.
+// therefore inserts the root default and rewrites the former scalar child effort
+// as an allowlist containing `xhigh`. Missing child policy receives the current
+// explicit default. Atomic replacement occurs only while source text is unchanged,
+// so concurrent operator edits are never overwritten by migration.
 //
 // @docs/user-guide/settings.md
 // ─────────────────────────────────────────────────────────────────
@@ -551,10 +597,55 @@ function withDefaultReasoningEffort(text: string): string {
   return trailingNewline || migrated.endsWith(newline) ? migrated : `${migrated}${newline}`
 }
 
-async function persistDefaultReasoningEffort(filePath: string): Promise<string> {
+function withSubagentReasoningAllowlist(text: string): string {
+  const newline = text.includes("\r\n") ? "\r\n" : "\n"
+  const trailingNewline = text.endsWith("\n")
+  const lines = text.replace(/\r\n/g, "\n").split("\n")
+  const subagentsStart = lines.findIndex((line) => /^  subagents:\s*(?:#.*)?$/.test(line))
+  if (subagentsStart < 0) return text
+  const subagentsEnd = lines.findIndex(
+    (line, index) => index > subagentsStart && /^  [^\s#][^:]*:\s*(?:.*)$/.test(line),
+  )
+  const boundary = subagentsEnd < 0 ? lines.length : subagentsEnd
+  const reasoningIndex = lines.findIndex(
+    (line, index) => index > subagentsStart && index < boundary && /^    reasoning_effort:\s*/.test(line),
+  )
+  if (reasoningIndex >= 0) {
+    const match = lines[reasoningIndex]?.match(
+      /^    reasoning_effort:\s*([A-Za-z][A-Za-z0-9_-]*)\s*(#.*)?$/,
+    )
+    if (!match) return text
+    const effort = match[1]
+    const allowlist =
+      effort === DEFAULT_SUBAGENT_REASONING_EFFORT
+        ? `[${DEFAULT_SUBAGENT_REASONING_EFFORT}]`
+        : `[${effort}, ${DEFAULT_SUBAGENT_REASONING_EFFORT}]`
+    lines[reasoningIndex] = `    reasoning_effort: ${allowlist}${match[2] ? ` ${match[2]}` : ""}`
+  } else {
+    const providerIndex = lines.findIndex(
+      (line, index) => index > subagentsStart && index < boundary && /^    provider:\s*/.test(line),
+    )
+    const enabledIndex = lines.findIndex(
+      (line, index) => index > subagentsStart && index < boundary && /^    enabled:\s*/.test(line),
+    )
+    lines.splice(
+      providerIndex >= 0 ? providerIndex + 1 : enabledIndex >= 0 ? enabledIndex + 1 : subagentsStart + 1,
+      0,
+      `    reasoning_effort: [${DEFAULT_SUBAGENT_REASONING_EFFORTS.join(", ")}]`,
+    )
+  }
+  const migrated = lines.join(newline)
+  return trailingNewline || migrated.endsWith(newline) ? migrated : `${migrated}${newline}`
+}
+
+function withSettingsMigrations(text: string): string {
+  return withSubagentReasoningAllowlist(withDefaultReasoningEffort(text))
+}
+
+async function persistSettingsMigrations(filePath: string): Promise<string> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const original = await Bun.file(filePath).text()
-    const migrated = withDefaultReasoningEffort(original)
+    const migrated = withSettingsMigrations(original)
     if (migrated === original) return original
 
     const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
@@ -573,11 +664,11 @@ async function persistDefaultReasoningEffort(filePath: string): Promise<string> 
       await unlink(temporaryPath).catch(() => undefined)
     }
   }
-  throw new Error(`Could not add agent.reasoning_effort to ${filePath}: the file changed during migration`)
+  throw new Error(`Could not migrate reasoning settings in ${filePath}: the file changed during migration`)
 }
 
 export async function load(directory = process.cwd()): Promise<Info> {
   const filePath = path.join(directory, SETTINGS_FILENAME)
   await createDefaultIfMissing(filePath)
-  return parse(await persistDefaultReasoningEffort(filePath), filePath)
+  return parse(await persistSettingsMigrations(filePath), filePath)
 }

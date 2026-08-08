@@ -218,6 +218,21 @@ describe("Pi provider security failures", () => {
       PiSecurity.classify({
         adapter: "openai-codex",
         provider: "openai-codex",
+        message: {
+          stopReason: "error",
+          diagnostics: [{ type: "provider_failure", error: { code: "cyber_policy", message: "redacted" } }],
+        },
+      }),
+    ).toEqual({
+      kind: "security_policy_block",
+      providerCode: "cyberPolicy",
+      evidence: "codex_error_code",
+      retryable: false,
+    })
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-codex",
+        provider: "openai-codex",
         upstream: { status: "failed", error: { codexErrorInfo: { cyberPolicy: {} } } },
       }),
     ).toEqual({
@@ -281,9 +296,23 @@ describe("Pi provider security failures", () => {
       PiSecurity.classify({
         adapter: "openai-codex",
         provider: "openai-codex",
-        message: { stopReason: "error", error: { message: "cyberPolicy" } },
+        message: { stopReason: "error", error: { message: "cyberPolicy cyber_policy" } },
       })?.kind,
     ).toBe("unknown")
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-responses",
+        provider: "compatible",
+        message: { stopReason: "error", diagnostics: [{ error: { code: "cyber_policy" } }] },
+      }),
+    ).toMatchObject({ kind: "unknown", providerCode: "cyber_policy", retryable: false })
+    expect(
+      PiSecurity.classify({
+        adapter: "openai-responses",
+        provider: "openai-codex",
+        message: { stopReason: "error", diagnostics: [{ error: { code: "cyber_policy" } }] },
+      }),
+    ).toMatchObject({ kind: "unknown", providerCode: "cyber_policy", retryable: false })
     expect(PiSecurity.classify({ ...route, upstream: { finishReason: "Content_Filter" } })?.kind).toBe("unknown")
     expect(PiSecurity.classify({ ...route, upstream: { finishReason: "sensitive" } })?.kind).toBe("unknown")
   })

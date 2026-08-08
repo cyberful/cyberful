@@ -6,11 +6,37 @@
 # ─────────────────────────────────────────────────────────────────────
 
 set -eu
+umask 077
 
 : "${CYBER_ZAP_API_KEY:?CYBER_ZAP_API_KEY is required}"
 : "${CYBER_ZAP_MCP_KEY:?CYBER_ZAP_MCP_KEY is required}"
 
+generation="${CYBER_ZAP_SESSION_GENERATION:-1}"
+case "${generation}" in
+  ''|*[!0-9]*) echo "CYBER_ZAP_SESSION_GENERATION must be a decimal integer" >&2; exit 2 ;;
+esac
+[ "${generation}" -ge 1 ] || { echo "CYBER_ZAP_SESSION_GENERATION must be positive" >&2; exit 2; }
+
+session_directory="${CYBER_ZAP_SESSION_ROOT:-/var/lib/cyberful/zap/session}"
+session_path="${session_directory}/engagement-${generation}"
+mkdir -p "${session_directory}"
+if [ -f "${session_path}.session" ]; then
+  session_option="-session"
+else
+  session_option="-newsession"
+fi
+
+certificate_path="${CYBER_ZAP_ROOT_CA_PATH:-/var/lib/cyberful/zap/root-ca.pem}"
+mkdir -p "$(dirname "${certificate_path}")"
+if [ -s "${certificate_path}" ]; then
+  certificate_option="-certload"
+else
+  certificate_option="-certfulldump"
+fi
+
 exec /zap/zap-x.sh \
+  "${session_option}" "${session_path}" \
+  "${certificate_option}" "${certificate_path}" \
   -daemon \
   -silent \
   -notel \

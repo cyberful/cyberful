@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { TestObjectLifecycleLedger } from "./test-object-lifecycle"
@@ -20,6 +20,8 @@ describe("test object lifecycle ledger", () => {
       expect(await ledger.handoffError()).toContain("dataset-1 (created)")
       await ledger.transition({ action: "transition", id: "dataset-1", state: "oracle_checked" })
       await ledger.transition({ action: "transition", id: "dataset-1", state: "cleanup_attempted" })
+      await mkdir(path.join(root, "raw"), { recursive: true })
+      await writeFile(path.join(root, "raw", "dataset-cleanup.md"), "cleanup evidence\n")
       await ledger.transition({ action: "transition", id: "dataset-1", state: "cleaned", evidence_path: "raw/dataset-cleanup.md" })
       expect(await ledger.handoffError()).toBeUndefined()
     } finally {
@@ -64,6 +66,55 @@ describe("test object lifecycle ledger", () => {
       })
       await ledger.transition({ action: "transition", id: "project-1", state: "not_created" })
       expect(await ledger.handoffError()).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("recovers only one child's objects and reports missing referenced evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-test-object-"))
+    try {
+      const ledger = new TestObjectLifecycleLedger(root, "exploit")
+      const child = { runID: "child-7", displayName: "api-monster", kind: "subagent" }
+      const parent = { runID: "root-1", displayName: "root", kind: "root" }
+      await ledger.transition({
+        action: "transition",
+        id: "child-record",
+        kind: "record",
+        label: "child fixture",
+        state: "planned",
+        _cyberful_actor: child,
+      })
+      await ledger.transition({ action: "transition", id: "child-record", state: "created" })
+      await ledger.transition({ action: "transition", id: "child-record", state: "cleanup_attempted" })
+      await ledger.transition({
+        action: "transition",
+        id: "child-record",
+        state: "cleaned",
+        evidence_path: "raw/evidence/child-cleanup.json",
+      })
+      await ledger.transition({
+        action: "transition",
+        id: "root-record",
+        kind: "record",
+        label: "root fixture",
+        state: "planned",
+        _cyberful_actor: parent,
+      })
+      await ledger.transition({ action: "transition", id: "root-record", state: "not_created" })
+
+      expect(await ledger.recover("child-7")).toEqual([
+        expect.objectContaining({
+          id: "child-record",
+          actorRunID: "child-7",
+          actorRole: "subagent",
+          evidencePath: "raw/evidence/child-cleanup.json",
+          evidenceExists: false,
+        }),
+      ])
+      expect(await ledger.handoffError()).toBe(
+        "test object lifecycle references missing evidence: child-record (raw/evidence/child-cleanup.json)",
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

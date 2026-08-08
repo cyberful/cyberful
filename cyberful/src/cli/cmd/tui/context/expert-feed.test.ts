@@ -161,6 +161,32 @@ describe("foldExpertActivity", () => {
     expect(out[0]?.text).toContain("Tool failed; run continues")
   })
 
+  test("renders the exact interrupted AgentRun identity and budget termination", () => {
+    const diagnostic = decodeExpertRuntimeDiagnostic(
+      JSON.stringify({
+        runtimeDiagnostic: {
+          component: "agent",
+          runID: "run-child-7",
+          parentRunID: "run-root-1",
+          role: "subagent",
+          termination: "budget_exhausted",
+          profile: "budget_exhausted",
+          stage: "provider",
+          severity: "error",
+          errorClass: "AgentRunFailure",
+          code: "budget_exhausted",
+          message: "AgentRun terminated with budget_exhausted.",
+          path: "raw/operations/runtime-diagnostics.jsonl",
+        },
+      }),
+    )
+
+    expect(diagnostic).toBeDefined()
+    expect(expertRuntimeDiagnosticText(diagnostic!)).toContain(
+      "agent/budget_exhausted · subagent run-child-7 · budget_exhausted · AgentRunFailure (budget_exhausted)",
+    )
+  })
+
   test("replays legacy path-only diagnostics with a neutral explanatory message", () => {
     const text = "Runtime diagnostic: gateway · GatewayStderr · raw/operations/runtime-diagnostics.jsonl"
     const diagnostic = decodeExpertRuntimeDiagnostic(text)
@@ -245,6 +271,7 @@ describe("foldExpertActivity", () => {
       effectiveLimitMs: 600_000,
       deadlineAt: 600_000,
       approvalWaitMs: 12_000,
+      targetCooldownWaitMs: 180_000,
       exitCode: 0,
       warnings: [],
       handoff: { successor: "exploit", artifact: "RECON.md" },
@@ -253,6 +280,7 @@ describe("foldExpertActivity", () => {
     expect(out[0]?.text).toBe("Phase completed")
     expect(out[0]?.phaseStatus?.handoff?.successor).toBe("exploit")
     expect(out[0]?.phaseStatus?.approvalWaitMs).toBe(12_000)
+    expect(out[0]?.phaseStatus?.targetCooldownWaitMs).toBe(180_000)
     expect(expertPhaseLabel(out[0]?.phase ?? "")).toBe("RECON")
     expect(expertPhaseLabel(out[0]?.phaseStatus?.handoff?.successor ?? "")).toBe("EXPLOIT")
     expect(expertPhaseDuration(out[0]?.phaseStatus?.durationMs ?? 0)).toBe("6m 32s")

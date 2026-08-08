@@ -236,7 +236,10 @@ function securityPolicyBlock(
   structured: StructuredEvidence,
 ): SecurityPolicyBlock | undefined {
   const codexRoute = observation.adapter === "openai-codex" || observation.provider === "openai-codex"
-  if (codexRoute && structured.codes.includes("cyberPolicy")) {
+  const codexCyberPolicy =
+    structured.codes.includes("cyberPolicy") ||
+    (observation.adapter === "openai-codex" && structured.codes.includes("cyber_policy"))
+  if (codexRoute && codexCyberPolicy) {
     return {
       kind: "security_policy_block",
       providerCode: "cyberPolicy",

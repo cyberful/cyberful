@@ -34,7 +34,15 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(workflow.title).toBe("Bug Bounty Program")
     expect(workflow.phases.map((phase) => phase.name)).toEqual(PHASES.map(([phase]) => phase))
     expect(workflow.sourcePolicy).toBe("read")
-    expect(workflow.capabilities).toEqual(["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab"])
+    expect(workflow.capabilities).toEqual([
+      "source",
+      "isolated-exec",
+      "browser",
+      "zap",
+      "ghidra",
+      "evm-lab",
+      "cve-dictionary",
+    ])
     expect(workflow.zapLifecycle).toBe("engagement")
     expect(workflow.completionTitle).toBe("Bug bounty assessment completed")
     expect(workflow.nextWorkflow).toBe("ask")
@@ -162,7 +170,9 @@ describe("built-in Bug Bounty Program workflow", () => {
       expect(brief).toContain(preflightInstruction)
     }
     expect(brief).toMatch(/complete the normal login autonomously/i)
-    expect(brief).toMatch(/pass only\s+`\{\{var:name\}\}` references to browser input tools/i)
+    expect(brief).toContain("{{var:<saved-name>}}")
+    expect(brief).toContain("[session-variable:<saved-name>]")
+    expect(brief).not.toContain("{{var:name}}")
     expect(brief).toMatch(/Ask the human only after autonomous login cannot continue/i)
     expect(brief).not.toMatch(/Never enter credentials/i)
     expect(brief).toMatch(/not an exhaustive vulnerability checklist/i)

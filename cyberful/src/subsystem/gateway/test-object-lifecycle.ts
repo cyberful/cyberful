@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { isRecord } from "@/util/record"
 
 export const STATES = [
@@ -31,6 +31,9 @@ interface Entry {
   readonly evidence_path?: string
   readonly note?: string
   readonly residual_reason?: string
+  readonly actor_run_id?: string
+  readonly actor_display_name?: string
+  readonly actor_role?: "root" | "subagent" | "fallback"
 }
 
 export interface Snapshot {
@@ -42,6 +45,16 @@ export interface Snapshot {
   readonly evidencePath?: string
   readonly note?: string
   readonly residualReason?: string
+  readonly actorRunID?: string
+  readonly actorDisplayName?: string
+  readonly actorRole?: "root" | "subagent" | "fallback"
+  readonly evidenceExists?: boolean
+}
+
+interface HostActor {
+  readonly runID: string
+  readonly displayName: string
+  readonly kind: "root" | "subagent" | "fallback"
 }
 
 const TRANSITIONS: Readonly<Record<State, readonly State[]>> = {
@@ -84,6 +97,21 @@ function relativeEvidencePath(value: unknown): string | undefined {
   return candidate
 }
 
+function hostActor(value: unknown): HostActor | undefined {
+  if (!isRecord(value)) return
+  if (
+    typeof value.runID !== "string" ||
+    typeof value.displayName !== "string" ||
+    (value.kind !== "root" && value.kind !== "subagent" && value.kind !== "fallback")
+  )
+    return
+  return {
+    runID: boundedText(value.runID, "test_object actor runID", 256),
+    displayName: boundedText(value.displayName, "test_object actor display name", 160),
+    kind: value.kind,
+  }
+}
+
 function parseEntry(value: unknown): Entry | undefined {
   if (!isRecord(value) || value.version !== 1) return undefined
   if (
@@ -106,6 +134,11 @@ function parseEntry(value: unknown): Entry | undefined {
     ...(typeof value.evidence_path === "string" ? { evidence_path: value.evidence_path } : {}),
     ...(typeof value.note === "string" ? { note: value.note } : {}),
     ...(typeof value.residual_reason === "string" ? { residual_reason: value.residual_reason } : {}),
+    ...(typeof value.actor_run_id === "string" ? { actor_run_id: value.actor_run_id } : {}),
+    ...(typeof value.actor_display_name === "string" ? { actor_display_name: value.actor_display_name } : {}),
+    ...(value.actor_role === "root" || value.actor_role === "subagent" || value.actor_role === "fallback"
+      ? { actor_role: value.actor_role }
+      : {}),
   }
 }
 
@@ -119,6 +152,9 @@ function snapshot(entry: Entry): Snapshot {
     ...(entry.evidence_path ? { evidencePath: entry.evidence_path } : {}),
     ...(entry.note ? { note: entry.note } : {}),
     ...(entry.residual_reason ? { residualReason: entry.residual_reason } : {}),
+    ...(entry.actor_run_id ? { actorRunID: entry.actor_run_id } : {}),
+    ...(entry.actor_display_name ? { actorDisplayName: entry.actor_display_name } : {}),
+    ...(entry.actor_role ? { actorRole: entry.actor_role } : {}),
   }
 }
 
@@ -130,12 +166,14 @@ function snapshot(entry: Entry): Snapshot {
 // target operation itself or a deliberately recorded residual object.
 // ─────────────────────────────────────────────────────────────────
 export class TestObjectLifecycleLedger {
+  readonly #workareaRoot: string
   readonly #file: string
   readonly #phase: string
   #queue: Promise<void> = Promise.resolve()
 
   constructor(workareaRoot: string, phase: string) {
     if (!path.isAbsolute(workareaRoot)) throw new Error("test object ledger requires an absolute workarea root")
+    this.#workareaRoot = workareaRoot
     this.#file = path.join(workareaRoot, "raw", "operations", "test-object-lifecycle.jsonl")
     this.#phase = boundedText(phase, "test object phase", 80)
   }
@@ -158,7 +196,11 @@ export class TestObjectLifecycleLedger {
         throw new Error(`test_object '${id}' label cannot change after planning`)
       const residualReason =
         state === "residual" ? boundedText(args.residual_reason, "test_object residual_reason", 2_000) : undefined
-      const evidencePath = relativeEvidencePath(args.evidence_path)
+      const evidencePath = relativeEvidencePath(args.evidence_path) ?? current?.evidencePath
+      const actor = hostActor(args._cyberful_actor) ??
+        (current?.actorRunID && current.actorDisplayName && current.actorRole
+          ? { runID: current.actorRunID, displayName: current.actorDisplayName, kind: current.actorRole }
+          : undefined)
       const entry: Entry = {
         version: 1,
         time_iso: new Date().toISOString(),
@@ -170,6 +212,13 @@ export class TestObjectLifecycleLedger {
         ...(evidencePath ? { evidence_path: evidencePath } : {}),
         ...(args.note === undefined ? {} : { note: boundedText(args.note, "test_object note", 2_000) }),
         ...(residualReason ? { residual_reason: residualReason } : {}),
+        ...(actor
+          ? {
+              actor_run_id: actor.runID,
+              actor_display_name: actor.displayName,
+              actor_role: actor.kind,
+            }
+          : {}),
       }
       await mkdir(path.dirname(this.#file), { recursive: true, mode: 0o700 })
       await writeFile(this.#file, "", { flag: "a", mode: 0o600 })
@@ -201,14 +250,48 @@ export class TestObjectLifecycleLedger {
       if (!entry) throw new Error("test object lifecycle ledger contains an invalid entry")
       latest.set(entry.id, entry)
     }
-    return [...latest.values()].map(snapshot).toSorted((left, right) => left.id.localeCompare(right.id))
+    return Promise.all(
+      [...latest.values()].map(async (entry) => {
+        const item = snapshot(entry)
+        return item.evidencePath
+          ? { ...item, evidenceExists: await this.#evidenceExists(item.evidencePath) }
+          : item
+      }),
+    ).then((items) => items.toSorted((left, right) => left.id.localeCompare(right.id)))
+  }
+
+  async recover(fromRunID: unknown): Promise<readonly Snapshot[]> {
+    const runID = boundedText(fromRunID, "test_object recovery runID", 256)
+    return (await this.list()).filter((item) => item.actorRunID === runID)
   }
 
   async handoffError(): Promise<string | undefined> {
-    const open = (await this.list()).filter((item) => !TERMINAL.has(item.state))
-    return open.length > 0
-      ? `test object lifecycle is incomplete for: ${open.map((item) => `${item.id} (${item.state})`).join(", ")}`
+    const objects = await this.list()
+    const open = objects.filter((item) => !TERMINAL.has(item.state))
+    if (open.length > 0)
+      return `test object lifecycle is incomplete for: ${open.map((item) => `${item.id} (${item.state})`).join(", ")}`
+    const missingEvidence = objects.filter((item) => item.evidencePath && item.evidenceExists === false)
+    return missingEvidence.length > 0
+      ? `test object lifecycle references missing evidence: ${missingEvidence
+          .map((item) => `${item.id} (${item.evidencePath})`)
+          .join(", ")}`
       : undefined
+  }
+
+  async #evidenceExists(relativePath: string): Promise<boolean> {
+    let current = this.#workareaRoot
+    const segments = relativePath.split("/")
+    for (const [index, segment] of segments.entries()) {
+      current = path.join(current, segment)
+      const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined
+        throw error
+      })
+      if (!info || info.isSymbolicLink()) return false
+      if (index < segments.length - 1 && !info.isDirectory()) return false
+      if (index === segments.length - 1) return info.isFile()
+    }
+    return false
   }
 }
 

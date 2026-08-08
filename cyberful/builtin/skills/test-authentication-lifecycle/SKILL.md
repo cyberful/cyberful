@@ -15,8 +15,7 @@ For each ceremony record:
 
 `claimed identity | evidence required | channel | freshness | attempts | state created | assurance level | session effect | notification | audit event | revocation`
 
-Read [references/lifecycle-checks.md](references/lifecycle-checks.md) for full state coverage and [references/mfa-recovery.md](references/mfa-recovery.md) for multi-factor and recovery-specific attacks.
-Use [references/field-heuristics.md](references/field-heuristics.md) for multi-ceremony races, authenticator replacement, alias, and support-path differentials.
+Read [references/lifecycle-checks.md](references/lifecycle-checks.md) for full state coverage and [references/mfa-recovery.md](references/mfa-recovery.md) for multi-factor and recovery-specific attacks. Use [references/field-heuristics.md](references/field-heuristics.md) for multi-ceremony races, authenticator replacement, alias, and support-path differentials.
 
 ## Test identity binding
 

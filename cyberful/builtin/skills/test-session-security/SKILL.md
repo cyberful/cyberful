@@ -25,8 +25,7 @@ Check idle and absolute expiry, refresh rotation, reuse detection, server-side i
 
 Check cookie host/domain/path scope, prefixes, `Secure`, `HttpOnly`, `SameSite`, duplicate cookie behavior, subdomain planting, URL tokens, referrer leakage, browser storage, cache behavior, CSRF tokens, cross-origin credential use, framing, and service workers.
 
-Read [references/session-attacks.md](references/session-attacks.md) for attack-path analysis.
-Use [references/field-heuristics.md](references/field-heuristics.md) for duplicate-cookie, rotation, revocation, distributed-state, and long-lived-channel differentials.
+Read [references/session-attacks.md](references/session-attacks.md) for attack-path analysis. Use [references/field-heuristics.md](references/field-heuristics.md) for duplicate-cookie, rotation, revocation, distributed-state, and long-lived-channel differentials.
 
 ## Audit implementation
 

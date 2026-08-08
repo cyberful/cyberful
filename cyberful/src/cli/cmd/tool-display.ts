@@ -10,6 +10,13 @@ export const SHELL_TOOL_ICON = "\uea85"
 
 export type ToolDisplayInput = Record<string, unknown> | string | undefined
 
+export type TargetCooldownDisplay = {
+  readonly origin: string
+  readonly durationSeconds: number
+  readonly reason?: string
+  readonly evidence?: string
+}
+
 const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 const DETAIL_LIMIT = 120
 const VALUE_LIMIT = 80
@@ -32,6 +39,7 @@ const TOOL_DETAIL_BUILDERS: Record<string, ToolDetailBuilder> = {
   todowrite: todoDetails,
   question: questionDetails,
   variable: (record) => details([field(record, "action"), field(record, "name")]),
+  target_cooldown: targetCooldownDetails,
 }
 
 export function toolDisplayName(name: string) {
@@ -60,6 +68,42 @@ export function toolInputRecord(input?: ToolDisplayInput): Record<string, unknow
   if (isRecord(input)) return input
   const decoded = Option.getOrUndefined(decodeJson(input))
   return isRecord(decoded) ? decoded : {}
+}
+
+export function targetCooldownDisplay(input?: ToolDisplayInput): TargetCooldownDisplay {
+  const record = toolInputRecord(input)
+  const durationSeconds =
+    typeof record.duration_seconds === "number" &&
+    Number.isInteger(record.duration_seconds) &&
+    record.duration_seconds >= 180 &&
+    record.duration_seconds <= 360
+      ? record.duration_seconds
+      : 180
+  const transportFailure =
+    record.transport_error === "empty_response"
+      ? "empty response"
+      : record.transport_error === "connection_reset"
+        ? "connection reset"
+        : record.transport_error === "connection_timeout"
+          ? "connection timeout"
+          : undefined
+  const failureCount =
+    typeof record.consecutive_transport_failures === "number" &&
+    Number.isInteger(record.consecutive_transport_failures) &&
+    record.consecutive_transport_failures >= 2 &&
+    record.consecutive_transport_failures <= 10
+      ? `${record.consecutive_transport_failures} consecutive transport failures`
+      : undefined
+  const evidence =
+    typeof record.evidence_summary === "string" && record.evidence_summary.trim()
+      ? shorten(record.evidence_summary.trim().replace(/\s+/g, " "), 500)
+      : undefined
+  return {
+    origin: bare(record, "origin") ?? "authorized origin",
+    durationSeconds,
+    reason: [transportFailure, failureCount].filter((value): value is string => Boolean(value)).join(" · ") || undefined,
+    evidence,
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -137,4 +181,9 @@ function questionDetails(record: Record<string, unknown>) {
   const questions = record.questions
   if (!Array.isArray(questions)) return primitiveDetails(record)
   return `${questions.length} question${questions.length === 1 ? "" : "s"}`
+}
+
+function targetCooldownDetails(record: Record<string, unknown>) {
+  const cooldown = targetCooldownDisplay(record)
+  return details([cooldown.origin, `duration=${cooldown.durationSeconds}s`])
 }

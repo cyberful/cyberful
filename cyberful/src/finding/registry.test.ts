@@ -178,6 +178,41 @@ test("requires explicit supported transitions and allows disproved findings to r
   })
 })
 
+test("returns typed reconciliation context for missing ids and invalid decisions", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  await store.startRun({ id: "ses_typed", workflow: "pentest" })
+  const missing = await store.get("MISSING").catch((error) => error)
+  expect(missing).toBeInstanceOf(FindingRegistry.FindingRegistryError)
+  expect((missing as FindingRegistry.FindingRegistryError).toolError({ action: "get" })).toMatchObject({
+    code: "FINDING_NOT_FOUND",
+    revision: 1,
+    available_ids: [],
+  })
+  const invalid = await store
+    .execute(
+      {
+        action: "record",
+        key: "AUTH-TYPED",
+        title: "Typed decision",
+        positive_evidence: "A bounded positive signal.",
+        severity: "MEDIUM",
+        verification: "SURVIVES",
+        verification_rationale: "Requested too early.",
+      },
+      context("ses_typed"),
+    )
+    .catch((error) => error)
+  expect(invalid).toBeInstanceOf(FindingRegistry.FindingRegistryError)
+  expect((invalid as FindingRegistry.FindingRegistryError).toolError({ action: "record" })).toMatchObject({
+    code: "FINDING_TRANSITION_INVALID",
+    path: "finding.verification",
+    current_state: "SUSPECTED",
+    requested_state: "SURVIVES",
+    allowed_states: ["CONFIRMED"],
+  })
+})
+
 test("refuses unsafe evidence paths and does not overwrite invalid or linked registries", async () => {
   const root = await workarea()
   const store = new FindingRegistry.Store(root, { workarea: "target" })

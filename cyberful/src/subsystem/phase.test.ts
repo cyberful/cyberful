@@ -558,6 +558,7 @@ describe("phase orchestration (runAndAdvance)", () => {
               },
               approvalWaitMs: 2_000,
               retryWaitMs: 12_000,
+              targetCooldownWaitMs: 180_000,
               retryCompensationMs: 10_000,
               recoveryPolicy: {
                 enabled: true,
@@ -594,6 +595,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(specs[1]?.budgetCarry).toEqual({
       approvalWaitMs: 2_000,
       retryWaitMs: 12_000,
+      targetCooldownWaitMs: 180_000,
       phaseExtensionMs: 10_000,
     })
     expect(out.phaseAttempts.slice(0, 2).map((attempt) => [attempt.phase, attempt.attempt, attempt.recovered])).toEqual([
@@ -602,6 +604,45 @@ describe("phase orchestration (runAndAdvance)", () => {
     ])
     expect(out.terminal).toBe(true)
     expect(out.outcome).toBe("warning")
+  })
+
+  test("a retryable required-upstream failure restarts once without changing provider route", async () => {
+    const specs: PhaseSpec[] = []
+    let attempts = 0
+    await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && attempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              exitCode: 127,
+              termination: "spawn_failed",
+              handoff: undefined,
+              phaseFailure: {
+                phase: spec.phase,
+                source: "upstream",
+                class: "required_upstream_unavailable",
+                detail: "ZAP preflight failed",
+                retryable: true,
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: true,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+      }),
+    )
+    expect(specs.slice(0, 2).map((spec) => [spec.attempt, spec.providerRoute])).toEqual([
+      [1, "main"],
+      [2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain("required-upstream")
   })
 
   test("a hard context tail restarts once on the same route and reconciles hypotheses", async () => {

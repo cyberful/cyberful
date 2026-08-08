@@ -20,6 +20,8 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { FormatError, FormatUnknownError } from "../error"
 import { ensureWorkarea, requireWorkarea, setLastWorkarea, workareaSystemPrompt } from "@/workarea"
 import * as Log from "@/util/log"
+import { dictionaryDataRoot } from "@/cve-dictionary/activation"
+import { prepareCveDictionaryModel } from "@/cve-dictionary/embedding"
 
 const log = Log.create({ service: "cli.run" })
 
@@ -688,6 +690,11 @@ export const RunCommand = effectCmd({
         return await execute(sdk)
       }
 
+      await prepareCveDictionaryModel({
+        cacheRoot: path.join(dictionaryDataRoot(), "models"),
+      }).catch((error) => {
+        log.warn("CVE Dictionary model preflight failed; semantic retrieval will degrade", { error })
+      })
       const sdk = createLocalControlPlaneClient({ directory })
       await execute(sdk)
     })

@@ -36,6 +36,12 @@ const questions: HumanQuestion[] = [
   },
 ]
 
+function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined
+}
+
 server.setRequestHandler(ListToolsRequestSchema, (request) => {
   if (request.params?.cursor === "second-page")
     return {
@@ -60,6 +66,16 @@ server.setRequestHandler(ListToolsRequestSchema, (request) => {
         name: "failure",
         description: "Return an MCP tool error.",
         inputSchema: objectSchema,
+      },
+      {
+        name: "target_cooldown",
+        description: "Exercise phase budget suspension.",
+        inputSchema: objectSchema,
+      },
+      {
+        name: "test_object",
+        description: "Exercise host-owned child ledger recovery.",
+        inputSchema: { type: "object" as const, additionalProperties: true, properties: {} },
       },
       {
         name: "filtered",
@@ -87,6 +103,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
     return {
       content: [{ type: "text" as const, text: `handoff: ${value}` }],
     }
+  if (request.params.name === "target_cooldown")
+    return {
+      content: [{ type: "text" as const, text: `cooldown: ${value}` }],
+    }
+  if (request.params.name === "test_object") {
+    const fromRunID = request.params.arguments?.fromRunID
+    const hostOwned = request.params.arguments?._cyberful_host === true
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            objects:
+              hostOwned && typeof fromRunID === "string"
+                ? [
+                    {
+                      id: `object-${fromRunID}`,
+                      kind: "temporary_record",
+                      label: "fixture record",
+                      state: "cleaned",
+                      phase: "exploit",
+                      evidencePath: "raw/evidence/fixture.json",
+                      evidenceExists: false,
+                    },
+                  ]
+                : [],
+          }),
+        },
+      ],
+    }
+  }
   if (request.params.name === "question") {
     const requestedSchema = approvalElicitationSchema(questions)
     if (value === "invalid-schema") requestedSchema.required = []
@@ -117,6 +164,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
       isError: true,
       content: [{ type: "text" as const, text: "unknown fixture tool" }],
     }
+  if (value === "actor-meta") {
+    const actor = record(request.params._meta)?.["io.cyberful/tool-actor"]
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(actor) }],
+    }
+  }
   return {
     content: [
       { type: "text" as const, text: `echo: ${value}` },

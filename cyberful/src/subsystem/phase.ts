@@ -25,6 +25,7 @@ export type WorkflowCapability =
   | "zap"
   | "ghidra"
   | "evm-lab"
+  | "cve-dictionary"
 
 // ── Phase Deliverable And Persona Contracts ─────────────────────
 // Each workflow phase names the one structured artifact it must leave in the
@@ -100,7 +101,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "pentest",
     sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap", "ghidra"],
+    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "cve-dictionary"],
     zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
@@ -133,7 +134,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "bug-bounty",
     sourcePolicy: "read",
-    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab"],
+    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "cve-dictionary"],
     zapLifecycle: "engagement",
     completionTitle: "Bug bounty assessment completed",
     nextWorkflow: "ask",
@@ -173,7 +174,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "code-audit",
     sourcePolicy: "read",
-    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra"],
+    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "cve-dictionary"],
     zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
@@ -213,7 +214,7 @@ const FOLLOW_UP: InteractiveWorkflow = {
   kind: "interactive",
   personas: "ask",
   sourcePolicy: "none",
-  capabilities: ["isolated-exec", "browser", "zap"],
+  capabilities: ["isolated-exec", "browser", "zap", "cve-dictionary"],
   zapLifecycle: "disabled",
   completionTitle: "Answer completed",
   persona: "ask",

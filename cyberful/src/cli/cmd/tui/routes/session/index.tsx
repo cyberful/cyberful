@@ -33,7 +33,13 @@ import {
 import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
 import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
-import { SHELL_TOOL_ICON, ToolDisplayLabel, toolDisplayDetails, toolDisplayText } from "@tui/component/tool-label"
+import {
+  SHELL_TOOL_ICON,
+  ToolDisplayLabel,
+  targetCooldownDisplay,
+  toolDisplayDetails,
+  toolDisplayText,
+} from "@tui/component/tool-label"
 import { generateSubtleSyntax, selectedForeground, tint, useTheme } from "@tui/context/theme"
 import {
   BoxRenderable,
@@ -242,8 +248,27 @@ export function Session() {
     ].toSorted((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)),
   )
   const questions = createMemo(() => {
-    if (session()?.parentID && directChildren().length === 0) return []
-    return children().flatMap((x) => sync.data.question[x.id] ?? [])
+    const current = session()
+    if (!current) return []
+    const sessions = new Map(sync.data.session.map((candidate) => [candidate.id, candidate]))
+    let root = current
+    while (root.parentID) {
+      const parent = sessions.get(root.parentID)
+      if (!parent) break
+      root = parent
+    }
+    const family = new Set([root.id])
+    for (let changed = true; changed; ) {
+      changed = false
+      for (const candidate of sessions.values()) {
+        if (!candidate.parentID || !family.has(candidate.parentID) || family.has(candidate.id)) continue
+        family.add(candidate.id)
+        changed = true
+      }
+    }
+    return [...family]
+      .toSorted()
+      .flatMap((sessionID) => sync.data.question[sessionID] ?? [])
   })
   const visible = createMemo(() => !session()?.parentID && questions().length === 0)
   const disabled = createMemo(() => questions().length > 0)
@@ -1250,7 +1275,7 @@ export function Session() {
               </box>
               <box flexShrink={0}>
                 <Show when={questions().length > 0}>
-                  <QuestionPrompt request={questions()[0]} />
+                  <QuestionPrompt request={questions()[0]} pendingCount={questions().length} />
                 </Show>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
@@ -1598,6 +1623,11 @@ function ExpertPhaseRow(props: {
                     <span style={{ fg: theme.textMuted }}>
                       {status().approvalWaitMs
                         ? ` · approval wait ${expertPhaseDuration(status().approvalWaitMs ?? 0)}`
+                        : ""}
+                    </span>
+                    <span style={{ fg: theme.textMuted }}>
+                      {status().targetCooldownWaitMs
+                        ? ` · target cooldown ${expertPhaseDuration(status().targetCooldownWaitMs ?? 0)}`
                         : ""}
                     </span>
                   </text>
@@ -2297,6 +2327,7 @@ function useToolArtifact<T>(props: ToolProps<T>, preview: () => string) {
 }
 
 function GenericTool(props: ToolProps<Tool.Info>) {
+  if (props.tool === "target_cooldown") return <TargetCooldownTool {...props} />
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
   const inputText = createMemo(() => toolDisplayDetails(props.tool, props.input))
@@ -2373,6 +2404,70 @@ function GenericTool(props: ToolProps<Tool.Info>) {
           </text>
         </Show>
       </box>
+    </BlockTool>
+  )
+}
+
+// ── A Cooldown Must Look Like A Phase Pause ─────────────────────
+// A running target_cooldown is otherwise indistinguishable from an ordinary
+// long MCP call, which hides both the phase-wide barrier and the evidence that
+// justified it. One locally updated card exposes the remaining time, canonical
+// transport reason, and bounded agent-supplied evidence without emitting feed
+// events every second. Completion mutates the same card into a resume notice,
+// preserving a compact transcript and making the single health-check rule clear.
+//
+// @docs/user-guide/interface.md
+// ─────────────────────────────────────────────────────────────────
+function TargetCooldownTool(props: ToolProps<Tool.Info>) {
+  const { theme } = useTheme()
+  const cooldown = createMemo(() => targetCooldownDisplay(props.input))
+  const running = createMemo(() => props.part.state.status === "running")
+  const completed = createMemo(() => props.part.state.status === "completed")
+  const mountedAt = Date.now()
+  const startedAt = createMemo(() =>
+    "time" in props.part.state && typeof props.part.state.time.start === "number"
+      ? props.part.state.time.start
+      : mountedAt,
+  )
+  const [now, setNow] = createSignal(mountedAt)
+
+  createEffect(() => {
+    if (!running()) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const remainingMs = createMemo(() =>
+    Math.max(0, cooldown().durationSeconds * 1_000 - Math.max(0, now() - startedAt())),
+  )
+  const remaining = createMemo(() => {
+    const rounded = Math.ceil(remainingMs() / 1_000) * 1_000
+    return rounded === 0 ? "0s" : Locale.duration(rounded)
+  })
+  const title = createMemo(() =>
+    running()
+      ? `Target cooldown · ${cooldown().origin} · ${remaining()} remaining`
+      : completed()
+        ? `Target cooldown complete · ${cooldown().origin} · ${cooldown().durationSeconds}s`
+        : `Target cooldown interrupted · ${cooldown().origin}`,
+  )
+
+  return (
+    <BlockTool title={title()} part={props.part} spinner={running()} marginTop={props.blockMarginTop}>
+      <text fg={running() ? theme.warning : completed() ? theme.success : theme.textMuted} wrapMode="word">
+        {running()
+          ? "Phase tool execution paused · agents retained; in-flight calls finish naturally."
+          : completed()
+            ? "Phase tool execution resumed · one bounded health check is allowed."
+            : "The phase-wide cooldown barrier is no longer active."}
+      </text>
+      <Show when={cooldown().reason}>
+        {(reason) => <text fg={theme.textMuted} wrapMode="word">{`Reason · ${reason()}`}</text>}
+      </Show>
+      <Show when={cooldown().evidence}>
+        {(evidence) => <text fg={theme.textMuted} wrapMode="word">{`Evidence · ${evidence()}`}</text>}
+      </Show>
     </BlockTool>
   )
 }

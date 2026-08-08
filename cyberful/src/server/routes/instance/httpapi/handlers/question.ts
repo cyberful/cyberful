@@ -9,7 +9,7 @@ import { QuestionID } from "@/question/schema"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { QuestionNotFoundError } from "../errors"
+import { QuestionNotFoundError, QuestionNotPresentedError } from "../errors"
 
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
@@ -18,6 +18,27 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     const list = Effect.fn("QuestionHttpApi.list")(function* () {
       return yield* svc.list()
     })
+
+    const presented = Effect.fn("QuestionHttpApi.presented")(function* (ctx: {
+      params: { requestID: QuestionID }
+    }) {
+      return yield* svc.present(ctx.params.requestID).pipe(
+        Effect.catchTag("Question.NotFoundError", (error) =>
+          Effect.fail(
+            new QuestionNotFoundError({
+              requestID: String(error.requestID),
+              message: `Question request not found: ${error.requestID}`,
+            }),
+          ),
+        ),
+      )
+    })
+
+    const notPresented = (error: Question.NotPresentedError) =>
+      new QuestionNotPresentedError({
+        requestID: String(error.requestID),
+        message: error.message,
+      })
 
     const reply = Effect.fn("QuestionHttpApi.reply")(function* (ctx: {
       params: { requestID: QuestionID }
@@ -37,6 +58,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
               }),
             ),
           ),
+          Effect.catchTag("Question.NotPresentedError", (error) => Effect.fail(notPresented(error))),
         )
       return true
     })
@@ -51,10 +73,15 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
             }),
           ),
         ),
+        Effect.catchTag("Question.NotPresentedError", (error) => Effect.fail(notPresented(error))),
       )
       return true
     })
 
-    return handlers.handle("list", list).handle("reply", reply).handle("reject", reject)
+    return handlers
+      .handle("list", list)
+      .handle("presented", presented)
+      .handle("reply", reply)
+      .handle("reject", reject)
   }),
 )

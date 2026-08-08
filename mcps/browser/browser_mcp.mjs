@@ -3,7 +3,7 @@
 // Owns one engagement browser context, exposes bounded navigation and evidence
 // tools over stdio MCP, and keeps protocol output separate from diagnostics.
 // It validates tool input, constrains artifact reads, redacts network secrets,
-// and closes its browser state on EOF or process shutdown.
+// interrupts timed-out work, and closes browser state on EOF or shutdown.
 // → mcps/browser/browser_context_ownership.mjs — protects shared CDP contexts during teardown.
 // → mcps/browser/browser_download.mjs — confines and bounds downloaded artifacts.
 // → mcps/browser/browser_launch_policy.mjs — defines background-network isolation.
@@ -44,6 +44,7 @@ const MAX_JSON_ARRAY_ITEMS = 256
 const MAX_JSON_OBJECT_PROPERTIES = 256
 const MAX_JSON_STRING_CHARS = 1024 * 1024
 const MAX_EVALUATE_OUTPUT_CHARS = 256 * 1024
+const CANCELLATION_GRACE_MS = 2_000
 const COOKIE_STORE_FILE_NAMES = new Set(["Cookies", "Cookies-journal", "Cookies-shm", "Cookies-wal"])
 const COOKIE_SCAN_SKIP_DIRS = new Set([
   "Cache",
@@ -85,6 +86,9 @@ let loadedDriverName = null
 let context = null
 let contextOwnership = "none"
 let activePage = null
+let browserEpoch = 0
+let browserLaunchPromise = null
+let browserCancellationCleanup = Promise.resolve()
 let cachedExecutablePath = null
 const attachedPages = new WeakSet()
 const pageIds = new WeakMap()
@@ -602,6 +606,18 @@ function resolveBrowserChannel() {
 
 async function ensureBrowser() {
   if (context) return context
+  if (browserLaunchPromise) return browserLaunchPromise
+  const expectedEpoch = browserEpoch
+  const launch = launchBrowser(expectedEpoch)
+  browserLaunchPromise = launch
+  try {
+    return await launch
+  } finally {
+    if (browserLaunchPromise === launch) browserLaunchPromise = null
+  }
+}
+
+async function launchBrowser(expectedEpoch) {
 
   ensureDir(BROWSERS_PATH)
   ensureDir(USER_DATA_DIR)
@@ -617,7 +633,10 @@ async function ensureBrowser() {
   // SingletonLock. Startup cookie cleanup is intentionally skipped for this path.
   // → cyberful/src/subsystem/gateway/server.ts — supplies the private CDP endpoint.
   // ─────────────────────────────────────────────────────────────────────
-  if (CDP_ENDPOINT) return attachOverCdp(chromium, CDP_ENDPOINT)
+  if (CDP_ENDPOINT) {
+    const attached = await attachOverCdp(chromium, CDP_ENDPOINT)
+    return retainCurrentBrowserEpoch(attached, expectedEpoch)
+  }
 
   const clearCookiesAfterLaunch = prepareStartupCookieCleanup()
 
@@ -757,7 +776,15 @@ async function ensureBrowser() {
     activePage = context.pages()[0] || (await context.newPage())
     attachPage(activePage)
   }
-  return context
+  return retainCurrentBrowserEpoch(context, expectedEpoch)
+}
+
+async function retainCurrentBrowserEpoch(browserContext, expectedEpoch) {
+  if (expectedEpoch === browserEpoch) return browserContext
+  await releaseDetachedBrowser(detachCurrentBrowser())
+  const error = new Error("browser request was cancelled while the profile was starting")
+  error.name = "AbortError"
+  throw error
 }
 
 // ── CDP Attachment Preserves External Context Ownership ──────────────
@@ -2713,8 +2740,10 @@ Environment variables:
 // clients can distinguish invalid transport requests from website failures.
 // ─────────────────────────────────────────────────────────────────────
 
-export async function handleToolCall(params) {
+export async function handleToolCall(params, signal = undefined) {
   try {
+    await browserCancellationCleanup
+    if (signal?.aborted) throw browserCancellationError(signal.reason)
     if (!params || typeof params !== "object" || Array.isArray(params)) {
       throw new Error("tool call params must be an object")
     }
@@ -2727,7 +2756,8 @@ export async function handleToolCall(params) {
     validateToolArguments(tool.inputSchema, args)
     const page = activePage && !activePage.isClosed() ? activePage : null
     const beforeUrl = page ? page.url() : "about:blank"
-    const result = await tool.handler(args)
+    const operation = Promise.resolve(tool.handler(args, signal))
+    const result = signal ? await raceBrowserCancellation(operation, signal) : await operation
     const resultPage = activePage && !activePage.isClosed() ? activePage : page
     return annotateBrowserAction(params.name, result, resultPage, beforeUrl)
   } catch (error) {
@@ -2735,7 +2765,31 @@ export async function handleToolCall(params) {
   }
 }
 
-async function handleRequest(message) {
+function browserCancellationError(reason) {
+  const error = new Error(reason ? String(reason) : "browser request was cancelled")
+  error.name = "AbortError"
+  return error
+}
+
+function raceBrowserCancellation(operation, signal) {
+  if (signal.aborted) return Promise.reject(browserCancellationError(signal.reason))
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(browserCancellationError(signal.reason))
+    signal.addEventListener("abort", abort, { once: true })
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort)
+        reject(error)
+      },
+    )
+  })
+}
+
+async function handleRequest(message, signal = undefined) {
   const id = message.id
   const method = message.method
   const params = message.params || {}
@@ -2756,7 +2810,8 @@ async function handleRequest(message) {
         tools: browserToolDefinitions(),
       })
     } else if (method === "tools/call") {
-      ok(id, await handleToolCall(params))
+      const result = await handleToolCall(params, signal)
+      if (!signal?.aborted) ok(id, result)
     } else if (method === "resources/list") {
       ok(id, {
         resources: [
@@ -2790,12 +2845,71 @@ async function handleRequest(message) {
       err(id, -32601, `method not found: ${method}`)
     }
   } catch (error) {
+    if (signal?.aborted) return
     eprint(`${method} failed: ${error.name || "Error"}: ${error.message || String(error)}`)
     if (method === "tools/call") {
       ok(id, toolException(error))
     } else {
       err(id, -32000, error.message || String(error))
     }
+  }
+}
+
+// ── Cancellation Bypasses The Serialized Tool Queue ─────────────
+// Browser mutations remain ordered for one profile, but MCP cancellation is a
+// control-plane notification and must be consumed while a tool is still active.
+// Each request owns an AbortController. Cancellation releases the serial gate,
+// suppresses the obsolete response, and starts profile teardown immediately;
+// ordinary requests still wait for the previous request or its cancellation.
+// This prevents a client-side timeout from leaving every later profile request
+// queued behind an unreachable Playwright promise.
+// ─────────────────────────────────────────────────────────────────
+export function createSerialRequestDispatcher({ handle = handleRequest, onCancel = interruptBrowserWork } = {}) {
+  const inFlight = new Map()
+  let serial = Promise.resolve()
+
+  return {
+    dispatch(message) {
+      if (message.method === "notifications/cancelled") {
+        const requestID = message.params?.requestId
+        const active = inFlight.get(requestID)
+        if (!active) return
+        active.controller.abort(message.params?.reason ?? "MCP client cancelled the browser request")
+        Promise.resolve(onCancel(message.params?.reason)).catch((error) => {
+          eprint(`browser cancellation cleanup failed: ${browserErrorMessage(error)}`)
+        })
+        return
+      }
+
+      if (message.id === undefined || message.id === null) {
+        void Promise.resolve(handle(message)).catch((error) => {
+          eprint(`notification ${message.method} failed: ${browserErrorMessage(error)}`)
+        })
+        return
+      }
+
+      const controller = new AbortController()
+      const active = { controller }
+      inFlight.set(message.id, active)
+      const operation = serial.then(() =>
+        controller.signal.aborted ? undefined : handle(message, controller.signal),
+      )
+      operation
+        .finally(() => {
+          if (inFlight.get(message.id) === active) inFlight.delete(message.id)
+        })
+        .catch(() => {})
+      serial = Promise.race([
+        operation,
+        new Promise((resolve) => controller.signal.addEventListener("abort", resolve, { once: true })),
+      ]).then(
+        () => undefined,
+        () => undefined,
+      )
+    },
+    drain() {
+      return serial
+    },
   }
 }
 
@@ -2809,7 +2923,7 @@ async function handleRequest(message) {
 
 let browserShutdown
 let browserSignalShutdown
-async function closeCurrentBrowser() {
+function detachCurrentBrowser() {
   const closingContext = context
   const closingOwnership = contextOwnership
   const closingPinnedPage = pinnedPage
@@ -2820,13 +2934,53 @@ async function closeCurrentBrowser() {
   pinnedPage = null
   pinnedTargetId = null
 
-  await releaseBrowserContext({
+  return {
     context: closingContext,
     ownership: closingOwnership,
     ownTab: OWN_TAB,
     pinnedPage: closingPinnedPage,
-  })
+  }
+}
+
+async function releaseDetachedBrowser(detached) {
+  await releaseBrowserContext(detached)
   await downloadQueue
+}
+
+async function closeCurrentBrowser() {
+  await releaseDetachedBrowser(detachCurrentBrowser())
+}
+
+// ── Timed-Out Browser Work Cannot Outlive Its MCP Request ───────
+// The SDK sends notifications/cancelled when the gateway deadline or caller
+// signal fires. The browser epoch is invalidated before teardown, so a launch
+// completing late cannot republish stale context handles. New work waits for
+// the captured context and any in-flight launch to settle. If Playwright does
+// not cooperate within the fixed grace period, only this profile's MCP process
+// exits; its owning gateway observes transport loss instead of retaining a
+// permanently wedged request queue.
+// ─────────────────────────────────────────────────────────────────
+function interruptBrowserWork(reason) {
+  browserEpoch++
+  const detached = detachCurrentBrowser()
+  const pendingLaunch = browserLaunchPromise
+  let settled = false
+  const cleanup = Promise.allSettled([
+    releaseDetachedBrowser(detached),
+    ...(pendingLaunch ? [pendingLaunch] : []),
+  ]).then(() => undefined)
+  const forceTimer = setTimeout(() => {
+    if (settled || !isEntrypoint()) return
+    eprint(`browser cancellation exceeded ${CANCELLATION_GRACE_MS}ms; terminating profile ${PROFILE_ID} MCP`)
+    process.exit(1)
+  }, CANCELLATION_GRACE_MS)
+  forceTimer.unref?.()
+  browserCancellationCleanup = cleanup.finally(() => {
+    settled = true
+    clearTimeout(forceTimer)
+  })
+  eprint(`cancelling active browser work${reason ? `: ${stripAnsi(String(reason)).slice(0, 240)}` : ""}`)
+  return browserCancellationCleanup
 }
 
 function closeBrowser() {
@@ -2959,6 +3113,7 @@ async function main() {
     await new Promise(() => {})
     return
   }
+  const dispatcher = createSerialRequestDispatcher()
   for await (const record of boundedJsonLines(process.stdin)) {
     if (record.error) {
       eprint(record.error)
@@ -2991,15 +3146,20 @@ async function main() {
         err(item && typeof item === "object" && !Array.isArray(item) ? (item.id ?? null) : null, -32600, envelopeError)
         continue
       }
-      await handleRequest(item)
+      dispatcher.dispatch(item)
     }
   }
 
+  await dispatcher.drain()
   await closeBrowser()
   eprint("stdio closed")
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+function isEntrypoint() {
+  return Boolean(process.argv[1] && path.resolve(process.argv[1]) === __filename)
+}
+
+if (isEntrypoint()) {
   try {
     await main()
   } catch (error) {

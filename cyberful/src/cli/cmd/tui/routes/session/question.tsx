@@ -17,12 +17,12 @@ import { useToast } from "../../ui/toast"
 import { errorMessage } from "@/util/error"
 import { observePromise } from "@/util/promise"
 import * as Log from "@/util/log"
-import { createQuestionBodyState, questionDecline, questionReady, questionSync } from "../../../run/question.shared"
+import { createQuestionBodyState, questionDecline, questionReady } from "../../../run/question.shared"
 
 const QUESTION_MODE = "question"
 const log = Log.create({ service: "tui.question" })
 
-export function QuestionPrompt(props: { request: QuestionRequest }) {
+export function QuestionPrompt(props: { request: QuestionRequest; pendingCount?: number }) {
   const sdk = useSDK()
   const { theme } = useTheme()
   const renderer = useRenderer()
@@ -34,7 +34,12 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
-  const [decline, setDecline] = createSignal(createQuestionBodyState(props.request.id))
+  const [decline, setDecline] = createSignal(
+    createQuestionBodyState(
+      props.request.id,
+      props.request.presentation === "presented" ? performance.now() : Number.POSITIVE_INFINITY,
+    ),
+  )
   const [store, setStore] = createStore<{
     tab: number
     answers: QuestionAnswer[]
@@ -69,8 +74,25 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
     return store.answers[store.tab]?.includes(value) ?? false
   })
 
+  let presentationRequestID: string | undefined
   createEffect(() => {
-    setDecline((current) => questionSync(current, props.request.id))
+    const request = props.request
+    if (presentationRequestID === request.id) return
+    presentationRequestID = request.id
+    setDecline(
+      createQuestionBodyState(
+        request.id,
+        request.presentation === "presented" ? performance.now() : Number.POSITIVE_INFINITY,
+      ),
+    )
+    if (request.presentation === "presented") return
+    observePromise(sdk.client.question.presented({ requestID: request.id }), {
+      fulfilled: () => setDecline(createQuestionBodyState(request.id, performance.now())),
+      rejected: (error) => {
+        presentationRequestID = undefined
+        reportFailure("presentation acknowledgement", error)
+      },
+    })
   })
 
   function submit() {
@@ -321,6 +343,12 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
       customBorderChars={SplitBorder.customBorderChars}
     >
       <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
+        <box flexDirection="row" gap={1} paddingLeft={1}>
+          <text fg={theme.accent}>WAITING FOR HUMAN</text>
+          <text fg={theme.textMuted}>
+            {props.pendingCount && props.pendingCount > 1 ? `${props.pendingCount} pending requests` : "input required"}
+          </text>
+        </box>
         <Show when={!single()}>
           <box flexDirection="row" gap={1} paddingLeft={1}>
             <For each={questions()}>

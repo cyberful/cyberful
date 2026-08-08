@@ -59,6 +59,7 @@ interface LabState {
   readonly version: 1
   readonly lab_id: string
   readonly container: string
+  readonly network?: string
   readonly mode: "fresh" | "fork"
   readonly host_rpc_url: string
   readonly container_rpc_url: string
@@ -170,6 +171,15 @@ async function waitForRpc(url: string, rpc: NonNullable<EvmLabHooks["rpc"]>) {
   throw new Error(`Anvil did not become ready: ${lastError instanceof Error ? lastError.message : String(lastError)}`)
 }
 
+function runtimeIdentity() {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+  const gid = typeof process.getgid === "function" ? process.getgid() : undefined
+  return {
+    uid: uid !== undefined && uid > 0 ? uid : 1000,
+    gid: gid !== undefined && gid > 0 ? gid : 1000,
+  }
+}
+
 function dockerOutput(result: DockerResult, operation: string) {
   if (result.exitCode !== 0) throw new Error(`${operation} failed: ${result.stderr.trim() || result.stdout.trim()}`)
   return result.stdout.trim()
@@ -218,6 +228,7 @@ async function state(workarea: string): Promise<LabState | undefined> {
     typeof value.lab_id !== "string" ||
     !/^[a-f0-9-]{36}$/i.test(value.lab_id) ||
     value.container !== `cyberful-anvil-${value.lab_id.slice(0, 12)}` ||
+    (value.network !== undefined && value.network !== `cyberful-anvil-net-${value.lab_id.slice(0, 12)}`) ||
     !Array.isArray(value.accounts) ||
     value.accounts.some(
       (account) =>
@@ -260,6 +271,45 @@ async function remove(container: string, owner: string, docker: NonNullable<EvmL
     throw new Error(`Anvil cleanup failed: ${result.stderr.trim()}`)
 }
 
+async function removeNetwork(network: string | undefined, owner: string, docker: NonNullable<EvmLabHooks["docker"]>) {
+  if (!network) return
+  const inspected = await docker([
+    "network",
+    "inspect",
+    "--format",
+    `{{index .Labels "${EVM_RUNTIME_LABEL}"}}`,
+    network,
+  ])
+  if (inspected.exitCode !== 0) {
+    if (inspected.stderr.includes("No such network")) return
+    throw new Error(`Anvil network inspection failed: ${inspected.stderr.trim()}`)
+  }
+  if (inspected.stdout.trim() !== owner) throw new Error("EVM lab network is not owned by this engagement")
+  const removed = await docker(["network", "rm", network])
+  if (removed.exitCode !== 0 && !removed.stderr.includes("No such network"))
+    throw new Error(`Anvil network cleanup failed: ${removed.stderr.trim()}`)
+}
+
+async function removeLabResources(
+  container: string,
+  network: string | undefined,
+  owner: string,
+  docker: NonNullable<EvmLabHooks["docker"]>,
+) {
+  const failures: unknown[] = []
+  try {
+    await remove(container, owner, docker)
+  } catch (error) {
+    failures.push(error)
+  }
+  try {
+    await removeNetwork(network, owner, docker)
+  } catch (error) {
+    failures.push(error)
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "EVM lab cleanup failed")
+}
+
 function publicState(value: LabState, live: boolean) {
   return {
     lab_id: value.lab_id,
@@ -293,7 +343,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
 
   if (args.action === "stop") {
     if (!current) return { stopped: false, status: "not-prepared" }
-    await remove(current.container, owner, docker)
+    await removeLabResources(current.container, current.network, owner, docker)
     for (const account of current.accounts) hooks.deleteVariable(account.variable)
     await rm(path.join(workarea, ".cyberful-evm", "projects", current.lab_id), { recursive: true, force: true })
     const stopped: LabState = { ...current, status: "stopped", stopped_at: new Date().toISOString() }
@@ -332,6 +382,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
   if (args.action !== "prepare") throw new Error("evm_lab action must be prepare, status, snapshot, revert, or stop")
   if (current && (await running(current.container, owner, docker))) throw new Error("an EVM lab is already running")
   if (current) {
+    await removeLabResources(current.container, current.network, owner, docker)
     for (const account of current.accounts) hooks.deleteVariable(account.variable)
     await rm(path.join(workarea, ".cyberful-evm", "projects", current.lab_id), { recursive: true, force: true })
   }
@@ -347,14 +398,22 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
   const accountCount = args.accounts === undefined ? DEFAULT_ACCOUNTS : integer(args.accounts, "accounts", 1, MAX_ACCOUNTS)
   const labID = randomUUID()
   const container = `cyberful-anvil-${labID.slice(0, 12)}`
+  const network = mode === "fresh" ? `cyberful-anvil-net-${labID.slice(0, 12)}` : undefined
   const destination = path.join(workarea, ".cyberful-evm", "projects", labID)
   const selectedRepositories = repositories(args.repositories)
   const projects = await materialize(destination, selectedRepositories)
   const image = process.env.CYBERFUL_OS_IMAGE?.trim() || "cyberful-os:latest"
+  const identity = runtimeIdentity()
   const labels = [
     ...dockerOwnershipLabels({ managed: "evm", runtime: "evm", session: process.env.CYBERFUL_SUBSYSTEM_SESSION ?? "unknown" }),
     `${EVM_RUNTIME_LABEL}=${owner}`,
   ]
+  // ── Fresh Chains Accept Inbound RPC Without Gaining Egress ─────────────────
+  // Docker internal networks discard published ports, which would make the host
+  // endpoint unusable. A dedicated bridge without IP masquerading preserves the
+  // loopback DNAT route while withholding outbound NAT from a fresh Anvil node.
+  // Fork mode alone uses the ordinary bridge because its selected RPC is required.
+  // ─────────────────────────────────────────────────────────────────────────────
   const command = [
     "run",
     "--detach",
@@ -363,19 +422,22 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
     "--name",
     container,
     ...labels.flatMap((label) => ["--label", label]),
-    "--add-host",
-    "host.docker.internal:host-gateway",
+    ...(network ? ["--network", network] : ["--add-host", "host.docker.internal:host-gateway"]),
     "--publish",
     "127.0.0.1::8545",
     "--cap-drop=ALL",
     "--security-opt=no-new-privileges",
     "--pids-limit=512",
-    "--mount",
-    `type=bind,source=${workarea},target=/workspace`,
-    "--workdir",
-    "/workspace",
-    image,
+    "--read-only",
+    "--user",
+    `${identity.uid}:${identity.gid}`,
+    "--env",
+    "HOME=/tmp",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,nodev,size=64m",
+    "--entrypoint",
     "anvil",
+    image,
     "--color",
     "never",
     "--host",
@@ -393,8 +455,24 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
   ]
 
   const variableNames: string[] = []
+  let containerStarted = false
   try {
+    if (network)
+      dockerOutput(
+        await docker([
+          "network",
+          "create",
+          "--driver",
+          "bridge",
+          "--opt",
+          "com.docker.network.bridge.enable_ip_masquerade=false",
+          ...labels.flatMap((label) => ["--label", label]),
+          network,
+        ]),
+        "Anvil network start",
+      )
     dockerOutput(await docker(command), "Anvil container start")
+    containerStarted = true
     const port = publishedPort(dockerOutput(await docker(["port", container, "8545/tcp"]), "Anvil port discovery"))
     const hostRpcUrl = `http://127.0.0.1:${port}`
     await waitForRpc(hostRpcUrl, rpc)
@@ -410,6 +488,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
       version: 1,
       lab_id: labID,
       container,
+      ...(network ? { network } : {}),
       mode,
       host_rpc_url: hostRpcUrl,
       container_rpc_url: `http://host.docker.internal:${port}`,
@@ -425,9 +504,33 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
     await writeState(workarea, next)
     return publicState(next, true)
   } catch (error) {
+    const logs = containerStarted
+      ? await docker(["logs", "--tail", "200", container]).catch(() => undefined)
+      : undefined
     for (const name of variableNames) hooks.deleteVariable(name)
-    await remove(container, owner, docker).catch(() => {})
-    await rm(destination, { recursive: true, force: true })
+    const cleanupFailures: unknown[] = []
+    try {
+      await removeLabResources(container, network, owner, docker)
+    } catch (cleanupError) {
+      cleanupFailures.push(cleanupError)
+    }
+    try {
+      await rm(destination, { recursive: true, force: true })
+    } catch (cleanupError) {
+      cleanupFailures.push(cleanupError)
+    }
+    if (cleanupFailures.length > 0)
+      throw new AggregateError([error, ...cleanupFailures], "Anvil startup and cleanup failed")
+    const detail = logs && logs.exitCode === 0
+      ? forkUrl
+        ? logs.stdout.trim().replaceAll(forkUrl, "[redacted fork URL]")
+        : logs.stdout.trim()
+      : ""
+    if (detail)
+      throw new Error(
+        `Anvil preparation failed: ${error instanceof Error ? error.message : String(error)}\nAnvil logs:\n${detail}`,
+        { cause: error },
+      )
     throw error
   }
 }
