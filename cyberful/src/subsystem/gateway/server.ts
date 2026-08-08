@@ -1395,6 +1395,8 @@ export function resolveBrowserUpstreamEnv(input: {
 // credentials; cyberful-os exposes a shell and the browser needs neither.
 // Deprecated ZAP scope variables are stripped from every upstream because the
 // bridge does not enforce an origin policy. Ledger proof keys remain host-only.
+// The host and browser retain ZAP's loopback-published endpoint, while commands
+// in the engagement core use the dedicated container's private Docker DNS route.
 // ─────────────────────────────────────────────────────────────────
 export function upstreamProcessEnv(
   key: string,
@@ -1421,16 +1423,18 @@ export function cyberfulOsProxyTrustEnv(
   inherited: Readonly<Record<string, string | undefined>> = process.env,
 ): Partial<Record<"CYBERFUL_OS_HTTP_PROXY" | "CYBERFUL_OS_CA_BUNDLE", string>> {
   const zapProxy = inherited.CYBER_ZAP_PROXY_URL?.trim()
+  const zapContainer = inherited.CYBERFUL_ZAP_RUNTIME_CONTAINER?.trim()
   const caBundle = inherited.CYBERFUL_OS_CA_BUNDLE?.trim()
   if (Boolean(zapProxy) !== Boolean(caBundle))
     throw new Error("cyberful-os proxy and CA bundle must be configured together")
   if (!zapProxy || !caBundle) return {}
+  if (!zapContainer || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(zapContainer))
+    throw new Error("cyberful-os proxy requires a valid engagement-owned ZAP container")
   if (caBundle !== CORE_PROXY_CA_BUNDLE)
     throw new Error("cyberful-os CA bundle does not use the host-owned engagement trust path")
-  const containerProxy = new URL(zapProxy)
-  containerProxy.hostname = "host.docker.internal"
+  new URL(zapProxy)
   return {
-    CYBERFUL_OS_HTTP_PROXY: containerProxy.toString(),
+    CYBERFUL_OS_HTTP_PROXY: `http://${zapContainer}:8080/`,
     CYBERFUL_OS_CA_BUNDLE: caBundle,
   }
 }

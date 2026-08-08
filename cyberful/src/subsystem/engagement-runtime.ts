@@ -250,6 +250,7 @@ async function verifyTlsClientCanary(input: {
   readonly container: string
   readonly network: string
   readonly ownershipLabels: readonly string[]
+  readonly proxyContainer: string
   readonly proxyUrl: string
   readonly signal?: AbortSignal
   readonly workarea: string
@@ -258,8 +259,7 @@ async function verifyTlsClientCanary(input: {
 }) {
   const canaryOrigin = `https://${input.canaryContainer}:${TLS_CANARY_PORT}`
   const canaryScratch = `/tmp/cyberful-tls-canary-${randomBytes(8).toString("hex")}`
-  const proxy = new URL(input.proxyUrl)
-  proxy.hostname = "host.docker.internal"
+  const proxy = new URL(`http://${input.proxyContainer}:8080`)
   const environment = {
     HTTP_PROXY: proxy.toString(),
     HTTPS_PROXY: proxy.toString(),
@@ -1306,6 +1306,7 @@ export async function startEngagement(input: {
         container: input.container,
         network,
         ownershipLabels: coreOwnershipLabels,
+        proxyContainer: zapContainer,
         proxyUrl: activeProxyUrl,
         workarea: input.workarea,
         ...(options.phase ? { phase: options.phase } : {}),

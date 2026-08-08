@@ -1,8 +1,9 @@
 // ── Engagement-Owned EVM Runtime ────────────────────────────────────────────
 // Gives every Bug Bounty engagement one opaque Docker ownership identity. A
-// phase gateway may create the managed Anvil container, while this parent owner
-// reaps every matching container and isolated compiler cache at every terminal
-// path. No JSON-RPC proxy or method policy exists in this runtime.
+// phase gateway may create the managed Anvil container and temporarily attach
+// the core container to its private network, while this parent owner reaps every
+// matching resource and isolated compiler cache at every terminal path. No
+// JSON-RPC proxy or method policy exists in this runtime.
 // → cyberful/src/subsystem/gateway/evm-lab.ts — creates and operates Anvil.
 // @docs/runtimes/evm.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,14 +108,24 @@ async function removeContainers(runtimeID: string) {
   if (failures.length > 0) throw new Error(`EVM runtime cleanup failed: ${failures.join("; ")}`)
 }
 
-async function removeNetworks(runtimeID: string) {
+// ── EVM Networks Borrow The Core Container ─────────────────────────────────
+// A live lab joins the engagement core to its private bridge so commands can use
+// Docker DNS instead of a host-loopback port that native Linux cannot route back
+// into a container. Terminal cleanup can run without the lab state file, so the
+// parent runtime force-disconnects its known core from every owned network before
+// removal. Failure to remove the network remains visible after this best effort.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function removeNetworks(runtimeID: string, coreContainer: string) {
   const ids = containerIDs(
     await dockerCommand(["network", "ls", "--quiet", "--filter", `label=${EVM_RUNTIME_LABEL}=${runtimeID}`]),
   )
   const failures: string[] = []
   for (const id of ids) {
+    const disconnected = await dockerCommand(["network", "disconnect", "--force", id, coreContainer])
     const removed = await dockerCommand(["network", "rm", id])
-    if (removed.exitCode !== 0 && !removed.stderr.includes("No such network")) failures.push(removed.stderr.trim())
+    if (removed.exitCode !== 0 && !removed.stderr.includes("No such network"))
+      failures.push([disconnected.stderr.trim(), removed.stderr.trim()].filter(Boolean).join("; "))
   }
   if (failures.length > 0) throw new Error(`EVM network cleanup failed: ${failures.join("; ")}`)
 }
@@ -219,7 +230,7 @@ async function cleanup(runtimeID: string, input: EvmEngagementInput) {
     failures.push(error)
   }
   try {
-    await removeNetworks(runtimeID)
+    await removeNetworks(runtimeID, input.container)
   } catch (error) {
     failures.push(error)
   }
@@ -269,13 +280,20 @@ function removeStartedSync() {
       { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3_000, maxBuffer: OUTPUT_LIMIT },
     )
     if (networks.exitCode !== 0) continue
-    for (const id of new TextDecoder().decode(networks.stdout).split("\n").filter(Boolean))
+    for (const id of new TextDecoder().decode(networks.stdout).split("\n").filter(Boolean)) {
+      Bun.spawnSync(["docker", "network", "disconnect", "--force", id, input.container], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        timeout: 3_000,
+      })
       Bun.spawnSync(["docker", "network", "rm", id], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
         timeout: 3_000,
       })
+    }
   }
 }
 
