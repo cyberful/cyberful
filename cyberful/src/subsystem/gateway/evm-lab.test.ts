@@ -14,6 +14,7 @@ let previousWorkarea: string | undefined
 let previousRuntime: string | undefined
 let previousSession: string | undefined
 let previousImage: string | undefined
+let previousContainer: string | undefined
 const runtime = "11111111-2222-4333-8444-555555555555"
 
 beforeEach(async () => {
@@ -22,10 +23,12 @@ beforeEach(async () => {
   previousRuntime = process.env.CYBERFUL_EVM_RUNTIME_ID
   previousSession = process.env.CYBERFUL_SUBSYSTEM_SESSION
   previousImage = process.env.CYBERFUL_OS_IMAGE
+  previousContainer = process.env.CYBERFUL_OS_CONTAINER
   process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = root
   process.env.CYBERFUL_EVM_RUNTIME_ID = runtime
   process.env.CYBERFUL_SUBSYSTEM_SESSION = "ses_evm_test"
   process.env.CYBERFUL_OS_IMAGE = "cyberful-os:test"
+  process.env.CYBERFUL_OS_CONTAINER = "cyberful-os-test"
 })
 
 afterEach(async () => {
@@ -37,6 +40,8 @@ afterEach(async () => {
   else process.env.CYBERFUL_SUBSYSTEM_SESSION = previousSession
   if (previousImage === undefined) delete process.env.CYBERFUL_OS_IMAGE
   else process.env.CYBERFUL_OS_IMAGE = previousImage
+  if (previousContainer === undefined) delete process.env.CYBERFUL_OS_CONTAINER
+  else process.env.CYBERFUL_OS_CONTAINER = previousContainer
   await rm(root, { recursive: true, force: true })
 })
 
@@ -51,6 +56,8 @@ function fixture(input: { readonly logs?: string } = {}) {
       if (args[0] === "network" && args[1] === "create") return { exitCode: 0, stdout: `${args.at(-1)}\n`, stderr: "" }
       if (args[0] === "network" && args[1] === "inspect")
         return { exitCode: 0, stdout: `${runtime}\n`, stderr: "" }
+      if (args[0] === "network" && args[1] === "connect") return { exitCode: 0, stdout: "", stderr: "" }
+      if (args[0] === "network" && args[1] === "disconnect") return { exitCode: 0, stdout: "", stderr: "" }
       if (args[0] === "network" && args[1] === "rm") return { exitCode: 0, stdout: `${args.at(-1)}\n`, stderr: "" }
       if (args[0] === "run") {
         container = String(args[args.indexOf("--name") + 1])
@@ -69,6 +76,7 @@ function fixture(input: { readonly logs?: string } = {}) {
               `(1) 0x${"b".repeat(64)}\n`,
           stderr: "",
         }
+      if (args[0] === "exec") return { exitCode: 0, stdout: "31337\n", stderr: "" }
       if (args[0] === "inspect") return { exitCode: 0, stdout: `${runtime} true\n`, stderr: "" }
       if (args[0] === "rm") return { exitCode: 0, stdout: `${container}\n`, stderr: "" }
       throw new Error(`unexpected Docker fixture call: ${args.join(" ")}`)
@@ -111,13 +119,20 @@ describe("managed EVM lab", () => {
       status: "running",
       mode: "fresh",
       host_rpc_url: "http://127.0.0.1:45678",
-      container_rpc_url: "http://host.docker.internal:45678",
       chain_id: 31337,
       accounts: [
         { address: "0x1111111111111111111111111111111111111111" },
         { address: "0x2222222222222222222222222222222222222222" },
       ],
     })
+    if (
+      !("lab_id" in prepared) ||
+      typeof prepared.lab_id !== "string" ||
+      !("container_rpc_url" in prepared) ||
+      typeof prepared.container_rpc_url !== "string"
+    )
+      throw new Error("prepared lab has no container route")
+    expect(prepared.container_rpc_url).toBe(`http://cyberful-anvil-${prepared.lab_id.slice(0, 12)}:8545`)
     expect(testRuntime.variables.size).toBe(2)
     expect([...testRuntime.variables.values()].every((value) => value.includes(`runtime=${runtime}`))).toBe(true)
     const run = testRuntime.calls.find((call) => call[0] === "run") ?? []
@@ -134,6 +149,16 @@ describe("managed EVM lab", () => {
     expect(run.join(" ")).not.toContain("proxy")
     const networkCreate = testRuntime.calls.find((call) => call[0] === "network" && call[1] === "create") ?? []
     expect(networkCreate).toContain("com.docker.network.bridge.enable_ip_masquerade=false")
+    const network = String(networkCreate.at(-1))
+    expect(testRuntime.calls).toContainEqual(["network", "connect", network, "cyberful-os-test"])
+    expect(testRuntime.calls).toContainEqual([
+      "exec",
+      "cyberful-os-test",
+      "cast",
+      "chain-id",
+      "--rpc-url",
+      prepared.container_rpc_url,
+    ])
 
     expect(await handleEvmLab({ action: "status" }, testRuntime.hooks)).toMatchObject({ status: "running" })
     expect(await handleEvmLab({ action: "snapshot", name: "before-poc" }, testRuntime.hooks)).toMatchObject({
@@ -145,6 +170,12 @@ describe("managed EVM lab", () => {
       snapshot: "0x3",
     })
     expect(await handleEvmLab({ action: "stop" }, testRuntime.hooks)).toMatchObject({ stopped: true })
+    const disconnectIndex = testRuntime.calls.findIndex(
+      (call) => call[0] === "network" && call[1] === "disconnect",
+    )
+    const removeIndex = testRuntime.calls.findIndex((call) => call[0] === "network" && call[1] === "rm")
+    expect(disconnectIndex).toBeGreaterThan(-1)
+    expect(removeIndex).toBeGreaterThan(disconnectIndex)
     expect(testRuntime.variables.size).toBe(0)
   })
 
@@ -164,7 +195,9 @@ describe("managed EVM lab", () => {
     const run = testRuntime.calls.find((call) => call[0] === "run") ?? []
     expect(run).toContain("--fork-url")
     expect(run).toContain("https://secret-token@rpc.example.test/private?api_key=secret")
-    expect(run).not.toContain("--network")
+    expect(run).toContain("--network")
+    const networkCreate = testRuntime.calls.find((call) => call[0] === "network" && call[1] === "create") ?? []
+    expect(networkCreate).not.toContain("com.docker.network.bridge.enable_ip_masquerade=false")
     const persisted = await readFile(path.join(root, "raw", "evm", "lab.json"), "utf8")
     expect(persisted).toContain('"origin": "https://rpc.example.test/[redacted]"')
     expect(persisted).not.toContain("secret-token")

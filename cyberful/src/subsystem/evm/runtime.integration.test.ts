@@ -143,18 +143,20 @@ test("Bug Bounty reuses Solc offline and reaches a hardened fresh Anvil lab from
       { setVariable: () => undefined, deleteVariable: () => undefined },
     )).toMatchObject({ reverted: true })
 
-    const [user, readOnly, mounts, port, network] = await Promise.all([
+    const [user, readOnly, mounts, port, network, coreNetworks] = await Promise.all([
       docker(["inspect", "--format", "{{.Config.User}}", labContainer]),
       docker(["inspect", "--format", "{{.HostConfig.ReadonlyRootfs}}", labContainer]),
       docker(["inspect", "--format", "{{json .Mounts}}", labContainer]),
       docker(["port", labContainer, "8545/tcp"]),
       docker(["inspect", "--format", "{{.HostConfig.NetworkMode}}", labContainer]),
+      docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", container]),
     ])
     expect(user).toMatch(/^\d+:\d+$/)
     expect(user).not.toBe("0:0")
     expect(readOnly).toBe("true")
     expect(JSON.parse(mounts)).toEqual([])
     expect(port).toMatch(/^127\.0\.0\.1:\d+$/)
+    expect(JSON.parse(coreNetworks)).toHaveProperty(network)
     expect(
       await docker([
         "network",
@@ -207,6 +209,8 @@ test("Bug Bounty reuses Solc offline and reaches a hardened fresh Anvil lab from
 
     await stopLab()
     stopLab = undefined
+    expect(JSON.parse(await docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", container]))).not
+      .toHaveProperty(network)
     expect(variables.size).toBe(0)
     await evm.stop()
     evm = undefined
