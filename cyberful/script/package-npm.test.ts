@@ -12,6 +12,11 @@ import { metaManifest, packNpmPackage, platformManifest, stageMetaPackage, stage
 
 const temporaryRoots: string[] = []
 
+test("the repository includes the release notice source", () => {
+  const repositoryRoot = path.resolve(import.meta.dir, "../..")
+  expect(fs.readFileSync(path.join(repositoryRoot, "THIRD_PARTY_NOTICES.md"), "utf8")).toContain("## OpenCode")
+})
+
 function writePackageDocuments(repositoryRoot: string) {
   for (const file of [
     "README.md",
