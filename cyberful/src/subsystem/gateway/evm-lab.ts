@@ -369,6 +369,38 @@ async function removeLabResources(
   if (failures.length > 0) throw new AggregateError(failures, "EVM lab cleanup failed")
 }
 
+// ── Mutable Projects May Contain Container-Owned Output ────────────────────
+// Forge commands run through the root-owned core supervisor and can leave build
+// output that the host identity cannot unlink on native Linux. The validated lab
+// identifier fixes the container path beneath /workspace; removing it through
+// the still-live core restores deterministic explicit and replacement cleanup.
+// ───────────────────────────────────────────────────────────────────
+
+async function removeLabProject(
+  workarea: string,
+  labID: string,
+  coreContainer: string,
+  docker: NonNullable<EvmLabHooks["docker"]>,
+) {
+  const containerProject = `/workspace/.cyberful-evm/projects/${labID}`
+  const privileged = await docker(["exec", coreContainer, "rm", "--recursive", "--force", "--", containerProject])
+    .catch((error) => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    }))
+  try {
+    await rm(path.join(workarea, ".cyberful-evm", "projects", labID), { recursive: true, force: true })
+  } catch (error) {
+    if (privileged.exitCode !== 0)
+      throw new AggregateError(
+        [new Error(`privileged EVM project cleanup failed: ${privileged.stderr.trim()}`), error],
+        "EVM project cleanup failed",
+      )
+    throw error
+  }
+}
+
 function publicState(value: LabState, live: boolean) {
   return {
     lab_id: value.lab_id,
@@ -405,7 +437,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
     const coreContainer = engagementContainer()
     await removeLabResources(current.container, current.network, coreContainer, owner, docker)
     for (const account of current.accounts) hooks.deleteVariable(account.variable)
-    await rm(path.join(workarea, ".cyberful-evm", "projects", current.lab_id), { recursive: true, force: true })
+    await removeLabProject(workarea, current.lab_id, coreContainer, docker)
     const stopped: LabState = { ...current, status: "stopped", stopped_at: new Date().toISOString() }
     await writeState(workarea, stopped)
     return { stopped: true, lab_id: current.lab_id }
@@ -445,7 +477,7 @@ export async function handleEvmLab(args: Record<string, unknown>, hooks: EvmLabH
   if (current) {
     await removeLabResources(current.container, current.network, coreContainer, owner, docker)
     for (const account of current.accounts) hooks.deleteVariable(account.variable)
-    await rm(path.join(workarea, ".cyberful-evm", "projects", current.lab_id), { recursive: true, force: true })
+    await removeLabProject(workarea, current.lab_id, coreContainer, docker)
   }
 
   const mode = args.mode === undefined ? "fresh" : args.mode

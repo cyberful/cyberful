@@ -182,6 +182,15 @@ describe("managed EVM lab", () => {
     const removeIndex = testRuntime.calls.findIndex((call) => call[0] === "network" && call[1] === "rm")
     expect(disconnectIndex).toBeGreaterThan(-1)
     expect(removeIndex).toBeGreaterThan(disconnectIndex)
+    expect(testRuntime.calls).toContainEqual([
+      "exec",
+      "cyberful-os-test",
+      "rm",
+      "--recursive",
+      "--force",
+      "--",
+      `/workspace/.cyberful-evm/projects/${prepared.lab_id}`,
+    ])
     expect(testRuntime.variables.size).toBe(0)
   })
 
