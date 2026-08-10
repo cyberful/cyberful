@@ -11,7 +11,7 @@ The harness defines the reachable security model. Optimize semantic depth and re
 
 Document target function and build, input framing, state reset, environment, allocator, thread model, timeout, maximum input, expected rejects, external side effects, and invariants. Remove network, clock, randomness, process-global caches, and nondeterministic concurrency unless they are the property under test.
 
-For structured formats, expose bytes at the earliest production parser boundary while retaining real downstream validation and object use. Do not replace the parser with a fuzzer-specific decoder that cannot represent production bugs.
+For structured formats, expose bytes at the earliest production parser boundary while retaining real downstream validation and object use. Do not replace the parser with a fuzzer-specific decoder that cannot represent production bugs. Validate source harness syntax and ABI with `harness_validate`; compile opaque production types against their real headers instead of guessing their size or layout.
 
 ## Choose the engine deliberately
 
@@ -20,6 +20,8 @@ For structured formats, expose bytes at the earliest production parser boundary 
 - Use Jazzer for JVM targets, Java/Kotlin parsers, and sanitizer hooks for injection/deserialization-style behavior.
 
 Read [references/fuzzing-fieldbook.md](references/fuzzing-fieldbook.md) for harness diagnostics and plateau recovery.
+
+Use `fuzz_campaign start` for a phase-owned background campaign, then `status`, `coverage`, and `crashes` instead of launching an untracked daemon. Create a `checkpoint` before handoff. Use `pause`, `resume`, and `stop` for lifecycle control; the bridge reaps any surviving process when the phase closes.
 
 ## Build the instrumentation matrix
 
@@ -38,6 +40,8 @@ Measure executions, edge/feature growth, corpus growth, reject-stage distributio
 ## Triage and prove crashes
 
 Reproduce outside the fuzzer with the exact build and environment; minimize while preserving the same root cause; symbolize; identify first invalid state rather than final crash; deduplicate by causal frame/data invariant; test sanitizer-independent behavior where relevant; and create a regression case.
+
+Use `crash_triage` for reproduction, symbolization, classification, deduplication, minimization, and evidence export. A campaign crash list is discovery evidence, never a confirmed vulnerability.
 
 ## Deliver
 

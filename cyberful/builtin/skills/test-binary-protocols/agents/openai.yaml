@@ -1,0 +1,4 @@
+interface:
+  display_name: "Binary Protocol Testing"
+  short_description: "Model mutate and verify protocol behavior"
+  default_prompt: "Use $test-binary-protocols to build a bounded corpus and run controlled differential protocol tests."

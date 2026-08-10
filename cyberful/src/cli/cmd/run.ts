@@ -20,8 +20,8 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { FormatError, FormatUnknownError } from "../error"
 import { ensureWorkarea, requireWorkarea, setLastWorkarea, workareaSystemPrompt } from "@/workarea"
 import * as Log from "@/util/log"
-import { dictionaryDataRoot } from "@/cve-dictionary/activation"
-import { prepareCveDictionaryModel } from "@/cve-dictionary/embedding"
+import { runCveDictionaryPreflight } from "@/cli/cve-dictionary-preflight"
+import { completionExitCode } from "./run/outcome"
 
 const log = Log.create({ service: "cli.run" })
 
@@ -152,6 +152,11 @@ export const RunCommand = effectCmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("workflow", {
+        type: "string",
+        choices: SubsystemPhase.listWorkflows().map((workflow) => workflow.name),
+        describe: "engagement workflow to start",
       })
       .option("format", {
         type: "string",
@@ -291,6 +296,11 @@ export const RunCommand = effectCmd({
         process.exit(1)
       }
 
+      if (args.workflow && (args.continue || args.session)) {
+        UI.error("--workflow starts a new session and cannot be combined with --continue or --session")
+        process.exit(1)
+      }
+
       function title() {
         if (args.title === undefined) return
         if (args.title !== "") return args.title
@@ -361,6 +371,8 @@ export const RunCommand = effectCmd({
         const name = title()
         const result = await sdk.session.create({
           title: name,
+          workflow: args.workflow,
+          agent: args.agent,
         })
         const id = result.data?.id
         if (!id) {
@@ -676,6 +688,8 @@ export const RunCommand = effectCmd({
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
           }
+          const workflowExitCode = completionExitCode(result.data)
+          if (workflowExitCode === 1) process.exitCode = 1
           if (streamError) process.exitCode = 1
         } finally {
           operationAbort.abort(new Error("non-interactive run complete"))
@@ -690,11 +704,7 @@ export const RunCommand = effectCmd({
         return await execute(sdk)
       }
 
-      await prepareCveDictionaryModel({
-        cacheRoot: path.join(dictionaryDataRoot(), "models"),
-      }).catch((error) => {
-        log.warn("CVE Dictionary model preflight failed; semantic retrieval will degrade", { error })
-      })
+      await runCveDictionaryPreflight()
       const sdk = createLocalControlPlaneClient({ directory })
       await execute(sdk)
     })

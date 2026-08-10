@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
+import type { BrowserProfileId } from "@/dependency/browser-profile"
 import { randomUUID } from "node:crypto"
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 
@@ -82,7 +83,7 @@ export interface ToolUsageEvent {
   error_class?: "timeout" | "nonzero_exit" | "tool_reported_error" | "invalid_arguments" | "transport"
   error_code?: string
   tool_exit_code?: number
-  browser_profile?: number
+  browser_profile?: BrowserProfileId
 }
 
 function csv(value: unknown) {

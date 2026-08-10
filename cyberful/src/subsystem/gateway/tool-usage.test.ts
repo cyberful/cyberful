@@ -57,6 +57,18 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
       error_code: "ECONNRESET",
       browser_profile: 1,
     })
+    await recorder.record({
+      tool: "web_search",
+      duration_ms: 20,
+      outcome: "ok",
+      argument_digest: "b".repeat(64),
+      browser_profile: "search",
+      egress_host: "html.duckduckgo.com",
+      egress_method: "GET",
+      egress_path_family: "/html",
+      egress_route: "browser/direct-search",
+      egress_observability: "inferred",
+    })
     await recorder.close()
 
     const csv = await readFile(path.join(root, "raw", "operations", "tool-usage.csv"), "utf8")
@@ -69,7 +81,7 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     expect(csv).not.toContain("reason_code")
     expect(csv).not.toContain("rationale")
     const [header, ...rows] = csv.trim().split("\n")
-    expect([header, ...rows]).toHaveLength(3)
+    expect([header, ...rows]).toHaveLength(4)
     const columns = header!.split(",")
     const failed = rows.find((row) => row.split(",")[columns.indexOf("tool")] === "browser_navigate")
     expect(failed).toBeDefined()
@@ -77,6 +89,12 @@ test("auto-populates one metadata-only CSV inside the engagement workarea", asyn
     expect(failedValues[columns.indexOf("error_class")]).toBe("tool_reported_error")
     expect(failedValues[columns.indexOf("error_code")]).toBe("ECONNRESET")
     expect(failedValues[columns.indexOf("browser_profile")]).toBe("1")
+    const search = rows.find((row) => row.split(",")[columns.indexOf("tool")] === "web_search")
+    expect(search).toBeDefined()
+    const searchValues = search!.split(",")
+    expect(searchValues[columns.indexOf("browser_profile")]).toBe("search")
+    expect(searchValues[columns.indexOf("egress_route")]).toBe("browser/direct-search")
+    expect(csv).not.toContain("private search terms")
   } finally {
     if (previous.root === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
     else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.root

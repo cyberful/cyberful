@@ -143,6 +143,65 @@ describe("hypothesis registry", () => {
     }
   })
 
+  test("makes exact record and same-state updates idempotent while merging new evidence", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      const record = {
+        action: "record",
+        id: "H-IDEM-1",
+        owner: "exploit-root",
+        description: "A stable authorization candidate",
+        root_cause: "missing ownership check",
+        surface: "object API",
+        discriminator: "cross-tenant object differential",
+        candidate_tools: ["browser_request"],
+      }
+      await registry.handle(record)
+      const afterRecord = await registry.list()
+      await registry.handle(record)
+      expect((await registry.list()).revision).toBe(afterRecord.revision)
+
+      await registry.handle({ action: "update", id: "H-IDEM-1", state: "TESTING" })
+      const afterTesting = await registry.list()
+      await registry.handle({ action: "update", id: "H-IDEM-1", state: "TESTING" })
+      expect((await registry.list()).revision).toBe(afterTesting.revision)
+
+      const suspected = {
+        action: "update",
+        id: "H-IDEM-1",
+        state: "SUSPECTED",
+        finding_id: "F-IDEM-1",
+        evidence: ["The second tenant received the synthetic object."],
+        evidence_refs: ["raw/evidence/one.json"],
+        reason: "The controlled cross-tenant differential is positive.",
+      }
+      await registry.handle(suspected)
+      const afterSuspected = await registry.list()
+      await registry.handle(suspected)
+      expect((await registry.list()).revision).toBe(afterSuspected.revision)
+      expect((await registry.get("H-IDEM-1")).transitions).toHaveLength(3)
+
+      await registry.handle({
+        ...suspected,
+        evidence: [
+          "The second tenant received the synthetic object.",
+          "A repeat control produced the same tenant differential.",
+        ],
+        evidence_refs: ["raw/evidence/one.json", "raw/evidence/two.json"],
+      })
+      const merged = await registry.get("H-IDEM-1")
+      expect(merged.evidence).toEqual([
+        "The second tenant received the synthetic object.",
+        "A repeat control produced the same tenant differential.",
+      ])
+      expect(merged.evidence_refs).toEqual(["raw/evidence/one.json", "raw/evidence/two.json"])
+      expect(merged.transitions).toHaveLength(3)
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
   test("counts active states and transfers child ownership through the host-only writer", async () => {
     const workarea = await temporaryWorkarea()
     try {

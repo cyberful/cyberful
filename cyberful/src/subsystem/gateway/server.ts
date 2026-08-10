@@ -1077,32 +1077,37 @@ export interface UpstreamTool {
   call(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>
 }
 
-// ── One Browser Surface Selects Five Isolated Identities ────────────
-// Repeating every browser tool five times would obscure the useful tool surface
-// and weaken existing prompts that already know the `browser_*` names. The
-// gateway instead adds one bounded profile selector to each browser schema and
-// removes it before forwarding the call to that profile's unmodified MCP tool.
-// Profile one remains the default, preserving existing calls while natural
-// references such as "the second browser profile" map directly to `profile: 2`.
+// ── One Browser Surface Selects Target Or Research Identity ────────
+// Repeating every browser tool per identity would obscure the useful tool
+// surface. The gateway instead adds one bounded selector to ordinary browser
+// tools and removes it before forwarding. Profile one remains the compatibility
+// default, while `search` names the credential-free research identity. The
+// dedicated web_search tool is forced to that identity and never accepts a
+// caller-controlled profile.
 // ─────────────────────────────────────────────────────────────────────
 export function browserProfileToolDefinition(
   definition: UpstreamTool["def"],
   profiles: readonly BrowserProfileId[],
 ): UpstreamTool["def"] {
+  if (definition.name === "web_search") return definition
   if (!isRecord(definition.inputSchema)) return definition
   const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
+  const availableTargets = profiles.filter(BrowserProfile.isTargetBrowserProfileId)
+  const searchAvailable = profiles.includes(BrowserProfile.SEARCH_BROWSER_PROFILE_ID)
   return {
     ...definition,
-    description: `${definition.description ?? "Use the isolated browser."} Select profile 1-5 for a distinct authenticated browser identity; profile 1 is the default.`,
+    description: `${definition.description ?? "Use the isolated browser."} Select target profile 1-5 or the credential-free search profile; profile 1 is the default.`,
     inputSchema: {
       ...definition.inputSchema,
       properties: {
         ...properties,
         profile: {
-          type: "integer",
-          enum: profiles,
+          oneOf: [
+            ...(availableTargets.length > 0 ? [{ type: "integer", enum: availableTargets }] : []),
+            ...(searchAvailable ? [{ type: "string", enum: [BrowserProfile.SEARCH_BROWSER_PROFILE_ID] }] : []),
+          ],
           default: 1,
-          description: "Isolated browser identity: 1 is the first profile, through 5 for the fifth profile.",
+          description: "Isolated browser identity: target account 1-5, or search for unauthenticated web research.",
         },
       },
     },
@@ -1117,6 +1122,15 @@ export function selectBrowserProfileUpstream(
     (candidate): candidate is UpstreamTool & { browserProfile: BrowserProfileId } =>
       candidate.browserProfile !== undefined,
   )
+  if (candidates[0]?.def.name === "web_search") {
+    if (args.profile !== undefined) throw new Error("web_search does not accept a browser profile")
+    const upstream = profiled.find(
+      (candidate) => candidate.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID,
+    )
+    if (!upstream) throw new Error("web_search search profile is unavailable")
+    return { upstream, args }
+  }
+
   if (profiled.length === 0) {
     const upstream = candidates[0]
     if (!upstream) throw new Error("browser tool has no available upstream")
@@ -1125,7 +1139,7 @@ export function selectBrowserProfileUpstream(
 
   const requested = args.profile ?? 1
   if (!BrowserProfile.isBrowserProfileId(requested)) {
-    throw new Error("browser profile must be an integer from 1 through 5")
+    throw new Error("browser profile must be an integer from 1 through 5 or search")
   }
   const upstream = profiled.find((candidate) => candidate.browserProfile === requested)
   if (!upstream) throw new Error(`browser profile ${requested} is unavailable`)
@@ -1314,14 +1328,43 @@ function browserScope(
   profile: BrowserProfileId | undefined,
   coverage: SurfaceCoverage | undefined,
 ) {
-  if (profile === undefined || !tool.startsWith("browser_")) return
+  if (profile === undefined || (!tool.startsWith("browser_") && tool !== "web_search")) return
   const current = coverage?.currentScope(profile)
+  if (tool === "web_search") {
+    return {
+      profile,
+      origin: "https://html.duckduckgo.com",
+      pageID: current?.pageID ?? "pending",
+    }
+  }
   if (tool !== "browser_navigate" || typeof args.url !== "string") return current
   try {
     const url = new URL(args.url.includes("://") ? args.url : `http://${args.url}`)
     return { profile, origin: url.origin, pageID: current?.pageID ?? "pending" }
   } catch {
     return current
+  }
+}
+
+function browserProfileEgress(
+  tool: string,
+  args: Record<string, unknown>,
+  result: CallToolResult,
+  profile: BrowserProfileId | undefined,
+) {
+  const inferred = EgressObservation.observe(tool, args, result)
+  if (profile !== BrowserProfile.SEARCH_BROWSER_PROFILE_ID) return inferred
+  return {
+    ...inferred,
+    ...(tool === "web_search"
+      ? {
+          egress_host: "html.duckduckgo.com",
+          egress_method: "GET",
+          egress_path_family: "/html",
+        }
+      : {}),
+    egress_route: "browser/direct-search",
+    egress_observability: inferred?.egress_host ? inferred.egress_observability : ("inferred" as const),
   }
 }
 
@@ -1365,27 +1408,39 @@ function proxyEnabled(): boolean {
 export function resolveBrowserUpstreamEnv(input: {
   dedicated?: string
   artifactsDir: string
+  direct?: boolean
   livePort?: number
   tempProfileDir: string
 }): {
   set: Record<string, string>
   unset: string[]
 } {
-  if (input.dedicated && !input.livePort) {
-    return {
-      set: {
-        CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
-        CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
-      },
-      unset: [],
-    }
-  }
+  const resolved =
+    input.dedicated && !input.livePort
+      ? {
+          set: {
+            CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
+            CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
+          },
+        }
+      : {
+          set: {
+            CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
+            CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
+          },
+        }
   return {
-    set: {
-      CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
-      CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
-    },
-    unset: [],
+    ...resolved,
+    unset: input.direct
+      ? [
+          "CYBER_BROWSER_PROXY",
+          "CYBER_BROWSER_PROXY_CA_SPKI",
+          "CYBER_BROWSER_PROXY_WARNING",
+          "CYBER_BROWSER_CDP_ENDPOINT",
+          "CYBER_BROWSER_OWN_TAB",
+          "CYBER_BROWSER_SHARED_ATTESTATION",
+        ]
+      : [],
   }
 }
 
@@ -1447,6 +1502,7 @@ export function cyberfulOsProxyTrustEnv(
 // ZAP and Ghidra failures degrade visibly without inventing a capability that cannot run.
 // ──────────────────────────────────────────────────────────────
 const BRIEF_BROWSER_TOOLS = new Set([
+  "web_search",
   "browser_status",
   "browser_navigate",
   "browser_snapshot",
@@ -1468,6 +1524,54 @@ const BRIEF_BROWSER_TOOLS = new Set([
   "browser_close",
 ])
 
+const SPECIALIST_TOOL_CAPABILITIES: Readonly<Record<string, SubsystemPhase.WorkflowCapability>> = {
+  firmware_lab: "firmware-lab",
+  appliance_fingerprint: "firmware-lab",
+  unblob: "firmware-lab",
+  binwalk: "firmware-lab",
+  unsquashfs: "firmware-lab",
+  ubireader_extract_files: "firmware-lab",
+  dumpimage: "firmware-lab",
+  dtc: "firmware-lab",
+  qemu_aarch64: "firmware-lab",
+  qemu_arm: "firmware-lab",
+  native_static_analysis: "native-analysis",
+  binary_diff: "native-analysis",
+  checksec: "native-analysis",
+  readelf: "native-analysis",
+  objdump: "native-analysis",
+  xxd: "native-analysis",
+  archive_extract: "native-analysis",
+  seven_zip: "native-analysis",
+  clang_tidy: "native-analysis",
+  scan_build: "native-analysis",
+  cppcheck: "native-analysis",
+  bear: "native-analysis",
+  native_lab: "native-debug",
+  native_debug: "native-debug",
+  crash_triage: "native-debug",
+  gdb_multiarch: "native-debug",
+  gdbserver: "native-debug",
+  pwn: "native-debug",
+  strace: "native-debug",
+  ltrace: "native-debug",
+  eu_stack: "native-debug",
+  llvm_symbolizer: "native-debug",
+  ropgadget: "native-debug",
+  ropper: "native-debug",
+  patchelf: "native-debug",
+  valgrind: "native-debug",
+  harness_validate: "native-debug",
+  firefox_lab: "native-debug",
+  x11_clipboard: "native-debug",
+  fuzz_campaign: "fuzz-campaign",
+  afl_showmap: "fuzz-campaign",
+  afl_tmin: "fuzz-campaign",
+  afl_whatsup: "fuzz-campaign",
+  protocol_campaign: "protocol-campaign",
+  zgrab2: "protocol-campaign",
+}
+
 // ── Brief Publishes Preflight Capabilities, Not Research Tools ───
 // Brief still needs ordinary browser interaction for login and a local shell
 // for attachments and atomic MISSION.md replacement. Publishing a complete
@@ -1482,6 +1586,8 @@ function phaseUpstreamToolAllowed(
   capability: SubsystemPhase.WorkflowCapability | undefined,
   name: string,
 ) {
+  const specialistCapability = SPECIALIST_TOOL_CAPABILITIES[name]
+  if (specialistCapability) return policy.allows(specialistCapability)
   if (policy.phase !== "brief") return true
   if (capability === "isolated-exec") return name === "shell"
   if (capability === "browser") return BRIEF_BROWSER_TOOLS.has(name)
@@ -1551,6 +1657,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         const { set, unset } = resolveBrowserUpstreamEnv({
           dedicated,
           artifactsDir: BrowserProfile.browserArtifactsDir(browserProfile),
+          direct: browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID,
           livePort,
           tempProfileDir: path.join(
             os.tmpdir(),
@@ -1840,8 +1947,11 @@ export async function createGatewayServer(opts?: {
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
       : { tools: [], clients: [], close: () => Promise.resolve() }
   const policy = gatewayPhasePolicy()
-  const upstreams = connected.tools.filter((upstream) =>
-    phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name),
+  const upstreams = connected.tools.filter(
+    (upstream) =>
+      phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name) &&
+      (upstream.def.name !== "web_search" ||
+        upstream.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID),
   )
   const byName = new Map<string, UpstreamTool[]>()
   for (const upstream of upstreams) {
@@ -2347,7 +2457,7 @@ export async function createGatewayServer(opts?: {
           }
         }
       }
-      const observedEgress = EgressObservation.observe(name, resolvedArgs, result)
+      const observedEgress = browserProfileEgress(name, resolvedArgs, result, upstream.browserProfile)
       const browserStatus = browserAction(result)?.status
       const egress =
         observedEgress && observedEgress.egress_http_status === undefined && browserStatus !== undefined
@@ -2382,7 +2492,7 @@ export async function createGatewayServer(opts?: {
           code: `${requiredUpstream}_transport_failed`,
           detail: `Required ${requiredUpstream} MCP upstream failed during a phase tool call.`,
         })
-      const egress = EgressObservation.observe(name, resolvedArgs, { content: [] })
+      const egress = browserProfileEgress(name, resolvedArgs, { content: [] }, upstream.browserProfile)
       await usage
         .record({
           ...callUsageMetadata({ name, args, meta: req.params._meta }),

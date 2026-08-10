@@ -17,7 +17,7 @@ import {
   readCircuitBreaker,
 } from "./circuit-breaker"
 
-const challenged = { profile: 2, origin: "https://example.test", pageID: "page-7" }
+const challenged = { profile: 2 as const, origin: "https://example.test", pageID: "page-7" }
 
 describe("CAPTCHA circuit breaker", () => {
   test("pauses only the challenged profile and origin until original-page verification", async () => {
@@ -27,7 +27,7 @@ describe("CAPTCHA circuit breaker", () => {
       const activation = await activateCircuitBreaker(file, "recon", challenged, true)
       expect((await readCircuitBreaker(file))?.surfacedAt).toBeNumber()
       expect(await circuitBreakerError(file, "browser_click", challenged)).toContain("profile 2")
-      expect(await circuitBreakerError(file, "browser_click", { ...challenged, profile: 1 })).toBeUndefined()
+      expect(await circuitBreakerError(file, "browser_click", { ...challenged, profile: 1 as const })).toBeUndefined()
       expect(await circuitBreakerError(file, "browser_navigate", { ...challenged, origin: "https://other.test" })).toBeUndefined()
       expect(await circuitBreakerError(file, "zap_http_request", challenged)).toBeUndefined()
       expect(await circuitBreakerError(file, "browser_captcha_status", challenged)).toBeUndefined()
@@ -53,6 +53,21 @@ describe("CAPTCHA circuit breaker", () => {
     }
   })
 
+  test("isolates a search challenge from every numbered target profile", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-search-"))
+    const file = path.join(root, "state.json")
+    const search = { profile: "search" as const, origin: "https://html.duckduckgo.com", pageID: "search-page" }
+    try {
+      await activateCircuitBreaker(file, "recon", search, false)
+      expect(await circuitBreakerError(file, "web_search", search)).toContain("profile search")
+      expect(await circuitBreakerError(file, "browser_click", { ...search, profile: 1 })).toBeUndefined()
+      expect(await circuitBreakerError(file, "browser_captcha_status", search)).toBeUndefined()
+      expect(await clearCircuitBreaker(file, search)).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("does not apply a late human answer to a replacement challenge", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-stale-answer-"))
     const file = path.join(root, "state.json")
@@ -61,7 +76,7 @@ describe("CAPTCHA circuit breaker", () => {
       const replacement = await activateCircuitBreaker(
         file,
         "recon",
-        { profile: 3, origin: "https://other.test", pageID: "page-8" },
+        { profile: 3 as const, origin: "https://other.test", pageID: "page-8" },
         true,
       )
       expect(await dismissCircuitBreaker(file, original)).toBe(false)

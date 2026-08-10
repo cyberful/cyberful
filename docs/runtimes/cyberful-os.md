@@ -2,13 +2,13 @@
 
 Cyberful uses one tooling image with two runtime roles for live-target engagements. The core container owns cyberful-os, Kali tools, and optional Ghidra; a dedicated, less-privileged container owns headless OWASP ZAP and Firefox/Xvfb. Code Audit starts only the offline core role. Both roles use the same attested image and remain engagement-scoped.
 
-Release builds embed an immutable multi-architecture reference:
+Release builds embed the complete filtered Docker build context and its content fingerprint. The first startup builds and attests this local image:
 
 ```text
-ghcr.io/cyberful/cyberful-os@sha256:<OCI-index-digest>
+cyberful-os:runtime-<sha256-context-fingerprint>
 ```
 
-The index has native `linux/amd64` and `linux/arm64` executables. Source runs default to the locally built `cyberful-os:latest`. `CYBERFUL_OS_IMAGE` overrides the complete image reference in either mode.
+Docker selects native Linux packages for the host architecture while building. Source runs default to the locally built `cyberful-os:latest`. `CYBERFUL_OS_IMAGE` overrides the complete image reference in either mode and is never pruned as a managed image.
 
 ## Engagement lifecycle
 
@@ -24,7 +24,7 @@ The ZAP role uses the same session and managed labels with `org.cyberful.runtime
 
 The workarea is mounted read/write. Ghidra receives a separate, owner-only `0700` project store. Each session binds ZAP's named session, private CA key, and home to an opaque owner-only child under `raw/zap/runtime/` so controlled recovery preserves its identity and concurrent sessions cannot share the same ZAP home. The core masks the entire runtime subtree with a nested private tmpfs, so even its root shell cannot read any ZAP private key. The matching child under `raw/zap/trust/` contains only that session's attested public certificate and combined CA bundle and is mounted read-only at `/run/cyberful/proxy-trust`. Browser and EVM runtimes remain separate.
 
-Pentest and Bug Bounty use normal container networking and publish only the dedicated ZAP container's port 8080 as a random host-loopback port. The core retains the capabilities required by the security toolchain and receives a mild relative OOM preference (`oom_score_adj=250`); ZAP receives neither those capabilities nor that adjustment, which makes it less likely to be selected before an expendable core workload under pressure. Code Audit creates the same image as an offline core with `--network none`, never starts ZAP, and keeps Ghidra and loopback working. Network policy is fixed when Docker creates each role and never changes at phase handoff.
+Pentest and Bug Bounty use normal container networking and publish only the dedicated ZAP container's port 8080 as a random host-loopback port. The core retains the capabilities required by the security toolchain and receives a mild relative OOM preference (`oom_score_adj=250`); ZAP receives neither those capabilities nor that adjustment, which makes it less likely to be selected before an expendable core workload under pressure. Every role uses `no-new-privileges`. The core relaxes Docker's default seccomp filter for nested user-namespace research but receives neither `SYS_ADMIN` nor privileged mode; runtime attestation calls `unshare --user --map-root-user` and reports a typed limitation when the host kernel still returns `EPERM`. Code Audit creates the same image as an offline core with `--network none`, never starts ZAP, and keeps Ghidra and loopback working. Network policy is fixed when Docker creates each role and never changes at phase handoff.
 
 Every phase gets a fresh private gateway. cyberful-os and Ghidra reconnect to the core container; ZAP reconnects to its dedicated container. Phase policy decides which MCP tools are visible.
 
@@ -56,11 +56,27 @@ The host exports ZAP's public root certificate from the local API and accepts it
 
 Tool discovery is derived from the live capability preflight. Required tools remain part of the image contract, while optional tools fail closed until the selected image proves they are installed. JEB therefore appears only for a private image built with its licensed installer; running `capability_attestation` refreshes the snapshot used by discovery, while `tool_inventory` independently reports the current live availability.
 
+## Native, firmware, fuzzing, and protocol laboratories
+
+The core runtime exposes thirteen managed MCP workflows: `firmware_lab`, `native_lab`, `native_debug`, `crash_triage`, `fuzz_campaign`, `binary_diff`, `protocol_campaign`, `appliance_fingerprint`, `native_static_analysis`, `harness_validate`, `archive_extract`, `firefox_lab`, and `x11_clipboard`. Their state and evidence remain below `/workspace`; background process groups are owned by the phase bridge and reaped when it exits. Every operation uses its own discriminated schema, so incomplete or unsupported argument combinations fail before execution. `native_static_analysis run_checks` accepts only C/C++ source files or source trees; ELF and other non-source inputs produce a concise structured `unsupported` result without launching Cppcheck or Clang-Tidy and should be routed to binary analysis.
+
+`harness_validate` uses the selected shell's parse-only mode, Node's JavaScript syntax check, and native architecture/ELF/dependency/symbol/build-identity checks. Native source harnesses compile against real headers and cannot replace opaque ABI structures with guessed storage. `native_lab start_process` automatically performs the applicable mandatory validation, records its evidence, and refuses to execute a failed harness. Lab status, readiness, file rendezvous, and structured diagnostics coordinate the harness with its debugger without timing guesses.
+
+`native_debug` has one serialized GDB/MI owner per session. Token-matched commands and explicit `running`, `stopped`, `exited`, and `closed` states prevent output from one request satisfying another. `wait` observes a transition, `close` is idempotent, and signal handling is explicit; `SIGSYS` remains stopping and non-passing unless the caller deliberately changes that session policy.
+
+`archive_extract` normally uses the standard ZIP path. A ZIP with prepended bytes or Info-ZIP status 2 retries through the image's native 7-Zip engine, exposed consistently as `7zz`, in a fresh temporary destination, validates the output tree, and publishes it atomically. This makes Mozilla `omni.ja` handling usable without a partial extraction. `xxd`, `7zz`, and `xclip` are installed and attested in every public image.
+
+`firefox_lab` owns an arbitrary Firefox executable, Xvfb, a temporary profile, the port read from `MarionetteActivePort`, its TCP probe, WebDriver window handles, active context, and complete teardown. Chrome-context launch includes `-remote-allow-system-access`; responses are normalized whether scalar, array, or object. Permission controls use Firefox's active privileged permission APIs and immediately read the value back; direct profile-database edits are not used. `x11_clipboard` supplies synthetic UTF-8 and `TARGETS` ownership on the lab display and cleans it without retaining the real desktop clipboard.
+
+Supporting commands include GDB/gdbserver, pwntools, checksec, multi-architecture binutils, strace/ltrace, elfutils and LLVM symbolization, ROPgadget/ropper, Patchelf, Valgrind, Unblob/Binwalk, SquashFS and UBI/U-Boot/device-tree tools, explicit ARM/AArch64 user-mode QEMU, Clang-Tidy/scan-build/Cppcheck/Bear, AFL++ campaign utilities, boofuzz, and zgrab2. Full-system QEMU, binfmt registration, Apple/iOS tooling, a physical Android bridge, and public JEB installation are deliberately absent because Cyberful cannot provide their complete safe lifecycle in this image.
+
+Firmware and static analysis are available from Recon or Code Audit Index through Verify. Debugger and fuzzer ownership begins in Exploit/Hacker or Code Audit Attack. Protocol campaigns are limited to live-target Recon through Verify. Brief and Report receive none of these operative surfaces; they consume durable evidence instead. Built-in skills provide the corresponding workflow and checkpoint rules.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CYBERFUL_OS_IMAGE` | embedded digest in releases; `cyberful-os:latest` in source | Complete unified image override |
+| `CYBERFUL_OS_IMAGE` | fingerprinted local image in releases; `cyberful-os:latest` in source | Complete unified image override |
 | `CYBERFUL_OS_MCP_ENABLED` | `1` | Expose cyberful-os in eligible phases |
 | `CYBER_ZAP_ENABLED` | `1` | Enable ZAP for live-target engagements |
 | `CYBER_BROWSER_THROUGH_ZAP` | `1` | Chain the isolated browser through ready ZAP |
@@ -77,11 +93,16 @@ Separate image overrides and `CYBERFUL_OS_AUTOSTART` are rejected by preflight. 
 
 The build context is `mcps/`; the Dockerfile is `mcps/cyberful-os/Dockerfile`. Kali, ZAP, Bun, Ghidra, add-ons, and downloaded tool archives are versioned or digest-pinned. The build fails unless Node 24, Firefox/Xvfb, every required ZAP add-on, PyGhidra, and the architecture-native decompiler are loadable.
 
+Installed releases build automatically at first startup and whenever the embedded context fingerprint changes. BuildKit output remains visible and is appended to a private `runtime-build-<fingerprint>.log`. Cyberful requires at least 100 GB free before starting a managed build, serializes concurrent attempts with a crash-safe lock, attests a temporary candidate before assigning the canonical tag, and retains the current and previous managed images.
+
 ```sh
 make runtime-build   # build cyberful-os:latest for this host architecture
 make test-runtime    # full cyberful-os, ZAP, bridge, Ghidra, and persistence contract
 make test-zap        # focused ZAP tests against the existing unified image
 make test-ghidra     # focused Ghidra tests against the existing unified image
+cyberful runtime status
+cyberful runtime build --force
+cyberful runtime prune
 ```
 
-Use `CYBERFUL_OS_IMAGE=<reference>` with the test targets to verify another local image. Building needs at least 100 GB free; running and pulling should start with at least 40 GB free.
+Use `CYBERFUL_OS_IMAGE=<reference>` with the test targets to verify another local image. Building needs at least 100 GB free; ordinary runtime operation should retain enough additional space for containers, browser data, Ghidra projects, workarea evidence, and reports.

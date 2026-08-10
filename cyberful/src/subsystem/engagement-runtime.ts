@@ -59,6 +59,22 @@ const ZAP_TRUST_ATTESTATION_FILE = "attestation.json"
 const MAX_SYSTEM_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 const TLS_CANARY_PORT = 8443
 const TLS_CANARY_TIMEOUT_MS = 20_000
+const DOCKER_HOSTNAME_MAX_LENGTH = 63
+
+export function dockerHostname(containerName: string): string {
+  if (containerName.length <= DOCKER_HOSTNAME_MAX_LENGTH) return containerName
+  const digest = createHash("sha256").update(containerName).digest("hex").slice(0, 24)
+  return `${containerName.slice(0, DOCKER_HOSTNAME_MAX_LENGTH - digest.length - 1)}-${digest}`
+}
+
+export function dockerChildContainerName(parent: string, role: string): string {
+  const candidate = `${parent}-${role}`
+  if (candidate.length <= DOCKER_HOSTNAME_MAX_LENGTH) return candidate
+  const digest = createHash("sha256").update(parent).update("\0").update(role).digest("hex").slice(0, 24)
+  const prefixLength = DOCKER_HOSTNAME_MAX_LENGTH - digest.length - role.length - 2
+  if (prefixLength < 1) throw new Error("Docker child container role is too long")
+  return `${parent.slice(0, prefixLength)}-${digest}-${role}`
+}
 
 export interface EngagementRuntime {
   readonly container: string
@@ -399,7 +415,7 @@ async function verifyTlsClientCanary(input: {
         "--name",
         input.canaryContainer,
         "--hostname",
-        input.canaryContainer,
+        dockerHostname(input.canaryContainer),
         "--network",
         input.network,
         ...input.ownershipLabels.flatMap((label) => ["--label", label]),
@@ -1056,7 +1072,7 @@ export async function startEngagement(input: {
     ...(ghidraMcpKey ? { CYBER_GHIDRA_MCP_KEY: ghidraMcpKey } : {}),
   }
   const identity = runtimeIdentity()
-  const zapContainer = `${input.container}-zap`
+  const zapContainer = dockerChildContainerName(input.container, "zap")
   const containers = zapEnabled ? [input.container, zapContainer] : [input.container]
   let published = cyberZapProxyPort() ? `127.0.0.1:${cyberZapProxyPort()}:8080` : "127.0.0.1::8080"
   let publishedPort: number | undefined
@@ -1120,7 +1136,7 @@ export async function startEngagement(input: {
         "--name",
         input.container,
         "--hostname",
-        input.container,
+        dockerHostname(input.container),
         "--network",
         network,
         "--workdir",
@@ -1128,6 +1144,8 @@ export async function startEngagement(input: {
         ...coreOwnershipLabels.flatMap((label) => ["--label", label]),
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_PTRACE",
+        "--security-opt=no-new-privileges",
+        "--security-opt=seccomp=unconfined",
         "--oom-score-adj=250",
         "--pids-limit=2048",
         ...(codeAudit ? ["--network", "none"] : ["--add-host", "host.docker.internal:host-gateway"]),
@@ -1189,7 +1207,7 @@ export async function startEngagement(input: {
         "--name",
         zapContainer,
         "--hostname",
-        zapContainer,
+        dockerHostname(zapContainer),
         "--network",
         network,
         "--workdir",

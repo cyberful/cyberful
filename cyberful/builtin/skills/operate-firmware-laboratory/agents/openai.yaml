@@ -1,0 +1,4 @@
+interface:
+  display_name: "Firmware Laboratory"
+  short_description: "Extract compare and inspect appliance firmware"
+  default_prompt: "Use $operate-firmware-laboratory to inventory, extract, compare, and safely inspect this firmware artifact."

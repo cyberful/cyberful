@@ -4,7 +4,7 @@ The standalone Cyberful CLI requires one configured model provider and a running
 
 | Use case | Host requirements |
 | --- | --- |
-| Run a standalone release binary | Docker with at least 10 GB of RAM dedicated to its VM/daemon, and one configured provider |
+| Run a standalone release binary | Docker with at least 10 GB of RAM dedicated to its VM/daemon, one configured provider, and the first-launch disk capacity below |
 | Install through npm | Node.js 18+ with npm for the small platform selector, then the requirements above |
 | Develop from this repository | Docker, Bun 1.3.14, Node.js 24 with npm, and Python 3.10+ |
 | Build the runtime image | The development tools above and at least 100 GB free |
@@ -29,9 +29,11 @@ A personal Chrome, Safari, Edge, or Firefox installation is not a runtime requir
 
 ## First launch and disk capacity
 
-The release CLI pulls one immutable multi-architecture image from `ghcr.io/cyberful/cyberful-os`. The initial compressed download can exceed 6 GB. Keep at least **40 GB free** for the unpacked image, container writable layer, browser, persistent Ghidra projects, workarea evidence, and reports. Building the image from source requires at least **100 GB free**.
+The release CLI carries the complete runtime build context and builds its fingerprinted image locally on first startup or after a runtime-changing release. The runtime build requires at least **100 GB free** when it begins. A fresh Cyberful installation also prepares the release-pinned CVE Dictionary first: release `2026.08.05` needs about **31 GiB of additional free space** while its 5.18 GiB archive expands to a 24.47 GiB SQLite database. Keep at least **131 GB free before the first complete startup**, plus working space for container layers, the browser, persistent Ghidra projects, workarea evidence, and reports. Docker BuildKit and dictionary progress remain visible on stderr; BuildKit output is also retained in Cyberful's private log directory.
 
-The image index contains native `linux/amd64` and `linux/arm64` manifests. Docker selects the matching manifest automatically. This does not add a Linux ARM64 package to the npm release: Linux ARM64 currently requires a source build. Cyberful prints the full image reference, selected architecture, and digest while pulling or attesting the runtime. A local source checkout instead defaults to `cyberful-os:latest`; build it with:
+Later startups reuse both the fingerprinted runtime image and verified dictionary. A Cyberful release that changes the runtime fingerprint rebuilds the image locally; a release that changes the bundled dictionary pin downloads and verifies that new snapshot in the foreground. Neither path performs background update checks.
+
+Docker resolves native Linux dependencies for the host architecture while building. This does not add a Linux ARM64 package to the npm release: Linux ARM64 currently requires a source build. Cyberful prints the local image tag, fingerprint, build progress, and attestation result. A source checkout defaults to `cyberful-os:latest`; build it with:
 
 ```sh
 make runtime-build
@@ -40,7 +42,7 @@ make runtime-build
 Cyberful does not delete old local images automatically. After confirming that no needed engagement is using them, inspect and prune images manually:
 
 ```sh
-docker image ls ghcr.io/cyberful/cyberful-os
+cyberful runtime status
 docker image prune
 ```
 

@@ -7,12 +7,13 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
 import { isRecord } from "@/util/record"
 
 export type CircuitBreakerStatus = "awaiting_human" | "awaiting_verification" | "cleared"
 
 export interface CircuitScope {
-  readonly profile: number
+  readonly profile: BrowserProfileId
   readonly origin: string
   readonly pageID: string
 }
@@ -33,7 +34,7 @@ function isMissing(error: unknown) {
 }
 
 function validScope(input: Record<string, unknown>) {
-  return Number.isInteger(input.profile) && (input.profile as number) >= 1 && (input.profile as number) <= 5 &&
+  return BrowserProfile.isBrowserProfileId(input.profile) &&
     typeof input.origin === "string" && input.origin.length > 0 && typeof input.pageID === "string" && input.pageID.length > 0
 }
 
@@ -102,7 +103,12 @@ export async function clearCircuitBreaker(filePath: string, scope: CircuitScope)
 }
 
 export async function circuitBreakerError(filePath: string, tool: string, scope?: CircuitScope) {
-  if (!tool.startsWith("browser_") || tool === "browser_captcha_status" || tool === "browser_captcha_handoff") return
+  if (
+    (tool !== "web_search" && !tool.startsWith("browser_")) ||
+    tool === "browser_captcha_status" ||
+    tool === "browser_captcha_handoff"
+  )
+    return
   const current = await readCircuitBreaker(filePath)
   if (!current || current.status === "cleared" || !scope || !sameProfileOrigin(current, scope)) return
   return `CAPTCHA awaits human resolution for browser profile ${current.profile} at ${current.origin}. Other browser profiles and origins remain available.`

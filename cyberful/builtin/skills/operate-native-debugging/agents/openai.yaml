@@ -1,0 +1,4 @@
+interface:
+  display_name: "Native Debugging"
+  short_description: "Debug symbolize and triage native failures"
+  default_prompt: "Use $operate-native-debugging to reproduce, inspect, symbolize, and classify this native failure."

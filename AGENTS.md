@@ -76,4 +76,6 @@ Do not hard-wrap Markdown prose. Keep each paragraph and each list item on one p
 
 The engineer site under `docs/` is a first-class maintenance target. Update it in the same change whenever behavior, configuration, phase contracts, tools, or event semantics change. Describe the present system, not migration history. Keep pages self-contained and add published pages to `mkdocs.yml`.
 
+Keep [`docs/runtimes/tool-catalog.md`](docs/runtimes/tool-catalog.md) complete and current whenever a Pi-native tool, gateway tool, MCP server or tool, runtime CLI or library wrapper, ZAP extension, version pin, availability rule, name, description, or use case changes. Reconcile its names and counts against the executable registries, distinguish pinned versions from locally build-resolved versions, and verify the catalog through the documentation build in the same change.
+
 Keep [`README.md`](README.md) aligned when a change affects components, setup, commands, or user-facing behavior.

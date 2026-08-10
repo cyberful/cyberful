@@ -127,7 +127,7 @@ function recoveryObjective(phase: string, objective: string, result: PhaseResult
   return [
     objective,
     "",
-    `Host recovery attempt for the ${phase} phase after a retryable ${upstream ? "required-upstream" : "provider"} failure.`,
+    `Host recovery attempt for the ${phase} phase after a recoverable ${upstream ? "required-upstream" : "provider"} failure.`,
     upstream
       ? `Previous termination: ${result.termination}; upstream failure: ${result.phaseFailure?.class ?? "unknown"}.`
       : `Previous termination: ${result.termination}; provider failure: ${failure?.kind ?? "unknown"}${failure?.providerCode ? ` (${failure.providerCode})` : ""}.`,
@@ -204,9 +204,15 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         const retryableFailure =
           (result.phaseFailure?.source === "provider" && result.subsystemFailure?.retryable === true) ||
           (result.phaseFailure?.source === "upstream" && result.phaseFailure.retryable === true)
+        const policyFallbackFailure: boolean =
+          route === "main" &&
+          result.phaseFailure?.source === "provider" &&
+          result.subsystemFailure?.kind === "security_policy_block" &&
+          policy?.useFallbackProvider === true &&
+          policy.fallbackConfigured
         if (
           result.ok ||
-          !retryableFailure ||
+          (!retryableFailure && !policyFallbackFailure) ||
           !policy?.enabled ||
           attempt > policy.maxRestarts ||
           remainingTimeoutMs <= 0 ||
@@ -215,7 +221,9 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           return { result, results }
         attemptObjective = recoveryObjective(phase, objective, result)
         route =
-          result.phaseFailure?.source === "upstream"
+          policyFallbackFailure
+            ? "fallback"
+            : result.phaseFailure?.source === "upstream"
             ? "main"
             : result.subsystemFailure?.providerCode === "active_tail_too_large"
             ? "main"

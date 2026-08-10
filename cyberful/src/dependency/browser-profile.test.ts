@@ -11,10 +11,10 @@ import { BrowserProfile } from "./browser-profile"
 describe("browser profile identity", () => {
   test("assigns five distinct stable profile and artifact directories", () => {
     const env = {}
-    const profiles = BrowserProfile.BROWSER_PROFILE_IDS.map((profile) =>
+    const profiles = BrowserProfile.TARGET_BROWSER_PROFILE_IDS.map((profile) =>
       BrowserProfile.browserProfileDir(profile, env, "/home/tester"),
     )
-    const artifacts = BrowserProfile.BROWSER_PROFILE_IDS.map((profile) =>
+    const artifacts = BrowserProfile.TARGET_BROWSER_PROFILE_IDS.map((profile) =>
       BrowserProfile.browserArtifactsDir(profile, env, "/home/tester"),
     )
 
@@ -22,6 +22,32 @@ describe("browser profile identity", () => {
     expect(new Set(artifacts).size).toBe(5)
     expect(profiles[0]).toBe("/home/tester/.cyberful/browser/profiles/cyberful")
     expect(profiles[4]).toBe("/home/tester/.cyberful/browser/profiles/cyberful-5")
+  })
+
+  test("keeps the web-research profile separate from every target identity", () => {
+    expect(BrowserProfile.BROWSER_PROFILE_IDS).toEqual([1, 2, 3, 4, 5, "search"])
+    expect(BrowserProfile.browserProfileDir("search", {}, "/home/tester")).toBe(
+      "/home/tester/.cyberful/browser/profiles/search",
+    )
+    expect(BrowserProfile.browserArtifactsDir("search", {}, "/home/tester")).toBe(
+      "/home/tester/.cyberful/browser/artifacts/search",
+    )
+    expect(
+      BrowserProfile.browserProfileDir(
+        "search",
+        { CYBER_BROWSER_USER_DATA_DIR_SEARCH: "/profiles/research" },
+        "/home/tester",
+      ),
+    ).toBe("/profiles/research")
+    expect(
+      BrowserProfile.browserArtifactsDir(
+        "search",
+        { CYBER_BROWSER_ARTIFACTS_DIR_SEARCH: "/artifacts/research" },
+        "/home/tester",
+      ),
+    ).toBe("/artifacts/research")
+    expect(BrowserProfile.isBrowserProfileId("search")).toBe(true)
+    expect(BrowserProfile.isTargetBrowserProfileId("search")).toBe(false)
   })
 
   test("prefers numbered overrides while preserving the profile-one legacy override", () => {

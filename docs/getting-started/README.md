@@ -23,8 +23,8 @@ Have these ready before starting:
 
 - an administrator account on the computer;
 - a browser and an account with access to the default OpenAI Codex provider;
-- an unrestricted internet connection for the Docker, npm, runtime-image, and provider-authentication downloads;
-- at least **40 GB of free disk space**. The first compressed runtime download can exceed 6 GB and needs substantially more space after extraction;
+- an unrestricted internet connection for Docker, npm, runtime build dependencies, and provider authentication;
+- at least **100 GB of free disk space** before the first local runtime build;
 - the written authorization and scope for the penetration test.
 
 The npm release supports these host platforms:
@@ -35,7 +35,7 @@ The npm release supports these host platforms:
 | Linux | `x86_64` with glibc |
 | Windows | 64-bit x86 (`AMD64`) |
 
-The runtime image also has an ARM64 Linux variant, but the npm release does not currently publish a Linux ARM64 CLI package. Linux ARM64 and musl-based systems such as Alpine therefore need a source build and are outside this fresh-host walkthrough.
+Docker can build the runtime natively on ARM64 Linux, but the npm release does not currently publish a Linux ARM64 CLI package. Linux ARM64 and musl-based systems such as Alpine therefore need a source build and are outside this fresh-host walkthrough.
 
 ## macOS: install everything
 
@@ -50,7 +50,7 @@ uname -m
 df -h "$HOME"
 ```
 
-`uname -m` must print `arm64` or `x86_64`. Confirm that the disk containing your home directory has at least 40 GB available.
+`uname -m` must print `arm64` or `x86_64`. Confirm that the disk containing your home directory has at least 100 GB available.
 
 ### 2. Install and start Docker Desktop
 
@@ -131,7 +131,7 @@ ldd --version | head -n 1
 df -h "$HOME"
 ```
 
-`uname -m` must print `x86_64`, `ldd` must identify glibc or GNU libc, and the disk containing your home directory must have at least 40 GB available.
+`uname -m` must print `x86_64`, `ldd` must identify glibc or GNU libc, and the disk containing your home directory must have at least 100 GB available.
 
 ### 2. Install Docker Engine
 
@@ -285,7 +285,7 @@ Get-PSDrive -Name C
 wsl --install --no-distribution
 ```
 
-The architecture must be `AMD64`, and the drive that will hold Docker data and your workarea needs at least 40 GB free. Restart Windows if `wsl --install` requests it. After the restart, reopen PowerShell as Administrator and run:
+The architecture must be `AMD64`, and the drive that will hold Docker data and your workarea needs at least 100 GB free. Restart Windows if `wsl --install` requests it. After the restart, reopen PowerShell as Administrator and run:
 
 ```powershell
 wsl --update
@@ -395,7 +395,7 @@ Authentication must be `available`, Docker must report both a client and a serve
 cyberful
 ```
 
-Before opening the TUI, Cyberful validates `settings.yaml`, resolves the main provider credential, verifies Docker, and prepares the immutable runtime image. The first compressed image download can exceed 6 GB, so the first start can take much longer than later ones. Leave Docker and the terminal running while the pull and image attestation complete. On first use, Cyberful also downloads about 150 MB for its isolated Chromium browser and stores it in its persistent cache; no browser installation step is required.
+Before opening the TUI, Cyberful validates `settings.yaml`, resolves the main provider credential, verifies Docker, and prepares the fingerprinted local runtime image. The first build can take much longer than later starts; leave Docker and the terminal running while the visible BuildKit log and image attestation complete. Cyberful retains a private copy of that log for diagnosis. On first use, Cyberful also downloads its isolated Chromium browser into the persistent cache; no browser installation step is required.
 
 If the preflight stops, fix the specific failed check and run `cyberful` again. Cyberful does not begin a security workflow with a missing provider credential or an unavailable Docker server. A failed Chromium download is reported as a degraded browser capability: relaunch Cyberful to retry before starting a test that needs browser automation.
 
@@ -524,6 +524,6 @@ After completion, the session switches to **Ask**. You can use it to explore a f
 | Authentication status is `missing` | From the engagement directory, rerun `cyberful auth login`, finish the browser/device flow, then run `cyberful auth status`. |
 | The Chromium download fails | Confirm that the host can reach the download service, then relaunch Cyberful. The preflight retries until the isolated browser is available. |
 | npm reports an unsupported platform | Confirm the host matches the release matrix near the top of this page. Source builds are documented in [Install Cyberful](install.md). |
-| The first launch runs out of space | Free enough space to leave at least 40 GB available, start Docker again, then rerun `cyberful`. |
+| The first launch runs out of space | Free enough space to leave at least 100 GB available, start Docker again, then rerun `cyberful`. |
 
 For alternative model providers, credential sources, and fallback routes, see [Agent providers and fallback](../user-guide/settings.md). For the responsibilities and boundaries of all three security workflows, continue with [Application security workflows](../user-guide/workflows.md).

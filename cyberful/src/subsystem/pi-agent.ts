@@ -20,7 +20,13 @@ import {
 import type { AssistantMessage, ToolResultMessage, UserMessage, Usage } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { Settings } from "@/config/settings"
-import { readWorkareaFileChunk, replaceWorkareaFile } from "@/workarea"
+import {
+  createEvidenceManifest,
+  listWorkareaFiles,
+  readWorkareaFileChunk,
+  replaceWorkareaFile,
+  verifyEvidenceManifest,
+} from "@/workarea"
 import { SubsystemControl } from "./control"
 import type {
   AgentEvent,
@@ -216,6 +222,45 @@ const WorkareaWriteParameters = Type.Object(
   },
   { additionalProperties: false },
 )
+
+const WorkareaListParameters = Type.Object(
+  {
+    prefix: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 1_024,
+        description: "Existing workarea-relative directory to search; omit for the workarea root.",
+      }),
+    ),
+    pattern: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 256,
+        description: "Bounded * and ? wildcard matched against relative paths and basenames.",
+      }),
+    ),
+    max_depth: Type.Optional(Type.Integer({ minimum: 0, maximum: 12, default: 4 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_024, default: 256 })),
+  },
+  { additionalProperties: false },
+)
+
+const EvidenceManifestParameters = Type.Union([
+  Type.Object(
+    {
+      command: Type.Literal("create"),
+      directory: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, default: "." })),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      command: Type.Literal("verify"),
+      directory: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, default: "." })),
+    },
+    { additionalProperties: false },
+  ),
+])
 
 const DelegationStatusParameters = Type.Object({}, { additionalProperties: false })
 const RECOVERY_SUMMARY_BYTES = 4_096
@@ -913,11 +958,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
     const providers: SubsystemStatus["providers"][number][] = []
     const errors: string[] = []
     let mainAuthenticated = false
+    let fallbackAuthenticated = false
     for (const route of routes) {
       try {
         const model = this.#registry.model(route.id)
         const auth = await this.#registry.models.getAuth(model)
         if (route.route === "main") mainAuthenticated = Boolean(auth)
+        if (route.route === "fallback") fallbackAuthenticated = Boolean(auth)
         providers.push({
           id: route.id,
           model: model.id,
@@ -928,15 +975,27 @@ export class PiAgentSubsystem implements AgentSubsystem {
           effectiveReasoningEffort: PiReasoning.resolve(Settings.reasoningEffort(settings), model).effective,
           ...(auth?.source ? { authSource: auth.source } : {}),
         })
-        if (!auth)
-          errors.push(`Provider '${route.id}' has no configured ${settings.agent.providers[route.id]?.auth.type}`)
+        if (!auth) {
+          const login = settings.agent.providers[route.id]?.auth.type === "subscription"
+            ? `; run 'cyberful auth login ${route.id}'`
+            : ""
+          errors.push(`Provider '${route.id}' has no configured ${settings.agent.providers[route.id]?.auth.type}${login}`)
+        }
       } catch (error) {
         errors.push(error instanceof Error ? error.message : String(error))
       }
     }
+    const phaseRecovery = Settings.phaseRecoveryPolicy(settings)
+    const fallbackRequired = Boolean(
+      settings.agent.fallback_provider &&
+        (settings.agent.fallback.proactive.enabled ||
+          settings.agent.fallback.automatic_security_block.enabled ||
+          (phaseRecovery.enabled && phaseRecovery.use_fallback_provider)),
+    )
+    const ready = mainAuthenticated && (!fallbackRequired || fallbackAuthenticated)
     return {
-      ready: mainAuthenticated,
-      degraded: mainAuthenticated && errors.length > 0,
+      ready,
+      degraded: ready && errors.length > 0,
       subsystem: "pi",
       providers,
       errors,
@@ -2047,6 +2106,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       "tool_search",
       "workarea_read",
       "workarea_write",
+      "workarea_list",
+      "evidence_manifest",
     ])
     for (const tool of allTools)
       if (reserved.has(tool.name)) throw new Error(`AgentRun tool name '${tool.name}' is reserved by Cyberful`)
@@ -2059,6 +2120,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
     const immediate = [
       this.#workareaReadTool(state),
+      this.#workareaListTool(state),
+      this.#evidenceManifestTool(state),
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading !== true),
       ...eligibleGatewayTools.filter((tool) => tool.name === "handoff"),
     ]
@@ -2126,6 +2189,50 @@ export class PiAgentSubsystem implements AgentSubsystem {
             total: chunk.total,
             nextOffset: chunk.nextOffset,
           },
+        }
+      },
+    }
+  }
+
+  #workareaListTool(state: RunState): AgentTool<typeof WorkareaListParameters> {
+    return {
+      name: "workarea_list",
+      label: "List Workarea Artifacts",
+      description:
+        "Discover regular workarea files by bounded directory prefix, wildcard pattern, depth, and result count. Symlinks and special files are never followed or returned.",
+      parameters: WorkareaListParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const result = await listWorkareaFiles(state.spec.workarea, {
+          ...(input.prefix === undefined ? {} : { prefix: input.prefix }),
+          ...(input.pattern === undefined ? {} : { pattern: input.pattern }),
+          ...(input.max_depth === undefined ? {} : { maxDepth: input.max_depth }),
+          ...(input.limit === undefined ? {} : { maxResults: input.limit }),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: { hostOwned: true, files: result.files.length, truncated: result.truncated },
+        }
+      },
+    }
+  }
+
+  #evidenceManifestTool(state: RunState): AgentTool<typeof EvidenceManifestParameters> {
+    return {
+      name: "evidence_manifest",
+      label: "Manage Evidence Manifest",
+      description:
+        "Create or verify a deterministic EVIDENCE.sha256 for one workarea directory. Entries are sorted relative regular files; the manifest and temporary files exclude themselves.",
+      parameters: EvidenceManifestParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const directory = input.directory ?? "."
+        const result = input.command === "create"
+          ? await createEvidenceManifest(state.spec.workarea, directory)
+          : await verifyEvidenceManifest(state.spec.workarea, directory)
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: { hostOwned: true, command: input.command, ...result },
         }
       },
     }
@@ -2293,13 +2400,18 @@ export class PiAgentSubsystem implements AgentSubsystem {
         const initialOutputBudget = initialChildState?.spec.budget.maxOutputTokens
         const initialResult = await child.result
         let result = initialResult
-        if (
+        const contextRecovery =
           initialResult.failure?.kind === "capacity" &&
           initialResult.failure.providerCode === "context_rotation_failed" &&
-          !initialResult.recoveryOf &&
-          initialResult.recoveryCheckpoint &&
-          initialDeadlineAt !== undefined
-        ) {
+          initialResult.recoveryCheckpoint !== undefined
+        const recoveryPolicy = Settings.phaseRecoveryPolicy(this.#settings)
+        const fallbackRecovery =
+          initialResult.providerAffinity === "main" &&
+          initialResult.failure?.retryable === true &&
+          recoveryPolicy.enabled &&
+          recoveryPolicy.use_fallback_provider &&
+          state.spec.fallback.providerConfigured
+        if (!initialResult.recoveryOf && initialDeadlineAt !== undefined && (contextRecovery || fallbackRecovery)) {
           const remainingRuntimeMs = Math.min(initialDeadlineAt - this.#now(), this.#remainingBudget(state))
           const remainingOutputTokens =
             initialOutputBudget === undefined
@@ -2309,7 +2421,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
             const recoveryContext = [
               initialChildState?.spec.task.context,
               `Host-owned context recovery of AgentRun ${initialResult.id}.`,
-              `Read deterministic checkpoint ${initialResult.recoveryCheckpoint.path} (sha256 ${initialResult.recoveryCheckpoint.sha256}).`,
+              initialResult.recoveryCheckpoint
+                ? `Read deterministic checkpoint ${initialResult.recoveryCheckpoint.path} (sha256 ${initialResult.recoveryCheckpoint.sha256}).`
+                : "Reconcile the existing workarea and durable registries before continuing unfinished work.",
               initialResult.recoveredHypotheses.length > 0
                 ? `Recovered hypothesis IDs: ${initialResult.recoveredHypotheses.map((item) => item.id).join(", ")}.`
                 : undefined,
@@ -2324,7 +2438,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             try {
               const recovery = await this.#startChild(state, {
                 role: "subagent",
-                route: initialResult.providerAffinity,
+                route: fallbackRecovery ? "fallback" : initialResult.providerAffinity,
                 task: {
                   ...initialChildState?.spec.task,
                   objective: initialChildState?.spec.task.objective ?? input.task,
@@ -2343,7 +2457,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             } catch (error) {
               this.#emitActivity(state, {
                 kind: "status",
-                text: `Context recovery child could not start: ${boundedFailureDetail(
+                text: `AgentRun recovery child could not start: ${boundedFailureDetail(
                   error instanceof Error ? error.message : String(error),
                 )}`,
               })
@@ -2351,7 +2465,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           } else {
             this.#emitActivity(state, {
               kind: "status",
-              text: `Context recovery child not started: residual budget is insufficient (${Math.max(0, Math.round(remainingRuntimeMs))} ms, ${remainingOutputTokens ?? "unbounded"} output tokens).`,
+              text: `AgentRun recovery child not started: residual budget is insufficient (${Math.max(0, Math.round(remainingRuntimeMs))} ms, ${remainingOutputTokens ?? "unbounded"} output tokens).`,
             })
           }
         }

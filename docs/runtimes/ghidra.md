@@ -35,7 +35,9 @@ In Code Audit the core engagement container starts with `--network none`. Ghidra
 | `ghidra_call_graph` | Bounded directed call graph |
 | `ghidra_annotations` | List or add names, comments, and bookmarks |
 
-Arbitrary scripts, binary mutation, debugger control, and generic Java/Python evaluation remain absent. One worker serializes JVM operations; imports and analysis use durable asynchronous jobs.
+Arbitrary scripts, binary mutation, debugger control, and generic Java/Python evaluation remain absent. One worker serializes JVM operations; imports and analysis use durable asynchronous jobs. On service restart, an interrupted import or analysis is reconciled against committed project and manifest state before it is requeued. If cancellation races with a verified result, the result wins as `succeeded` with `cancel_requested: true`; only an acknowledged cancellation without a completed result becomes `cancelled`.
+
+Function selectors are resolved centrally across canonical addresses, simple or qualified names, and full/demangled signatures. Every successful function lookup returns the canonical address selector for reuse. When multiple functions match, the call fails with a bounded candidate list instead of selecting one implicitly.
 
 ## Phase policy
 

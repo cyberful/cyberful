@@ -41,6 +41,11 @@ describe("built-in Bug Bounty Program workflow", () => {
       "zap",
       "ghidra",
       "evm-lab",
+      "firmware-lab",
+      "native-analysis",
+      "native-debug",
+      "fuzz-campaign",
+      "protocol-campaign",
       "cve-dictionary",
     ])
     expect(workflow.zapLifecycle).toBe("engagement")

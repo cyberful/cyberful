@@ -10,7 +10,7 @@ import { BrowserProfileLauncher } from "../src/dependency/browser-profile-launch
 
 const profileArgument = process.argv[2]
 const profile = Number(profileArgument)
-if (!BrowserProfile.isBrowserProfileId(profile)) {
+if (!BrowserProfile.isTargetBrowserProfileId(profile)) {
   process.stderr.write("Usage: bun cyberful/script/browser-run.ts <profile 1-5>\n")
   process.exit(2)
 }

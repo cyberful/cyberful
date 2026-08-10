@@ -229,6 +229,10 @@ export class FindingRegistryError extends Error {
       ...(this.context.requestedState ? { requested_state: this.context.requestedState } : {}),
       ...(this.context.allowedStates ? { allowed_states: this.context.allowedStates } : {}),
       ...(this.context.availableIDs ? { available_ids: this.context.availableIDs } : {}),
+      recovery_calls:
+        this.code === "FINDING_NOT_FOUND"
+          ? [{ action: "list" }]
+          : [{ action: "get", id: "<finding-id>" }, { action: "update", id: "<finding-id>", state: "<allowed-state>" }],
     }
   }
 }
@@ -335,6 +339,41 @@ function context(input: RunContext): RunContext {
 
 function latestAssessed(finding: Finding) {
   return finding.observations.findLast((item): item is typeof AssessedObservation.Type => item.review === "ASSESSED")
+}
+
+function observationCore(observation: Observation) {
+  const common = {
+    runID: observation.runID,
+    phase: observation.phase,
+    review: observation.review,
+    severity: observation.severity,
+    verification: observation.verification,
+    submission: observation.submission,
+    summary: observation.summary,
+  }
+  return observation.review === "ASSESSED"
+    ? { ...common, disposition: observation.disposition }
+    : { ...common, plan: observation.plan, carriedState: observation.carriedState }
+}
+
+function mergeObservationEvidence(
+  found: Finding,
+  observation: Observation,
+  timestamp: string,
+): { readonly value: Finding; readonly changed: boolean } | undefined {
+  const previousIndex = found.observations.findLastIndex(
+    (item) => item.runID === observation.runID && item.review === observation.review,
+  )
+  if (previousIndex < 0) return
+  const previous = found.observations[previousIndex]!
+  if (JSON.stringify(observationCore(previous)) !== JSON.stringify(observationCore(observation))) return
+  const evidencePaths = [...new Set([...previous.evidencePaths, ...observation.evidencePaths])]
+  if (evidencePaths.length === previous.evidencePaths.length)
+    return { value: found, changed: false }
+  const observations = [...found.observations]
+  observations[previousIndex] = { ...previous, evidencePaths }
+  const updated = { ...found, updatedAt: timestamp, observations } satisfies Finding
+  return { value: updated, changed: true }
 }
 
 function findFinding(registry: Registry, value: unknown) {
@@ -613,6 +652,18 @@ export class Store {
     return this.#mutate((current) => {
       const found = current.findings.find((item) => item.id === key || item.aliases.includes(key))
       if (found) {
+        const repeated = mergeObservationEvidence(found, observation, timestamp)
+        if (repeated && found.title === title) {
+          if (!repeated.changed) return { next: current, value: found, changed: false }
+          return {
+            next: {
+              ...current,
+              findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)),
+            },
+            value: repeated.value,
+            changed: true,
+          }
+        }
         const updated = {
           ...found,
           title,
@@ -661,6 +712,15 @@ export class Store {
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
       } satisfies Observation
+      const repeated = mergeObservationEvidence(found, observation, timestamp)
+      if (repeated) {
+        if (!repeated.changed) return { next: current, value: found, changed: false }
+        return {
+          next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)) },
+          value: repeated.value,
+          changed: true,
+        }
+      }
       const updated = {
         ...found,
         updatedAt: timestamp,
@@ -709,9 +769,19 @@ export class Store {
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
       } satisfies Observation
+      const repeated = mergeObservationEvidence(found, observation, timestamp)
+      const requestedTitle = input.title === undefined ? found.title : boundedText(input.title, "finding title", 300)
+      if (repeated && requestedTitle === found.title) {
+        if (!repeated.changed) return { next: current, value: found, changed: false }
+        return {
+          next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)) },
+          value: repeated.value,
+          changed: true,
+        }
+      }
       const updated = {
         ...found,
-        ...(input.title === undefined ? {} : { title: boundedText(input.title, "finding title", 300) }),
+        ...(input.title === undefined ? {} : { title: requestedTitle }),
         updatedAt: timestamp,
         observations: [...found.observations, observation],
       } satisfies Finding

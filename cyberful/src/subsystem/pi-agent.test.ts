@@ -1693,6 +1693,51 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(pressureExecutions).toBe(1)
   })
 
+  test("replaces one retry-exhausted main subagent on fallback without consuming proactive quota", async () => {
+    const provider = new InMemoryProvider((call) => {
+      if (runRole(call) === "root") {
+        if (toolResultCount(call) === 0)
+          return toolCall(call, "delegate_task", {
+            task: "finish the provider recovery probe",
+            expected_result: "return the recovered evidence",
+            output_artifact: "raw/recovery/provider.md",
+          })
+        return assistant(call, "root received fallback-recovered evidence")
+      }
+      if (call.provider === FALLBACK_PROVIDER) {
+        expect(userTexts(call).join("\n")).toContain("Reconcile the existing workarea")
+        return assistant(call, "fallback replacement completed the child task")
+      }
+      return unavailableError(call, [], "server_is_overloaded")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "subagent-provider-restart",
+        objective: "delegate one task that exhausts provider retries",
+        maxPerRun: 1,
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const starts = startedEvents(events).filter((event) => event.role === "subagent")
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "root received fallback-recovered evidence",
+      fallbackAdmissions: 0,
+      fallbackDescendants: 1,
+    })
+    expect(starts).toHaveLength(2)
+    expect(starts[0]).toMatchObject({ providerAffinity: "main", provider: MAIN_PROVIDER })
+    expect(starts[1]).toMatchObject({
+      recoveryOf: starts[0]?.runID,
+      providerAffinity: "fallback",
+      provider: FALLBACK_PROVIDER,
+    })
+  })
+
   test("reports failed compaction and keeps the original result when artifact persistence is unavailable", async () => {
     const parent = await temporaryWorkarea()
     const unavailableWorkarea = path.join(parent, "missing-workarea")

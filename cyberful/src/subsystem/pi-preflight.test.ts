@@ -1,6 +1,5 @@
 // ── Pi Provider Preflight Tests ──────────────────────────────────
-// Verifies that main-provider authentication controls launch readiness while an
-//   unavailable optional fallback is reported as non-blocking degradation.
+// Verifies that every enabled provider route is authenticated before launch.
 // → cyberful/src/subsystem/pi-agent.ts — owns provider readiness inspection.
 // ─────────────────────────────────────────────────────────────────
 
@@ -142,7 +141,7 @@ function registry(
 }
 
 describe("Pi provider preflight", () => {
-  test("keeps main-backed sessions ready when only fallback authentication is missing", async () => {
+  test("blocks launch when an enabled fallback route is not authenticated", async () => {
     const subsystem = new PiAgentSubsystem({
       settings,
       registry: registry({ [MAIN]: true, [FALLBACK]: false }),
@@ -150,8 +149,8 @@ describe("Pi provider preflight", () => {
     try {
       const status = await subsystem.preflight(settings)
 
-      expect(status.ready).toBe(true)
-      expect(status.degraded).toBe(true)
+      expect(status.ready).toBe(false)
+      expect(status.degraded).toBe(false)
       expect(status.providers).toEqual([
         {
           id: MAIN,

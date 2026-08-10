@@ -120,7 +120,9 @@ Backoff is exponential with full jitter, bounded by `max_delay_ms`, and is inter
 
 ## Phase provider recovery
 
-`agent.phase_recovery` starts one fresh phase owner after same-turn retry is exhausted and the provider failure remains explicitly retryable. The replacement receives only the remaining phase budget and reads the existing workarea, checkpoint, hypothesis registry, and tool-usage evidence so it can continue without deliberately repeating completed effects. When `use_fallback_provider` is true and a fallback is configured, the replacement root and descendants retain fallback affinity; otherwise the phase opens a fresh main-provider session. Policy blocks, authentication, cancellation, invalid handoffs, missing artifacts, and unverified cleanup never use this path.
+`agent.phase_recovery` starts one fresh phase owner after same-turn retry is exhausted and the provider failure remains explicitly retryable. A structured main-provider `security_policy_block` is also recoverable when `use_fallback_provider` is true and an authenticated fallback route is configured. The replacement receives only the remaining phase budget and reads the existing workarea, semantic checkpoint, registries, tool-usage evidence, and prior-attempt transcript so it can continue without deliberately repeating completed effects. The replacement root and every descendant retain fallback affinity and never return automatically to main; a policy block on that fallback route is terminal. Authentication, cancellation, invalid handoffs, missing artifacts, and unverified cleanup never use this path.
+
+After ordinary retry and context-recovery options are exhausted, one failed main-route subagent may be replaced once on the authenticated fallback route with the same task, output artifact, checkpoint, and residual child budget. The replacement and descendants remain fallback-affine. This automatic recovery is separate from proactive admission and does not consume its quota.
 
 ## Authentication
 
@@ -134,7 +136,7 @@ cyberful auth logout <name>
 
 Omitting `<name>` selects `main_provider`. With `auth.type: subscription`, Cyberful automatically selects the provider-owned login: OpenAI Codex opens its OAuth browser or device-code flow, while Z.AI Coding Plan and Kimi For Coding prompt securely for the plan key. OAuth tokens and stored plan keys remain in Cyberful's owner-only credential store.
 
-`auth status` and the launch preflight resolve the credential into the actual request authentication used by Pi; the mere presence of a stored OAuth record is not considered available. The same provider registry and OAuth bootstrap run inside the separately compiled TUI Worker that owns phase execution.
+`auth status` and the launch preflight resolve the credential into the actual request authentication used by Pi; the mere presence of a stored OAuth record is not considered available. Whenever proactive fallback, automatic security fallback, fallback phase recovery, or failed-subagent replacement can route work to the fallback provider, preflight requires that route to authenticate before the phase starts. A missing credential names the configured provider and the exact recovery command, such as `cyberful auth login kimi`. The same provider registry and OAuth bootstrap run inside the separately compiled TUI Worker that owns phase execution.
 
 Environment-backed providers reference a variable name:
 
@@ -282,8 +284,8 @@ Fallback is enabled only when `fallback_provider` names a configured provider di
 
 There are two admission paths:
 
-- A main root or subagent may request one specific, bounded fallback task when it predicts an imminent provider security-policy block. Proactive admissions share the session quota configured by `percentage`; the default is 2%.
-- Cyberful may start fallback automatically after the main provider returns a provider-specific, structured `security_policy_block`. Automatic admissions do not consume the proactive quota.
+- A main root or subagent may request one specific, bounded fallback task when it predicts an imminent provider security-policy block. Proactive admissions share the deterministic session quota configured by `percentage`; at the default this is explicitly “2% + 1”, not a random 2% probability.
+- Cyberful may restart the same root phase or replace one exhausted main-route subagent after a provider-specific, structured `security_policy_block` or eligible terminal failure. Automatic security fallback and recovery admissions do not consume the proactive quota.
 
 On the `openai-codex` adapter, the exact structured provider codes `cyberPolicy` and `cyber_policy` both normalize to `security_policy_block` with canonical code `cyberPolicy`. Message text never activates this classification, and `cyber_policy` from every other adapter remains `unknown`. The runtime diagnostic therefore records `profile: "security_policy_block"` and `code: "cyberPolicy"` before the configured fallback is considered.
 
@@ -300,6 +302,8 @@ floor(main actor runs × percentage / 100) + 1
 ```
 
 Each admitted fallback root consumes one slot. Its descendants belong to that same admission. All trees remain bounded by `max_per_run`, `max_concurrent`, `max_depth`, the phase budget, the child budget, and worker capacity. Cyberful persists the session counters in an owner-only host ledger, so a restart or a later phase cannot reset the proactive quota. Removing the session also removes its ledger.
+
+The denominator counts main roots and main subagents across the session; fallback-affine trees never increase it. A failed proactive launch rolls its reserved admission back, while a completed launch or a launch that reached the provider consumes it. Automatic security fallback, phase recovery, and failed-subagent replacement are quota-exempt. The extra slot at every exact boundary is intentional: 49 and 50 main actors both admit 2 proactive roots at 2%, while 99 and 100 admit 2 and 3 respectively.
 
 ## Trusted instructions and skills
 

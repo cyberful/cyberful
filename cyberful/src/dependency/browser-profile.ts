@@ -1,6 +1,6 @@
 // ── Browser Profile Identity ────────────────────────────────────────
-// Defines the five stable browser identities shared by manual pre-authentication
-// and phase gateways, including legacy profile-one environment compatibility.
+// Defines five target identities plus one isolated web-research identity shared
+// by manual pre-authentication and phase gateways.
 // → cyberful/src/bootstrap-browser.ts — provisions stable browser state defaults.
 // → cyberful/src/subsystem/gateway/server.ts — routes browser tools by profile.
 // @docs/runtimes/browser.md
@@ -9,9 +9,12 @@
 import os from "node:os"
 import path from "node:path"
 
-export const BROWSER_PROFILE_IDS = [1, 2, 3, 4, 5] as const
+export const TARGET_BROWSER_PROFILE_IDS = [1, 2, 3, 4, 5] as const
+export const SEARCH_BROWSER_PROFILE_ID = "search" as const
+export const BROWSER_PROFILE_IDS = [...TARGET_BROWSER_PROFILE_IDS, SEARCH_BROWSER_PROFILE_ID] as const
 
-export type BrowserProfileId = (typeof BROWSER_PROFILE_IDS)[number]
+export type TargetBrowserProfileId = (typeof TARGET_BROWSER_PROFILE_IDS)[number]
+export type BrowserProfileId = TargetBrowserProfileId | typeof SEARCH_BROWSER_PROFILE_ID
 
 export function browserHome(homeDirectory = os.homedir()): string {
   return path.join(homeDirectory, ".cyberful", "browser")
@@ -35,13 +38,18 @@ export function browserProfileDir(
   env: Readonly<NodeJS.ProcessEnv> = process.env,
   homeDirectory = os.homedir(),
 ): string {
-  const numbered = configuredPath(env, `CYBER_BROWSER_USER_DATA_DIR_${profile}`)
-  if (numbered) return numbered
+  const override = configuredPath(
+    env,
+    profile === SEARCH_BROWSER_PROFILE_ID
+      ? "CYBER_BROWSER_USER_DATA_DIR_SEARCH"
+      : `CYBER_BROWSER_USER_DATA_DIR_${profile}`,
+  )
+  if (override) return override
   if (profile === 1) {
     const legacy = configuredPath(env, "CYBER_BROWSER_USER_DATA_DIR")
     if (legacy) return legacy
   }
-  const directory = profile === 1 ? "cyberful" : `cyberful-${profile}`
+  const directory = profile === SEARCH_BROWSER_PROFILE_ID ? "search" : profile === 1 ? "cyberful" : `cyberful-${profile}`
   return path.join(browserHome(homeDirectory), "profiles", directory)
 }
 
@@ -50,13 +58,22 @@ export function browserArtifactsDir(
   env: Readonly<NodeJS.ProcessEnv> = process.env,
   homeDirectory = os.homedir(),
 ): string {
-  const numbered = configuredPath(env, `CYBER_BROWSER_ARTIFACTS_DIR_${profile}`)
-  if (numbered) return numbered
+  const override = configuredPath(
+    env,
+    profile === SEARCH_BROWSER_PROFILE_ID
+      ? "CYBER_BROWSER_ARTIFACTS_DIR_SEARCH"
+      : `CYBER_BROWSER_ARTIFACTS_DIR_${profile}`,
+  )
+  if (override) return override
   if (profile === 1) {
     const legacy = configuredPath(env, "CYBER_BROWSER_ARTIFACTS_DIR")
     if (legacy) return legacy
   }
-  return path.join(browserHome(homeDirectory), "artifacts", `profile-${profile}`)
+  return path.join(
+    browserHome(homeDirectory),
+    "artifacts",
+    profile === SEARCH_BROWSER_PROFILE_ID ? "search" : `profile-${profile}`,
+  )
 }
 
 // ── Manual Seeding Always Owns Its Persistent Browser ───────────────
@@ -67,7 +84,7 @@ export function browserArtifactsDir(
 // profile identity, eager lifetime, and headed mode are fixed for this boundary.
 // ─────────────────────────────────────────────────────────────────────
 export function manualBrowserProfileEnv(
-  profile: BrowserProfileId,
+  profile: TargetBrowserProfileId,
   env: Readonly<NodeJS.ProcessEnv> = process.env,
   homeDirectory = os.homedir(),
 ): Record<string, string> {
@@ -91,7 +108,11 @@ export function manualBrowserProfileEnv(
 }
 
 export function isBrowserProfileId(value: unknown): value is BrowserProfileId {
-  return typeof value === "number" && BROWSER_PROFILE_IDS.some((profile) => profile === value)
+  return value === SEARCH_BROWSER_PROFILE_ID || isTargetBrowserProfileId(value)
+}
+
+export function isTargetBrowserProfileId(value: unknown): value is TargetBrowserProfileId {
+  return typeof value === "number" && TARGET_BROWSER_PROFILE_IDS.some((profile) => profile === value)
 }
 
 export * as BrowserProfile from "./browser-profile"

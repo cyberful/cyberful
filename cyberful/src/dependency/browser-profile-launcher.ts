@@ -8,7 +8,7 @@
 
 import { BrowserPreflight } from "./browser-preflight"
 import { cyberBrowserMcpCommand } from "./config"
-import { BrowserProfile, type BrowserProfileId } from "./browser-profile"
+import { BrowserProfile, type TargetBrowserProfileId } from "./browser-profile"
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 
@@ -24,7 +24,7 @@ export interface BrowserProfileLaunchOptions {
 // reaped, preventing a completed profile session from affecting later CLI work.
 // ─────────────────────────────────────────────────────────────────────
 export async function launchBrowserProfile(
-  profile: BrowserProfileId,
+  profile: TargetBrowserProfileId,
   options: BrowserProfileLaunchOptions = {},
 ): Promise<number> {
   await BrowserPreflight.runBrowserPreflight()

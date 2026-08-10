@@ -13,6 +13,21 @@ import { SubsystemPhase } from "./phase"
 const REPOSITORY_ROOT = path.resolve(import.meta.dir, "../../..")
 const CYBERFUL_OS_DIR = path.join(REPOSITORY_ROOT, "mcps", "cyberful-os")
 const IMAGE = process.env.CYBERFUL_OS_IMAGE?.trim() || "cyberful-os:latest"
+const NATIVE_MCP_TOOL_NAMES = [
+  "archive_extract",
+  "appliance_fingerprint",
+  "binary_diff",
+  "crash_triage",
+  "firmware_lab",
+  "fuzz_campaign",
+  "firefox_lab",
+  "harness_validate",
+  "native_debug",
+  "native_lab",
+  "native_static_analysis",
+  "protocol_campaign",
+  "x11_clipboard",
+] as const
 const ENVIRONMENT_KEYS = [
   "CYBERFUL_DB",
   "CYBERFUL_SUBSYSTEM_SESSION",
@@ -122,7 +137,7 @@ test("the built image exposes every required capability through cyberful-os and 
   process.env.CYBERFUL_DB = ":memory:"
   process.env.CYBERFUL_SUBSYSTEM_SESSION = "ses_cyberful_os_live"
   process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
-  process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+  process.env.CYBERFUL_SUBSYSTEM_PHASE = "exploit"
   process.env.CYBERFUL_SUBSYSTEM_LABEL = "test-cyberful-os"
   process.env.CYBERFUL_SUBSYSTEM_GATEWAY_PROXY = "1"
   process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = workarea
@@ -214,6 +229,7 @@ test("the built image exposes every required capability through cyberful-os and 
         "hypothesis",
         "target_cooldown",
         "cve_dictionary",
+        ...NATIVE_MCP_TOOL_NAMES,
         ...installedInventoryNames,
       ].toSorted(),
     )
@@ -235,6 +251,112 @@ test("the built image exposes every required capability through cyberful-os and 
     expect(shellText).toContain("exit_code: 0")
     expect(shellText).toContain("timed_out: false")
     expect(shellText).toContain("stdout:\nshell-live:stable")
+
+    const fixtureResult = await client.callTool({
+      name: "shell",
+      arguments: {
+        command: "mkdir -p /workspace/native-fixture && printf 'ASAN heap-use-after-free at 0x1234\\n' > /workspace/native-fixture/crash.txt && printf 'int main(int argc,char **argv){return argv[0][0];}\\n' > /workspace/native-fixture/main.c && printf 'const fixture = 1;\\n' > /workspace/native-fixture/fixture.js && printf 'one\\n' > /workspace/native-fixture/left.bin && printf 'two\\n' > /workspace/native-fixture/right.bin && cp /bin/true /workspace/native-fixture/true && python3 -c \"import zipfile; z=zipfile.ZipFile('/workspace/native-fixture/fixture.zip','w'); z.writestr('fixture.txt','ok'); z.close()\"",
+        timeout_seconds: 5,
+      },
+    })
+    expect(fixtureResult.isError).not.toBe(true)
+
+    const nativeCalls = [
+      ["firmware_lab", { operation: "manifest", path: "/workspace/native-fixture" }],
+      ["native_lab", { operation: "create", lab_id: "integration" }],
+      ["native_debug", { operation: "launch", session_id: "integration", path: "/workspace/native-fixture/true" }],
+      ["crash_triage", { operation: "classify", path: "/workspace/native-fixture/crash.txt" }],
+      ["fuzz_campaign", { operation: "start", campaign_id: "integration", argv: ["/bin/sleep", "30"] }],
+      ["binary_diff", { operation: "compare_programs", left: "/workspace/native-fixture/left.bin", right: "/workspace/native-fixture/right.bin" }],
+      ["protocol_campaign", { operation: "mutate", campaign_id: "integration", value: "seed" }],
+      ["appliance_fingerprint", { operation: "infer_version", observations: [{ asset: "fixture", banner: "Widget v1.2.3" }] }],
+      ["native_static_analysis", { operation: "trace_source_sink", path: "/workspace/native-fixture" }],
+      ["harness_validate", { operation: "javascript", path: "/workspace/native-fixture/fixture.js" }],
+      ["archive_extract", { operation: "inspect", path: "/workspace/native-fixture/fixture.zip" }],
+    ] as const
+    let debuggerState = ""
+    for (const [name, args] of nativeCalls) {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError).not.toBe(true)
+      const record = jsonRecord(textContent(result), name)
+      expect(record.evidence_path).toBeString()
+      if (name === "native_debug") {
+        debuggerState = String(record.state)
+        expect(["running", "stopped"]).toContain(debuggerState)
+      }
+    }
+    if (debuggerState === "running") {
+      const waited = await client.callTool({
+        name: "native_debug",
+        arguments: { operation: "wait", session_id: "integration", timeout_seconds: 10 },
+      })
+      expect(waited.isError).not.toBe(true)
+      const record = jsonRecord(textContent(waited), "native_debug")
+      expect(record.state).toBe("stopped")
+      expect(record.output).toContain("*stopped")
+    }
+    const registers = await client.callTool({ name: "native_debug", arguments: { operation: "registers", session_id: "integration" } })
+    expect(registers.isError).not.toBe(true)
+    expect(jsonRecord(textContent(registers), "native_debug").output).toContain("register-values")
+    expect((await client.callTool({ name: "native_debug", arguments: { operation: "detach", session_id: "integration" } })).isError).not.toBe(true)
+    expect((await client.callTool({ name: "fuzz_campaign", arguments: { operation: "stop", campaign_id: "integration" } })).isError).not.toBe(true)
+    expect((await client.callTool({ name: "native_lab", arguments: { operation: "destroy", lab_id: "integration" } })).isError).not.toBe(true)
+
+    expect((await client.callTool({
+      name: "firefox_lab",
+      arguments: {
+        operation: "launch",
+        session_id: "integration",
+        executable: "/usr/bin/firefox-esr",
+        context: "chrome",
+      },
+    })).isError).not.toBe(true)
+    expect((await client.callTool({
+      name: "firefox_lab",
+      arguments: { operation: "new_window", session_id: "integration", type: "tab" },
+    })).isError).not.toBe(true)
+    const navigation = await client.callTool({
+      name: "firefox_lab",
+      arguments: { operation: "navigate", session_id: "integration", url: "about:blank" },
+    })
+    if (navigation.isError) throw new Error(textContent(navigation))
+    const normalized = await client.callTool({
+      name: "firefox_lab",
+      arguments: {
+        operation: "execute",
+        session_id: "integration",
+        script: "return [1, {two: 2}];",
+        args: [],
+      },
+    })
+    expect(normalized.isError).not.toBe(true)
+    expect(jsonRecord(textContent(normalized), "firefox_lab").result).toEqual([1, { two: 2 }])
+    expect((await client.callTool({
+      name: "firefox_lab",
+      arguments: {
+        operation: "set_permission",
+        session_id: "integration",
+        origin: "http://127.0.0.1",
+        permission: "clipboard-read",
+        action: 1,
+      },
+    })).isError).not.toBe(true)
+    expect((await client.callTool({
+      name: "x11_clipboard",
+      arguments: { operation: "set", session_id: "integration", text: "synthetic-clipboard-fixture" },
+    })).isError).not.toBe(true)
+    expect((await client.callTool({
+      name: "x11_clipboard",
+      arguments: { operation: "targets", session_id: "integration" },
+    })).isError).not.toBe(true)
+    expect((await client.callTool({
+      name: "x11_clipboard",
+      arguments: { operation: "clear", session_id: "integration" },
+    })).isError).not.toBe(true)
+    expect((await client.callTool({
+      name: "firefox_lab",
+      arguments: { operation: "close", session_id: "integration" },
+    })).isError).not.toBe(true)
 
     const parseResult = await client.callTool({
       name: "bs4",

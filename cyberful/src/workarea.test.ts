@@ -9,11 +9,14 @@ import path from "path"
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "fs/promises"
 import { tmpdir } from "os"
 import {
+  createEvidenceManifest,
   ensureWorkareaDirectory,
   ensureWorkarea,
+  listWorkareaFiles,
   normalizeWorkarea,
   readWorkareaFileChunk,
   replaceWorkareaFile,
+  verifyEvidenceManifest,
   workareaAbsolutePath,
   workareaDirectoryName,
   workareaProjectRoot,
@@ -177,6 +180,67 @@ describe("workarea", () => {
       await symlink(outside, path.join(dir, "raw", "tool-results", "run", "result.txt"))
       await expect(readWorkareaFileChunk(dir, "raw/tool-results/run/result.txt")).rejects.toThrow("regular file")
       await rm(outside, { force: true })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("discovers bounded regular files without traversing symlinks", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "cyberful-workarea-list-")))
+    const outside = path.join(path.dirname(dir), `${path.basename(dir)}-outside`)
+    try {
+      await replaceWorkareaFile(dir, "raw/one.txt", "one")
+      await replaceWorkareaFile(dir, "raw/nested/two.log", "two")
+      await replaceWorkareaFile(dir, "raw/nested/three.txt", "three")
+      await mkdir(outside)
+      await writeFile(path.join(outside, "escaped.txt"), "escaped")
+      await symlink(outside, path.join(dir, "raw", "linked"))
+
+      expect(await listWorkareaFiles(dir, { prefix: "raw", pattern: "*.txt", maxDepth: 2 })).toEqual({
+        files: [
+          { path: "raw/nested/three.txt", size: 5 },
+          { path: "raw/one.txt", size: 3 },
+        ],
+        truncated: false,
+      })
+      expect(await listWorkareaFiles(dir, { prefix: "raw", maxResults: 1 })).toMatchObject({
+        files: [{ path: "raw/nested/three.txt" }],
+        truncated: true,
+      })
+    } finally {
+      await Promise.all([rm(dir, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })])
+    }
+  })
+
+  test("creates stable self-excluding manifests and detects file-set or digest changes", async () => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), "cyberful-evidence-manifest-")))
+    try {
+      await replaceWorkareaFile(dir, "evidence/b.txt", "bravo")
+      await replaceWorkareaFile(dir, "evidence/a.txt", "alpha")
+      await replaceWorkareaFile(dir, "evidence/ignored.tmp", "temporary")
+
+      const first = await createEvidenceManifest(dir, "evidence")
+      const content = await readFile(path.join(dir, first.path), "utf8")
+      expect(content.split("\n").filter(Boolean).map((line) => line.slice(66))).toEqual(["a.txt", "b.txt"])
+      expect(content).not.toContain("EVIDENCE.sha256")
+      expect(await createEvidenceManifest(dir, "evidence")).toEqual(first)
+      expect(await verifyEvidenceManifest(dir, "evidence")).toEqual({
+        path: "evidence/EVIDENCE.sha256",
+        valid: true,
+        files: 2,
+      })
+
+      await replaceWorkareaFile(dir, "evidence/a.txt", "changed")
+      expect(await verifyEvidenceManifest(dir, "evidence")).toMatchObject({
+        valid: false,
+        reason: "digest_mismatch",
+        file: "a.txt",
+      })
+      await replaceWorkareaFile(dir, "evidence/c.txt", "charlie")
+      expect(await verifyEvidenceManifest(dir, "evidence")).toMatchObject({
+        valid: false,
+        reason: "file_set_mismatch",
+      })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

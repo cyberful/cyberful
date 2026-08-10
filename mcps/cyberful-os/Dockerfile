@@ -92,6 +92,10 @@ ENV PATH="${CYBERFUL_OS_PYTHON_VENV}/bin:${PATH}"
 ARG JEB_INSTALLER_URL=""
 ARG JEB_SHA256=""
 ARG GHIDRA_VERSION=12.1.2+ds-0kali1
+ARG CYBERFUL_RUNTIME_FINGERPRINT=source-unbundled
+
+LABEL org.cyberful.managed-runtime="true" \
+      org.cyberful.runtime-fingerprint="${CYBERFUL_RUNTIME_FINGERPRINT}"
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. APT defaults
@@ -572,6 +576,89 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   && clang --version
 
 # ───────────────────────────────────────────────────────────────────────────
+# 12a. Native, firmware, debugger, and protocol laboratory
+# ───────────────────────────────────────────────────────────────────────────
+# User-mode QEMU is invoked explicitly by the native lab. The image deliberately
+# omits qemu-user-binfmt and full-system emulators so building CyberOS never
+# mutates host-global binfmt registrations or promises unsupported hardware.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bear \
+    binutils-multiarch \
+    binwalk \
+    checksec \
+    clang-tidy \
+    clang-tools \
+    cmake \
+    cpio \
+    cppcheck \
+    device-tree-compiler \
+    dosfstools \
+    e2fsprogs \
+    elfutils \
+    gdb-multiarch \
+    gdbserver \
+    golang-go \
+    ltrace \
+    meson \
+    ninja-build \
+    patchelf \
+    pkg-config \
+    python3-backports.zstd \
+    python3-pwntools \
+    python3-ropgadget \
+    python3-ubireader \
+    qemu-user \
+    ropper \
+    squashfs-tools \
+    strace \
+    u-boot-tools \
+    unblob \
+    valgrind \
+    7zip \
+    xclip \
+    xxd \
+  && test -x /usr/bin/7z \
+  && ln -sf /usr/bin/7z /usr/local/bin/7zz \
+  && apt-get purge -y qemu-user-binfmt \
+  && rm -f /usr/share/binfmts/qemu-* \
+  && if dpkg-query -W -f='${db:Status-Status}\n' qemu-user-binfmt 2>/dev/null | grep -qx installed; then exit 1; fi \
+  && test ! -e /usr/share/binfmts/qemu-aarch64 \
+  && command -v gdb-multiarch \
+  && command -v qemu-aarch64 \
+  && command -v unblob \
+  && command -v clang-tidy \
+  && command -v afl-showmap \
+  && command -v afl-tmin \
+  && command -v afl-whatsup \
+  && command -v 7zz \
+  && command -v xclip \
+  && command -v xxd
+
+ARG BOOFUZZ_VERSION=0.4.2
+ARG ROPGADGET_VERSION=7.7
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
+      "boofuzz==${BOOFUZZ_VERSION}" \
+      "ROPGadget==${ROPGADGET_VERSION}" \
+  && ln -sf "${CYBERFUL_OS_PYTHON_VENV}/bin/ROPgadget" /usr/local/bin/ROPgadget \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c 'from importlib.metadata import version; print(version("boofuzz"))' \
+  && ROPgadget --version
+
+ARG ZGRAB2_REVISION=e8fbc9eff2304403c3c574af3d6b65abfc2032b3
+ARG ZGRAB2_SHA256=dc38bbe35e645d749fbcf31e27a38a44d4aaf30ab2d809ce97bb5a4741cf00f2
+RUN curl -fsSL "https://github.com/zmap/zgrab2/archive/${ZGRAB2_REVISION}.tar.gz" -o /tmp/zgrab2.tar.gz \
+  && echo "${ZGRAB2_SHA256}  /tmp/zgrab2.tar.gz" | sha256sum -c - \
+  && mkdir -p /tmp/zgrab2 \
+  && tar -xzf /tmp/zgrab2.tar.gz --strip-components=1 -C /tmp/zgrab2 \
+  && cd /tmp/zgrab2 \
+  && go build -trimpath -ldflags="-buildid=" -o /usr/local/bin/zgrab2 ./cmd/zgrab2 \
+  && zgrab2 --help >/dev/null \
+  && rm -rf /tmp/zgrab2 /tmp/zgrab2.tar.gz
+
+# ───────────────────────────────────────────────────────────────────────────
 # 13. Final touches
 # ───────────────────────────────────────────────────────────────────────────
 RUN mkdir -p /etc/kali-motd \
@@ -614,6 +701,7 @@ RUN mkdir -p /etc/kali-motd \
 # installations that leave a binary on PATH but cannot actually initialize.
 COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
 COPY cyberful-os/mcp_framing.py /opt/cyberful-os/mcp_framing.py
+COPY cyberful-os/native_security.py /opt/cyberful-os/native_security.py
 COPY cyberful-os/prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
@@ -636,6 +724,12 @@ RUN chmod 0755 /usr/local/bin/prowler \
   && grep -q "afl-fuzz \[ options \]" /tmp/afl-help \
   && rm -f /tmp/afl-help \
   && clang --version \
+  && checksec --version \
+  && gdb-multiarch --version \
+  && unblob --version \
+  && zgrab2 --help >/dev/null \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c 'import boofuzz' \
+  && /usr/bin/python3 -c 'import pwn' \
   && msfconsole -q -x 'version; exit'
 
 COPY --from=zap-runtime /zap /zap

@@ -92,6 +92,53 @@ test("serializes concurrent records without losing either revision", async () =>
   )
 })
 
+test("treats exact finding mutations as idempotent and merges only new evidence paths", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target", now: () => new Date("2026-08-10T00:00:00Z") })
+  await store.startRun({ id: "ses_idempotent", workflow: "pentest" })
+  const record = {
+    action: "record",
+    key: "IDEM-1",
+    title: "Idempotent signal",
+    positive_evidence: "A bounded positive signal was observed.",
+    summary: "Signal observed.",
+    severity: "MEDIUM",
+    evidence_paths: ["raw/signal-a.json"],
+  }
+  await store.execute(record, context("ses_idempotent"))
+  const afterRecord = await store.read()
+  await store.execute(record, context("ses_idempotent"))
+  expect((await store.read()).revision).toBe(afterRecord.revision)
+
+  await store.execute({ ...record, evidence_paths: ["raw/signal-a.json", "raw/signal-b.json"] }, context("ses_idempotent"))
+  const merged = await store.get("IDEM-1")
+  expect(merged.observations).toHaveLength(1)
+  expect(merged.observations[0]?.evidencePaths).toEqual(["raw/signal-a.json", "raw/signal-b.json"])
+
+  const revisit = { action: "revisit", id: "IDEM-1", plan: "Repeat the bounded control.", summary: "Control queued." }
+  await store.execute(revisit, context("ses_idempotent", "verify"))
+  const afterRevisit = await store.read()
+  await store.execute(revisit, context("ses_idempotent", "verify"))
+  expect((await store.read()).revision).toBe(afterRevisit.revision)
+
+  const update = {
+    action: "update",
+    id: "IDEM-1",
+    state: "CONFIRMED",
+    proof: "The bounded control produced a repeatable security effect.",
+    summary: "Confirmed by the control.",
+  }
+  await store.execute(update, context("ses_idempotent", "verify"))
+  const afterUpdate = await store.read()
+  await store.execute(update, context("ses_idempotent", "verify"))
+  expect((await store.read()).revision).toBe(afterUpdate.revision)
+
+  await store.execute({ action: "alias", id: "IDEM-1", alias: "IDEM-STABLE" }, context("ses_idempotent"))
+  const afterAlias = await store.read()
+  await store.execute({ action: "alias", id: "IDEM-1", alias: "IDEM-STABLE" }, context("ses_idempotent"))
+  expect((await store.read()).revision).toBe(afterAlias.revision)
+})
+
 test("requires explicit supported transitions and allows disproved findings to reopen", async () => {
   const root = await workarea()
   const store = new FindingRegistry.Store(root, { workarea: "target" })

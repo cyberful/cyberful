@@ -1,6 +1,6 @@
 // ── Passive Surface Coverage ────────────────────────────────────
-// Persists redacted browser and egress metadata plus a phase summary without
-//   selectors, entered text, cookies, query values, or response bodies.
+// Persists redacted browser and egress metadata plus phase summaries, then
+//   validates Recon coverage against current or inherited Brief evidence.
 // → mcps/browser/browser_mcp.mjs — emits the trusted metadata envelope.
 // → cyberful/src/subsystem/gateway/egress-observation.ts — supplies redacted network dimensions.
 // → cyberful/src/subsystem/gateway/server.ts — records upstream results.
@@ -8,8 +8,9 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { randomUUID } from "node:crypto"
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { BrowserProfile, type BrowserProfileId, type TargetBrowserProfileId } from "@/dependency/browser-profile"
 import { isRecord } from "@/util/record"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { ToolUsageEvent } from "./tool-usage"
@@ -18,7 +19,7 @@ import type { EngagementPolicy } from "./engagement-policy"
 export const BROWSER_ACTION_META_KEY = "cyberful.dev/browser-action"
 
 export interface BrowserAction {
-  readonly profile: number
+  readonly profile: BrowserProfileId
   readonly pageID: string
   readonly origin: string
   readonly pathFamily: string
@@ -42,16 +43,23 @@ type CoverageAction =
   | ({ readonly kind: "browser" } & BrowserAction)
   | ({ readonly kind: "egress" } & EgressAction)
 
+type ProfileCoverageSummary = {
+  readonly profile: TargetBrowserProfileId
+  readonly meaningfulOrigins: readonly string[]
+}
+
+const MEANINGFUL_BROWSER_ACTIONS = new Set(["navigation", "ui_interaction", "ui_input", "script"])
+
 function decode(value: unknown): BrowserAction | undefined {
   if (!isRecord(value)) return
-  if (!Number.isInteger(value.profile) || (value.profile as number) < 1 || (value.profile as number) > 5) return
+  if (!BrowserProfile.isBrowserProfileId(value.profile)) return
   const strings = ["page_id", "origin", "path_family", "action", "action_family", "page_transition", "outcome"] as const
   if (strings.some((field) => typeof value[field] !== "string")) return
   if (!new Set(["none", "same_origin", "cross_origin"]).has(value.page_transition as string)) return
   if (value.outcome !== "ok" && value.outcome !== "error") return
   if (value.status !== null && value.status !== undefined && (!Number.isInteger(value.status) || (value.status as number) < 100 || (value.status as number) > 599)) return
   return {
-    profile: value.profile as number,
+    profile: value.profile,
     pageID: value.page_id as string,
     origin: value.origin as string,
     pathFamily: value.path_family as string,
@@ -71,11 +79,30 @@ function sorted(values: Iterable<string | number>) {
   return [...new Set(values)].sort((a, b) => String(a).localeCompare(String(b)))
 }
 
+function decodeProfileCoverageSummary(value: unknown): ProfileCoverageSummary | undefined {
+  if (!isRecord(value) || !BrowserProfile.isTargetBrowserProfileId(value.profile) || !Array.isArray(value.meaningful_origins)) return
+  if (!value.meaningful_origins.every((origin) => typeof origin === "string")) return
+  return { profile: value.profile, meaningfulOrigins: value.meaningful_origins }
+}
+
+function profileHasMeaningfulOrigin(
+  profile: EngagementPolicy["profiles"][number],
+  coverage: readonly ProfileCoverageSummary[],
+) {
+  return coverage.some(
+    (entry) =>
+      entry.profile === profile.profile &&
+      entry.meaningfulOrigins.some((origin) => !profile.origin || origin === profile.origin),
+  )
+}
+
 export class SurfaceCoverage {
   readonly #phase: string
   readonly #ledger: string
   readonly #summary: string
+  readonly #briefSummary: string
   readonly #records: CoverageAction[] = []
+  readonly #browserScopes = new Map<BrowserProfileId, Pick<BrowserAction, "profile" | "pageID" | "origin">>()
   #queue: Promise<void> = Promise.resolve()
 
   constructor(workareaRoot: string, phase: string) {
@@ -84,6 +111,7 @@ export class SurfaceCoverage {
     const root = path.join(workareaRoot, "raw", "operations")
     this.#ledger = path.join(root, "surface-coverage.jsonl")
     this.#summary = path.join(root, "surface-coverage", `${phase}.summary.json`)
+    this.#briefSummary = path.join(root, "surface-coverage", "brief.summary.json")
   }
 
   observe(
@@ -94,9 +122,18 @@ export class SurfaceCoverage {
     >,
   ): Promise<void> {
     const browser = browserAction(result)
+    if (browser) {
+      this.#browserScopes.set(browser.profile, {
+        profile: browser.profile,
+        pageID: browser.pageID,
+        origin: browser.origin,
+      })
+    }
+    const research =
+      browser?.profile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID || egress?.egress_route === "browser/direct-search"
     const actions: CoverageAction[] = [
-      ...(browser ? [{ kind: "browser" as const, ...browser }] : []),
-      ...(egress?.egress_host && egress.egress_path_family
+      ...(browser && !research ? [{ kind: "browser" as const, ...browser }] : []),
+      ...(!research && egress?.egress_host && egress.egress_path_family
         ? [{
             kind: "egress" as const,
             origin: `network://${egress.egress_host}`,
@@ -127,12 +164,8 @@ export class SurfaceCoverage {
     return pending
   }
 
-  currentScope(profile: number): Pick<BrowserAction, "profile" | "pageID" | "origin"> | undefined {
-    const action = this.#records.findLast(
-      (entry): entry is Extract<CoverageAction, { kind: "browser" }> =>
-        entry.kind === "browser" && entry.profile === profile,
-    )
-    return action ? { profile: action.profile, pageID: action.pageID, origin: action.origin } : undefined
+  currentScope(profile: BrowserProfileId): Pick<BrowserAction, "profile" | "pageID" | "origin"> | undefined {
+    return this.#browserScopes.get(profile)
   }
 
   close(): Promise<void> {
@@ -142,24 +175,51 @@ export class SurfaceCoverage {
   async handoffError(policy: EngagementPolicy | undefined) {
     await this.#queue
     if (this.#phase !== "recon" || !policy) return
+    const inherited = await this.#readBriefProfileCoverage()
     const missing = policy.profiles.flatMap((profile) => {
       if (profile.readiness !== "READY" || profile.scope !== "IN_SCOPE") return []
-      const records = this.#records.filter(
-        (entry): entry is Extract<CoverageAction, { kind: "browser" }> =>
-          entry.kind === "browser" && entry.profile === profile.profile,
-      )
-      const reachedOrigin = records.some(
-        (entry) => entry.outcome === "ok" && (!profile.origin || entry.origin === profile.origin),
-      )
-      const meaningfulAction = records.some(
+      const coveredThisPhase = this.#records.some(
         (entry) =>
+          entry.kind === "browser" &&
+          entry.profile === profile.profile &&
           entry.outcome === "ok" &&
-          ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily),
+          (!profile.origin || entry.origin === profile.origin) &&
+          MEANINGFUL_BROWSER_ACTIONS.has(entry.actionFamily),
       )
-      return reachedOrigin && meaningfulAction ? [] : [profile.profile]
+      return coveredThisPhase || profileHasMeaningfulOrigin(profile, inherited) ? [] : [profile.profile]
     })
     if (missing.length > 0)
       return `surface coverage is incomplete for READY + IN_SCOPE profiles: ${missing.join(", ")}`
+  }
+
+  // ── Brief Coverage Survives An Intentionally Local Recon ────────
+  // Brief may consume the engagement's only authorized policy reads while it
+  // proves profile readiness. Requiring Recon to repeat target traffic would
+  // then make safe phase advancement impossible. Recon accepts only a valid
+  // host-written Brief summary that proves a successful meaningful action for
+  // the same profile and exact configured origin; absent or malformed evidence
+  // remains uncovered so a genuinely unused profile still fails closed.
+  //
+  // @docs/user-guide/workflows.md
+  // ────────────────────────────────────────────────────────────────
+  async #readBriefProfileCoverage(): Promise<readonly ProfileCoverageSummary[]> {
+    const content = await readFile(this.#briefSummary, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return
+      throw error
+    })
+    if (content === undefined) return []
+    let value: unknown
+    try {
+      value = JSON.parse(content)
+    } catch {
+      return []
+    }
+    if (!isRecord(value) || value.version !== 2 || value.phase !== "brief" || !Array.isArray(value.per_profile))
+      return []
+    return value.per_profile.flatMap((entry) => {
+      const decoded = decodeProfileCoverageSummary(entry)
+      return decoded ? [decoded] : []
+    })
   }
 
   // ── One Per-Route Reducer Owns The Summary ─────────────────────
@@ -197,7 +257,7 @@ export class SurfaceCoverage {
       surface.outcomes.add(entry.outcome)
       surface.exercised ||=
         entry.kind === "egress" ||
-        ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily)
+        MEANINGFUL_BROWSER_ACTIONS.has(entry.actionFamily)
       surfaces.set(key, surface)
     }
     const surfaceDetails = [...surfaces.entries()]
@@ -241,9 +301,12 @@ export class SurfaceCoverage {
           profile,
           origins: sorted(records.map((entry) => entry.origin)),
           route_families: sorted(records.map((entry) => `${entry.origin}${entry.pathFamily}`)),
-          meaningful_actions: records.filter((entry) =>
-            ["navigation", "ui_interaction", "ui_input", "script"].includes(entry.actionFamily),
-          ).length,
+          meaningful_actions: records.filter((entry) => MEANINGFUL_BROWSER_ACTIONS.has(entry.actionFamily)).length,
+          meaningful_origins: sorted(
+            records.flatMap((entry) =>
+              entry.outcome === "ok" && MEANINGFUL_BROWSER_ACTIONS.has(entry.actionFamily) ? [entry.origin] : [],
+            ),
+          ),
           errors: records.filter((entry) => entry.outcome === "error").length,
         }]
       }),

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url"
 import { releaseBrowserContext } from "./browser_context_ownership.mjs"
 import { saveBrowserDownload } from "./browser_download.mjs"
 import { BrowserToolRegistry } from "./browser_tool_registry.mjs"
+import { duckDuckGoSearchUrl, extractDuckDuckGoResultsDocument } from "./duckduckgo_search.mjs"
 import {
   BACKGROUND_NETWORKING_DISABLED_ARGS,
   PATCHRIGHT_DISABLED_FEATURES_ARG,
@@ -75,7 +76,7 @@ const USER_DATA_DIR =
   process.env.CYBER_BROWSER_USER_DATA_DIR || path.join(STATE_HOME, "cyberful-os", "mcp", "browser", "profile")
 const ARTIFACTS_DIR =
   process.env.CYBER_BROWSER_ARTIFACTS_DIR || path.join(STATE_HOME, "cyberful-os", "mcp", "browser", "artifacts")
-const PROFILE_ID = envInt("CYBER_BROWSER_PROFILE_ID", 1, 1, 5)
+const PROFILE_ID = envBrowserProfileId("CYBER_BROWSER_PROFILE_ID", 1)
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = BROWSERS_PATH
@@ -205,6 +206,7 @@ function redactedLocation(rawUrl) {
 }
 
 function actionFamily(tool) {
+  if (tool === "web_search") return "web_research"
   if (tool === "browser_navigate") return "navigation"
   if (["browser_click", "browser_scroll", "browser_press"].includes(tool)) return "ui_interaction"
   if (["browser_fill", "browser_type", "browser_select", "browser_check", "browser_set_input_files"].includes(tool)) return "ui_input"
@@ -215,7 +217,7 @@ function actionFamily(tool) {
 }
 
 function annotateBrowserAction(tool, result, page, beforeUrl) {
-  if (!tool.startsWith("browser_")) return result
+  if (!tool.startsWith("browser_") && tool !== "web_search") return result
   const afterUrl = page && !page.isClosed() ? page.url() : beforeUrl
   const before = redactedLocation(beforeUrl)
   const after = redactedLocation(afterUrl)
@@ -292,6 +294,19 @@ function envInt(name, defaultValue, minimum, maximum) {
   const parsed = Number(normalized)
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
     throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`)
+  }
+  return parsed
+}
+
+export function envBrowserProfileId(name, defaultValue) {
+  const raw = process.env[name]
+  if (raw === undefined || raw === "") return defaultValue
+  const normalized = raw.trim()
+  if (normalized === "search") return normalized
+  if (!/^\d+$/.test(normalized)) throw new Error(`${name} must be an integer from 1 through 5 or search`)
+  const parsed = Number(normalized)
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 5) {
+    throw new Error(`${name} must be an integer from 1 through 5 or search`)
   }
   return parsed
 }
@@ -1933,6 +1948,64 @@ registerTool(
   },
 )
 
+if (PROFILE_ID === "search") {
+  registerTool(
+    "web_search",
+    "Search the public web through DuckDuckGo's HTML results in the isolated search browser profile. Returns bounded structured results and never retries automatically.",
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 500 },
+        max_results: { type: "integer", minimum: 1, maximum: 20, default: 10 },
+        safe_search: {
+          type: "string",
+          enum: ["strict", "moderate", "off"],
+          default: "moderate",
+        },
+        timeout_ms: { type: "integer", minimum: 1, maximum: MAX_TIMEOUT_MS, default: DEFAULT_TIMEOUT_MS },
+      },
+      required: ["query"],
+    },
+    async (args) => {
+      const query = String(args.query)
+      const maxResults = intArg(args.max_results, 10, 1, 20)
+      const safeSearch = args.safe_search ?? "moderate"
+      const page = await currentPage()
+      await page.goto(duckDuckGoSearchUrl(query, safeSearch), {
+        waitUntil: "domcontentloaded",
+        timeout: timeoutArg(args),
+      })
+      const challenge = await detectCaptcha(page, 50, { includeNetwork: true })
+      if (challenge.detected) {
+        return toolResult(
+          `${asJson({
+            engine: "duckduckgo",
+            profile: "search",
+            query,
+            error: "DuckDuckGo presented a visible human challenge",
+            action:
+              'Call browser_captcha_status and browser_captcha_handoff with profile "search", then retry the search after the human resolves it.',
+            challenge,
+          })}\n`,
+          true,
+        )
+      }
+      const extracted = await page.evaluate(extractDuckDuckGoResultsDocument, maxResults)
+      return toolResult(
+        `${asJson({
+          engine: "duckduckgo",
+          profile: "search",
+          query,
+          count: extracted.results.length,
+          truncated: extracted.truncated,
+          results: extracted.results,
+        })}\n`,
+      )
+    },
+  )
+}
+
 registerTool(
   "browser_snapshot",
   "Return a bounded slice of visible page text and actionable refs. Prefer the 12k default, narrow long pages with a CSS selector, and follow next_text_offset for later non-overlapping slices; increase limits only when necessary.",
@@ -2708,6 +2781,7 @@ Navigation guidance:
 
 Isolation defaults:
 - browser binary cache: \`${BROWSERS_PATH}\`
+- profile identity: \`${PROFILE_ID}\`
 - profile/user data: \`${USER_DATA_DIR}\`
 - artifacts/downloads: \`${ARTIFACTS_DIR}\`
 - launch mode: ${envBool("CYBER_BROWSER_HEADLESS", false) ? "headless" : "headed"}
@@ -2721,6 +2795,7 @@ npm run browser:install
 Environment variables:
 - \`CYBER_BROWSER_BROWSERS_PATH\`: override the isolated browser binary cache.
 - \`CYBER_BROWSER_USER_DATA_DIR\`: override the persistent browser profile.
+- \`CYBER_BROWSER_PROFILE_ID\`: set one target identity from 1 through 5 or the named \`search\` identity.
 - \`CYBER_BROWSER_ARTIFACTS_DIR\`: override artifacts/downloads output.
 - \`CYBER_BROWSER_HEADLESS=true\`: run Chromium without a visible macOS window.
 - \`CYBER_BROWSER_EXECUTABLE\`: use a specific Chromium-compatible executable.

@@ -9,7 +9,7 @@ Treat decompiler output as a lossy hypothesis. Anchor conclusions in bytes, relo
 
 ## Establish artifact identity
 
-Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Keep universal/fat slices and platform variants separate.
+Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Use bounded `xxd` views when raw bytes resolve format ambiguity, and `archive_extract` for deterministic atomic ZIP/optimized-ZIP publication. Keep universal/fat slices and platform variants separate.
 
 ## Triage before decompiling
 
@@ -19,7 +19,7 @@ Use the persistent Ghidra MCP as the primary semantic workspace:
 
 1. call `ghidra_import` with a relative workarea path and retain its SHA-256;
 2. poll the returned identifier with `ghidra_job` instead of blocking on analysis;
-3. use `ghidra_search`, `ghidra_xrefs`, and `ghidra_call_graph` to narrow the boundary;
+3. use `ghidra_search`, `ghidra_xrefs`, and `ghidra_call_graph` to narrow the boundary; when a name or signature is ambiguous, select only a returned canonical address rather than guessing;
 4. confirm decisive sites with `ghidra_listing` and `ghidra_decompile`;
 5. preserve hypotheses and confidence with `ghidra_annotations`;
 6. create a `ghidra_project` checkpoint before handoff.
@@ -48,6 +48,8 @@ Expect inlining, tail calls, thunks, split functions, merged constants, stack-sl
 ## Diff by semantics
 
 For patches, normalize addresses and compiler noise; compare control-flow shape, constants, call targets, bounds, validation order, error handling, and data structure layout. Trace the changed invariant outward to sibling functions and older product branches. A one-line source fix may compile into several sites, while a large binary diff may be toolchain noise.
+
+Use `binary_diff compare_programs`, `changed_functions`, `changed_calls`, and `changed_constants` to retain reproducible first-pass evidence. Use `security_candidates` only to prioritize manual validation; its heuristic label is not a finding. Confirm decisive changes in Ghidra listings or raw disassembly.
 
 ## Deliver
 

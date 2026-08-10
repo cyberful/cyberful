@@ -1,0 +1,404 @@
+# Complete tool and MCP catalog
+
+This page inventories every first-party tool surface shipped by Cyberful: Pi-native tools, the phase gateway, the isolated browser, the ZAP bridge and official ZAP MCP add-on, Ghidra, and all tools published by cyberful-os. Availability is phase-scoped: a tool appears only when the selected workflow policy, runtime, and authorization permit it.
+
+## Version semantics
+
+Cyberful releases build the security image locally. Explicitly pinned dependencies show their exact version below. `Kali rolling, build-resolved` means the numeric package version is resolved and attested when the local image is built; documenting one static number would be inaccurate across later local builds. `Cyberful release` means the tool is versioned with the application rather than as an independent package. The `tool_inventory` and `capability_attestation` tools provide the authoritative live-image state.
+
+## Pi-native tools
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `workarea_read` | Cyberful release | Bounded workarea file reader. | Read engagement artifacts without exposing files outside the workarea. |
+| `workarea_list` | Cyberful release | Bounded workarea regular-file discovery by prefix, wildcard pattern, depth, and result count without symlink traversal. | Locate evidence and outputs from their actual workarea paths instead of guessing artifact names. |
+| `workarea_write` | Cyberful release | Bounded workarea file writer. | Create or update phase artifacts and evidence within the owned workarea. |
+| `evidence_manifest` | Cyberful release | Atomic creator and verifier for deterministic, sorted, self-excluding `EVIDENCE.sha256` manifests. | Seal or verify one evidence directory without accidentally hashing the manifest or temporary files into itself. |
+| `tool_search` | Cyberful release | Lazy tool discovery interface. | Find currently available tools without loading the full catalog into model context. |
+| `skill_read` | Cyberful release | First-party skill reader. | Load complete workflow instructions and referenced skill resources before use. |
+| `finding` | Cyberful release | Authoritative session finding registry. | Record, update, verify, classify, alias, list, and read evidence-backed security findings across phases. |
+| `delegate_task` | Cyberful release | Bounded Pi subagent launcher. | Delegate a specific task when phase policy and configured limits permit it. |
+| `delegation_status` | Cyberful release | Delegation status reader. | Inspect child-agent progress and results. |
+| `request_fallback_delegation` | Cyberful release | Configured fallback-provider launcher. | Request a complete fallback AgentRun when the primary route cannot continue. |
+| `host_fallback_delegation` | Cyberful release | Host-managed fallback adapter. | Carry out the approved fallback run while preserving provider affinity. |
+
+## Expert gateway MCP
+
+The gateway MCP server is version 0.1.0. Its local tools are combined with policy-approved upstream MCP tools for each phase.
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `variable` | Gateway 0.1.0 | Shared session variable store with redacted and explicit reveal reads. | Store tokens, target URLs, IDs, and other values reused safely across phases. |
+| `question` | Gateway 0.1.0 | Human decision and CAPTCHA handoff tool. | Pause only when authorization, a missing fact, or human CAPTCHA completion is required. |
+| `handoff` | Gateway 0.1.0 | Validated phase completion contract. | Submit the phase deliverable and transfer control to the next phase exactly once. |
+| `test_object` | Gateway 0.1.0 | Lifecycle registry for authorized targets and test identities. | Declare, inspect, update, and close test objects before target interaction. |
+| `egress_observation` | Gateway 0.1.0 | Engagement egress evidence recorder. | Record observed hosts, methods, effects, and scope-relevant outbound activity. |
+| `hypothesis` | Gateway 0.1.0 | Persistent vulnerability hypothesis registry. | Create, test, promote, disprove, and hand off evidence-backed research hypotheses. |
+| `engagement_policy` | Gateway 0.1.0 | Machine-readable engagement policy store. | Install and inspect the authorized scope, identities, traffic limits, and prohibited actions. |
+| `target_cooldown` | Gateway 0.1.0 | Per-target cooldown controller. | Apply and inspect traffic pauses after throttling, instability, or explicit program limits. |
+| `source_import` | Gateway 0.1.0 | Controlled source import boundary. | Bring an authorized source tree into a bounded code-audit workarea. |
+| `source_catalog` | Gateway 0.1.0 | Source corpus catalog. | List imported repositories and source roots available to an audit. |
+| `source_inventory` | Gateway 0.1.0 | Bounded source metadata inventory. | Enumerate files, languages, manifests, and structural metadata without arbitrary execution. |
+| `source_read` | Gateway 0.1.0 | Bounded source reader. | Read an exact source file or slice while preserving checkout isolation. |
+| `source_search` | Gateway 0.1.0 | Bounded source search. | Search imported code for symbols, patterns, sinks, and configuration. |
+| `source_snapshot` | Gateway 0.1.0 | Immutable source snapshot metadata. | Capture hashes and state used to make audit findings reproducible. |
+| `code_graph_index` | Gateway 0.1.0 | Semantic code graph builder. | Index symbols, calls, data-flow anchors, and relationships for code-audit phases. |
+| `code_graph_query` | Gateway 0.1.0 | Semantic code graph query. | Trace callers, callees, paths, and source-to-sink relationships. |
+| `code_finding` | Gateway 0.1.0 | Code-audit finding registry. | Record and update evidence-backed candidate or confirmed code findings. |
+| `code_graph_manifest` | Gateway 0.1.0 | Code graph evidence manifest. | Report index coverage, provenance, and graph artifact paths. |
+| `audit_diff_prepare` | Gateway 0.1.0 | Read-only audit diff preparation. | Create a bounded comparison view without modifying the user checkout. |
+| `audit_lab_prepare` | Gateway 0.1.0 | Disposable offline audit laboratory. | Bootstrap dependencies from manifests and execute project checks only in the isolated lab. |
+| `evm_lab` | Gateway 0.1.0 | Managed local EVM laboratory. | Start Anvil, manage deterministic accounts, snapshot, revert, and stop contract test chains. |
+| `evm_evidence` | Gateway 0.1.0 | Smart-contract evidence recorder. | Persist transactions, traces, receipts, state changes, and exploit reproduction data. |
+| `cve_dictionary` | Gateway 0.1.0; snapshot 2026.08.05 | Local CVE search and research-memory interface backed by a deeply verified signed installation and a filesystem-attested fast startup path; changed snapshots automatically return to complete verification. | Search an active verified snapshot and remember CVE-linked hypotheses without treating matches as proof. |
+
+## Isolated browser MCP
+
+The browser MCP is version 0.1.0 and uses Patchright 1.61.1. Each eligible phase receives isolated owners: target profiles 1–5 retain proxy attestation, while the named `search` profile is direct.
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `web_search` | MCP 0.1.0; Patchright 1.61.1; DuckDuckGo HTML | Search one bounded DuckDuckGo HTML result page in the direct named `search` profile without automatic retries. | Find unauthenticated public sources while keeping organic and sponsored results distinct and excluding research traffic from target coverage. |
+| `browser_status` | MCP 0.1.0; Patchright 1.61.1 | Attest the configured proxy for a dedicated blank browser, then report installation, runtime, and active page state. | Use the isolated browser to attest the configured proxy for a dedicated blank browser, then report installation, runtime, and active page state. |
+| `browser_navigate` | MCP 0.1.0; Patchright 1.61.1 | Open a URL in the isolated Chromium page. Uses domcontentloaded by default; use browser_wait for selector/text readiness instead of networkidle. | Use the isolated browser to open a URL in the isolated Chromium page. Uses domcontentloaded by default; use browser_wait for selector/text readiness instead of networkidle. |
+| `browser_snapshot` | MCP 0.1.0; Patchright 1.61.1 | Return a bounded slice of visible page text and actionable refs. Prefer the 12k default, narrow long pages with a CSS selector, and follow next_text_offset for later non-overlapping slices; increase limits only when necessary. | Use the isolated browser to return a bounded slice of visible page text and actionable refs. Prefer the 12k default, narrow long pages with a CSS selector, and follow next_text_offset for later non-overlapping slices; increase limits only when necessary. |
+| `browser_captcha_status` | MCP 0.1.0; Patchright 1.61.1 | Detect CAPTCHA or anti-bot challenge signals on the active page without solving or bypassing them. | Use the isolated browser to detect CAPTCHA or anti-bot challenge signals on the active page without solving or bypassing them. |
+| `browser_captcha_handoff` | MCP 0.1.0; Patchright 1.61.1 | Attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with the gateway question tool using kind=captcha; only this browser profile and origin pause until browser_captcha_status clears the original page. | Use the isolated browser to attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with the gateway question tool using kind=captcha; only this browser profile and origin pause until browser_captcha_status clears the original page. |
+| `browser_click` | MCP 0.1.0; Patchright 1.61.1 | Click an element by snapshot ref, selector, label, placeholder, or text. The locator already scrolls the target into view; set force:true to also bypass the actionability checks (visible / stable / receives-events) that time out on an obscured or covered control, or when a captured selector is non-unique. force clicks whatever the locator resolves to, so it does NOT fix a wrong selector — prefer a precise ref from browser_snapshot. | Use the isolated browser to click an element by snapshot ref, selector, label, placeholder, or text. The locator already scrolls the target into view; set force:true to also bypass the actionability checks (visible / stable / receives-events) that time out on an obscured or covered control, or when a captured selector is non-unique. force clicks whatever the locator resolves to, so it does NOT fix a wrong selector — prefer a precise ref from browser_snapshot. |
+| `browser_fill` | MCP 0.1.0; Patchright 1.61.1 | Fill a form field by snapshot ref, selector, label, placeholder, or text. | Use the isolated browser to fill a form field by snapshot ref, selector, label, placeholder, or text. |
+| `browser_type` | MCP 0.1.0; Patchright 1.61.1 | Type text into an element or the active page. | Use the isolated browser to type text into an element or the active page. |
+| `browser_select` | MCP 0.1.0; Patchright 1.61.1 | Select one or more values in a select element. | Use the isolated browser to select one or more values in a select element. |
+| `browser_set_input_files` | MCP 0.1.0; Patchright 1.61.1 | Upload local file(s) to a file input. Target the `input[type=file]` element itself; a hidden input is fine. Uploading multiple files needs the input to allow multiple. | Upload one or more authorized local artifacts through the exact file-input control. |
+| `browser_scroll` | MCP 0.1.0; Patchright 1.61.1 | Scroll a target element into view (by ref/selector/label/placeholder/text), or wheel-scroll the viewport by a pixel delta when no locator is given. | Use the isolated browser to scroll a target element into view (by ref/selector/label/placeholder/text), or wheel-scroll the viewport by a pixel delta when no locator is given. |
+| `browser_check` | MCP 0.1.0; Patchright 1.61.1 | Set a checkbox or radio input checked state. | Use the isolated browser to set a checkbox or radio input checked state. |
+| `browser_press` | MCP 0.1.0; Patchright 1.61.1 | Press a keyboard key on an element or the active page. | Use the isolated browser to press a keyboard key on an element or the active page. |
+| `browser_wait` | MCP 0.1.0; Patchright 1.61.1 | Wait for a selector, text, load state, or fixed duration. | Use the isolated browser to wait for a selector, text, load state, or fixed duration. |
+| `browser_artifact_list` | MCP 0.1.0; Patchright 1.61.1 | List downloads and other files saved by the browser MCP artifacts directory. | Use the isolated browser to list downloads and other files saved by the browser MCP artifacts directory. |
+| `browser_artifact_read` | MCP 0.1.0; Patchright 1.61.1 | Read a saved browser artifact by path/name. Images are returned as MCP image content. | Use the isolated browser to read a saved browser artifact by path/name. Images are returned as MCP image content. |
+| `browser_network_log` | MCP 0.1.0; Patchright 1.61.1 | Return recent captured network requests and responses from the active browser context. | Use the isolated browser to return recent captured network requests and responses from the active browser context. |
+| `browser_network_response_body` | MCP 0.1.0; Patchright 1.61.1 | Read a response body by network request id from browser_network_log. | Use the isolated browser to read a response body by network request id from browser_network_log. |
+| `browser_evaluate` | MCP 0.1.0; Patchright 1.61.1 | Run JavaScript in the active page. The script may be an expression or an async function body; use return to emit a value from a body. | Use the isolated browser to run JavaScript in the active page. The script may be an expression or an async function body; use return to emit a value from a body. |
+| `browser_cookies` | MCP 0.1.0; Patchright 1.61.1 | List, set, or clear cookies in the isolated browser context. | Use the isolated browser to list, set, or clear cookies in the isolated browser context. |
+| `browser_close` | MCP 0.1.0; Patchright 1.61.1 | Release this process's browser session without closing a host-owned shared browser. | Use the isolated browser to release this process's browser session without closing a host-owned shared browser. |
+
+## OWASP ZAP MCP
+
+Cyberful ships OWASP ZAP 2.17.0, the official MCP add-on 0.2.0, and a Cyberful bridge 0.1.0. The bridge preserves the official tools and adds bounded history, replay, reporting, WebSocket, authentication, prompt, and complete API access.
+
+### Official ZAP MCP tools
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `zap_version` | ZAP 2.17.0; MCP add-on 0.2.0 | Get the installed ZAP version. | Confirm scanner and runtime compatibility. |
+| `zap_info` | ZAP 2.17.0; MCP add-on 0.2.0 | Get basic ZAP information. | Inspect the active ZAP instance before testing. |
+| `zap_create_context` | ZAP 2.17.0; MCP add-on 0.2.0 | Create a context with URL and include or exclude expressions. | Define an exact application boundary for scans and authentication. |
+| `zap_start_spider` | ZAP 2.17.0; MCP add-on 0.2.0 | Start the traditional spider. | Discover links and endpoints in an authorized context. |
+| `zap_stop_spider` | ZAP 2.17.0; MCP add-on 0.2.0 | Stop a spider plan. | End discovery at a traffic or time boundary. |
+| `zap_get_spider_status` | ZAP 2.17.0; MCP add-on 0.2.0 | Read spider progress. | Wait for or report deterministic crawl completion. |
+| `zap_start_ajax_spider` | ZAP 2.17.0; MCP add-on 0.2.0 | Start the browser-driven AJAX spider. | Discover routes in JavaScript-heavy applications. |
+| `zap_stop_ajax_spider` | ZAP 2.17.0; MCP add-on 0.2.0 | Stop an AJAX spider plan. | Bound dynamic crawling and cleanly close it. |
+| `zap_get_ajax_spider_status` | ZAP 2.17.0; MCP add-on 0.2.0 | Read AJAX spider progress. | Monitor dynamic discovery to completion. |
+| `zap_start_active_scan` | ZAP 2.17.0; MCP add-on 0.2.0 | Start an active scan using an optional policy. | Run authorized attack rules against a prepared site tree. |
+| `zap_stop_active_scan` | ZAP 2.17.0; MCP add-on 0.2.0 | Stop an active scan plan. | Respect time, traffic, or safety limits. |
+| `zap_get_active_scan_status` | ZAP 2.17.0; MCP add-on 0.2.0 | Read active-scan progress. | Monitor and close a scan deterministically. |
+| `zap_get_passive_scan_status` | ZAP 2.17.0; MCP add-on 0.2.0 | Read the passive-scan queue depth. | Wait until captured traffic has been analyzed. |
+| `zap_generate_report` | ZAP 2.17.0; MCP add-on 0.2.0 | Generate a ZAP report. | Export session findings with an installed report template. |
+
+### Cyberful ZAP bridge tools
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `zap_api_catalog` | Bridge 0.1.0 | List every API operation exposed by the installed ZAP core and add-ons. | Use the phase-owned ZAP session to list every API operation exposed by the installed ZAP core and add-ons. |
+| `zap_api_call` | Bridge 0.1.0 | Call any operation returned by zap_api_catalog without an additional host-owned scope policy. | Use the phase-owned ZAP session to call any operation returned by zap_api_catalog without an additional host-owned scope policy. |
+| `zap_http_request` | Bridge 0.1.0 | Send or replay one complete raw HTTP request through ZAP. Absolute-form HTTP(S) requests are accepted directly; origin-form requests require target_url and are normalized without guessing the scheme. Redirect handling is caller-selected. | Use the phase-owned ZAP session to send or replay one complete raw HTTP request through ZAP. Absolute-form HTTP(S) requests are accepted directly; origin-form requests require target_url and are normalized without guessing the scheme. Redirect handling is caller-selected. |
+| `zap_generate_workarea_report` | Bridge 0.1.0 | Generate a ZAP report inside the engagement workarea from the complete ZAP session without filtering sites. | Use the phase-owned ZAP session to generate a ZAP report inside the engagement workarea from the complete ZAP session without filtering sites. |
+| `zap_history_search` | Bridge 0.1.0 | Return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Request and response bodies are opt-in. | Use the phase-owned ZAP session to return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Request and response bodies are opt-in. |
+| `zap_history_get` | Bridge 0.1.0 | Read metadata for one ZAP history message. Request and response bodies are opt-in. | Use the phase-owned ZAP session to read metadata for one ZAP history message. Request and response bodies are opt-in. |
+| `zap_history_replay` | Bridge 0.1.0 | Clone one captured HTTP history message and send exactly one same-destination replay with bounded header, query, or JSON Pointer mutations. Captured credentials remain inside ZAP and response bodies remain in history. | Use the phase-owned ZAP session to clone one captured HTTP history message and send exactly one same-destination replay with bounded header, query, or JSON Pointer mutations. Captured credentials remain inside ZAP and response bodies remain in history. |
+| `zap_websocket_history` | Bridge 0.1.0 | Read a bounded page of WebSocket messages, optionally for one channel. | Use the phase-owned ZAP session to read a bounded page of WebSocket messages, optionally for one channel. |
+| `zap_context_auth` | Bridge 0.1.0 | Call an installed context, authentication, session-management, users, or forced-user API operation. | Use the phase-owned ZAP session to call an installed context, authentication, session-management, users, or forced-user API operation. |
+| `zap_prompt_get` | Bridge 0.1.0 | Resolve one official ZAP MCP prompt, including baseline and full scan workflows, into its prompt messages. | Use the phase-owned ZAP session to resolve one official ZAP MCP prompt, including baseline and full scan workflows, into its prompt messages. |
+
+### Installed ZAP extensions
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `ascanrules` | 83 | Release active scan rules. | Run stable active checks. |
+| `spiderAjax` | 23.32.0 | AJAX Spider add-on. | Crawl dynamic browser applications. |
+| `authhelper` | 0.40.0 | Authentication helper add-on. | Diagnose and configure authenticated contexts. |
+| `graphql` | 0.33.0 | GraphQL add-on. | Import and test GraphQL schemas and endpoints. |
+| `mcp` | 0.2.0 | Official ZAP MCP add-on. | Publish ZAP tools, resources, and scan prompts. |
+| `oast` | 0.24.0 | Out-of-band application security testing add-on. | Observe authorized asynchronous callbacks. |
+| `openapi` | 57 | OpenAPI add-on. | Import API definitions into the site tree. |
+| `pscanrules` | 75 | Release passive scan rules. | Analyze proxied traffic without active requests. |
+| `reports` | 0.46.0 | Report generation add-on. | Export HTML, JSON, and other installed formats. |
+| `websocket` | 37 | WebSocket add-on. | Capture and analyze WebSocket channels and messages. |
+
+The `zap_api_catalog` tool discovers every core and add-on API operation installed in the current image; `zap_api_call` executes any returned operation. This dynamic pair is the complete surface for ZAP APIs whose individual operation names vary with the installed add-on catalog.
+
+## Ghidra MCP
+
+The persistent Ghidra service uses MCP 0.1.0 and Ghidra 12.1.2. The project and queued analysis survive eligible phase transitions while arbitrary scripts and binary mutation remain unavailable.
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `ghidra_project` | MCP 0.1.0; Ghidra 12.1.2 | Inspect the persistent project, list imported programs, or write a durable checkpoint. | Use persistent semantic analysis to inspect the persistent project, list imported programs, or write a durable checkpoint. |
+| `ghidra_import` | MCP 0.1.0; Ghidra 12.1.2 | Idempotently queue a workarea binary import by SHA-256, optionally followed by analysis. | Use persistent semantic analysis to idempotently queue a workarea binary import by SHA-256, optionally followed by analysis. |
+| `ghidra_job` | MCP 0.1.0; Ghidra 12.1.2 | Submit, inspect, list, and cancel persistent asynchronous jobs; restart reconciliation recognizes already committed results, and a verified completion wins a cancellation race. | Resume durable import or analysis work after a bridge restart without duplicating committed project changes. |
+| `ghidra_search` | MCP 0.1.0; Ghidra 12.1.2 | Search analyzed functions, symbols, or defined strings with stable pagination and canonical address selectors. | Discover a unique reusable selector before listing, decompilation, cross-reference, graph, or annotation calls. |
+| `ghidra_listing` | MCP 0.1.0; Ghidra 12.1.2 | Return bounded disassembly selected by canonical address, name, qualified name, or full/demangled signature. | Inspect instructions while retaining the canonical address selector returned for later calls. |
+| `ghidra_decompile` | MCP 0.1.0; Ghidra 12.1.2 | Decompile one uniquely resolved function with a finite timeout. Ambiguous names return bounded candidates instead of guessing. | Decompile overloaded or duplicated symbols safely by signature or canonical address. |
+| `ghidra_xrefs` | MCP 0.1.0; Ghidra 12.1.2 | List references to or from a function or address with stable pagination. | Use persistent semantic analysis to list references to or from a function or address with stable pagination. |
+| `ghidra_call_graph` | MCP 0.1.0; Ghidra 12.1.2 | Build a bounded directed call graph, optionally rooted at one function. | Use persistent semantic analysis to build a bounded directed call graph, optionally rooted at one function. |
+| `ghidra_annotations` | MCP 0.1.0; Ghidra 12.1.2 | List durable annotations or transactionally add comments, bookmarks, and function renames. | Use persistent semantic analysis to list durable annotations or transactionally add comments, bookmarks, and function renames. |
+
+## cyberful-os MCP utilities
+
+The cyberful-os MCP server is version 0.2.0. The five tools below manage capability discovery and bounded fallback execution.
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `capability_attestation` | MCP 0.2.0 | Attest the live cyberful-os image against every required CLI and Python-library capability, including Nuclei and Metasploit smoke probes. This is read-only and writes no target traffic. | Verify every required command and library plus smoke probes before a phase starts. |
+| `tool_inventory` | MCP 0.2.0 | List cyberful-os MCP tools, real commands/modules, aliases, categories, expected paths, optional flags, and live availability. | Inspect names, commands, categories, aliases, paths, optional status, and live availability. |
+| `nuclei_templates` | MCP 0.2.0 | Optionally list the installed Nuclei templates matching filter arguments. This runs offline with -tl and sends no target request. | Preview the pinned signed Nuclei template corpus offline. |
+| `wordlists` | MCP 0.2.0 | List and preview cyberful-os credential and discovery wordlists inside the container. | List and preview the bundled credential and content wordlists. |
+| `shell` | MCP 0.2.0 | Fallback only: execute an arbitrary shell command inside the Docker cyberful-os container when no dedicated lowercase tool fits. | Run a bounded fallback command only when no dedicated lowercase tool fits. |
+
+## cyberful-os stateful workflows
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `firmware_lab` | MCP 0.2.0 | Stateful firmware import, identification, unpacking, manifest, diff, service, route, and checkpoint workflow. | Operations: import, identify, unpack, manifest, diff, find_services, find_routes, checkpoint. |
+| `native_lab` | MCP 0.2.0 | Disposable native-process laboratory with user-namespace attestation, mandatory harness validation, readiness rendezvous, diagnostics, snapshots, and owned process cleanup. | Operations: create, start_process, stop_process, status, readiness, file_rendezvous, diagnostics, snapshot, restore, network_status, destroy. |
+| `native_debug` | MCP 0.2.0 | One serialized multi-architecture GDB/MI owner with token-matched commands, explicit state, waits, idempotent close, and per-session signal policy. | Operations: launch, attach, status, breakpoint, continue, wait, signal_policy, registers, stack, memory, backtrace, detach, close. `SIGSYS` stops by default and is passed only explicitly. |
+| `crash_triage` | MCP 0.2.0 | Crash reproduction, collection, classification, deduplication, symbolization, minimization, and export workflow. | Operations: collect, reproduce, symbolize, classify, deduplicate, minimize, export_evidence. |
+| `fuzz_campaign` | MCP 0.2.0 | Owned fuzzing campaign lifecycle with status, coverage, crash, checkpoint, pause, resume, and stop operations. | Operations: start, status, coverage, crashes, checkpoint, pause, resume, stop. |
+| `binary_diff` | MCP 0.2.0 | Binary comparison workflow for changed functions, calls, constants, and security candidates. | Operations: compare_programs, changed_functions, changed_calls, changed_constants, security_candidates. |
+| `protocol_campaign` | MCP 0.2.0 | Protocol corpus, mutation, paired-timing, anomaly classification, and stop workflow. | Operations: import_zap_request, build_corpus, mutate, paired_timing, classify_anomaly, stop. |
+| `appliance_fingerprint` | MCP 0.2.0 | Appliance observation, clustering, comparison, version inference, and version-matrix workflow. | Operations: observe, cluster_hosts, compare_assets, infer_version, build_version_matrix. |
+| `native_static_analysis` | MCP 0.2.0 | Compile-database import, source-validated native checks, source and sink tracing, and variadic-call inspection workflow; `run_checks` rejects ELF and other non-source inputs without launching an analyzer. | Use import_compile_db, run_checks, trace_source_sink, and inspect_variadic_calls on C/C++ source inputs; route binaries to the binary-analysis workflow. |
+| `harness_validate` | MCP 0.2.0 | Parse-only shell and JavaScript validation plus native executable/source architecture, ELF ABI, dependency, symbol, build-identity, real-header, and compile checks. | Operations: shell, javascript, native_executable, native_source. Reject malformed or ABI-inventing harnesses before execution. |
+| `archive_extract` | MCP 0.2.0; native 7-Zip build-resolved | Bounded archive inspection and extraction with ordinary ZIP handling plus a fresh-destination `7zz` retry for prepended or optimized ZIP layouts. | Operations: inspect, extract. Reliably unpack Mozilla `omni.ja` and similar archives before atomically publishing the result. |
+| `firefox_lab` | MCP 0.2.0; Firefox/Marionette build-resolved | Managed Firefox, Xvfb, profile, discovered Marionette socket, context, window, permission, and teardown owner for an arbitrary Firefox executable. | Operations: launch, status, new_window, navigate, execute, set_permission, close. Run loopback research harnesses in content or chrome context and verify privileged permission readback. |
+| `x11_clipboard` | MCP 0.2.0; xclip build-resolved | Managed synthetic X11 clipboard ownership with UTF-8, `TARGETS`, status, and cleanup operations that do not persist real clipboard contents. | Operations: set, targets, status, clear. Exercise clipboard-sensitive Firefox paths inside an owned Xvfb display. |
+
+## cyberful-os library tools
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `requests` | MCP 0.2.0; build-resolved Python package | HTTP client capability backed by Python requests inside the cyberful-os container. | Fetch an HTTP(S) URL with method, headers, params, body, TLS, redirect, and timeout options. |
+| `bs4` | MCP 0.2.0; build-resolved Python package | HTML parsing and CSS selector extraction backed by Beautiful Soup inside the cyberful-os container. | Extract text, attributes, or HTML fragments from inline HTML or a file in /workspace. |
+| `lxml` | MCP 0.2.0; build-resolved Python package | HTML/XML parsing and XPath extraction backed by lxml inside the cyberful-os container. | Evaluate XPath against inline content or a file in /workspace. |
+
+## cyberful-os CLI tools
+
+Every row below is a dedicated lowercase MCP wrapper around one real executable in the locally built image. There are 202 CLI wrappers; required commands are image-attested and the optional JEB entry remains hidden unless a private build proves it available.
+
+| Tool / MCP | Version | Description | Use case |
+|---|---|---|---|
+| `bettercap` | Kali rolling, build-resolved | Interactive network attack and monitoring framework for authorized LAN testing. Command: `bettercap`. Category: network. | Pass bettercap CLI flags in args, such as -eval commands or -iface interface selection. |
+| `bloodhound` | Kali rolling, build-resolved | BloodHound GUI entrypoint for Active Directory attack path analysis. Command: `bloodhound`. Category: active-directory. | Pass the BloodHound CLI/GUI flags in args; in headless contexts prefer SharpHound/BloodHound data files in /workspace. |
+| `certipy_ad` | Kali rolling, build-resolved | Certipy for Active Directory Certificate Services enumeration and abuse testing. Command: `certipy-ad`. Category: active-directory. | Pass certipy-ad subcommands and flags in args, for example find, auth, req, or relay options. |
+| `dirb` | Kali rolling, build-resolved | Classic web content scanner using wordlists. Command: `dirb`. Category: web. | Pass the target URL and optional wordlist/flags in args. Content lists live in /usr/share/wordlists/cyberful-os/content/ — prefer the frequency-ordered raft-medium-directories.txt (paths) / raft-medium-files.txt (files) / api-endpoints.txt / api-objects.txt over the sparse dirb/common.txt so early hits surface first. |
+| `dig` | Kali rolling, build-resolved | DNS lookup utility from dnsutils for records, resolvers, and zone diagnostics. Command: `dig`. Category: dns. | Pass standard dig arguments in args. |
+| `host` | Kali rolling, build-resolved | Simple DNS lookup utility for forward and reverse records. Command: `host`. Category: dns. | Pass host arguments in args. |
+| `nslookup` | Kali rolling, build-resolved | Interactive or one-shot DNS query utility. Command: `nslookup`. Category: dns. | Pass nslookup arguments in args. |
+| `evil_winrm` | Kali rolling, build-resolved | WinRM shell client for authorized Windows remote management and assessment. Command: `evil-winrm`. Category: windows. | Pass evil-winrm connection flags in args, such as -i, -u, -p, -H, -S, and script paths. |
+| `feroxbuster` | Kali rolling, build-resolved | Fast recursive web content discovery scanner. Command: `feroxbuster`. Category: web. | Pass feroxbuster flags in args, including -u, -w, -x, -t, --timeout, --scan-dir-listings, and recursion settings. For internet targets prefer --timeout 15 or higher. Use --scan-dir-listings for directory listing checks; do not use the invalid --scan-dir-list flag. If feroxbuster reports that it could not connect to any target, the MCP result is treated as an error even when feroxbuster exits 0. Content lists live in /usr/share/wordlists/cyberful-os/content/ — prefer the frequency-ordered raft-medium-directories.txt (paths) / raft-medium-files.txt (files) / api-endpoints.txt / api-objects.txt over the sparse dirb/common.txt so early hits surface first. |
+| `ffuf` | Kali rolling, build-resolved | Fast web fuzzer for paths, parameters, virtual hosts, and headers. Command: `ffuf`. Category: web. | Pass ffuf flags in args; include FUZZ where the wordlist value should be substituted. Content lists live in /usr/share/wordlists/cyberful-os/content/ — prefer the frequency-ordered raft-medium-directories.txt (paths) / raft-medium-files.txt (files) / api-endpoints.txt / api-objects.txt over the sparse dirb/common.txt so early hits surface first. |
+| `gobuster` | Kali rolling, build-resolved | Web, DNS, S3, and virtual-host brute forcing tool. Command: `gobuster`. Category: web. | Pass gobuster mode and flags in args, such as dir, dns, vhost, s3, -u, -d, and -w. For dir mode, content lists live in /usr/share/wordlists/cyberful-os/content/ — prefer the frequency-ordered raft-medium-directories.txt (paths) / raft-medium-files.txt (files) / api-endpoints.txt / api-objects.txt over the sparse dirb/common.txt so early hits surface first. |
+| `graphqlmap` | Build-resolved source snapshot | Interactive GraphQL introspection, schema dumping, and injection console for testing GraphQL endpoints (swisskyrepo/GraphQLmap). Command: `graphqlmap`. Category: web. | Pass the endpoint with -u plus options like --method, --headers, and -v in args; graphqlmap then reads console commands from stdin (dump_via_introspection, dump_via_fragment, nosqli, mysqli, postgresqli, mssqli, or a raw GraphQL query; help, exit), so drive it non-interactively by supplying those command lines via stdin. |
+| `hashcat` | Kali rolling, build-resolved | GPU/CPU password hash recovery tool. Command: `hashcat`. Category: credentials. | Pass hashcat mode, attack type, hash file, and wordlist flags in args. |
+| `hydra` | Kali rolling, build-resolved | Network login brute-force tool for authorized protocol testing. Command: `hydra`. Category: credentials. | Pass hydra flags in args, including -l/-L, -p/-P, target, and service module. |
+| `john` | Kali rolling, build-resolved | John the Ripper password hash auditing and cracking tool. Command: `john`. Category: credentials. | Pass john flags, hash files, formats, and wordlists in args. |
+| `johnny` | Kali rolling, build-resolved | Johnny GUI frontend for John the Ripper. Command: `johnny`. Category: credentials. | Pass johnny arguments in args; this usually requires a graphical session. |
+| `jwt_cracker` | 4.1.1 | JWT secret cracking helper installed from npm. Command: `jwt-cracker`. Category: credentials. | Pass jwt-cracker token and options in args. |
+| `masscan` | Kali rolling, build-resolved | High-speed Internet-scale TCP port scanner. Command: `masscan`. Category: network. | Pass masscan targets, ports, rate, and adapter flags in args. |
+| `msfconsole` | Kali rolling, build-resolved | Metasploit Framework console for modules, payloads, auxiliary checks, and post-exploitation workflows. Command: `msfconsole`. Category: exploitation. | Pass msfconsole flags in args; use -q -x for non-interactive command batches. |
+| `msfvenom` | Kali rolling, build-resolved | Metasploit payload generator and encoder. Command: `msfvenom`. Category: exploitation. | Pass payload, format, architecture, and output flags in args. |
+| `msfdb` | Kali rolling, build-resolved | Metasploit database management helper. Command: `msfdb`. Category: exploitation. | Pass msfdb actions such as init, start, stop, status, or reinit in args. |
+| `msfd` | Kali rolling, build-resolved | Metasploit daemon entrypoint. Command: `msfd`. Category: exploitation. | Pass msfd flags in args for daemonized Metasploit service workflows. |
+| `msfrpc` | Kali rolling, build-resolved | Metasploit RPC client helper. Command: `msfrpc`. Category: exploitation. | Pass msfrpc connection and command flags in args. |
+| `msfrpcd` | Kali rolling, build-resolved | Metasploit RPC daemon. Command: `msfrpcd`. Category: exploitation. | Pass msfrpcd service flags in args. |
+| `msfupdate` | Kali rolling, build-resolved | Metasploit update helper provided by the framework package. Command: `msfupdate`. Category: exploitation. | Pass msfupdate flags in args. |
+| `msf_egghunter` | Kali rolling, build-resolved | Metasploit egghunter shellcode helper. Command: `msf-egghunter`. Category: exploitation. | Pass helper flags in args. |
+| `msf_exe2vba` | Kali rolling, build-resolved | Metasploit helper that converts executables to VBA payload form. Command: `msf-exe2vba`. Category: exploitation. | Pass input and output paths in args. |
+| `msf_exe2vbs` | Kali rolling, build-resolved | Metasploit helper that converts executables to VBS payload form. Command: `msf-exe2vbs`. Category: exploitation. | Pass input and output paths in args. |
+| `msf_find_badchars` | Kali rolling, build-resolved | Metasploit helper for bad-character analysis. Command: `msf-find_badchars`. Category: exploitation. | Pass payload bytes/options in args. |
+| `msf_halflm_second` | Kali rolling, build-resolved | Metasploit helper for legacy HalfLM cracking workflows. Command: `msf-halflm_second`. Category: credentials. | Pass helper flags in args. |
+| `msf_hmac_sha1_crack` | Kali rolling, build-resolved | Metasploit helper for HMAC-SHA1 cracking workflows. Command: `msf-hmac_sha1_crack`. Category: credentials. | Pass hash material and options in args. |
+| `msf_java_deserializer` | Kali rolling, build-resolved | Metasploit Java deserialization helper. Command: `msf-java_deserializer`. Category: exploitation. | Pass serialized payload helper flags in args. |
+| `msf_jsobfu` | Kali rolling, build-resolved | Metasploit JavaScript obfuscation helper. Command: `msf-jsobfu`. Category: exploitation. | Pass JavaScript input/options in args. |
+| `msf_makeiplist` | Kali rolling, build-resolved | Metasploit helper for expanding and normalizing IP target lists. Command: `msf-makeiplist`. Category: network. | Pass IP ranges or files in args. |
+| `msf_md5_lookup` | Kali rolling, build-resolved | Metasploit helper for MD5 hash lookup workflows. Command: `msf-md5_lookup`. Category: credentials. | Pass MD5 values/options in args. |
+| `msf_metasm_shell` | Kali rolling, build-resolved | Metasploit Metasm shell helper. Command: `msf-metasm_shell`. Category: exploitation. | Pass helper options in args. |
+| `msf_msf_irb_shell` | Kali rolling, build-resolved | Metasploit IRB shell helper. Command: `msf-msf_irb_shell`. Category: exploitation. | Pass helper options in args. |
+| `msf_nasm_shell` | Kali rolling, build-resolved | Metasploit NASM shell helper. Command: `msf-nasm_shell`. Category: exploitation. | Pass assembly snippets/options in args. |
+| `msf_pattern_create` | Kali rolling, build-resolved | Metasploit cyclic pattern generator. Command: `msf-pattern_create`. Category: exploitation. | Pass -l length and related flags in args. |
+| `msf_pattern_offset` | Kali rolling, build-resolved | Metasploit cyclic pattern offset finder. Command: `msf-pattern_offset`. Category: exploitation. | Pass -q query and related flags in args. |
+| `msf_pdf2xdp` | Kali rolling, build-resolved | Metasploit PDF to XDP helper. Command: `msf-pdf2xdp`. Category: exploitation. | Pass input/output paths in args. |
+| `msf_virustotal` | Kali rolling, build-resolved | Metasploit VirusTotal lookup helper; requires an API key where applicable. Command: `msf-virustotal`. Category: malware-analysis. | Pass file/hash/API flags in args. |
+| `nikto` | Kali rolling, build-resolved | Web server vulnerability and misconfiguration scanner. Command: `nikto`. Category: web. | Pass nikto flags in args, such as -h, -p, -Tuning, and output options. |
+| `nmap` | Kali rolling, build-resolved | Network scanner for host discovery, port scanning, service detection, OS fingerprinting, and NSE scripts. Command: `nmap`. Category: network. | Pass nmap flags and targets in args. For polite rate limiting use `--max-rate N` or `--max-rate=N`; do not use non-Nmap flags such as `--rate-rate`. |
+| `impacket_netview` | Kali rolling, build-resolved | Impacket netview helper for enumerating Windows domain hosts and shares. Command: `impacket-netview`. Category: windows. | Pass impacket-netview target and authentication flags in args. |
+| `impacket_rpcdump` | Kali rolling, build-resolved | Impacket RPC endpoint mapper dumping utility. Command: `impacket-rpcdump`. Category: windows. | Pass target binding and authentication flags in args. |
+| `impacket_samrdump` | Kali rolling, build-resolved | Impacket SAMR enumeration utility for Windows account and group data. Command: `impacket-samrdump`. Category: windows. | Pass target and authentication flags in args. |
+| `impacket_secretsdump` | Kali rolling, build-resolved | Impacket credential extraction utility for authorized Windows assessments. Command: `impacket-secretsdump`. Category: windows. | Pass target and authentication flags in args. |
+| `impacket_wmiexec` | Kali rolling, build-resolved | Impacket WMI remote command execution utility for authorized Windows administration/testing. Command: `impacket-wmiexec`. Category: windows. | Pass target and authentication flags in args. |
+| `responder` | Kali rolling, build-resolved | LLMNR/NBT-NS/mDNS poisoner and credential capture tool for authorized internal testing. Command: `responder`. Category: network. | Pass Responder interface and protocol flags in args. |
+| `snmpwalk` | Kali rolling, build-resolved | Walk SNMP OIDs from a target agent. Command: `snmpwalk`. Category: snmp. | Pass SNMP version, community/auth, target, and OID args. |
+| `snmpget` | Kali rolling, build-resolved | Fetch specific SNMP OID values. Command: `snmpget`. Category: snmp. | Pass SNMP version, community/auth, target, and OID args. |
+| `snmpbulkget` | Kali rolling, build-resolved | SNMP GETBULK query utility. Command: `snmpbulkget`. Category: snmp. | Pass SNMP version, auth, target, and OID args. |
+| `snmpbulkwalk` | Kali rolling, build-resolved | SNMP GETBULK tree walking utility. Command: `snmpbulkwalk`. Category: snmp. | Pass SNMP version, auth, target, and OID args. |
+| `snmpgetnext` | Kali rolling, build-resolved | Fetch the next SNMP OID after the requested object. Command: `snmpgetnext`. Category: snmp. | Pass SNMP version, auth, target, and OID args. |
+| `snmpset` | Kali rolling, build-resolved | Set writable SNMP OID values where authorized. Command: `snmpset`. Category: snmp. | Pass SNMP auth, target, OID, type, and value args. |
+| `snmpstatus` | Kali rolling, build-resolved | Summarize SNMP agent status. Command: `snmpstatus`. Category: snmp. | Pass SNMP version, auth, and target args. |
+| `snmptable` | Kali rolling, build-resolved | Render SNMP table data. Command: `snmptable`. Category: snmp. | Pass SNMP auth, target, and table OID args. |
+| `snmptranslate` | Kali rolling, build-resolved | Translate SNMP OIDs and MIB names. Command: `snmptranslate`. Category: snmp. | Pass OID/MIB translation flags in args. |
+| `snmptrap` | Kali rolling, build-resolved | Send SNMP traps for authorized testing. Command: `snmptrap`. Category: snmp. | Pass destination, auth, OID, and varbind args. |
+| `snmpcheck` | Kali rolling, build-resolved | SNMP enumeration helper for common device information. Command: `snmpcheck`. Category: snmp. | Pass target and community flags in args. |
+| `snmpconf` | Kali rolling, build-resolved | SNMP configuration helper. Command: `snmpconf`. Category: snmp. | Pass snmpconf flags in args. |
+| `snmpdf` | Kali rolling, build-resolved | Show disk space via SNMP HOST-RESOURCES-MIB. Command: `snmpdf`. Category: snmp. | Pass SNMP auth and target args. |
+| `snmpdelta` | Kali rolling, build-resolved | Monitor SNMP integer counters over time. Command: `snmpdelta`. Category: snmp. | Pass SNMP auth, target, and OID args. |
+| `snmpinform` | Kali rolling, build-resolved | Send SNMP inform notifications. Command: `snmpinform`. Category: snmp. | Pass destination, auth, OID, and varbind args. |
+| `snmpnetstat` | Kali rolling, build-resolved | Query network statistics via SNMP. Command: `snmpnetstat`. Category: snmp. | Pass SNMP auth and target args. |
+| `snmpping` | Kali rolling, build-resolved | SNMP ping utility. Command: `snmpping`. Category: snmp. | Pass SNMP auth and target args. |
+| `snmpps` | Kali rolling, build-resolved | Show process information via SNMP HOST-RESOURCES-MIB. Command: `snmpps`. Category: snmp. | Pass SNMP auth and target args. |
+| `snmptest` | Kali rolling, build-resolved | Interactive SNMP test utility. Command: `snmptest`. Category: snmp. | Pass SNMP auth and target args. |
+| `snmptls` | Kali rolling, build-resolved | SNMP TLS/DTLS helper. Command: `snmptls`. Category: snmp. | Pass snmptls flags in args. |
+| `snmpusm` | Kali rolling, build-resolved | SNMPv3 user-based security model management utility. Command: `snmpusm`. Category: snmp. | Pass SNMPv3 management flags in args. |
+| `snmpvacm` | Kali rolling, build-resolved | SNMP view-based access control management utility. Command: `snmpvacm`. Category: snmp. | Pass VACM management flags in args. |
+| `sqlmap` | Kali rolling, build-resolved | SQL injection detection and exploitation framework. Command: `sqlmap`. Category: web. | Pass sqlmap flags in args, such as -u, --data, --batch, --risk, and --level. |
+| `searchsploit` | Kali rolling, build-resolved | Offline Exploit-DB search client for finding public exploits and shellcode by product, version, or CVE. Command: `searchsploit`. Category: exploitation. | Pass search terms and searchsploit flags in args, such as -t (title), --cve, -w (web links), -x (examine), -m (mirror/copy), and --nmap. The bundled database at /usr/share/exploitdb works offline; a -u refresh is opt-in. |
+| `tcpdump` | Kali rolling, build-resolved | Packet capture and traffic inspection utility. Command: `tcpdump`. Category: network. | Pass tcpdump interface, filter, and write/read flags in args. |
+| `traceroute` | Kali rolling, build-resolved | Network route discovery utility. Command: `traceroute`. Category: network. | Pass traceroute flags and target in args. |
+| `tshark` | Kali rolling, build-resolved | Terminal Wireshark packet capture and protocol analysis. Command: `tshark`. Category: network. | Pass tshark capture/read/filter/export flags in args. |
+| `wfuzz` | Kali rolling, build-resolved | Web application fuzzer for paths, params, headers, and payload positions. Command: `wfuzz`. Category: web. | Pass wfuzz flags in args with FUZZ placeholders. Content lists live in /usr/share/wordlists/cyberful-os/content/ — prefer the frequency-ordered raft-medium-directories.txt (paths) / raft-medium-files.txt (files) / api-endpoints.txt / api-objects.txt over the sparse dirb/common.txt so early hits surface first. |
+| `whatweb` | Kali rolling, build-resolved | Web technology fingerprinting scanner. Command: `whatweb`. Category: web. | Pass targets and whatweb flags in args. Results print as brief per-target lines on STDOUT by default. Do NOT pass --quiet/-q: it suppresses that logging, so a successful scan returns nothing. Use --color never for clean text, or --log-json=/dev/stdout for machine-readable JSON. |
+| `whois` | Kali rolling, build-resolved | WHOIS lookup client for domain and IP registration records. Command: `whois`. Category: osint. | Pass query target and whois flags in args. |
+| `cewl` | Kali rolling, build-resolved | Custom wordlist generator from website content. Command: `cewl`. Category: osint. | Pass target URL, crawl depth, output, and auth flags in args. |
+| `cloud_enum` | Kali rolling, build-resolved | Cloud asset enumeration tool for public S3, Azure, and GCP naming patterns. Command: `cloud_enum`. Category: cloud. | Pass cloud_enum flags in args, such as -k keyword and provider options. |
+| `crunch` | Kali rolling, build-resolved | Password wordlist generator. Command: `crunch`. Category: credentials. | Pass min/max length, charset, pattern, and output flags in args. |
+| `exiftool` | Kali rolling, build-resolved | Metadata extraction and editing utility for files and media. Command: `exiftool`. Category: osint. | Pass file paths and exiftool flags in args. |
+| `patator` | Kali rolling, build-resolved | Multi-protocol brute-force and fuzzing framework for authorized testing. Command: `patator`. Category: credentials. | Pass patator module and key=value options in args. |
+| `proxychains4` | Kali rolling, build-resolved | Run commands through proxychains for proxy/Tor-routed testing. Command: `proxychains4`. Category: privacy. | Pass the command to run and its args after proxychains4 flags. |
+| `recon_ng` | Kali rolling, build-resolved | Recon-ng OSINT framework console. Command: `recon-ng`. Category: osint. | Pass recon-ng workspace, module, and command flags in args. |
+| `s3scanner` | Kali rolling, build-resolved | S3 bucket enumeration and permissions scanner. Command: `s3scanner`. Category: cloud. | Pass bucket names, wordlists, and scan flags in args. |
+| `the_harvester` | Kali rolling, build-resolved | Email, subdomain, host, and people OSINT collector. Command: `theHarvester`. Category: osint. | Pass theHarvester flags in args, such as -d domain, -b source, and -l limit. |
+| `tor` | Kali rolling, build-resolved | Tor daemon for onion routing and anonymized OSINT workflows. Command: `tor`. Category: privacy. | Pass tor daemon flags in args; cyberful-os also provides tor_run for the bundled torrc. |
+| `tor_run` | Kali rolling, build-resolved | cyberful-os helper that starts Tor with the bundled /etc/tor/torrc. Command: `tor-run`. Category: privacy. | Pass extra tor flags in args. |
+| `h8mail` | Kali rolling, build-resolved | Email OSINT and breach reconnaissance tool. Command: `h8mail`. Category: osint. | Pass h8mail target and source flags in args. |
+| `holehe` | Kali rolling, build-resolved | Check whether an email is registered across common websites. Command: `holehe`. Category: osint. | Pass email and holehe flags in args. |
+| `maigret` | Kali rolling, build-resolved | Username search across public sites. Command: `maigret`. Category: osint. | Pass usernames and maigret flags in args. |
+| `socialscan` | Kali rolling, build-resolved | Email and username availability checks across platforms. Command: `socialscan`. Category: osint. | Pass socialscan targets and flags in args. |
+| `sherlock` | Build-resolved source snapshot | Username OSINT across social networks. Command: `sherlock`. Category: osint. | Pass usernames and sherlock flags in args. |
+| `androguard` | Kali rolling, build-resolved | Android APK and DEX analysis toolkit. Command: `androguard`. Category: mobile. | Pass androguard subcommands and target files in args. |
+| `apktool` | Kali rolling, build-resolved | APK reverse engineering tool for decoding and rebuilding Android apps. Command: `apktool`. Category: mobile. | Pass apktool commands such as d, b, if and file paths in args. |
+| `ghidra` | Kali rolling, build-resolved | Ghidra launcher provided by the system package. Command: `ghidra`. Category: reversing. | Pass Ghidra launcher flags in args; graphical use needs a display. |
+| `ghidra_run` | 12.1.2 | Ghidra GUI launcher symlinked by cyberful-os. Command: `ghidraRun`. Category: reversing. | Pass Ghidra GUI flags in args; graphical use needs a display. |
+| `analyze_headless` | 12.1.2 | Ghidra headless analyzer for batch reverse engineering. Command: `analyzeHeadless`. Category: reversing. | Pass project path/name, import path, script, processor, and analysis flags in args. |
+| `jadx` | Kali rolling, build-resolved | Dex to Java decompiler for APK/DEX/JAR files. Command: `jadx`. Category: mobile. | Pass jadx flags and input files in args. |
+| `jadx_gui` | Kali rolling, build-resolved | JADX graphical decompiler launcher. Command: `jadx-gui`. Category: mobile. | Pass jadx-gui flags and files in args; graphical use needs a display. |
+| `radare2` | Kali rolling, build-resolved | Radare2 reverse engineering framework entrypoint. Command: `radare2`. Category: reversing. | Pass radare2 flags and target files in args. |
+| `r2` | Kali rolling, build-resolved | Short radare2 entrypoint. Command: `r2`. Category: reversing. | Pass r2 flags and target files in args. |
+| `r2agent` | Kali rolling, build-resolved | Radare2 agent service helper. Command: `r2agent`. Category: reversing. | Pass r2agent flags in args. |
+| `r2pm` | Kali rolling, build-resolved | Radare2 package manager. Command: `r2pm`. Category: reversing. | Pass r2pm commands in args. |
+| `r2r` | Kali rolling, build-resolved | Radare2 regression test runner/helper. Command: `r2r`. Category: reversing. | Pass r2r flags in args. |
+| `r2sdb` | Kali rolling, build-resolved | Radare2 sdb database helper. Command: `r2sdb`. Category: reversing. | Pass r2sdb flags and database paths in args. |
+| `rabin2` | Kali rolling, build-resolved | Binary metadata, imports, symbols, strings, and section inspection from radare2. Command: `rabin2`. Category: reversing. | Pass rabin2 flags and binary paths in args. |
+| `radiff2` | Kali rolling, build-resolved | Binary diffing utility from radare2. Command: `radiff2`. Category: reversing. | Pass radiff2 flags and file paths in args. |
+| `rafind2` | Kali rolling, build-resolved | Binary pattern search utility from radare2. Command: `rafind2`. Category: reversing. | Pass search pattern and file args. |
+| `ragg2` | Kali rolling, build-resolved | Radare2 shellcode and binary generation helper. Command: `ragg2`. Category: reversing. | Pass ragg2 flags in args. |
+| `rahash2` | Kali rolling, build-resolved | Hashing and entropy utility from radare2. Command: `rahash2`. Category: reversing. | Pass rahash2 flags and file paths in args. |
+| `rapatch2` | Kali rolling, build-resolved | Binary patch application helper from radare2. Command: `rapatch2`. Category: reversing. | Pass patch script and file args. |
+| `rarun2` | Kali rolling, build-resolved | Runtime profile runner for radare2 debugging workflows. Command: `rarun2`. Category: reversing. | Pass rarun2 profile flags/files in args. |
+| `rasign2` | Kali rolling, build-resolved | Radare2 signature generation and management helper. Command: `rasign2`. Category: reversing. | Pass signature flags and files in args. |
+| `rasm2` | Kali rolling, build-resolved | Assembler/disassembler helper from radare2. Command: `rasm2`. Category: reversing. | Pass architecture, bits, and code bytes/text in args. |
+| `ravc2` | Kali rolling, build-resolved | Radare2 version-control style helper. Command: `ravc2`. Category: reversing. | Pass ravc2 flags in args. |
+| `rax2` | Kali rolling, build-resolved | Radare2 base conversion and numeric helper. Command: `rax2`. Category: reversing. | Pass numbers, encodings, or conversion flags in args. |
+| `frida` | Kali rolling, build-resolved | Frida dynamic instrumentation CLI. Command: `frida`. Category: mobile. | Pass Frida target, device, script, and runtime flags in args. |
+| `frida_apk` | Kali rolling, build-resolved | Frida APK patching/helper command from frida-tools. Command: `frida-apk`. Category: mobile. | Pass APK and frida-apk flags in args. |
+| `frida_compile` | Kali rolling, build-resolved | Compile Frida JavaScript agents. Command: `frida-compile`. Category: mobile. | Pass input script and output flags in args. |
+| `frida_create` | Kali rolling, build-resolved | Create Frida project templates. Command: `frida-create`. Category: mobile. | Pass project/template flags in args. |
+| `frida_discover` | Kali rolling, build-resolved | Discover functions and APIs with Frida. Command: `frida-discover`. Category: mobile. | Pass Frida target/device flags in args. |
+| `frida_itrace` | Kali rolling, build-resolved | Trace low-level instructions with Frida. Command: `frida-itrace`. Category: mobile. | Pass Frida target and trace flags in args. |
+| `frida_join` | Kali rolling, build-resolved | Join Frida portal sessions. Command: `frida-join`. Category: mobile. | Pass frida-join flags in args. |
+| `frida_kill` | Kali rolling, build-resolved | Kill processes through Frida device/session selection. Command: `frida-kill`. Category: mobile. | Pass device and process args. |
+| `frida_ls` | Kali rolling, build-resolved | List files through Frida device filesystem access. Command: `frida-ls`. Category: mobile. | Pass device and path args. |
+| `frida_ls_devices` | Kali rolling, build-resolved | List devices visible to Frida. Command: `frida-ls-devices`. Category: mobile. | Pass frida-ls-devices flags in args. |
+| `frida_pm` | Kali rolling, build-resolved | Frida package manager/helper. Command: `frida-pm`. Category: mobile. | Pass frida-pm commands in args. |
+| `frida_ps` | Kali rolling, build-resolved | List processes on local, USB, or remote Frida devices. Command: `frida-ps`. Category: mobile. | Pass Frida device flags in args. |
+| `frida_pull` | Kali rolling, build-resolved | Pull files from a Frida-connected device. Command: `frida-pull`. Category: mobile. | Pass device, remote path, and local path args. |
+| `frida_push` | Kali rolling, build-resolved | Push files to a Frida-connected device. Command: `frida-push`. Category: mobile. | Pass device, local path, and remote path args. |
+| `frida_rm` | Kali rolling, build-resolved | Remove files on a Frida-connected device. Command: `frida-rm`. Category: mobile. | Pass device and remote path args. |
+| `frida_strace` | Kali rolling, build-resolved | Trace system calls with Frida. Command: `frida-strace`. Category: mobile. | Pass Frida target/device flags in args. |
+| `frida_trace` | Kali rolling, build-resolved | Trace functions and APIs with Frida. Command: `frida-trace`. Category: mobile. | Pass Frida target and include/exclude flags in args. |
+| `drozer` | Kali rolling, build-resolved | Android security assessment framework console/client. Command: `drozer`. Category: mobile. | Pass drozer subcommands and connection flags in args. |
+| `drozer_complete` | Kali rolling, build-resolved | Drozer shell completion helper. Command: `drozer-complete`. Category: mobile. | Pass drozer-complete flags in args. |
+| `drozer_repository` | Kali rolling, build-resolved | Drozer module repository helper. Command: `drozer-repository`. Category: mobile. | Pass drozer-repository commands in args. |
+| `mobsf` | Kali rolling, build-resolved | MobSF mobile security framework entrypoint. Command: `mobsf`. Category: mobile. | Pass MobSF server or management flags in args. |
+| `objection` | Kali rolling, build-resolved | Runtime mobile exploration toolkit built on Frida. Command: `objection`. Category: mobile. | Pass objection target and command flags in args. |
+| `trivy` | Kali rolling, build-resolved | Vulnerability, secret, misconfiguration, filesystem, image, and SBOM scanner. Command: `trivy`. Category: supply-chain. | Pass trivy subcommands and flags in args, such as fs, image, config, --scanners, and --format. |
+| `retire` | 5.4.3 | Retire.js scanner for vulnerable JavaScript libraries and Node dependencies. Command: `retire`. Category: supply-chain. | Pass retire flags in args, such as --path, --outputformat, --severity, and --exitwith. |
+| `semgrep` | 1.170.0 | Semgrep structural and dataflow-aware static analysis for source, custom rules, framework sinks, and audit triage. Command: `semgrep`. Category: static-analysis. | Pass Semgrep subcommands and flags in args. Prefer local pinned rule directories or files, include --metrics=off, emit SARIF or JSON into /workspace, and record excluded/generated paths so coverage is reproducible. |
+| `syft` | 1.44.0 | Syft SBOM generator for directories, archives, filesystems, and container images. Command: `syft`. Category: supply-chain. | Pass a source with an explicit scheme when ambiguity matters, then choose one or more output formats. Persist CycloneDX JSON or SPDX JSON under /workspace for correlation with lockfiles and scanner results. |
+| `grype` | 0.112.0 | Grype vulnerability matcher for SBOMs, directories, filesystems, archives, and container images. Command: `grype`. Category: supply-chain. | Pass an explicit source such as sbom:/workspace/sbom.cdx.json or dir:/workspace. Choose JSON or CycloneDX output, preserve the vulnerability DB status/age, and use --only-fixed or severity filters only after retaining the unfiltered evidence set. |
+| `gitleaks` | 8.30.1 | Gitleaks secret discovery across Git history, working trees, directories, and stdin. Command: `gitleaks`. Category: supply-chain. | Pass the current gitleaks subcommand (git, dir, or stdin), source path, config/baseline flags, and a machine-readable report path. Scan history and present files separately because their remediation and exposure windows differ. |
+| `forge` | 1.7.1 | Pinned Foundry build, test, fuzz, invariant, trace, and Solidity project tool. Command: `forge`. Category: smart-contracts. | Pass ordinary Forge subcommands and flags. Work in a mutable engagement project, retain exact test commands and seeds for candidate findings, and let Forge auto-detect the required solc version unless the project pins one explicitly. |
+| `cast` | 1.7.1 | Pinned Foundry RPC, ABI, transaction, trace, storage, and wallet utility. Command: `cast`. Category: smart-contracts. | Pass ordinary Cast subcommands and flags. Prefer the managed EVM lab RPC for state-changing proofs when the engagement policy requires local-only execution. |
+| `anvil` | 1.7.1 | Pinned Foundry local Ethereum node and fork engine. Command: `anvil`. Category: smart-contracts. | Use the host-owned evm_lab tool for persistent engagement nodes, snapshots, accounts, and cleanup. Direct Anvil remains available for version inspection or additional caller-managed nodes. |
+| `cloudsplaining` | 0.9.1 | AWS IAM policy analysis for privilege escalation, data exposure, infrastructure modification, and resource-constraint gaps. Command: `cloudsplaining`. Category: cloud. | Pass cloudsplaining subcommands and flags in args. Analyze exported account authorization details or individual policy documents, retain the raw input snapshot, and write HTML/JSON findings into /workspace. |
+| `prowler` | 5.33.2 | Prowler multi-provider cloud, Kubernetes, SaaS, and compliance posture assessment CLI. Command: `prowler`. Category: cloud. | Pass the provider first, then scope by account/subscription/project, region, service, check, category, or compliance framework. Use explicit output modes and directory; broad provider-wide scans should follow a credential and scope inventory so absences are distinguishable from denied visibility. |
+| `kubectl` | 1.36.0 | Pinned Kubernetes client for API discovery, RBAC review, workload inspection, and bounded cluster evidence collection. Command: `kubectl`. Category: kubernetes. | Pass --kubeconfig and --context explicitly when more than one context may exist. Prefer structured -o json/yaml output and server-side discovery; kubectl is within one minor of supported v1.36 clusters and older/newer clusters may require a matching client. |
+| `kube_bench` | 0.15.6 | kube-bench CIS Kubernetes benchmark evaluator with the upstream configuration corpus bundled under /opt/kube-bench/cfg. Command: `kube-bench`. Category: kubernetes. | Pass run, benchmark/target, config directory, and JSON output flags. Direct node checks require the relevant host configuration and process/filesystem views to be mounted; otherwise use the tool against collected artifacts or run its job form in the cluster. |
+| `jazzer` | 0.30.0 | Coverage-guided JVM fuzzer for Java and other JVM languages with sanitizers, hooks, reproducer generation, and libFuzzer-compatible controls. Command: `jazzer`. Category: fuzzing. | Pass target class, classpath, corpus, instrumentation filters, sanitizer/hook options, and libFuzzer flags in args. Put corpora, crash artifacts, and exact classpaths under /workspace so crashes can be replayed deterministically. |
+| `afl_fuzz` | Kali rolling, build-resolved | AFL++ coverage-guided fuzzing engine for instrumented native targets and supported binary-only modes. Command: `afl-fuzz`. Category: fuzzing. | Pass input/output directories, resource bounds, mode flags, and the target after --. Use one seed corpus per input grammar, preserve crashes/hangs/queue plus compiler command, and reproduce findings outside the fuzzer before classification. |
+| `afl_clang_fast` | Kali rolling, build-resolved | AFL++ LLVM compiler wrapper for coverage-instrumented C targets. Command: `afl-clang-fast`. Category: fuzzing. | Pass normal clang compile/link arguments. Add sanitizers and hardening deliberately, keep the exact build command, and compile the harness plus target code into a dedicated fuzz binary under /workspace. |
+| `afl_clang_fastxx` | Kali rolling, build-resolved | AFL++ LLVM compiler wrapper for coverage-instrumented C++ targets. Command: `afl-clang-fast++`. Category: fuzzing. | Pass normal clang++ compile/link arguments, harness sources, sanitizer flags, and output path. Keep exception/RTTI settings aligned with the production parser unless the campaign is explicitly differential. |
+| `afl_cmin` | Kali rolling, build-resolved | AFL++ corpus minimizer that retains coverage-distinct test cases. Command: `afl-cmin`. Category: fuzzing. | Pass input/output corpus paths and the target after --. Minimize only with the same binary, instrumentation, environment, and timeout intended for the campaign or coverage equivalence will be misleading. |
+| `clang` | Kali rolling, build-resolved | Clang C compiler for sanitizer-enabled harnesses, libFuzzer targets, and native audit reproductions. Command: `clang`. Category: fuzzing. | Pass normal clang arguments. For libFuzzer, compile and link the harness with -fsanitize=fuzzer plus the selected bug sanitizers; use -fsanitize=fuzzer-no-link for library objects that should not pull in the driver. |
+| `clangxx` | Kali rolling, build-resolved | Clang C++ compiler for sanitizer-enabled harnesses, libFuzzer targets, and native audit reproductions. Command: `clang++`. Category: fuzzing. | Pass normal clang++ arguments. For libFuzzer, compile and link LLVMFuzzerTestOneInput with -fsanitize=fuzzer,address,undefined and preserve the exact compiler/runtime versions with every crash artifact. |
+| `libfuzzer_clang` | Kali rolling, build-resolved | Explicit C libFuzzer build entrypoint backed by Clang and the bundled compiler-rt runtime. Command: `clang`. Category: fuzzing. | Pass compile/link arguments including -fsanitize=fuzzer or -fsanitize=fuzzer-no-link. This tool names the libFuzzer workflow directly while retaining argv-only execution; it does not inject flags or hide the build recipe. |
+| `libfuzzer_clangxx` | Kali rolling, build-resolved | Explicit C++ libFuzzer build entrypoint backed by Clang++ and the bundled compiler-rt runtime. Command: `clang++`. Category: fuzzing. | Pass compile/link arguments including -fsanitize=fuzzer and selected bug sanitizers. The resulting binary accepts libFuzzer corpus, artifact_prefix, timeout, rss_limit_mb, jobs, and workers flags directly. |
+| `gdb_multiarch` | Kali rolling, build-resolved | Multi-architecture GDB debugger. Command: `gdb-multiarch`. Category: native-debug. | Prefer native_debug for owned sessions; pass ordinary non-interactive GDB arguments here. |
+| `gdbserver` | Kali rolling, build-resolved | Remote GDB stub for lab-owned processes. Command: `gdbserver`. Category: native-debug. | Bind only inside an authorized native lab and stop it before handoff. |
+| `pwn` | Kali rolling, build-resolved | Pwntools command-line utilities for exploit development and cyclic patterns. Command: `pwn`. Category: exploitation. | Pass a pwntools subcommand and arguments. |
+| `checksec` | Kali rolling, build-resolved | Inspect executable hardening such as PIE, RELRO, NX, and stack canaries. Command: `checksec`. Category: reversing. | Pass --file and an ELF path. |
+| `readelf` | Kali rolling, build-resolved | Inspect ELF headers, sections, symbols, and relocations. Command: `readelf`. Category: reversing. | Pass binutils readelf flags and paths. |
+| `objdump` | Kali rolling, build-resolved | Disassemble and inspect native object files. Command: `objdump`. Category: reversing. | Pass binutils objdump flags and paths. |
+| `strace` | Kali rolling, build-resolved | Trace Linux system calls and signals. Command: `strace`. Category: native-debug. | Run only lab-owned processes and retain trace output under /workspace. |
+| `ltrace` | Kali rolling, build-resolved | Trace dynamic library calls. Command: `ltrace`. Category: native-debug. | Run only lab-owned processes and retain trace output under /workspace. |
+| `eu_stack` | Kali rolling, build-resolved | Render native stacks from processes or core files using elfutils. Command: `eu-stack`. Category: crash-triage. | Pass an owned PID or core/executable pair. |
+| `llvm_symbolizer` | Kali rolling, build-resolved | Resolve native addresses to source symbols. Command: `llvm-symbolizer`. Category: crash-triage. | Pass an object and addresses. |
+| `ropgadget` | 7.7 | Search ELF, PE, Mach-O, and raw binaries for ROP gadgets. Command: `ROPgadget`. Category: exploitation. | Pass a binary and bounded gadget filters. |
+| `ropper` | Kali rolling, build-resolved | Find and filter ROP/JOP gadgets across architectures. Command: `ropper`. Category: exploitation. | Pass --file and search flags. |
+| `patchelf` | Kali rolling, build-resolved | Inspect or modify ELF interpreter and dynamic dependencies on scratch copies. Command: `patchelf`. Category: reversing. | Never patch the original evidence file; operate on a lab copy. |
+| `valgrind` | Kali rolling, build-resolved | Dynamic memory and undefined-behavior analysis for native lab processes. Command: `valgrind`. Category: crash-triage. | Pass bounded Valgrind flags and a local target. |
+| `unblob` | Kali rolling, build-resolved | Recursive firmware extraction and format identification. Command: `unblob`. Category: firmware. | Prefer firmware_lab so manifests and evidence are retained. |
+| `binwalk` | Kali rolling, build-resolved | Firmware signature scanning and fallback extraction. Command: `binwalk`. Category: firmware. | Pass a local firmware path; do not execute extracted files directly. |
+| `unsquashfs` | Kali rolling, build-resolved | Extract SquashFS filesystems. Command: `unsquashfs`. Category: firmware. | Write into a dedicated lab directory. |
+| `ubireader_extract_files` | Kali rolling, build-resolved | Extract files from UBI/UBIFS images. Command: `ubireader_extract_files`. Category: firmware. | Pass an image and explicit output directory. |
+| `dumpimage` | Kali rolling, build-resolved | Inspect and extract U-Boot images. Command: `dumpimage`. Category: firmware. | Pass listing or extraction flags and a local image. |
+| `dtc` | Kali rolling, build-resolved | Compile and decompile Device Tree blobs. Command: `dtc`. Category: firmware. | Pass explicit input/output formats and paths. |
+| `qemu_aarch64` | Kali rolling, build-resolved | Explicit AArch64 Linux userspace emulation without binfmt registration. Command: `qemu-aarch64`. Category: firmware. | Use native_lab and provide the extracted rootfs with -L. |
+| `qemu_arm` | Kali rolling, build-resolved | Explicit ARM Linux userspace emulation without binfmt registration. Command: `qemu-arm`. Category: firmware. | Use native_lab and provide the extracted rootfs with -L. |
+| `clang_tidy` | Kali rolling, build-resolved | Compiler-aware C/C++ checks using a compile database. Command: `clang-tidy`. Category: static-analysis. | Pass source paths, checks, and -p explicitly. |
+| `scan_build` | Kali rolling, build-resolved | Clang Static Analyzer build wrapper. Command: `scan-build`. Category: static-analysis. | Pass a bounded local build command and retain reports under /workspace. |
+| `cppcheck` | Kali rolling, build-resolved | C/C++ static analysis independent of a compiler frontend. Command: `cppcheck`. Category: static-analysis. | Pass explicit source and output options. |
+| `bear` | Kali rolling, build-resolved | Generate compile_commands.json from a native build. Command: `bear`. Category: static-analysis. | Run only inside a mutable lab copy. |
+| `afl_showmap` | Kali rolling, build-resolved | Record AFL++ coverage tuples for one input. Command: `afl-showmap`. Category: fuzzing. | Use the same target and instrumentation as the campaign. |
+| `afl_tmin` | Kali rolling, build-resolved | Minimize one crashing or coverage-relevant AFL++ input. Command: `afl-tmin`. Category: fuzzing. | Preserve the exact target and environment. |
+| `afl_whatsup` | Kali rolling, build-resolved | Summarize synchronized AFL++ campaign status. Command: `afl-whatsup`. Category: fuzzing. | Pass an AFL output directory. |
+| `zgrab2` | e8fbc9e | Perform bounded application-layer handshakes without authentication. Command: `zgrab2`. Category: protocol. | Use explicit targets and concurrency compatible with the engagement policy. |
+| `xxd` | Kali rolling, build-resolved | Hexadecimal dump and reverse-dump utility. Command: `xxd`. Category: reversing. | Inspect exact archive headers, binary fixtures, crash inputs, and byte-level format differences without an ad hoc script. |
+| `seven_zip` | Kali rolling, build-resolved | Native 7-Zip archive engine exposed through the stable `7zz` alias. Command: `7zz`. Category: archive. | Inspect or extract unusual and optimized archives; prefer `archive_extract` when atomic publication and Mozilla prepended-ZIP fallback are required. |
+| `jeb` | Optional private build | Optional JEB reverse engineering suite entrypoint when installed in private builds. Command: `jeb`. Category: reversing. | Pass JEB CLI flags in args; this tool is optional and appears missing unless JEB_INSTALLER_URL was used at image build time. |
+| `testssl` | Kali rolling, build-resolved | TLS/SSL protocol, cipher suite, certificate, and configuration scanner (testssl.sh; the system package installs the binary as `testssl`). Report deprecated protocols (TLS 1.0/1.1) as a protocol-support problem, not a key-length one. Command: `testssl`. Category: tls. | The target (host, host:port, or https URL) MUST be the LAST argument; put all flags BEFORE it (testssl aborts with 'URI comes last' otherwise). Use --quiet --color 0 for clean machine-readable output. |
+| `sslscan` | Kali rolling, build-resolved | TLS/SSL cipher suite and protocol version enumeration scanner. Command: `sslscan`. Category: tls. | Pass the target host:port and sslscan flags in args. |
+| `nuclei` | Kali rolling, build-resolved | Complete ProjectDiscovery Nuclei CLI. Cyberful adds only -disable-update-check; all other Nuclei arguments remain caller-controlled under the mission. Command: `nuclei`. Category: web. | Pass any Nuclei CLI arguments in args. nuclei_templates is an optional offline preview. |
+| `httpx` | Kali rolling, build-resolved | Fast HTTP probing, fingerprinting, and technology/title/status detection (ProjectDiscovery httpx). Telemetry-hardened: ALWAYS pass -duc (disable update check). httpx has NO per-header flags (there is no -csp, -hsts, etc.) — to inspect security headers/cookies (CSP, HSTS, Set-Cookie...) use -json with -include-response-header (-irh) and read the headers from the JSON, or use the `requests` tool. Common valid flags: -title, -tech-detect, -status-code, -web-server, -location, -json, -irh. Command: `httpx-pd`. Category: web. | Pass targets and httpx flags in args; always include -duc. For header inspection use -json -irh, not invented per-header flags. |
+| `subfinder` | Kali rolling, build-resolved | Passive subdomain enumeration from public sources (ProjectDiscovery). Telemetry-hardened: always pass `-duc` to disable update checks. Command: `subfinder`. Category: dns. | Pass `-d domain` and the required Subfinder flags; always include `-duc`. |
+
+## Completeness and runtime checks
+
+The documented static surfaces comprise 11 Pi-native and session tools, 23 gateway tools, 22 browser tools, 14 official ZAP tools, 10 Cyberful ZAP bridge tools, 9 Ghidra tools, 5 cyberful-os utilities, 13 cyberful-os managed workflows, 3 cyberful-os library tools, and 202 cyberful-os CLI tools. The cyberful-os registry therefore contains 223 declared tools, of which 222 are exposed by the public build because the optional JEB wrapper remains hidden until a private image attests it. Phase policy intentionally exposes only the subset needed by the active persona. ZAP API operations are runtime-discovered through `zap_api_catalog`, because that operation set is defined by the installed add-ons rather than by a stable Cyberful registry.

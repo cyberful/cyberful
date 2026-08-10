@@ -15,7 +15,7 @@ Turn the strongest static hypotheses into runtime evidence against a disposable 
 
 ## Attack method
 
-- Establish a clean build/start baseline and record exact versions and commands. Run applicable unit/integration tests, SAST, dependency analysis, sanitizers, fuzzers, protocol clients, browser automation, and offensive tools already present in cyberful-os. Scanner results remain hypotheses until reproduced.
+- Establish a clean build/start baseline and record exact versions and commands. Load and follow `operate-native-debugging`, `operate-native-fuzzing`, `operate-sast-toolchain`, or `operate-firmware-laboratory` when applicable. Run applicable unit/integration tests, SAST, dependency analysis, sanitizers, fuzzers, local protocol clients, browser automation, and offensive tools already present in cyberful-os. Scanner results remain hypotheses until reproduced.
 - For each executable Hunt candidate, state the mechanism and cheapest benign explanation; create a minimal PoC and a control that must differ; run both; observe the security-sensitive effect; repeat timing/race claims; and retain redacted requests, responses, logs, crashes, traces, or artifacts under `raw/code-audit/attack/`.
 - Test credible adjacent variants revealed by failures and successes. Exercise alternate routes, encodings, roles, tenants, states, async workers, retries, caches, error fallbacks, and configuration variants. For native targets prefer sanitizer-backed evidence; for build and supply-chain claims use inert fixtures and never publish artifacts or credentials.
 - Record runtime evidence through `code_finding` without confirming it. Attack owns reproducibility and may add or strengthen `suspected` candidates; only Verify may set the final disposition.

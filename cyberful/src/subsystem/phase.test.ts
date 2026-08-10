@@ -606,6 +606,95 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(out.outcome).toBe("warning")
   })
 
+  test("a main-provider policy block restarts the same phase once on fallback", async () => {
+    const specs: PhaseSpec[] = []
+    let attempts = 0
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && attempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "security_policy_block",
+                providerCode: "cyberPolicy",
+                retryable: false,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "security_policy_block",
+                code: "cyberPolicy",
+                detail: "main route rejected the request",
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: true,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.phase, spec.attempt, spec.providerRoute])).toEqual([
+      ["recon", 1, "main"],
+      ["recon", 2, "fallback"],
+    ])
+    expect(specs[1]?.objective).toContain("security_policy_block")
+    expect(out.terminal).toBe(true)
+    expect(out.outcome).toBe("warning")
+  })
+
+  test("a fallback-provider policy block is terminal and never returns to main", async () => {
+    const specs: PhaseSpec[] = []
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          return {
+            ...completedPhase(spec.phase),
+            ok: false,
+            summary: "",
+            exitCode: 1,
+            termination: "subsystem_failed",
+            handoff: undefined,
+            subsystemFailure: {
+              kind: "security_policy_block",
+              providerCode: "cyberPolicy",
+              retryable: false,
+            },
+            phaseFailure: {
+              phase: spec.phase,
+              source: "provider",
+              class: "security_policy_block",
+              code: "cyberPolicy",
+              detail: "fallback route rejected the request",
+            },
+            recoveryPolicy: {
+              enabled: true,
+              maxRestarts: 1,
+              useFallbackProvider: true,
+              fallbackConfigured: true,
+            },
+          }
+        },
+      }),
+    )
+
+    expect(specs.map((spec) => spec.providerRoute)).toEqual(["main", "fallback"])
+    expect(out.haltedAt).toBe("recon")
+    expect(out.outcome).toBe("failed")
+  })
+
   test("a retryable required-upstream failure restarts once without changing provider route", async () => {
     const specs: PhaseSpec[] = []
     let attempts = 0

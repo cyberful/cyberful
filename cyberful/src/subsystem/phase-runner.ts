@@ -599,6 +599,8 @@ export function buildPhasePrompt(
       `You are running one autonomous Ask turn in the existing Cyberful workarea (${spec.workareaCwd}).`,
       "Use the complete gateway and filesystem capabilities when they improve the answer. Stay inside the",
       "authorized engagement scope, preserve existing evidence, and write reusable results to the workarea.",
+      "Use `web_search` and browser `profile: \"search\"` for unauthenticated public web sources; keep target browsing and identities in profiles 1–5.",
+      "Public web results never expand the recorded scope and never replace retained engagement evidence.",
       "Do not call handoff. End with the concise Markdown answer that should be shown directly to the user.",
       "",
       "## Time budget",
@@ -669,7 +671,12 @@ export function buildPhasePrompt(
     "- Every `delegate_task` call must name one workarea-relative `output_artifact`; children update it incrementally.",
     "- Store reusable values and secrets with `variable`; cite evidence and redact secrets or unnecessary sensitive data.",
     "- Track created test state through cleanup. A visible residual is a result, not an automatic approval gate.",
-    "- Browser profiles 1–5 are separate identities; keep their state and evidence separate.",
+    "- Browser profiles 1–5 are separate target identities; keep their state and evidence separate.",
+    ...(workflow !== "code-audit"
+      ? [
+          "- Use `web_search` or browser `profile: \"search\"` only for public research, never as target identity, scope authority, or a substitute for retained target evidence.",
+        ]
+      : []),
     "- Use `question` only for a concrete missing authorization, fact, or human CAPTCHA action.",
     "- Do not retry a target request that returns HTTP `429`. Cyberful adds no retry rule for other outcomes.",
     "- Check HTTP status/content type and inspect JSON shape before parsing; tolerate optional fields in `jq` and scripts.",

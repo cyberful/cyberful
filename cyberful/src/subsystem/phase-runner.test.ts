@@ -491,8 +491,11 @@ describe("runPhase transcript persistence", () => {
       }),
     )
 
-    expect(system).toMatch(/Browser profiles 1–5 are separate identities/i)
+    expect(system).toMatch(/Browser profiles 1–5 are separate target identities/i)
     expect(system).toMatch(/keep their state and evidence separate/i)
+    expect(system).toContain("`web_search`")
+    expect(system).toContain('profile: "search"')
+    expect(system).toMatch(/never as target identity, scope authority/i)
   })
 
   test("routes imported-source execution through cyberful-os without hardcoding a host path", async () => {
@@ -1274,6 +1277,9 @@ describe("interactive Ask excursion", () => {
     expect(result.ok).toBe(true)
     expect(permission).toBe("autonomous")
     expect(system).toContain("one autonomous Ask turn")
+    expect(system).toContain("`web_search`")
+    expect(system).toContain('profile: "search"')
+    expect(system).toMatch(/never expand the recorded scope/i)
     expect(userMessage).toContain("Explain the report")
     expect(system).not.toContain("Required deliverable")
     expect(privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH).toBeUndefined()

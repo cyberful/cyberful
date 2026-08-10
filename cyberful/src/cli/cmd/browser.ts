@@ -7,23 +7,23 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import type { CommandModule } from "yargs"
-import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
+import { BrowserProfile, type TargetBrowserProfileId } from "@/dependency/browser-profile"
 import { BrowserProfileLauncher } from "@/dependency/browser-profile-launcher"
 import { UI } from "../ui"
 import { errorMessage } from "@/util/error"
 
-export const BROWSER_PROFILE_COMMANDS = BrowserProfile.BROWSER_PROFILE_IDS.map((profile) => `browser-${profile}`)
+export const BROWSER_PROFILE_COMMANDS = BrowserProfile.TARGET_BROWSER_PROFILE_IDS.map((profile) => `browser-${profile}`)
 
 export function browserProfileCommandKind(value: string): "supported" | "unsupported" | "unrelated" {
   if (!value.startsWith("browser-")) return "unrelated"
   return BROWSER_PROFILE_COMMANDS.includes(value) ? "supported" : "unsupported"
 }
 
-export function browserProfileFromCommand(value: unknown): BrowserProfileId {
+export function browserProfileFromCommand(value: unknown): TargetBrowserProfileId {
   if (typeof value !== "string") throw new Error("Browser profile command is missing")
   const match = /^browser-(\d+)$/.exec(value)
   const profile = match ? Number(match[1]) : Number.NaN
-  if (!BrowserProfile.isBrowserProfileId(profile)) throw new RangeError(invalidBrowserProfileMessage(value))
+  if (!BrowserProfile.isTargetBrowserProfileId(profile)) throw new RangeError(invalidBrowserProfileMessage(value))
   return profile
 }
 

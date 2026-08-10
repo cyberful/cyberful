@@ -76,6 +76,40 @@ describe("resolveBrowserUpstreamEnv", () => {
       CYBER_BROWSER_ARTIFACTS_DIR: path.join(TEMP, "artifacts"),
     })
   })
+
+  test("the search profile strips proxy and shared browser state", () => {
+    const r = resolveBrowserUpstreamEnv({
+      dedicated: "/home/u/search",
+      artifactsDir: "/home/u/search-artifacts",
+      direct: true,
+      tempProfileDir: TEMP,
+    })
+    expect(r.set.CYBER_BROWSER_USER_DATA_DIR).toBe("/home/u/search")
+    expect(r.unset).toEqual([
+      "CYBER_BROWSER_PROXY",
+      "CYBER_BROWSER_PROXY_CA_SPKI",
+      "CYBER_BROWSER_PROXY_WARNING",
+      "CYBER_BROWSER_CDP_ENDPOINT",
+      "CYBER_BROWSER_OWN_TAB",
+      "CYBER_BROWSER_SHARED_ATTESTATION",
+    ])
+  })
+
+  test("a locked search profile keeps direct routing in its independent temporary fallback", () => {
+    const r = resolveBrowserUpstreamEnv({
+      dedicated: "/home/u/search",
+      artifactsDir: "/home/u/search-artifacts",
+      direct: true,
+      livePort: 4321,
+      tempProfileDir: TEMP,
+    })
+    expect(r.set).toEqual({
+      CYBER_BROWSER_USER_DATA_DIR: TEMP,
+      CYBER_BROWSER_ARTIFACTS_DIR: path.join(TEMP, "artifacts"),
+    })
+    expect(r.unset).toContain("CYBER_BROWSER_PROXY")
+    expect(r.unset).toContain("CYBER_BROWSER_SHARED_ATTESTATION")
+  })
 })
 
 describe("browser profile tool routing", () => {
@@ -93,13 +127,22 @@ describe("browser profile tool routing", () => {
   const candidates = [
     { def: definition, capability: "browser" as const, browserProfile: 1 as const, call },
     { def: definition, capability: "browser" as const, browserProfile: 2 as const, call },
+    { def: definition, capability: "browser" as const, browserProfile: "search" as const, call },
   ]
 
   test("advertises one optional selector without changing the underlying browser schema", () => {
-    const advertised = browserProfileToolDefinition(definition, [1, 2])
+    const advertised = browserProfileToolDefinition(definition, [1, 2, "search"])
     expect(advertised.inputSchema).toMatchObject({
       additionalProperties: false,
-      properties: { profile: { type: "integer", enum: [1, 2], default: 1 } },
+      properties: {
+        profile: {
+          oneOf: [
+            { type: "integer", enum: [1, 2] },
+            { type: "string", enum: ["search"] },
+          ],
+          default: 1,
+        },
+      },
     })
     expect(definition.inputSchema.properties).not.toHaveProperty("profile")
   })
@@ -113,11 +156,43 @@ describe("browser profile tool routing", () => {
       upstream: candidates[1],
       args: { url: "https://example.test" },
     })
+    expect(
+      selectBrowserProfileUpstream(candidates, { profile: "search", url: "https://duckduckgo.com/about" }),
+    ).toEqual({
+      upstream: candidates[2],
+      args: { url: "https://duckduckgo.com/about" },
+    })
   })
 
   test("rejects invalid or unavailable profile identities", () => {
-    expect(() => selectBrowserProfileUpstream(candidates, { profile: "2" })).toThrow("integer from 1 through 5")
+    expect(() => selectBrowserProfileUpstream(candidates, { profile: "2" })).toThrow("integer from 1 through 5 or search")
     expect(() => selectBrowserProfileUpstream(candidates, { profile: 5 })).toThrow("profile 5 is unavailable")
+  })
+
+  test("forces web_search to the named profile without advertising a selector", () => {
+    const searchDefinition = {
+      name: "web_search",
+      description: "Search DuckDuckGo.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    }
+    const search = { def: searchDefinition, capability: "browser" as const, browserProfile: "search" as const, call }
+    const wrongProfile = { def: searchDefinition, capability: "browser" as const, browserProfile: 1 as const, call }
+    expect(browserProfileToolDefinition(searchDefinition, ["search"])).toBe(searchDefinition)
+    expect(selectBrowserProfileUpstream([wrongProfile, search], { query: "CVE" })).toEqual({
+      upstream: search,
+      args: { query: "CVE" },
+    })
+    expect(() => selectBrowserProfileUpstream([wrongProfile], { query: "CVE" })).toThrow(
+      "search profile is unavailable",
+    )
+    expect(() => selectBrowserProfileUpstream([search], { query: "CVE", profile: 1 })).toThrow(
+      "does not accept a browser profile",
+    )
   })
 })
 

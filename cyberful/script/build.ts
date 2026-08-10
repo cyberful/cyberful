@@ -7,6 +7,7 @@
 // ────────────────────────────────────────────────────────────────────
 
 import fs from "node:fs"
+import { createHash } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -321,23 +322,47 @@ for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: Builtin
 }
 console.log(`Embedding ${Object.keys(embeddedConfig).length} built-in config files`)
 
-// ── Releases Embed Only The Host-Side Runtime Launcher ───────────
-// The security-tool filesystem ships as one signed GHCR image rather than source
-// Docker contexts inside every platform binary. Releases retain only the stdio
-// MCP launcher and its Python protocol implementation; a source checkout still
-// owns the Dockerfile, supervisor, bridges, wordlists, and contributor build path.
-// → cyberful/src/bootstrap-config.ts — restores the embedded toolkit on first use.
+// ── Releases Carry One Complete Local Runtime Recipe ─────────────
+// Published binaries do not depend on a Cyberful container registry. The small
+// first-party Docker context is embedded byte-for-byte and materialized on first
+// use, while large third-party layers remain checksum-pinned Docker build inputs.
+// A normalized content hash, independent of the CLI version, lets UI-only releases
+// reuse the already attested local image.
+// → cyberful/src/bootstrap-config.ts — restores the context atomically.
 // ─────────────────────────────────────────────────────────────────────
-const cyberfulOsRoot = path.resolve(dir, "../mcps/cyberful-os")
+const runtimeContextRoot = path.resolve(dir, "../mcps")
 const embeddedCyberfulOs: Record<string, string> = {}
-if (fs.existsSync(cyberfulOsRoot)) {
-  for (const rel of ["bin/cyberful-os", "cyberful_os_mcp.py", "mcp_framing.py"]) {
-    const file = path.join(cyberfulOsRoot, rel)
-    if (!fs.existsSync(file)) throw new Error(`Host runtime asset not found: ${file}`)
-    embeddedCyberfulOs[rel] = await Bun.file(file).text()
-  }
+const runtimeExcludedSegments = new Set([".git", "__pycache__", "node_modules", "tests", "browser"])
+const runtimeExcludedFiles = new Set([
+  "package-lock.json",
+  "cyberful-os/docker-compose.yml",
+  "ghidra/Dockerfile",
+  "ghidra/Dockerfile.bridge",
+  "zap/Dockerfile",
+  "zap/Dockerfile.bridge",
+])
+for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: runtimeContextRoot, onlyFiles: true }))) {
+  const norm = rel.replaceAll("\\", "/")
+  const segments = norm.split("/")
+  if (segments.some((segment) => runtimeExcludedSegments.has(segment))) continue
+  if (runtimeExcludedFiles.has(norm) || norm.endsWith(".test.mjs")) continue
+  embeddedCyberfulOs[norm] = Buffer.from(await Bun.file(path.join(runtimeContextRoot, rel)).arrayBuffer()).toString(
+    "base64",
+  )
 }
-console.log(`Embedding ${Object.keys(embeddedCyberfulOs).length} cyberful-os files`)
+if (!embeddedCyberfulOs["cyberful-os/Dockerfile"] || !embeddedCyberfulOs["cyberful-os/bin/cyberful-os-build"])
+  throw new Error("Complete cyberful-os runtime context is unavailable")
+const runtimeFingerprintHash = createHash("sha256")
+for (const [rel, content] of Object.entries(embeddedCyberfulOs).sort(([left], [right]) => left.localeCompare(right))) {
+  runtimeFingerprintHash.update(rel).update("\0").update(content).update("\0")
+}
+const runtimeFingerprint = runtimeFingerprintHash.digest("hex")
+console.log(`Embedding ${Object.keys(embeddedCyberfulOs).length} runtime files (${runtimeFingerprint.slice(0, 12)})`)
+await fs.promises.mkdir(path.join(dir, "dist"), { recursive: true })
+await fs.promises.writeFile(
+  path.join(dir, "dist", "runtime-manifest.json"),
+  `${JSON.stringify({ version: 1, fingerprint: runtimeFingerprint, files: Object.keys(embeddedCyberfulOs).sort() }, null, 2)}\n`,
+)
 
 // ── Browser Driver Embedding Preserves Binary Assets ─────────────────
 // The browser MCP and Patchright driver ship inside Cyberful; only Chromium is
@@ -397,6 +422,7 @@ for (const item of targets) {
   const rootPath = path.resolve(dir, "../node_modules/@opentui/core/parser.worker.js")
   const parserWorker = fs.realpathSync(fs.existsSync(localPath) ? localPath : rootPath)
   const workerPath = "./src/cli/cmd/tui/worker.ts"
+  const cveDictionaryIntegrityWorkerPath = "./src/cve-dictionary/integrity-worker.ts"
 
   // ── The Gateway Is A First-Class Binary Entrypoint ───────────────
   // A compiled phase launches its private gateway by re-entering the binary through
@@ -430,13 +456,14 @@ for (const item of targets) {
       execArgv: [`--user-agent=cyberful/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
-    entrypoints: ["./src/index.ts", parserWorker, workerPath, gatewayPath],
+    entrypoints: ["./src/index.ts", parserWorker, workerPath, gatewayPath, cveDictionaryIntegrityWorkerPath],
     define: {
       CYBERFUL_VERSION: `'${Script.version}'`,
       CYBERFUL_BUILD_ID: JSON.stringify(buildID),
       CYBERFUL_MIGRATIONS: JSON.stringify(migrations),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       CYBERFUL_WORKER_PATH: workerPath,
+      CYBERFUL_CVE_DICTIONARY_INTEGRITY_WORKER_PATH: cveDictionaryIntegrityWorkerPath,
       // ── Release Gateways Re-Enter The Stable Main Binary ────────
       // Standalone builds hash secondary-entrypoint chunks, so their source-relative
       // paths are not stable release addresses. This marker makes the gateway invoke
@@ -450,7 +477,7 @@ for (const item of targets) {
       CYBERFUL_EMBEDDED_ENV: JSON.stringify(embeddedEnv),
       CYBERFUL_EMBEDDED_CONFIG: JSON.stringify(embeddedConfig),
       CYBERFUL_EMBEDDED_CYBERFUL_OS: JSON.stringify(embeddedCyberfulOs),
-      CYBERFUL_RUNTIME_IMAGE: JSON.stringify(process.env.CYBERFUL_RUNTIME_IMAGE?.trim() ?? ""),
+      CYBERFUL_RUNTIME_FINGERPRINT: JSON.stringify(runtimeFingerprint),
       CYBERFUL_EMBEDDED_BROWSER: JSON.stringify(embeddedBrowser),
       CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedBrowserBin),
       CYBERFUL_EMBEDDED_ONNX_RUNTIME: JSON.stringify(embeddedOnnx),

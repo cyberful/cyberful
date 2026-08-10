@@ -31,9 +31,11 @@ cyberful auth status
 cyberful
 ```
 
-`cyberful auth status` must report `Status: available`. The first launch pulls the Cyberful security image and installs its isolated Chromium browser. Keep at least 40 GB of disk space free and dedicate at least 10 GB of RAM to Docker.
+`cyberful auth status` must report `Status: available`. The first launch builds the fingerprinted Cyberful security image locally with visible Docker logs and installs its isolated Chromium browser. Keep at least 100 GB of disk space free for the first build and dedicate at least 10 GB of RAM to Docker.
 
 Open any persistent browser identity before a test with `cyberful browser-1` through `cyberful browser-5`. Sign in only to the authorized target account, then fully close the browser so Cyberful can reuse that profile during the test.
+
+Public web research uses a sixth persistent identity named `search`, kept separate from target accounts and routed directly to DuckDuckGo through `web_search`. It has no separate CLI command and is never included in target surface coverage.
 
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.io/getting-started/)**.
 
@@ -46,10 +48,10 @@ To install through npm and run a release:
 - Docker with a running Linux-container engine;
 - Node.js 18 or newer with npm;
 - one configured model provider;
-- at least 40 GB of free disk space;
+- at least 100 GB of free disk space before the first runtime build;
 - at least 10 GB of RAM dedicated to Docker.
 
-ZAP, Ghidra, Python, Ruby/Bundler, and the offensive toolchain—including the internal Firefox/Xvfb runtime used by ZAP—are included in the runtime image. Before a live-target AgentRun starts, an ephemeral private-network HTTPS canary verifies that curl/OpenSSL, Git, Requests/pip, Node, and Ruby/Bundler can traverse the real ZAP proxy with the attested engagement CA; it never contacts the target or Internet. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
+ZAP, Ghidra, Python, Ruby/Bundler, native debugging and fuzzing, managed Firefox/Marionette, Xvfb/X11 clipboard testing, archive extraction, and the offensive toolchain are included in the runtime image. Before a live-target AgentRun starts, an ephemeral private-network HTTPS canary verifies that curl/OpenSSL, Git, Requests/pip, Node, and Ruby/Bundler can traverse the real ZAP proxy with the attested engagement CA; it never contacts the target or Internet. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
 
 See [What you need](https://cyberful.io/getting-started/requirements/) for the supported host platforms, release architectures, provider setup, and source development requirements.
 
@@ -73,7 +75,9 @@ Cyberful creates a secret-free `settings.yaml` in the launch directory. It defin
 
 Workareas live under `work/<name>/` and session logs under `logs/session-logs/`. They can contain sensitive evidence. Never commit workareas, transcripts, browser profiles, ZAP or Ghidra state, generated reports, credentials, or tokens.
 
-Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`. Session lifecycle, out-of-band steering, CAPTCHA handoffs, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.io/user-guide/sessions-and-reports/).
+The first local engagement also prepares the release-pinned CVE Dictionary in the foreground. Before downloading, Cyberful checks an explicit verified path, the managed pointer, verified orphan snapshots, and a source checkout's fixed `dist/cve-dictionary` directory; selecting an orphan repairs the missing pointer atomically. Release `2026.08.05` downloads about 5.18 GiB only when no verified local candidate exists, expands to about 24.47 GiB, requires approximately 31 GiB of additional free space during installation, and shows verified download and activation progress on stderr. Later startups reuse the local snapshot without a network update check.
+
+Start a specific headless workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`. Session lifecycle, out-of-band steering, CAPTCHA handoffs, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.io/user-guide/sessions-and-reports/).
 
 ## Documentation
 

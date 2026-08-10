@@ -29,6 +29,12 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any, Callable
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+if MODULE_DIR not in sys.path:
+    sys.path.insert(0, MODULE_DIR)
+
+import native_security
+
 from mcp_framing import (
     bounded_json_lines as read_bounded_json_lines,
     reject_nonfinite_json,
@@ -547,6 +553,8 @@ def ensure_container(timeout_seconds: int) -> None:
         f"{workspace}:{target}",
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_PTRACE",
+        "--security-opt=no-new-privileges",
+        "--security-opt=seccomp=unconfined",
         *docker_extra_args(),
         *container_owner_args(),
         image_name(),
@@ -1046,6 +1054,23 @@ def _validate_schema_value(
     if depth > MAX_JSON_DEPTH:
         _input_error(path_label, f"nesting exceeds {MAX_JSON_DEPTH} levels")
 
+    alternatives = schema.get("oneOf")
+    if alternatives is not None:
+        matches: list[int] = []
+        failures: list[str] = []
+        for alternative in alternatives:
+            candidate_state = [state[0]]
+            try:
+                _validate_schema_value(value, alternative, path_label, depth, candidate_state)
+                matches.append(candidate_state[0])
+            except ValueError as exc:
+                failures.append(str(exc))
+        if len(matches) != 1:
+            detail = failures[0] if not matches and failures else f"matched {len(matches)} operation schemas"
+            _input_error(path_label, f"expected exactly one operation schema ({detail})")
+        state[0] = matches[0]
+        return
+
     choices = schema.get("enum")
     if choices is not None and not any(type(value) is type(choice) and value == choice for choice in choices):
         _input_error(path_label, f"expected one of {', '.join(json.dumps(choice) for choice in choices)}")
@@ -1518,6 +1543,38 @@ CLI_TOOL_SPECS: tuple[CliToolSpec, ...] = (
     _cli("clangxx", "clang++", "fuzzing", "Clang C++ compiler for sanitizer-enabled harnesses, libFuzzer targets, and native audit reproductions.", "Pass normal clang++ arguments. For libFuzzer, compile and link LLVMFuzzerTestOneInput with -fsanitize=fuzzer,address,undefined and preserve the exact compiler/runtime versions with every crash artifact.", examples=("-O1 -g -fsanitize=fuzzer,address,undefined /workspace/fuzz_target.cc /workspace/parser.cc -o /workspace/fuzz_target",), aliases=("clang++",)),
     _cli("libfuzzer_clang", "clang", "fuzzing", "Explicit C libFuzzer build entrypoint backed by Clang and the bundled compiler-rt runtime.", "Pass compile/link arguments including -fsanitize=fuzzer or -fsanitize=fuzzer-no-link. This tool names the libFuzzer workflow directly while retaining argv-only execution; it does not inject flags or hide the build recipe.", examples=("-O1 -g -fsanitize=fuzzer,address /workspace/fuzz_target.c -o /workspace/fuzz_target",)),
     _cli("libfuzzer_clangxx", "clang++", "fuzzing", "Explicit C++ libFuzzer build entrypoint backed by Clang++ and the bundled compiler-rt runtime.", "Pass compile/link arguments including -fsanitize=fuzzer and selected bug sanitizers. The resulting binary accepts libFuzzer corpus, artifact_prefix, timeout, rss_limit_mb, jobs, and workers flags directly.", examples=("-O1 -g -fsanitize=fuzzer,address,undefined /workspace/fuzz_target.cc -o /workspace/fuzz_target",), aliases=("libfuzzer-clang++",)),
+    _cli("gdb_multiarch", "gdb-multiarch", "native-debug", "Multi-architecture GDB debugger.", "Prefer native_debug for owned sessions; pass ordinary non-interactive GDB arguments here.", examples=("--batch -ex 'file /workspace/target' -ex 'info files'",)),
+    _cli("gdbserver", "gdbserver", "native-debug", "Remote GDB stub for lab-owned processes.", "Bind only inside an authorized native lab and stop it before handoff.", examples=("127.0.0.1:2345 /workspace/target",)),
+    _cli("pwn", "pwn", "exploitation", "Pwntools command-line utilities for exploit development and cyclic patterns.", "Pass a pwntools subcommand and arguments.", examples=("cyclic 256",)),
+    _cli("checksec", "checksec", "reversing", "Inspect executable hardening such as PIE, RELRO, NX, and stack canaries.", "Pass --file and an ELF path.", examples=("--file=/workspace/target",)),
+    _cli("readelf", "readelf", "reversing", "Inspect ELF headers, sections, symbols, and relocations.", "Pass binutils readelf flags and paths.", examples=("-a /workspace/target",)),
+    _cli("xxd", "xxd", "reversing", "Render bounded binary hex dumps and reverse synthetic hex fixtures.", "Pass explicit offsets, lengths, and paths; prefer a bounded -l value for evidence inspection.", examples=("-g 1 -l 256 /workspace/target",)),
+    _cli("objdump", "objdump", "reversing", "Disassemble and inspect native object files.", "Pass binutils objdump flags and paths.", examples=("-d /workspace/target",)),
+    _cli("strace", "strace", "native-debug", "Trace Linux system calls and signals.", "Run only lab-owned processes and retain trace output under /workspace.", examples=("-f -o /workspace/trace.log /workspace/target",)),
+    _cli("ltrace", "ltrace", "native-debug", "Trace dynamic library calls.", "Run only lab-owned processes and retain trace output under /workspace.", examples=("-f -o /workspace/ltrace.log /workspace/target",)),
+    _cli("eu_stack", "eu-stack", "crash-triage", "Render native stacks from processes or core files using elfutils.", "Pass an owned PID or core/executable pair.", examples=("--core=/workspace/core -e /workspace/target",), aliases=("eu-stack",)),
+    _cli("llvm_symbolizer", "llvm-symbolizer", "crash-triage", "Resolve native addresses to source symbols.", "Pass an object and addresses.", examples=("--obj=/workspace/target 0x401000",), aliases=("llvm-symbolizer",)),
+    _cli("ropgadget", "ROPgadget", "exploitation", "Search ELF, PE, Mach-O, and raw binaries for ROP gadgets.", "Pass a binary and bounded gadget filters.", examples=("--binary /workspace/target --only 'pop|ret'",), aliases=("ROPgadget",)),
+    _cli("ropper", "ropper", "exploitation", "Find and filter ROP/JOP gadgets across architectures.", "Pass --file and search flags.", examples=("--file /workspace/target --search 'pop rdi; ret'",)),
+    _cli("patchelf", "patchelf", "reversing", "Inspect or modify ELF interpreter and dynamic dependencies on scratch copies.", "Never patch the original evidence file; operate on a lab copy.", examples=("--print-interpreter /workspace/target",)),
+    _cli("valgrind", "valgrind", "crash-triage", "Dynamic memory and undefined-behavior analysis for native lab processes.", "Pass bounded Valgrind flags and a local target.", examples=("--tool=memcheck --error-exitcode=99 /workspace/target",)),
+    _cli("unblob", "unblob", "firmware", "Recursive firmware extraction and format identification.", "Prefer firmware_lab so manifests and evidence are retained.", examples=("/workspace/firmware.bin --extract-dir /workspace/unpacked",)),
+    _cli("binwalk", "binwalk", "firmware", "Firmware signature scanning and fallback extraction.", "Pass a local firmware path; do not execute extracted files directly.", examples=("/workspace/firmware.bin",)),
+    _cli("seven_zip", "7zz", "archive", "Native 7-Zip CLI for archive inspection and recovery.", "Prefer archive_extract for atomic bounded extraction; use this direct wrapper for read-only listing or unsupported local formats.", examples=("l -slt /workspace/omni.ja",), aliases=("7zz",)),
+    _cli("unsquashfs", "unsquashfs", "firmware", "Extract SquashFS filesystems.", "Write into a dedicated lab directory.", examples=("-d /workspace/rootfs /workspace/rootfs.squashfs",)),
+    _cli("ubireader_extract_files", "ubireader_extract_files", "firmware", "Extract files from UBI/UBIFS images.", "Pass an image and explicit output directory.", examples=("-o /workspace/ubi /workspace/flash.ubi",), aliases=("ubireader-extract-files",)),
+    _cli("dumpimage", "dumpimage", "firmware", "Inspect and extract U-Boot images.", "Pass listing or extraction flags and a local image.", examples=("-l /workspace/uImage",)),
+    _cli("dtc", "dtc", "firmware", "Compile and decompile Device Tree blobs.", "Pass explicit input/output formats and paths.", examples=("-I dtb -O dts /workspace/device.dtb",)),
+    _cli("qemu_aarch64", "qemu-aarch64", "firmware", "Explicit AArch64 Linux userspace emulation without binfmt registration.", "Use native_lab and provide the extracted rootfs with -L.", examples=("-L /workspace/rootfs /workspace/rootfs/bin/busybox",), aliases=("qemu-aarch64",)),
+    _cli("qemu_arm", "qemu-arm", "firmware", "Explicit ARM Linux userspace emulation without binfmt registration.", "Use native_lab and provide the extracted rootfs with -L.", examples=("-L /workspace/rootfs /workspace/rootfs/bin/busybox",), aliases=("qemu-arm",)),
+    _cli("clang_tidy", "clang-tidy", "static-analysis", "Compiler-aware C/C++ checks using a compile database.", "Pass source paths, checks, and -p explicitly.", examples=("/workspace/src/file.cc -p /workspace/build",), aliases=("clang-tidy",)),
+    _cli("scan_build", "scan-build", "static-analysis", "Clang Static Analyzer build wrapper.", "Pass a bounded local build command and retain reports under /workspace.", examples=("-o /workspace/scan-build cmake --build /workspace/build",), aliases=("scan-build",)),
+    _cli("cppcheck", "cppcheck", "static-analysis", "C/C++ static analysis independent of a compiler frontend.", "Pass explicit source and output options.", examples=("--enable=warning,style /workspace/src",)),
+    _cli("bear", "bear", "static-analysis", "Generate compile_commands.json from a native build.", "Run only inside a mutable lab copy.", examples=("-- make -C /workspace/project",)),
+    _cli("afl_showmap", "afl-showmap", "fuzzing", "Record AFL++ coverage tuples for one input.", "Use the same target and instrumentation as the campaign.", examples=("-o /workspace/map -- /workspace/target @@",), aliases=("afl-showmap",)),
+    _cli("afl_tmin", "afl-tmin", "fuzzing", "Minimize one crashing or coverage-relevant AFL++ input.", "Preserve the exact target and environment.", examples=("-i /workspace/crash -o /workspace/min -- /workspace/target @@",), aliases=("afl-tmin",)),
+    _cli("afl_whatsup", "afl-whatsup", "fuzzing", "Summarize synchronized AFL++ campaign status.", "Pass an AFL output directory.", examples=("/workspace/afl-out",), aliases=("afl-whatsup",)),
+    _cli("zgrab2", "zgrab2", "protocol", "Perform bounded application-layer handshakes without authentication.", "Use explicit targets and concurrency compatible with the engagement policy.", examples=("http --port 8080",)),
     _cli("jeb", "jeb", "reversing", "Optional JEB reverse engineering suite entrypoint when installed in private builds.", "Pass JEB CLI flags in args; this tool is optional and appears missing unless JEB_INSTALLER_URL was used at image build time.", examples=("--help",), optional=True),
     _cli("testssl", "testssl", "tls", "TLS/SSL protocol, cipher suite, certificate, and configuration scanner (testssl.sh; the system package installs the binary as `testssl`). Report deprecated protocols (TLS 1.0/1.1) as a protocol-support problem, not a key-length one.", "The target (host, host:port, or https URL) MUST be the LAST argument; put all flags BEFORE it (testssl aborts with 'URI comes last' otherwise). Use --quiet --color 0 for clean machine-readable output.", examples=("https://example.com", "--quiet --color 0 --severity LOW example.com:443", "-p -S example.com:443"), expected_paths=("/usr/bin/testssl",)),
     _cli("sslscan", "sslscan", "tls", "TLS/SSL cipher suite and protocol version enumeration scanner.", "Pass the target host:port and sslscan flags in args.", examples=("example.com:443", "--no-failed example.com"), expected_paths=("/usr/bin/sslscan",)),
@@ -2460,6 +2517,16 @@ register_tool(
 )(handle_tool_inventory)
 for _spec in CLI_TOOL_SPECS:
     register_tool(_spec.name, _cli_tool_description(_spec), _cli_tool_schema())(_make_cli_handler(_spec))
+
+for _native_name, _native_operations in native_security.OPERATIONS.items():
+    def _native_handler(args: dict[str, Any], name: str = _native_name) -> dict[str, Any]:
+        return tool_result(json.dumps(native_security.invoke(name, args), indent=2, sort_keys=True) + "\n")
+
+    register_tool(
+        _native_name,
+        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.",
+        native_security.SCHEMAS[_native_name],
+    )(_native_handler)
 register_tool(
     "nuclei_templates",
     "Optionally list the installed Nuclei templates matching filter arguments. This runs offline with -tl and sends no target request.",
@@ -2853,6 +2920,7 @@ def main() -> int:
     except KeyboardInterrupt:
         eprint("shutdown requested")
     finally:
+        native_security.shutdown()
         eprint("stdio closed")
     return 0
 

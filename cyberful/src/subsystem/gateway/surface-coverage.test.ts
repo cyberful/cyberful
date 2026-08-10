@@ -1,5 +1,6 @@
 // ── Passive Surface Coverage Tests ──────────────────────────────
-// Verifies redacted metadata decoding and durable phase summaries.
+// Verifies redacted metadata, durable phase summaries, and inherited Brief
+//   coverage used by the Recon handoff guard.
 // → cyberful/src/subsystem/gateway/surface-coverage.ts — owns the ledger.
 // ─────────────────────────────────────────────────────────────────
 
@@ -7,16 +8,23 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import type { BrowserProfileId } from "@/dependency/browser-profile"
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
 
-function result(action: string, family: string, route: string, outcome: "ok" | "error" = "ok") {
+function result(
+  action: string,
+  family: string,
+  route: string,
+  outcome: "ok" | "error" = "ok",
+  profile: BrowserProfileId = 2,
+) {
   return {
     content: [{ type: "text" as const, text: "ok" }],
     _meta: {
       "cyberful.dev/browser-action": {
-        profile: 2,
-        page_id: "page-1",
-        origin: "https://example.test",
+        profile,
+        page_id: profile === "search" ? "search-page" : "page-1",
+        origin: profile === "search" ? "https://html.duckduckgo.com" : "https://example.test",
         path_family: route,
         action,
         action_family: family,
@@ -112,6 +120,7 @@ describe("surface coverage", () => {
             "https://example.test/trade",
           ],
           meaningful_actions: 2,
+          meaningful_origins: ["https://example.test"],
           errors: 1,
         },
       ])
@@ -127,6 +136,91 @@ describe("surface coverage", () => {
           global_http_rps: null,
         }),
       ).toContain("3")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("allows local-only Recon after Brief meaningfully reached the same ready profile origin", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "surface-coverage-"))
+    try {
+      const brief = new SurfaceCoverage(root, "brief")
+      await brief.observe(result("browser_navigate", "navigation", "/policy"))
+      await brief.close()
+
+      const recon = new SurfaceCoverage(root, "recon")
+      const policy = {
+        version: 1 as const,
+        updated_at: new Date().toISOString(),
+        profiles: [{ profile: 2, readiness: "READY" as const, scope: "IN_SCOPE" as const, origin: "https://example.test" }],
+        authorized_http_hosts: ["example.test"],
+        global_http_rps: null,
+      }
+      expect(await recon.handoffError(policy)).toBeUndefined()
+
+      const otherOrigin = { ...policy, profiles: [{ ...policy.profiles[0]!, origin: "https://other.test" }] }
+      expect(await recon.handoffError(otherOrigin)).toContain("2")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("does not inherit observation-only Brief coverage", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "surface-coverage-"))
+    try {
+      const brief = new SurfaceCoverage(root, "brief")
+      await brief.observe(result("browser_snapshot", "observation", "/policy"))
+      await brief.close()
+
+      const recon = new SurfaceCoverage(root, "recon")
+      expect(
+        await recon.handoffError({
+          version: 1,
+          updated_at: new Date().toISOString(),
+          profiles: [{ profile: 2, readiness: "READY", scope: "IN_SCOPE", origin: "https://example.test" }],
+          authorized_http_hosts: ["example.test"],
+          global_http_rps: null,
+        }),
+      ).toContain("2")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps search scope in memory for CAPTCHA while excluding it from target evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "surface-coverage-search-"))
+    try {
+      const coverage = new SurfaceCoverage(root, "recon")
+      await coverage.observe(result("browser_navigate", "navigation", "/target"))
+      await coverage.observe(result("web_search", "web_research", "/html", "ok", "search"), {
+        egress_host: "html.duckduckgo.com",
+        egress_method: "GET",
+        egress_http_status: 200,
+        egress_path_family: "/html",
+        egress_route: "browser/direct-search",
+      })
+      await coverage.observe({ content: [{ type: "text", text: "malformed upstream metadata" }] }, {
+        egress_host: "html.duckduckgo.com",
+        egress_method: "GET",
+        egress_path_family: "/html",
+        egress_route: "browser/direct-search",
+      })
+      expect(coverage.currentScope("search")).toEqual({
+        profile: "search",
+        pageID: "search-page",
+        origin: "https://html.duckduckgo.com",
+      })
+      await coverage.close()
+
+      const ledger = await readFile(path.join(root, "raw/operations/surface-coverage.jsonl"), "utf8")
+      expect(ledger).not.toContain("search")
+      expect(ledger).not.toContain("duckduckgo")
+      expect(ledger).not.toContain("direct-search")
+      const summary = JSON.parse(
+        await readFile(path.join(root, "raw/operations/surface-coverage/recon.summary.json"), "utf8"),
+      )
+      expect(summary.route_families).toEqual(["https://example.test/target"])
+      expect(summary.per_profile.map((entry: { profile: number }) => entry.profile)).toEqual([2])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

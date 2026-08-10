@@ -59,6 +59,7 @@ def report() -> dict[str, object]:
         "ghidra_service": Path("/opt/cyberful/ghidra/ghidra_mcp.py"),
         "ghidra_bridge": Path("/opt/cyberful/ghidra/ghidra_bridge.py"),
         "ghidra_decompiler": decompiler,
+        "native_security": Path("/opt/cyberful-os/native_security.py"),
     }
     commands = {
         name: shutil.which(name) or ""
@@ -76,6 +77,9 @@ def report() -> dict[str, object]:
             "Xvfb",
             "xvfb-run",
             "xauth",
+            "xclip",
+            "xxd",
+            "7zz",
         )
     }
     missing = [name for name, path in files.items() if not path.is_file()]
@@ -125,8 +129,17 @@ def report() -> dict[str, object]:
         "tls_canary_syntax": command_succeeds(
             [sys.executable, "-m", "py_compile", "/opt/cyberful/tls-canary"]
         ),
+        "native_security_syntax": command_succeeds(
+            [sys.executable, "-m", "py_compile", "/opt/cyberful-os/native_security.py"]
+        ),
     }
+    user_namespace = command_succeeds(["unshare", "--user", "--map-root-user", "true"])
     missing.extend(name.replace("_", "-") for name, passed in checks.items() if not passed)
+    limitations = [] if user_namespace else [{
+        "code": "USER_NAMESPACE_DENIED",
+        "capability": "nested_user_namespace",
+        "detail": "The host kernel or container runtime denied unshare --user --map-root-user.",
+    }]
     return {
         "architecture": platform.machine(),
         "status": "available" if not missing else "unavailable",
@@ -134,6 +147,8 @@ def report() -> dict[str, object]:
         "files": {name: str(path) for name, path in files.items()},
         "commands": commands,
         "checks": checks,
+        "limitations": limitations,
+        "user_namespace": {"available": user_namespace},
         "node_version": node_version,
     }
 

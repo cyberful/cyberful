@@ -1,6 +1,6 @@
 // ── Embedded Browser Bootstrap ───────────────────────────────────
 // Materializes the browser MCP and its binary assets from release definitions,
-// then binds source and installed builds to five stable profile identities.
+// then binds source and installed builds to five target identities plus search.
 // → cyberful/src/dependency/browser-preflight.ts — acquires Chromium separately on first use.
 // → mcps/browser/bin/cyber-browser — consumes the materialized driver layout.
 // @docs/runtimes/browser.md
@@ -72,7 +72,7 @@ function materializeBrowser(): boolean {
 // seeding is a source-tree command. Both launch paths must resolve the same
 // Chromium cache and first persistent identity or a successful pre-login would
 // disappear when Cyberful starts. Environment overrides remain authoritative,
-// including the numbered profile-one override used by the five-profile router.
+// including the numbered profile-one override used by the browser profile router.
 // @docs/runtimes/browser.md
 // ─────────────────────────────────────────────────────────────────────
 const home = browserHome()

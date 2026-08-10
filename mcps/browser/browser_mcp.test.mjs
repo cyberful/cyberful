@@ -22,6 +22,7 @@ const {
   captureSnapshotDocument,
   createSerialRequestDispatcher,
   envBool,
+  envBrowserProfileId,
   formatSnapshot,
   handleToolCall,
   readBoundedResponseBody,
@@ -57,6 +58,44 @@ describe("browser MCP input boundary", () => {
       expect(tool.name.startsWith("browser_")).toBe(true)
       expect(tool.inputSchema.type).toBe("object")
       expect(tool.inputSchema.additionalProperties).toBe(false)
+    }
+  })
+
+  test("publishes web_search only for the named search profile", async () => {
+    const previous = process.env.CYBER_BROWSER_PROFILE_ID
+    process.env.CYBER_BROWSER_PROFILE_ID = "search"
+    try {
+      const searchModule = await import(`./browser_mcp.mjs?search-profile-test=${Date.now()}`)
+      const definition = searchModule.browserToolDefinitions().find((tool) => tool.name === "web_search")
+      expect(definition?.inputSchema).toMatchObject({
+        additionalProperties: false,
+        required: ["query"],
+        properties: {
+          query: { type: "string", minLength: 1, maxLength: 500 },
+          max_results: { type: "integer", minimum: 1, maximum: 20, default: 10 },
+          safe_search: { enum: ["strict", "moderate", "off"], default: "moderate" },
+        },
+      })
+      const invalid = await searchModule.handleToolCall({
+        name: "web_search",
+        arguments: { query: "test", profile: 1 },
+      })
+      expect(invalid.isError).toBe(true)
+      expect(invalid.content[0].text).toContain("unknown property profile")
+      for (const argumentsValue of [
+        { query: "" },
+        { query: "x".repeat(501) },
+        { query: "test", max_results: 0 },
+        { query: "test", safe_search: "disabled" },
+        { query: "test", timeout_ms: 300_001 },
+      ]) {
+        const malformed = await searchModule.handleToolCall({ name: "web_search", arguments: argumentsValue })
+        expect(malformed.isError).toBe(true)
+        expect(malformed.content[0].text).toContain("invalid tool arguments")
+      }
+    } finally {
+      if (previous === undefined) delete process.env.CYBER_BROWSER_PROFILE_ID
+      else process.env.CYBER_BROWSER_PROFILE_ID = previous
     }
   })
 
@@ -100,6 +139,22 @@ describe("browser MCP input boundary", () => {
       expect(envBool(name, false)).toBe(true)
       process.env[name] = "sometimes"
       expect(() => envBool(name, false)).toThrow("must be one of")
+    } finally {
+      if (previous === undefined) delete process.env[name]
+      else process.env[name] = previous
+    }
+  })
+
+  test("accepts only numbered target profiles or the search identity", () => {
+    const name = "CYBERFUL_BROWSER_PROFILE_TEST"
+    const previous = process.env[name]
+    try {
+      process.env[name] = "search"
+      expect(envBrowserProfileId(name, 1)).toBe("search")
+      process.env[name] = "5"
+      expect(envBrowserProfileId(name, 1)).toBe(5)
+      process.env[name] = "6"
+      expect(() => envBrowserProfileId(name, 1)).toThrow("1 through 5 or search")
     } finally {
       if (previous === undefined) delete process.env[name]
       else process.env[name] = previous

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Firefox Marionette Laboratory"
+  short_description: "Drive privileged Firefox research safely"
+  default_prompt: "Use $operate-firefox-marionette to launch, automate, verify permissions, and close this Firefox laboratory session."

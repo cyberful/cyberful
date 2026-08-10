@@ -34,6 +34,10 @@ describe("built-in Code Audit workflow", () => {
       "isolated-exec",
       "audit-diff",
       "ghidra",
+      "firmware-lab",
+      "native-analysis",
+      "native-debug",
+      "fuzz-campaign",
       "cve-dictionary",
     ])
     expect(workflow.completionTitle).toBe("Code audit completed")

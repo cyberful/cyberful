@@ -9,7 +9,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
-declare const CYBERFUL_RUNTIME_IMAGE: string | undefined
+declare const CYBERFUL_RUNTIME_FINGERPRINT: string | undefined
 
 const SIBLING_CYBERFUL_OS_DIR = "../../../cyberful-os"
 const SIBLING_MCPS_DIR = "../../../mcps"
@@ -226,19 +226,38 @@ export function cyberfulOsContainerCommand() {
   return ["cyberful-os-container"]
 }
 
-export function cyberfulOsBuildCommand() {
+export function cyberfulOsBuildCommand(image = cyberfulOsImage()) {
   const configured = envValue("CYBERFUL_OS_BUILD_COMMAND")
   if (configured) return [configured]
 
   const root = cyberfulOsDir()
-  if (root) return [cyberfulOsBinaryPath(root, "cyberful-os-build")]
+  if (root)
+    return [
+      "docker",
+      "build",
+      "--progress=plain",
+      "--tag",
+      image,
+      "--file",
+      path.join(root, "Dockerfile"),
+      path.dirname(root),
+    ]
 
   return ["cyberful-os-build"]
 }
 
 export function cyberfulOsImage() {
-  const embedded = typeof CYBERFUL_RUNTIME_IMAGE === "string" ? CYBERFUL_RUNTIME_IMAGE.trim() : ""
-  return envValue("CYBERFUL_OS_IMAGE") ?? (embedded || "cyberful-os:latest")
+  const fingerprint = cyberfulOsRuntimeFingerprint()
+  return envValue("CYBERFUL_OS_IMAGE") ?? (fingerprint ? `cyberful-os:runtime-${fingerprint}` : "cyberful-os:latest")
+}
+
+export function cyberfulOsRuntimeFingerprint() {
+  const embedded = typeof CYBERFUL_RUNTIME_FINGERPRINT === "string" ? CYBERFUL_RUNTIME_FINGERPRINT.trim() : ""
+  return /^[a-f0-9]{64}$/.test(embedded) ? embedded : undefined
+}
+
+export function cyberfulOsImageIsManaged() {
+  return !envValue("CYBERFUL_OS_IMAGE") && Boolean(cyberfulOsRuntimeFingerprint())
 }
 
 const DEPRECATED_RUNTIME_ENV = [

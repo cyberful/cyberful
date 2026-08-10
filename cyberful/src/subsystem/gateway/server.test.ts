@@ -19,8 +19,11 @@ import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotoco
 const SESSION = SessionID.make("ses_gwtest")
 const PROJECT = ProjectID.make("prj_gwtest")
 const previousDatabase = process.env.CYBERFUL_DB
+const previousDictionaryPath = process.env.CYBERFUL_CVE_DICTIONARY_PATH
+const cveDictionaryTestRoot = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-cve-test-"))
 process.env.CYBERFUL_DB = ":memory:"
 process.env.CYBERFUL_SUBSYSTEM_SESSION = SESSION
+process.env.CYBERFUL_CVE_DICTIONARY_PATH = path.join(cveDictionaryTestRoot, "missing-snapshot")
 const stderr = spyOn(process.stderr, "write").mockImplementation(() => true)
 
 // Imports below open nothing at load time (the DB client is lazy), so the env above is in effect
@@ -145,9 +148,16 @@ afterAll(async () => {
     } catch (error) {
       failures.push(error)
     }
+    try {
+      await rm(cveDictionaryTestRoot, { recursive: true, force: true })
+    } catch (error) {
+      failures.push(error)
+    }
   } finally {
     if (previousDatabase === undefined) delete process.env.CYBERFUL_DB
     else process.env.CYBERFUL_DB = previousDatabase
+    if (previousDictionaryPath === undefined) delete process.env.CYBERFUL_CVE_DICTIONARY_PATH
+    else process.env.CYBERFUL_CVE_DICTIONARY_PATH = previousDictionaryPath
     stderr.mockRestore()
   }
   if (failures.length > 0) throw new AggregateError(failures, "gateway test cleanup failed")
@@ -705,7 +715,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       )
       expect(browserDefinitions).toHaveLength(1)
       expect(browserDefinitions[0]?.inputSchema).toMatchObject({
-        properties: { profile: { type: "integer", enum: [1, 2], default: 1 } },
+        properties: { profile: { oneOf: [{ type: "integer", enum: [1, 2] }], default: 1 } },
       })
 
       const explicit = await browserClient.callTool({
@@ -728,6 +738,86 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
+  test("audits forced DuckDuckGo search without adding it to target coverage", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "expert-search-gateway-test-"))
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+    }
+    const query = "private search terms must stay out of metadata ledgers"
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
+    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = root
+    const search: UpstreamTool = {
+      def: {
+        name: "web_search",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      },
+      capability: "browser",
+      browserProfile: "search",
+      call: async (args) => ({
+        content: [{ type: "text", text: JSON.stringify({ engine: "duckduckgo", profile: "search", query: args.query }) }],
+        _meta: {
+          "cyberful.dev/browser-action": {
+            profile: "search",
+            page_id: "search-page",
+            origin: "https://html.duckduckgo.com",
+            path_family: "/html",
+            action: "web_search",
+            action_family: "web_research",
+            page_transition: "cross_origin",
+            outcome: "ok",
+            status: 200,
+          },
+        },
+      }),
+    }
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let client: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [search] })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      client = new Client({ name: "search-audit-test", version: "0" })
+      await client.connect(clientTransport)
+      const tools = (await client.listTools()).tools
+      expect(tools.find((tool) => tool.name === "web_search")?.inputSchema.properties).not.toHaveProperty("profile")
+      const response = await client.callTool({ name: "web_search", arguments: { query } })
+      expect(response._meta).toMatchObject({ cyberful: { browserProfile: "search" } })
+    } finally {
+      await client?.close()
+      await server?.closeGateway()
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
+    }
+    try {
+      const usage = await readFile(path.join(root, "raw/operations/tool-usage.csv"), "utf8")
+      expect(usage).toContain("web_search")
+      expect(usage).toContain("browser/direct-search")
+      expect(usage).not.toContain(query)
+      const [header, row] = usage.trim().split("\n")
+      expect(row?.split(",")[header!.split(",").indexOf("browser_profile")]).toBe("search")
+      await expect(
+        readFile(path.join(root, "raw/operations/surface-coverage/recon.summary.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" })
+      await expect(readFile(path.join(root, "raw/operations/surface-coverage.jsonl"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("filters injected Brief upstreams to local shell and ordinary browser preflight", async () => {
     const previous = {
       workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
@@ -746,6 +836,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       upstreams: [
         upstream("shell", "isolated-exec"),
         upstream("nmap", "isolated-exec"),
+        { ...upstream("web_search", "browser"), browserProfile: "search" },
         upstream("browser_navigate", "browser"),
         upstream("browser_evaluate", "browser"),
         upstream("zap_history", "zap"),
@@ -758,6 +849,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     try {
       const names = (await briefClient.listTools()).tools.map((tool) => tool.name)
       expect(names).toContain("shell")
+      expect(names).toContain("web_search")
       expect(names).toContain("browser_navigate")
       expect(names).not.toContain("nmap")
       expect(names).not.toContain("browser_evaluate")

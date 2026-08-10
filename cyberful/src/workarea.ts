@@ -7,8 +7,8 @@
 
 import path from "node:path"
 import { constants } from "node:fs"
-import { randomUUID } from "node:crypto"
-import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises"
 import { Global } from "@/global"
 import { Flock } from "@/util/flock"
 import * as Filesystem from "@/util/filesystem"
@@ -306,6 +306,193 @@ export async function readWorkareaFileChunk(
   } finally {
     await handle.close()
   }
+}
+
+export interface WorkareaFileEntry {
+  readonly path: string
+  readonly size: number
+}
+
+export interface WorkareaFileListing {
+  readonly files: readonly WorkareaFileEntry[]
+  readonly truncated: boolean
+}
+
+function wildcardPattern(pattern: string): RegExp {
+  if (!pattern || pattern.length > 256 || pattern.includes("\0"))
+    throw new Error("Workarea list pattern must contain between 1 and 256 characters.")
+  const source = [...pattern]
+    .map((character) => {
+      if (character === "*") return ".*"
+      if (character === "?") return "."
+      return character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
+    })
+    .join("")
+  return new RegExp(`^${source}$`, "u")
+}
+
+async function existingWorkareaDirectory(workareaRoot: string, relativeDirectory: string): Promise<string> {
+  let directory = await canonicalPlainWorkarea(workareaRoot)
+  if (!relativeDirectory || relativeDirectory === ".") return directory
+  for (const segment of containedWorkareaSegments(relativeDirectory, "Workarea directory discovery")) {
+    const child = path.join(directory, segment)
+    const info = await lstat(child)
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error("Workarea directory discovery encountered a non-directory or symlink.")
+    const canonical = await realpath(child)
+    const relation = path.relative(directory, canonical)
+    if (!relation || relation === ".." || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation))
+      throw new Error("Workarea directory discovery escaped its canonical parent.")
+    directory = canonical
+  }
+  return directory
+}
+
+// ── Bounded Workarea Discovery Never Follows Links ──────────────
+// Artifact producers choose their own nested paths, so consumers need bounded
+// discovery instead of guessing filenames. Each traversed entry is inspected
+// without following links; symlinks and special files are omitted entirely.
+// Prefix, depth, wildcard, and result limits keep provider output predictable.
+// ─────────────────────────────────────────────────────────────────
+export async function listWorkareaFiles(
+  workareaRoot: string,
+  options: {
+    readonly prefix?: string
+    readonly pattern?: string
+    readonly maxDepth?: number
+    readonly maxResults?: number
+  } = {},
+): Promise<WorkareaFileListing> {
+  const prefix = options.prefix?.trim() || "."
+  const start = await existingWorkareaDirectory(workareaRoot, prefix)
+  const matcher = wildcardPattern(options.pattern?.trim() || "*")
+  const maxDepth = options.maxDepth ?? 4
+  const maxResults = options.maxResults ?? 256
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 12)
+    throw new Error("Workarea list maxDepth must be between 0 and 12.")
+  if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 1_024)
+    throw new Error("Workarea list maxResults must be between 1 and 1024.")
+
+  const files: WorkareaFileEntry[] = []
+  let truncated = false
+  async function visit(directory: string, relativeDirectory: string, depth: number): Promise<void> {
+    const entries = (await readdir(directory, { withFileTypes: true })).toSorted((left, right) =>
+      left.name.localeCompare(right.name),
+    )
+    for (const entry of entries) {
+      if (files.length >= maxResults) {
+        truncated = true
+        return
+      }
+      const absolute = path.join(directory, entry.name)
+      const info = await lstat(absolute)
+      if (info.isSymbolicLink()) continue
+      const relative = relativeDirectory ? path.posix.join(relativeDirectory, entry.name) : entry.name
+      if (info.isFile()) {
+        if (matcher.test(relative) || matcher.test(entry.name)) files.push({ path: relative, size: info.size })
+        continue
+      }
+      if (info.isDirectory() && depth < maxDepth) await visit(absolute, relative, depth + 1)
+      if (truncated) return
+    }
+  }
+  await visit(start, prefix === "." ? "" : prefix.replaceAll("\\", "/"), 0)
+  return { files, truncated }
+}
+
+const EVIDENCE_MANIFEST = "EVIDENCE.sha256"
+
+function manifestTemporary(pathname: string): boolean {
+  const name = path.posix.basename(pathname)
+  return name.startsWith(".cyberful-") || name.endsWith(".tmp") || name.endsWith(".partial")
+}
+
+async function hashRegularWorkareaFile(workareaRoot: string, relativePath: string): Promise<string> {
+  const chunk = await readWorkareaFileChunk(workareaRoot, relativePath, { limit: 1 })
+  const target = path.join(workareaRoot, ...relativePath.split("/"))
+  const handle = await open(
+    target,
+    constants.O_RDONLY | (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+  )
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile() || stat.size !== chunk.total)
+      throw new Error(`Evidence file '${relativePath}' changed while it was being verified.`)
+    const hash = createHash("sha256")
+    const buffer = Buffer.alloc(64 * 1024)
+    let offset = 0
+    while (offset < stat.size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset)
+      if (bytesRead <= 0) throw new Error(`Evidence file '${relativePath}' ended before its declared size.`)
+      hash.update(buffer.subarray(0, bytesRead))
+      offset += bytesRead
+    }
+    return hash.digest("hex")
+  } finally {
+    await handle.close()
+  }
+}
+
+async function evidenceFiles(workareaRoot: string, directory: string): Promise<readonly WorkareaFileEntry[]> {
+  const listing = await listWorkareaFiles(workareaRoot, {
+    prefix: directory,
+    pattern: "*",
+    maxDepth: 12,
+    maxResults: 1_024,
+  })
+  if (listing.truncated) throw new Error("Evidence manifest exceeds the 1024-file safety bound.")
+  const prefix = !directory || directory === "." ? "" : `${directory.replaceAll("\\", "/")}/`
+  return listing.files
+    .map((entry) => ({ ...entry, path: prefix && entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.path }))
+    .filter((entry) => entry.path !== EVIDENCE_MANIFEST && !manifestTemporary(entry.path))
+    .toSorted((left, right) => left.path.localeCompare(right.path))
+}
+
+// ── Evidence Manifests Describe Their Own Directory ─────────────
+// Creation and verification use the same sorted regular-file inventory. The
+// manifest and temporary publication files are excluded, and replacement is
+// atomic so repeated creation cannot hash a prior manifest into itself.
+// Verification also rejects unlisted additions instead of checking digests only.
+// ─────────────────────────────────────────────────────────────────
+export async function createEvidenceManifest(workareaRoot: string, directory = ".") {
+  const files = await evidenceFiles(workareaRoot, directory)
+  const lines: string[] = []
+  for (const file of files) {
+    if (file.path.includes("\n") || file.path.includes("\r"))
+      throw new Error("Evidence manifest paths may not contain newlines.")
+    const rooted = directory === "." ? file.path : path.posix.join(directory.replaceAll("\\", "/"), file.path)
+    lines.push(`${await hashRegularWorkareaFile(workareaRoot, rooted)}  ${file.path}`)
+  }
+  const relativeManifest = directory === "." ? EVIDENCE_MANIFEST : path.posix.join(directory, EVIDENCE_MANIFEST)
+  const content = lines.length > 0 ? `${lines.join("\n")}\n` : ""
+  await replaceWorkareaFile(workareaRoot, relativeManifest, content, { mode: 0o600 })
+  return {
+    path: relativeManifest,
+    files: files.length,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  }
+}
+
+export async function verifyEvidenceManifest(workareaRoot: string, directory = ".") {
+  const relativeManifest = directory === "." ? EVIDENCE_MANIFEST : path.posix.join(directory, EVIDENCE_MANIFEST)
+  const manifest = await readWorkareaFileChunk(workareaRoot, relativeManifest, { limit: 65_536 })
+  if (manifest.nextOffset !== undefined) throw new Error("Evidence manifest exceeds the 65536-byte verification bound.")
+  const expected = new Map<string, string>()
+  for (const line of manifest.content.split("\n").filter(Boolean)) {
+    const match = /^([a-f0-9]{64})  (.+)$/.exec(line)
+    if (!match || expected.has(match[2]!)) throw new Error("Evidence manifest contains an invalid or duplicate entry.")
+    expected.set(match[2]!, match[1]!)
+  }
+  const files = await evidenceFiles(workareaRoot, directory)
+  const actualPaths = files.map((file) => file.path)
+  if (JSON.stringify([...expected.keys()].toSorted()) !== JSON.stringify(actualPaths))
+    return { path: relativeManifest, valid: false, reason: "file_set_mismatch", files: files.length }
+  for (const file of files) {
+    const rooted = directory === "." ? file.path : path.posix.join(directory.replaceAll("\\", "/"), file.path)
+    if ((await hashRegularWorkareaFile(workareaRoot, rooted)) !== expected.get(file.path))
+      return { path: relativeManifest, valid: false, reason: "digest_mismatch", file: file.path, files: files.length }
+  }
+  return { path: relativeManifest, valid: true, files: files.length }
 }
 
 export async function ensureWorkarea(projectPath: string, input: string) {

@@ -36,6 +36,8 @@ Use the dedicated semgrep tool with:
 
 Keep broad discovery output separate from release-gating output. Baselines suppress historical results for triage; they do not prove historical code safe.
 
+For C/C++, use `native_static_analysis import_compile_db` before compiler-aware checks when a compile database exists. Pass `run_checks` only a C/C++ source file or a directory containing C/C++ sources; ELF and other non-source inputs return a structured `unsupported` result without invoking source analyzers and belong in the binary-analysis workflow. Use `run_checks`, `trace_source_sink`, and `inspect_variadic_calls` as bounded discovery passes, then validate with the actual build flags, Clang-Tidy/scan-build output, and complete source context. Generate a compile database with Bear only inside a mutable lab copy.
+
 ## Validate every custom rule
 
 Create minimal positive, negative, near-miss, and sanitizer fixtures. Include aliasing, wrapper, alternate syntax, async/callback, and language-version cases relevant to the repository. Run the rule against fixtures before the product tree.
