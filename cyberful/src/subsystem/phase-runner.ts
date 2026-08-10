@@ -688,10 +688,9 @@ export function buildPhasePrompt(
       : []),
     ...(workflow !== "code-audit" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
       ? [
-          "- Treat the Brief matrix as a floor, not a checklist; add newly discovered hypotheses and queue unfinished ones to the exact successor.",
-          "- If hypotheses converge, use `hypothesis synthesize` for a substantive pivot or evidenced exhaustion.",
+          "- Treat the Brief matrix as a floor; add discoveries and queue unfinished hypotheses to the exact successor.",
           "- Use `finding` as soon as positive target evidence supports SUSPECTED; `record` requires a cautious provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity. Do not register mere hypotheses or backlog.",
-          "- Revisit historical findings explicitly, then update every technical, verification, severity, or Bug Bounty submission decision.",
+          "- Revisit historical findings and persist every changed decision.",
           "- Use `zap_api_catalog` before `zap_api_call`; supply its required parameters.",
           ...(spec.phase === "exploit" || spec.phase === "hacker"
             ? [
@@ -703,6 +702,31 @@ export function buildPhasePrompt(
                 "- Before handoff, give every current finding its final workflow verification and Bug Bounty submission decision.",
               ]
             : []),
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
+      ? [
+          "- Answer each finding maturation checkpoint through authorized evidence; maximize supportable impact and prioritize host-derived published monetary upside, then proof proximity and test cost.",
+          ...(spec.phase === "verify"
+            ? [
+                "- Reconcile every remaining PURSUE assessment to MAXIMIZED or DEFERRED with an evidence-backed ceiling or exact resume condition.",
+              ]
+            : []),
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && spec.phase === "brief"
+      ? [
+          "- Read official reward tiers autonomously and call `reward_policy set`; use NOT_PUBLISHED or UNAVAILABLE instead of inferred values.",
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && spec.phase === "report"
+      ? [
+          "- Use `reward_policy get`; put host-derived published bands only in BUG_BOUNTY_REPORT.md and omit reward expectations from portable BBP-### submissions.",
+        ]
+      : []),
+    ...(workflow === "pentest" && ["exploit", "hacker", "verify"].includes(spec.phase)
+      ? [
+          "- Use each technical finding maturation checkpoint to test the strongest defensible impact and persist PURSUE, MAXIMIZED, or DEFERRED; monetary reward policy does not apply to Pentest.",
         ]
       : []),
     ...(workflow === "code-audit" && ["trace", "hunt", "attack", "verify"].includes(spec.phase)

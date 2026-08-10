@@ -107,6 +107,144 @@ test("publishes revisions and keeps the Report finding tool read-only", async ()
   expect(revisions).toEqual([1, 2])
 })
 
+test("returns one reward-aware maturation bundle and persists its conservative upside", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  const run = { runID: "ses_maturation", workflow: "bug-bounty" as const, phase: "exploit" }
+  await store.startRun({ id: run.runID, workflow: run.workflow })
+  const notices: SessionFinding.MaturationNotice[] = []
+  const tool = SessionFinding.dynamicTool(store, run, {
+    readonly: false,
+    rewardPolicy: async () => ({
+      version: 1,
+      revision: "reward-r1",
+      updated_at: "2026-08-10T08:00:00.000Z",
+      kind: "MONETARY",
+      source: {
+        url: "https://security.example.test/program",
+        observed_at: "2026-08-10T08:00:00.000Z",
+      },
+      groups: [
+        {
+          id: "web",
+          label: "Web",
+          assets: ["app.example.test"],
+          tiers: [
+            { severity: "MEDIUM", minimum: 500, maximum: 1_000, currency: "USD" },
+            { severity: "HIGH", minimum: 3_000, maximum: 5_000, currency: "USD" },
+          ],
+        },
+      ],
+    }),
+    onMaturation: (notice) => notices.push(notice),
+  })
+  const record = {
+    action: "record",
+    key: "BBP-REWARD-001",
+    title: "Cross-tenant export disclosure",
+    positive_evidence: "A controlled tenant retrieved the other tester tenant's export metadata.",
+    severity: "MEDIUM",
+  }
+
+  const first = await tool.execute(record, { signal })
+  expect(first.success).toBe(true)
+  expect(JSON.parse(first.text).maturation_advisory).toMatchObject({
+    currentSeverity: "MEDIUM",
+    targetSeverity: "HIGH",
+    checkpoint: {
+      reward: {
+        current: { minimum: 500, maximum: 1_000, currency: "USD" },
+        target: { minimum: 3_000, maximum: 5_000, currency: "USD" },
+        upside: { minimum: 2_000, maximum: 4_500, currency: "USD" },
+      },
+    },
+  })
+  expect(notices).toHaveLength(1)
+  expect(JSON.parse(first.text).maturation_advisory).toEqual(notices[0])
+  expect(notices[0]?.checkpoint.questions).toHaveLength(4)
+  expect(notices[0]?.checkpoint.questions.join(" ")).toContain("published schedule")
+  expect((await store.get("BBP-REWARD-001")).observations[0]?.maturation?.checkpoint?.reward?.upside).toMatchObject({
+    minimum: 2_000,
+    maximum: 4_500,
+  })
+
+  const repeated = await tool.execute(record, { signal })
+  expect(repeated.success).toBe(true)
+  expect(JSON.parse(repeated.text).maturation_advisory).toBeUndefined()
+  expect(notices).toHaveLength(1)
+  expect((await store.get("BBP-REWARD-001")).observations).toHaveLength(1)
+})
+
+test("validates maturation lifecycle fields and keeps Pentest checkpoints technical", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  const run = { runID: "ses_pentest_maturation", workflow: "pentest" as const, phase: "exploit" }
+  await store.startRun({ id: run.runID, workflow: run.workflow })
+  const notices: SessionFinding.MaturationNotice[] = []
+  const tool = SessionFinding.dynamicTool(store, run, {
+    readonly: false,
+    onMaturation: (notice) => notices.push(notice),
+  })
+  await tool.execute(
+    {
+      action: "record",
+      key: "PT-001",
+      title: "Authorization boundary weakness",
+      positive_evidence: "A controlled low-privilege identity reached an administrator-only object.",
+      severity: "MEDIUM",
+    },
+    { signal },
+  )
+  expect(notices[0]?.checkpoint.questions).toHaveLength(3)
+  expect(notices[0]?.checkpoint.reward).toBeUndefined()
+
+  const invalid = await tool.execute(
+    {
+      action: "update",
+      id: "PT-001",
+      state: "SUSPECTED",
+      positive_evidence: "The boundary remains reachable.",
+      summary: "Impact expansion remains under test.",
+      maturation: {
+        status: "PURSUE",
+        current_impact: "One administrator-only object is exposed.",
+        target_severity: "HIGH",
+      },
+    },
+    { signal },
+  )
+  expect(invalid.success).toBe(false)
+  expect(JSON.parse(invalid.text).error.hint).toContain("evidence_gap")
+})
+
+test("keeps technical maturation available when the stored reward policy is unreadable", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  const run = { runID: "ses_reward_degraded", workflow: "bug-bounty" as const, phase: "recon" }
+  await store.startRun({ id: run.runID, workflow: run.workflow })
+  const result = await SessionFinding.dynamicTool(store, run, {
+    readonly: false,
+    rewardPolicy: async () => {
+      throw new Error("invalid reward policy JSON")
+    },
+  }).execute(
+    {
+      action: "record",
+      key: "BBP-DEGRADED-001",
+      title: "Supported authorization weakness",
+      positive_evidence: "A controlled identity crossed the expected object boundary.",
+      severity: "MEDIUM",
+    },
+    { signal },
+  )
+
+  expect(result.success).toBe(true)
+  expect(JSON.parse(result.text)).toMatchObject({
+    reward_policy_warning: expect.stringContaining("technical maturation continues"),
+    maturation_advisory: { checkpoint: { questions: expect.any(Array) } },
+  })
+})
+
 test("reconciles Exploit handoffs and requires final Bug Bounty Verify decisions", async () => {
   const root = await workarea()
   const store = new FindingRegistry.Store(root, { workarea: "target" })

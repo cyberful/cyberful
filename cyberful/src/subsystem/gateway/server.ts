@@ -48,6 +48,7 @@ import {
   type EngagementPolicy,
   ZapRateLimitInstallError,
 } from "./engagement-policy"
+import { REWARD_POLICY_READ_TOOL_DEF, REWARD_POLICY_TOOL_DEF, RewardPolicyStore } from "./reward-policy"
 import {
   TEST_OBJECT_TOOL_DEF,
   testObjectLifecycleFromEnvironment,
@@ -292,6 +293,7 @@ function liveTargetToolDefinitions(input: {
   egress: boolean
   hypothesis: boolean
   engagementPolicy: boolean
+  rewardPolicy: false | "readonly" | "readwrite"
   targetCooldown: boolean
 }) {
   return [
@@ -299,6 +301,11 @@ function liveTargetToolDefinitions(input: {
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
     ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
     ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
+    ...(input.rewardPolicy === "readwrite"
+      ? [REWARD_POLICY_TOOL_DEF]
+      : input.rewardPolicy === "readonly"
+        ? [REWARD_POLICY_READ_TOOL_DEF]
+        : []),
     ...(input.targetCooldown ? [TARGET_COOLDOWN_TOOL_DEF] : []),
   ]
 }
@@ -310,6 +317,7 @@ function localToolDefinitions(
     egress: boolean
     hypothesis: boolean
     engagementPolicy: boolean
+    rewardPolicy: false | "readonly" | "readwrite"
     targetCooldown: boolean
   },
 ) {
@@ -1978,8 +1986,14 @@ export async function createGatewayServer(opts?: {
     engagementPolicy: Boolean(
       workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
+    rewardPolicy:
+      workareaRoot && policy.workflow === "bug-bounty" && phase
+        ? phase === "brief"
+          ? "readwrite"
+          : "readonly"
+        : false,
     targetCooldown: liveTargetResearch,
-  }
+  } satisfies Parameters<typeof localToolDefinitions>[1]
   const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
   const handoff = handoffConfig()
@@ -2004,6 +2018,7 @@ export async function createGatewayServer(opts?: {
       : undefined
   const engagementPolicy =
     workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
+  const rewardPolicy = workareaRoot && liveTargetTools.rewardPolicy ? new RewardPolicyStore(workareaRoot) : undefined
   let engagementPolicySetThisPhase = false
   const targetCooldown = localTools.some((tool) => tool.name === TARGET_COOLDOWN_TOOL_NAME)
     ? new TargetCooldownController()
@@ -2311,6 +2326,19 @@ export async function createGatewayServer(opts?: {
             })
             return text(error.toolResult(), true)
           }
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === REWARD_POLICY_TOOL_DEF.name && rewardPolicy) {
+      tools.register(definition, async (args) => {
+        try {
+          if (args.action === "get") return text((await rewardPolicy.get()) ?? { configured: false })
+          if (phase !== "brief") return text({ error: "reward_policy set is available only in Bug Bounty Brief" }, true)
+          if (args.action !== "set") return text({ error: "reward_policy action must be set or get" }, true)
+          return text({ policy: await rewardPolicy.set(args) })
+        } catch (error) {
           return text({ error: error instanceof Error ? error.message : String(error) }, true)
         }
       })

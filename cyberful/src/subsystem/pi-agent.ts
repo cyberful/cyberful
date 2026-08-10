@@ -866,6 +866,7 @@ function closeoutToolAllowed(name: string): boolean {
       "code_finding",
       "test_object",
       "engagement_policy",
+      "reward_policy",
       "variable",
       "skill_read",
       "tool_search",

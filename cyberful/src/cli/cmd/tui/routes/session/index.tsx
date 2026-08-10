@@ -28,6 +28,7 @@ import {
   expertActorStateText,
   expertPhaseDuration,
   expertPhaseLabel,
+  expertRewardText,
   isExpertSemanticProgress,
 } from "@tui/context/expert-feed"
 import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
@@ -1545,6 +1546,52 @@ function ExpertPhaseRow(props: {
               </text>
             </Show>
           </box>
+        </Match>
+        <Match when={props.entry.kind === "status" ? props.entry.findingMaturation : undefined}>
+          {(maturation) => (
+            <box marginTop={1} marginBottom={1} paddingLeft={3} flexDirection="column" flexShrink={0}>
+              <text wrapMode="none" truncate>
+                <span style={{ fg: theme.info }}>◆ Finding maturation</span>
+                <span style={{ fg: theme.textMuted }}>
+                  {` · ${maturation().alias ?? maturation().findingID} · ${maturation().title}`}
+                </span>
+              </text>
+              <text wrapMode="none" truncate>
+                <span style={{ fg: theme.textMuted }}>Severity </span>
+                <span style={{ fg: markerColor() }}>{maturation().currentSeverity}</span>
+                <Show when={maturation().targetSeverity}>
+                  {(target) => <span style={{ fg: theme.info }}>{` → ${target()}`}</span>}
+                </Show>
+              </text>
+              <Show when={maturation().checkpoint.reward}>
+                {(reward) => (
+                  <text wrapMode="none" truncate>
+                    <span style={{ fg: theme.textMuted }}>Published reward </span>
+                    <span style={{ fg: theme.text }}>
+                      {expertRewardText(reward().current) ??
+                        (!reward().groupID && ["MONETARY", "POINTS"].includes(reward().policyKind)
+                          ? "reward group unresolved"
+                          : reward().policyKind.replaceAll("_", " ").toLowerCase())}
+                    </span>
+                    <Show when={expertRewardText(reward().target)}>
+                      {(target) => <span style={{ fg: theme.info }}>{` → ${target()}`}</span>}
+                    </Show>
+                    <Show when={expertRewardText(reward().upside)}>
+                      {(upside) => <span style={{ fg: theme.success }}>{` · upside ${upside()}`}</span>}
+                    </Show>
+                  </text>
+                )}
+              </Show>
+              <For each={maturation().checkpoint.questions}>
+                {(question, index) => (
+                  <text wrapMode="word">
+                    <span style={{ fg: theme.textMuted }}>{`${index() + 1}. `}</span>
+                    <span style={{ fg: theme.text }}>{question}</span>
+                  </text>
+                )}
+              </For>
+            </box>
+          )}
         </Match>
         <Match when={props.entry.kind === "status"}>
           {/* Host-authored terminal telemetry remains raw when it is not the final phase status. Semantic

@@ -381,6 +381,22 @@ describe("runPhase transcript persistence", () => {
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
+  test("phase prompts keep reward-aware maturation specific to Bug Bounty", () => {
+    const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const brief = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "brief" }), 30)
+    const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
+    const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "exploit" }), 120)
+    const codeAudit = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "code-audit", phase: "attack" }), 120)
+
+    expect(bugBounty).toMatch(/finding maturation checkpoint/i)
+    expect(bugBounty).toMatch(/host-derived published monetary upside/i)
+    expect(brief).toMatch(/reward_policy set.*NOT_PUBLISHED.*UNAVAILABLE/i)
+    expect(report).toMatch(/reward_policy get.*BUG_BOUNTY_REPORT\.md.*portable BBP-###/i)
+    expect(pentest).toMatch(/technical finding maturation checkpoint/i)
+    expect(pentest).toMatch(/monetary reward policy does not apply/i)
+    expect(codeAudit).not.toMatch(/finding maturation|reward_policy/i)
+  })
+
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
     let system = ""
     let privateEnv: Readonly<Record<string, string>> | undefined

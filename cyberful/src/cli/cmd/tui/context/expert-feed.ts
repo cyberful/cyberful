@@ -40,6 +40,7 @@ export type ExpertPhaseEntry = {
   contextCompaction?: ExpertContextCompaction
   providerRetry?: ExpertProviderRetry
   runtimeDiagnostic?: ExpertRuntimeDiagnostic
+  findingMaturation?: ExpertFindingMaturation
   actor?: PhaseActivityActor
   actorState?: PhaseActivityActorState
   actorTransitionID?: string
@@ -111,6 +112,41 @@ export type ExpertRuntimeDiagnostic = {
   message: string
   path: string
 }
+
+export type ExpertFindingMaturation = {
+  workflow: "bug-bounty" | "pentest"
+  phase: string
+  findingID: string
+  alias?: string
+  title: string
+  currentSeverity: string
+  targetSeverity?: string
+  checkpoint: {
+    id: string
+    signature: string
+    promptedAt: string
+    questions: string[]
+    reward?: {
+      policyRevision: string
+      policyKind: string
+      groupID?: string
+      groupLabel?: string
+      current?: ExpertRewardBand
+      target?: ExpertRewardBand
+      upside?: ExpertRewardDelta
+    }
+  }
+}
+
+export type ExpertRewardBand = {
+  severity: string
+  minimum: number
+  maximum: number
+  unit: "MONEY" | "POINTS"
+  currency?: string
+}
+
+export type ExpertRewardDelta = Omit<ExpertRewardBand, "severity">
 
 // ── Public Updates Delimit Readable Phase Turns ──────────────────
 // One subsystem run can stream many public updates and tool calls. Each root
@@ -244,6 +280,105 @@ export function decodeExpertRuntimeDiagnostic(text: string): ExpertRuntimeDiagno
       path: legacy[3]?.trim() || "raw/operations/runtime-diagnostics.jsonl",
     }
   }
+}
+
+function expertRewardBand(value: unknown): ExpertRewardBand | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.severity !== "string" ||
+    typeof value.minimum !== "number" ||
+    typeof value.maximum !== "number" ||
+    (value.unit !== "MONEY" && value.unit !== "POINTS") ||
+    (value.currency !== undefined && typeof value.currency !== "string")
+  )
+    return
+  return {
+    severity: value.severity,
+    minimum: value.minimum,
+    maximum: value.maximum,
+    unit: value.unit,
+    ...(value.currency ? { currency: value.currency } : {}),
+  }
+}
+
+function expertRewardDelta(value: unknown): ExpertRewardDelta | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.minimum !== "number" ||
+    typeof value.maximum !== "number" ||
+    (value.unit !== "MONEY" && value.unit !== "POINTS") ||
+    (value.currency !== undefined && typeof value.currency !== "string")
+  )
+    return
+  return {
+    minimum: value.minimum,
+    maximum: value.maximum,
+    unit: value.unit,
+    ...(value.currency ? { currency: value.currency } : {}),
+  }
+}
+
+export function decodeExpertFindingMaturation(text: string): ExpertFindingMaturation | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.findingMaturation)) return
+    const notice = value.findingMaturation
+    if (
+      (notice.workflow !== "bug-bounty" && notice.workflow !== "pentest") ||
+      typeof notice.phase !== "string" ||
+      typeof notice.findingID !== "string" ||
+      typeof notice.title !== "string" ||
+      typeof notice.currentSeverity !== "string" ||
+      (notice.alias !== undefined && typeof notice.alias !== "string") ||
+      (notice.targetSeverity !== undefined && typeof notice.targetSeverity !== "string") ||
+      !isRecord(notice.checkpoint) ||
+      typeof notice.checkpoint.id !== "string" ||
+      typeof notice.checkpoint.signature !== "string" ||
+      typeof notice.checkpoint.promptedAt !== "string" ||
+      !Array.isArray(notice.checkpoint.questions) ||
+      !notice.checkpoint.questions.every((question) => typeof question === "string")
+    )
+      return
+    const rawReward = notice.checkpoint.reward
+    const reward =
+      isRecord(rawReward) &&
+      typeof rawReward.policyRevision === "string" &&
+      typeof rawReward.policyKind === "string"
+        ? {
+            policyRevision: rawReward.policyRevision,
+            policyKind: rawReward.policyKind,
+            ...(typeof rawReward.groupID === "string" ? { groupID: rawReward.groupID } : {}),
+            ...(typeof rawReward.groupLabel === "string" ? { groupLabel: rawReward.groupLabel } : {}),
+            ...(expertRewardBand(rawReward.current) ? { current: expertRewardBand(rawReward.current) } : {}),
+            ...(expertRewardBand(rawReward.target) ? { target: expertRewardBand(rawReward.target) } : {}),
+            ...(expertRewardDelta(rawReward.upside) ? { upside: expertRewardDelta(rawReward.upside) } : {}),
+          }
+        : undefined
+    return {
+      workflow: notice.workflow,
+      phase: notice.phase,
+      findingID: notice.findingID,
+      ...(notice.alias ? { alias: notice.alias } : {}),
+      title: notice.title,
+      currentSeverity: notice.currentSeverity,
+      ...(notice.targetSeverity ? { targetSeverity: notice.targetSeverity } : {}),
+      checkpoint: {
+        id: notice.checkpoint.id,
+        signature: notice.checkpoint.signature,
+        promptedAt: notice.checkpoint.promptedAt,
+        questions: notice.checkpoint.questions,
+        ...(reward ? { reward } : {}),
+      },
+    }
+  } catch {
+    return
+  }
+}
+
+export function expertRewardText(value: ExpertRewardBand | ExpertRewardDelta | undefined) {
+  if (!value) return
+  const amount = value.minimum === value.maximum ? `${value.minimum}` : `${value.minimum}–${value.maximum}`
+  return value.unit === "MONEY" ? `${value.currency ?? "currency"} ${amount}` : `${amount} points`
 }
 
 export function expertRuntimeDiagnosticText(diagnostic: ExpertRuntimeDiagnostic): string {
@@ -490,6 +625,7 @@ export function foldExpertActivity(
     const contextCompaction = decodeExpertContextCompaction(a.text)
     const providerRetry = decodeExpertProviderRetry(a.text)
     const runtimeDiagnostic = decodeExpertRuntimeDiagnostic(a.text)
+    const findingMaturation = decodeExpertFindingMaturation(a.text)
     return [
       ...entries,
       {
@@ -501,12 +637,15 @@ export function foldExpertActivity(
             ? expertContextCompactionText(contextCompaction)
             : runtimeDiagnostic
               ? expertRuntimeDiagnosticText(runtimeDiagnostic)
+              : findingMaturation
+                ? "Finding maturation checkpoint"
               : a.text,
         tool: "",
         phaseStatus: status,
         contextCompaction,
         providerRetry,
         runtimeDiagnostic,
+        findingMaturation,
       },
     ]
   }

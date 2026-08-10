@@ -16,7 +16,7 @@ Cyberful releases build the security image locally. Explicitly pinned dependenci
 | `evidence_manifest` | Cyberful release | Atomic creator and verifier for deterministic, sorted, self-excluding `EVIDENCE.sha256` manifests. | Seal or verify one evidence directory without accidentally hashing the manifest or temporary files into itself. |
 | `tool_search` | Cyberful release | Lazy tool discovery interface. | Find currently available tools without loading the full catalog into model context. |
 | `skill_read` | Cyberful release | First-party skill reader. | Load complete workflow instructions and referenced skill resources before use. |
-| `finding` | Cyberful release | Authoritative session finding registry. | Record, update, verify, classify, alias, list, and read evidence-backed security findings across phases. |
+| `finding` | Cyberful release | Authoritative session finding and maturation registry. | Record, update, verify, classify, mature, alias, list, and read evidence-backed security findings across phases. |
 | `delegate_task` | Cyberful release | Bounded Pi subagent launcher. | Delegate a specific task when phase policy and configured limits permit it. |
 | `delegation_status` | Cyberful release | Delegation status reader. | Inspect child-agent progress and results. |
 | `request_fallback_delegation` | Cyberful release | Configured fallback-provider launcher. | Request a complete fallback AgentRun when the primary route cannot continue. |
@@ -35,6 +35,7 @@ The gateway MCP server is version 0.1.0. Its local tools are combined with polic
 | `egress_observation` | Gateway 0.1.0 | Engagement egress evidence recorder. | Record observed hosts, methods, effects, and scope-relevant outbound activity. |
 | `hypothesis` | Gateway 0.1.0 | Persistent vulnerability hypothesis registry. | Create, test, promote, disprove, and hand off evidence-backed research hypotheses. |
 | `engagement_policy` | Gateway 0.1.0 | Machine-readable engagement policy store. | Install and inspect the authorized scope, identities, traffic limits, and prohibited actions. |
+| `reward_policy` | Gateway 0.1.0 | Official Bug Bounty reward schedule store. | Persist the program page provenance, asset groups, severity tiers, currency or non-monetary state, then read it without estimating payout. |
 | `target_cooldown` | Gateway 0.1.0 | Per-target cooldown controller. | Apply and inspect traffic pauses after throttling, instability, or explicit program limits. |
 | `source_import` | Gateway 0.1.0 | Controlled source import boundary. | Bring an authorized source tree into a bounded code-audit workarea. |
 | `source_catalog` | Gateway 0.1.0 | Source corpus catalog. | List imported repositories and source roots available to an audit. |
@@ -401,4 +402,4 @@ Every row below is a dedicated lowercase MCP wrapper around one real executable 
 
 ## Completeness and runtime checks
 
-The documented static surfaces comprise 11 Pi-native and session tools, 23 gateway tools, 22 browser tools, 14 official ZAP tools, 10 Cyberful ZAP bridge tools, 9 Ghidra tools, 5 cyberful-os utilities, 13 cyberful-os managed workflows, 3 cyberful-os library tools, and 202 cyberful-os CLI tools. The cyberful-os registry therefore contains 223 declared tools, of which 222 are exposed by the public build because the optional JEB wrapper remains hidden until a private image attests it. Phase policy intentionally exposes only the subset needed by the active persona. ZAP API operations are runtime-discovered through `zap_api_catalog`, because that operation set is defined by the installed add-ons rather than by a stable Cyberful registry.
+The documented static surfaces comprise 11 Pi-native and session tools, 24 gateway tools, 22 browser tools, 14 official ZAP tools, 10 Cyberful ZAP bridge tools, 9 Ghidra tools, 5 cyberful-os utilities, 13 cyberful-os managed workflows, 3 cyberful-os library tools, and 202 cyberful-os CLI tools. The cyberful-os registry therefore contains 223 declared tools, of which 222 are exposed by the public build because the optional JEB wrapper remains hidden until a private image attests it. Phase policy intentionally exposes only the subset needed by the active persona. ZAP API operations are runtime-discovered through `zap_api_catalog`, because that operation set is defined by the installed add-ons rather than by a stable Cyberful registry.

@@ -462,6 +462,7 @@ describe("expert-gateway workflow capability policy", () => {
         "test_object",
         "egress_observation",
         "hypothesis",
+        "reward_policy",
         "target_cooldown",
       ])
       expect(await toolNames("bug-bounty", "brief")).toEqual([
@@ -475,6 +476,7 @@ describe("expert-gateway workflow capability policy", () => {
         "cve_dictionary",
         "hypothesis",
         "engagement_policy",
+        "reward_policy",
       ])
       expect(await toolNames("bug-bounty", "report")).toEqual([
         "variable",
@@ -486,6 +488,7 @@ describe("expert-gateway workflow capability policy", () => {
         "evm_evidence",
         "cve_dictionary",
         "hypothesis",
+        "reward_policy",
       ])
 
       process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
@@ -533,6 +536,75 @@ describe("expert-gateway workflow capability policy", () => {
       else process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = previous.novelty
       if (previous.evmRuntime === undefined) delete process.env.CYBERFUL_EVM_RUNTIME_ID
       else process.env.CYBERFUL_EVM_RUNTIME_ID = previous.evmRuntime
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("lets Bug Bounty Brief set the reward schedule and keeps later phases read-only", async () => {
+    const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-reward-policy-test-")))
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+    }
+    Object.assign(process.env, {
+      CYBERFUL_SUBSYSTEM_WORKFLOW: "bug-bounty",
+      CYBERFUL_SUBSYSTEM_PHASE: "brief",
+      CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: directory,
+    })
+    const arguments_ = {
+      action: "set",
+      kind: "MONETARY",
+      source: { url: "https://security.example.test/program", observed_at: "2026-08-10T08:00:00.000Z" },
+      groups: [
+        {
+          id: "web",
+          label: "Web",
+          assets: ["app.example.test"],
+          tiers: [{ severity: "HIGH", minimum: 2_000, maximum: 4_000, currency: "USD" }],
+        },
+      ],
+    }
+    async function scopedClient() {
+      const server = await createGatewayServer({ upstreams: [] })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const scoped = new Client({ name: "reward-policy-phase-test", version: "0" })
+      await scoped.connect(clientTransport)
+      return { server, scoped }
+    }
+
+    try {
+      const brief = await scopedClient()
+      try {
+        expect((await brief.scoped.callTool({ name: "reward_policy", arguments: arguments_ })).isError).not.toBe(true)
+      } finally {
+        await brief.scoped.close()
+        await brief.server.closeGateway()
+      }
+
+      process.env.CYBERFUL_SUBSYSTEM_PHASE = "report"
+      const report = await scopedClient()
+      try {
+        const rewardDefinition = (await report.scoped.listTools()).tools.find((tool) => tool.name === "reward_policy")
+        expect(JSON.stringify(rewardDefinition?.inputSchema)).toContain('"get"')
+        expect(JSON.stringify(rewardDefinition?.inputSchema)).not.toContain('"set"')
+        expect(
+          jsonContent(await report.scoped.callTool({ name: "reward_policy", arguments: { action: "get" } })),
+        ).toMatchObject({ kind: "MONETARY", groups: [{ id: "web" }] })
+        const rejected = await report.scoped.callTool({ name: "reward_policy", arguments: arguments_ })
+        expect(rejected.isError).toBe(true)
+      } finally {
+        await report.scoped.close()
+        await report.server.closeGateway()
+      }
+    } finally {
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
       await rm(directory, { recursive: true, force: true })
     }
   })

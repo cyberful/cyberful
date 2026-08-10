@@ -80,6 +80,7 @@ import { FindingRegistry } from "@/finding/registry"
 import { SessionFinding } from "./finding"
 import { SessionHypothesis } from "./hypothesis"
 import { readHypothesisRegistryView } from "@/subsystem/gateway/hypothesis-registry"
+import { readRewardPolicy } from "@/subsystem/gateway/reward-policy"
 import { createCodeGraphService } from "@/code-graph/service"
 import { findingHandoffWarning, findingWorkflow } from "./finding-handoff"
 import type { CommandInput, LoopInput, PromptInput, ShellInput } from "./prompt-input"
@@ -1041,7 +1042,19 @@ export const layer = Layer.effect(
                       SessionFinding.dynamicTool(
                         findingStore,
                         { runID: session.id, workflow: registryWorkflow, phase: spec.phase },
-                        { readonly: false },
+                        {
+                          readonly: false,
+                          rewardPolicy:
+                            registryWorkflow === "bug-bounty" ? () => readRewardPolicy(workareaCwd) : undefined,
+                          onMaturation: (notice) =>
+                            bridge.fork(
+                              publishPhase(
+                                spec.phase,
+                                "status",
+                                JSON.stringify({ findingMaturation: notice }),
+                              ),
+                            ),
+                        },
                       ),
                     ]
                   : undefined,

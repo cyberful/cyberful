@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import {
   continuesExpertPhaseTurn,
   decodeExpertContextCompaction,
+  decodeExpertFindingMaturation,
   decodeExpertPhaseStatus,
   decodeExpertProviderRetry,
   decodeExpertRuntimeDiagnostic,
@@ -18,6 +19,7 @@ import {
   expertPhaseDuration,
   expertPhaseLabel,
   expertRuntimeDiagnosticText,
+  expertRewardText,
   foldExpertActivity,
   isExpertSemanticProgress,
   type ExpertPhaseEntry,
@@ -109,6 +111,53 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("decodes a non-blocking finding maturation card with published upside", () => {
+    const payload = JSON.stringify({
+      findingMaturation: {
+        workflow: "bug-bounty",
+        phase: "exploit",
+        findingID: "fnd_001",
+        alias: "BBP-001",
+        title: "Cross-tenant export disclosure",
+        currentSeverity: "MEDIUM",
+        targetSeverity: "HIGH",
+        checkpoint: {
+          id: "mat_001",
+          signature: "signature",
+          promptedAt: "2026-08-10T08:00:00.000Z",
+          questions: [
+            "What is the strongest impact currently supported by the evidence?",
+            "Which authorized test would close that gap most efficiently?",
+          ],
+          reward: {
+            policyRevision: "reward-r1",
+            policyKind: "MONETARY",
+            groupID: "web",
+            current: { severity: "MEDIUM", minimum: 500, maximum: 1_000, unit: "MONEY", currency: "USD" },
+            target: { severity: "HIGH", minimum: 3_000, maximum: 5_000, unit: "MONEY", currency: "USD" },
+            upside: { minimum: 2_000, maximum: 4_500, unit: "MONEY", currency: "USD" },
+          },
+        },
+      },
+    })
+
+    const decoded = decodeExpertFindingMaturation(payload)
+    expect(decoded).toMatchObject({
+      findingID: "fnd_001",
+      checkpoint: { reward: { upside: { minimum: 2_000, maximum: 4_500 } } },
+    })
+    expect(expertRewardText(decoded?.checkpoint.reward?.upside)).toBe("USD 2000–4500")
+    const out = foldExpertActivity([], act("status", payload, "", "maturation"))
+    expect(out[0]?.findingMaturation).toEqual(decoded)
+    expect(out[0]?.text).toBe("Finding maturation checkpoint")
+  })
+
+  test("rejects malformed maturation envelopes without disturbing the status feed", () => {
+    const payload = JSON.stringify({ findingMaturation: { findingID: "fnd_001", questions: "not-an-array" } })
+    expect(decodeExpertFindingMaturation(payload)).toBeUndefined()
+    expect(foldExpertActivity([], act("status", payload, "", "malformed"))[0]?.text).toBe(payload)
+  })
+
   test("decodes provider retry telemetry for compact grouped styling", () => {
     expect(
       decodeExpertProviderRetry("Provider retry scheduled: attempt 1/3 after 624 ms (server_is_overloaded)."),

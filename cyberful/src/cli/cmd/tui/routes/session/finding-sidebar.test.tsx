@@ -10,6 +10,7 @@ import {
   activeHypothesisLabel,
   findingDialogHeight,
   findingGroups,
+  findingRewardSummary,
   findingSeverityTone,
   findingSplitWidths,
   findingTag,
@@ -46,6 +47,27 @@ const view: FindingRegistryView = {
             submission: { result: "SUBMISSION_READY", rationale: "Ready in the old run." },
             summary: "Old confirmation.",
             evidencePaths: [],
+            maturation: {
+              assessment: {
+                status: "MAXIMIZED",
+                currentImpact: "Cross-tenant account access.",
+                conclusion: "The independent proof supports HIGH.",
+              },
+              checkpoint: {
+                id: "mat_old",
+                signature: "signature",
+                promptedAt: "2026-01-01T00:00:00.000Z",
+                questions: ["What is the strongest impact currently supported by the evidence?"],
+                reward: {
+                  policyRevision: "reward-r1",
+                  policyKind: "MONETARY",
+                  groupID: "web",
+                  current: { severity: "HIGH", minimum: 3_000, maximum: 5_000, unit: "MONEY", currency: "USD" },
+                  target: { severity: "CRITICAL", minimum: 8_000, maximum: 10_000, unit: "MONEY", currency: "USD" },
+                  upside: { minimum: 3_000, maximum: 7_000, unit: "MONEY", currency: "USD" },
+                },
+              },
+            },
           },
         ],
       },
@@ -92,6 +114,11 @@ test("active hypothesis copy is absent at zero and handles singular and plural",
   expect(activeHypothesisLabel(0)).toBeUndefined()
   expect(activeHypothesisLabel(1)).toBe("(i) 1 active hypothesis")
   expect(activeHypothesisLabel(12)).toBe("(i) 12 active hypotheses")
+})
+
+test("Bug Bounty reward previews retain current, target, and conservative upside", () => {
+  const maturation = view.registry.findings[0]?.observations[0]?.maturation
+  expect(findingRewardSummary(maturation)).toBe("USD 3000–5000 → USD 8000–10000 · +USD 3000–7000")
 })
 
 test("OpenTUI renders the feed at 2/3 and the divider-owned sidebar at 1/3", async () => {

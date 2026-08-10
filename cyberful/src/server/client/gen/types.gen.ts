@@ -1018,6 +1018,52 @@ export type FindingSubmission = {
   rationale?: string
 }
 
+export type FindingMaturationAssessment = {
+  status: "PURSUE" | "MAXIMIZED" | "DEFERRED"
+  currentImpact: string
+  targetSeverity?: "UNRATED" | "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  evidenceGap?: string
+  nextTest?: string
+  conclusion?: string
+  rewardGroupID?: string
+}
+
+export type FindingRewardBand = {
+  severity: "UNRATED" | "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  minimum: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  maximum: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  unit: "MONEY" | "POINTS"
+  currency?: string
+}
+
+export type FindingRewardSnapshot = {
+  policyRevision: string
+  policyKind: string
+  groupID?: string
+  groupLabel?: string
+  current?: FindingRewardBand
+  target?: FindingRewardBand
+  upside?: {
+    minimum: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    maximum: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    unit: "MONEY" | "POINTS"
+    currency?: string
+  }
+}
+
+export type FindingMaturationCheckpoint = {
+  id: string
+  signature: string
+  promptedAt: string
+  questions: Array<string>
+  reward?: FindingRewardSnapshot
+}
+
+export type FindingMaturation = {
+  assessment?: FindingMaturationAssessment
+  checkpoint?: FindingMaturationCheckpoint
+}
+
 export type WorkareaFinding = {
   id: string
   aliases: Array<string>
@@ -1040,6 +1086,7 @@ export type WorkareaFinding = {
         submission: FindingSubmission
         summary: string
         evidencePaths: Array<string>
+        maturation?: FindingMaturation
         review: "IN_REVIEW"
         plan: string
         carriedState?: "SUSPECTED" | "INCONCLUSIVE" | "UNTESTABLE" | "CONFIRMED" | "DISPROVED"
@@ -1054,6 +1101,7 @@ export type WorkareaFinding = {
         submission: FindingSubmission
         summary: string
         evidencePaths: Array<string>
+        maturation?: FindingMaturation
         review: "ASSESSED"
         disposition:
           | {

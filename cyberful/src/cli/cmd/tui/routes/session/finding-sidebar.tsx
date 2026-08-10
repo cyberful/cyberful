@@ -22,6 +22,13 @@ type FindingObservation = WorkareaFinding["observations"][number]
 type AssessedObservation = Extract<FindingObservation, { review: "ASSESSED" }>
 type FindingTechnicalState = AssessedObservation["disposition"]["state"]
 type FindingSeverity = FindingObservation["severity"]
+type FindingMaturation = NonNullable<FindingObservation["maturation"]>
+type FindingRewardValue = {
+  minimum: number | string
+  maximum: number | string
+  unit: "MONEY" | "POINTS"
+  currency?: string
+}
 
 type FindingRow = {
   finding: WorkareaFinding
@@ -107,6 +114,22 @@ function rowState(row: FindingRow) {
 function provisionalSeverity(row: FindingRow) {
   if (!row.observation || row.observation.review === "IN_REVIEW") return true
   return row.observation.verification.result === "NOT_REVIEWED"
+}
+
+function rewardAmount(value: FindingRewardValue | undefined) {
+  if (!value || typeof value.minimum !== "number" || typeof value.maximum !== "number") return
+  const amount = value.minimum === value.maximum ? `${value.minimum}` : `${value.minimum}–${value.maximum}`
+  return value.unit === "MONEY" ? `${value.currency ?? "currency"} ${amount}` : `${amount} pts`
+}
+
+export function findingRewardSummary(maturation: FindingMaturation | undefined) {
+  const reward = maturation?.checkpoint?.reward
+  if (!reward) return
+  const current = rewardAmount(reward.current)
+  const target = rewardAmount(reward.target)
+  const upside = rewardAmount(reward.upside)
+  if (!current && !target) return reward.policyKind.replaceAll("_", " ")
+  return `${current ?? "unmapped"}${target ? ` → ${target}` : ""}${upside ? ` · +${upside}` : ""}`
 }
 
 export function findingTag(value: string) {
@@ -281,6 +304,19 @@ export function FindingSidebar(props: {
                         >
                           {findingTag(submission(row))}
                         </text>
+                        <Show
+                          when={
+                            row.finding.origin.workflow === "bug-bounty"
+                              ? findingRewardSummary(row.observation?.maturation)
+                              : undefined
+                          }
+                        >
+                          {(reward) => (
+                            <text width="100%" overflow="hidden" wrapMode="none" truncate fg={theme.success}>
+                              {`Reward ${reward()}`}
+                            </text>
+                          )}
+                        </Show>
                       </box>
                     )
                   }}
@@ -434,6 +470,44 @@ function FindingObservationCard(props: { observation: FindingObservation; runID:
               <Show when={item().submission.rationale}>
                 {(value) => <text fg={theme.textMuted} wrapMode="word">{`Submission: ${value()}`}</text>}
               </Show>
+              <Show when={item().maturation?.assessment}>
+                {(assessment) => (
+                  <>
+                    <text fg={theme.info} wrapMode="word">
+                      {`Maturation: ${assessment().status} · ${assessment().currentImpact}`}
+                    </text>
+                    <Show when={assessment().targetSeverity}>
+                      {(target) => <text fg={theme.textMuted}>{`Target severity: ${target()}`}</text>}
+                    </Show>
+                    <Show when={assessment().evidenceGap}>
+                      {(gap) => <text fg={theme.textMuted} wrapMode="word">{`Evidence gap: ${gap()}`}</text>}
+                    </Show>
+                    <Show when={assessment().nextTest}>
+                      {(next) => <text fg={theme.textMuted} wrapMode="word">{`Next test: ${next()}`}</text>}
+                    </Show>
+                    <Show when={assessment().conclusion}>
+                      {(conclusion) => (
+                        <text fg={theme.textMuted} wrapMode="word">{`Conclusion: ${conclusion()}`}</text>
+                      )}
+                    </Show>
+                  </>
+                )}
+              </Show>
+            </Show>
+            <Show when={findingRewardSummary(item().maturation)}>
+              {(reward) => <text fg={theme.success} wrapMode="word">{`Published reward: ${reward()}`}</text>}
+            </Show>
+            <Show when={item().maturation?.checkpoint}>
+              {(checkpoint) => (
+                <>
+                  <text fg={theme.info}>Finding maturation questions</text>
+                  <For each={checkpoint().questions}>
+                    {(question, index) => (
+                      <text fg={theme.textMuted} wrapMode="word">{`${index() + 1}. ${question}`}</text>
+                    )}
+                  </For>
+                </>
+              )}
             </Show>
           </>
         )}
