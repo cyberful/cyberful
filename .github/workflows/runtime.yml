@@ -142,7 +142,7 @@ jobs:
           app-id: ${{ vars.CYBERFUL_RUNNER_APP_ID }}
           private-key: ${{ secrets.CYBERFUL_RUNNER_APP_PRIVATE_KEY }}
       - name: Assume the ephemeral runner provisioning role
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: true
