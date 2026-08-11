@@ -1102,16 +1102,22 @@ function failedBeforeSpawn(input: {
   }
 }
 
-const WORKAREA_INSTRUCTIONS = [
-  "The workarea root is intentionally an artifact workspace, not a Git repository.",
-  "Do not run repository-level Git probes such as `git status`, `git diff`, or `git rev-parse` there; inspect artifacts directly with filesystem commands.",
-  "Use Git only when a phase explicitly materializes a nested repository or disposable lab, and run it with that repository's explicit working directory.",
-  "When working with imported source code, use the host's native shell only for static-analysis operations such as `rg`, `sed`, `find`, and read-only Git queries. The host shell remains available for all other purposes, including networking and scripts that do not execute or load imported source.",
-  "For dependency installation, package managers, builds, tests, scripts, binaries, services, or any other execution of imported source, call the cyberful-os `shell` MCP tool, displayed as `cyberful-os_shell`.",
-  "The active workarea root is mounted inside cyberful-os at `/workspace`. Map a workarea-relative host path such as `relative/path` to `/workspace/relative/path`; never embed or guess an absolute host workarea path.",
-  "Network access remains available inside cyberful-os and may be used for dependency installation and target traffic authorized by `MISSION.md`.",
-  "If cyberful-os cannot execute imported source, diagnose that environment or record the blocker; do not fall back to executing imported source on the host.",
-].join("\n")
+function workareaInstructions(runtimePlatform: string | undefined): string {
+  const platform = new Set(["Linux/ARM64 (aarch64)", "Linux/AMD64 (x86_64)"]).has(runtimePlatform ?? "")
+    ? runtimePlatform
+    : "Linux with an unattested architecture"
+  return [
+    "The workarea root is intentionally an artifact workspace, not a Git repository.",
+    "Do not run repository-level Git probes such as `git status`, `git diff`, or `git rev-parse` there; inspect artifacts directly with filesystem commands.",
+    "Use Git only when a phase explicitly materializes a nested repository or disposable lab, and run it with that repository's explicit working directory.",
+    "When working with imported source code, use the host's native shell only for static-analysis operations such as `rg`, `sed`, `find`, and read-only Git queries. The host shell remains available for all other purposes, including networking and scripts that do not execute or load imported source.",
+    "For dependency installation, package managers, builds, tests, scripts, binaries, services, or any other execution of imported source, call the cyberful-os `shell` MCP tool, displayed as `cyberful-os_shell`.",
+    "The active workarea root is mounted inside cyberful-os at `/workspace`. Map a workarea-relative host path such as `relative/path` to `/workspace/relative/path`; never embed or guess an absolute host workarea path.",
+    `The available cyberful-os laboratory build is ${platform}. Compare the target OS and architecture with this platform before planning dynamic exact-build execution. A target binary built for another OS or architecture is not natively executable here unless a purpose-built Cyberful tool explicitly supports it; preserve useful static analysis, but record dynamic proof as unavailable instead of repeatedly invoking the lab or executing imported target code on the host.`,
+    "Network access remains available inside cyberful-os and may be used for dependency installation and target traffic authorized by `MISSION.md`.",
+    "If cyberful-os cannot execute imported source, diagnose that environment or record the blocker; do not fall back to executing imported source on the host.",
+  ].join("\n")
+}
 
 // ── Prompt Sources Resolve Before The Worker Starts ──────────────
 // First-party policy always supplies the base template. A persona override may
@@ -1470,7 +1476,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     AgentPromptCompiler.compile({
       templateSource: promptSetup.value.sources.templateSource,
       personaSource: promptSetup.value.sources.personaSource,
-      workareaSource: WORKAREA_INSTRUCTIONS,
+      workareaSource: workareaInstructions(phaseEnvironment.CYBERFUL_OS_RUNTIME_PLATFORM),
       runtimeInstructions,
       workflow: promptSetup.value.sources.workflow,
       phase: spec.phase,

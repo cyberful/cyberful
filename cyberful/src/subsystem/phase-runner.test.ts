@@ -519,6 +519,10 @@ describe("runPhase transcript persistence", () => {
     await SubsystemPhaseRunner.runPhase(
       spec(),
       deps({
+        preparePhase: async () => ({
+          warnings: [],
+          env: { CYBERFUL_OS_RUNTIME_PLATFORM: "Linux/ARM64 (aarch64)" },
+        }),
         run: async (input) => {
           baseInstructions = input.spec.baseInstructions ?? ""
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
@@ -533,6 +537,8 @@ describe("runPhase transcript persistence", () => {
     expect(baseInstructions).toContain("host shell remains available for all other purposes")
     expect(baseInstructions).toContain("cyberful-os `shell` MCP tool")
     expect(baseInstructions).toContain("`relative/path` to `/workspace/relative/path`")
+    expect(baseInstructions).toContain("available cyberful-os laboratory build is Linux/ARM64 (aarch64)")
+    expect(baseInstructions).toContain("target binary built for another OS or architecture is not natively executable")
     expect(baseInstructions).toContain("Network access remains available inside cyberful-os")
     expect(baseInstructions).toContain("# Cyberful Workarea")
     expect(baseInstructions).not.toContain("</CYBERFUL WORKAREA>")

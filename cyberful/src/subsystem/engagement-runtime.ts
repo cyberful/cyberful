@@ -1,6 +1,6 @@
 // ── Unified Engagement Runtime Ownership ─────────────────────────
-// Starts the core tooling role plus a dedicated ZAP role and owns both across
-//   phase gateways, explicit recovery, and terminal session cleanup.
+// Starts the core tooling role plus a dedicated ZAP role, attests the core
+//   platform, and owns both across gateways, recovery, and session cleanup.
 // → cyberful/src/session/prompt.ts — scopes this owner to one workflow run.
 // → mcps/cyberful-os/runtime_supervisor.py — supervises the in-container services.
 // @docs/concepts/execution-model.md
@@ -74,6 +74,15 @@ export function dockerChildContainerName(parent: string, role: string): string {
   const prefixLength = DOCKER_HOSTNAME_MAX_LENGTH - digest.length - role.length - 2
   if (prefixLength < 1) throw new Error("Docker child container role is too long")
   return `${parent.slice(0, prefixLength)}-${digest}-${role}`
+}
+
+export function cyberfulOsRuntimePlatform(kernel: string, machine: string): string {
+  const normalizedKernel = kernel.trim().toLowerCase()
+  if (normalizedKernel !== "linux") throw new Error(`unsupported cyberful-os kernel: ${kernel.trim() || "<empty>"}`)
+  const normalizedMachine = machine.trim().toLowerCase()
+  if (normalizedMachine === "aarch64" || normalizedMachine === "arm64") return "Linux/ARM64 (aarch64)"
+  if (normalizedMachine === "x86_64" || normalizedMachine === "amd64") return "Linux/AMD64 (x86_64)"
+  throw new Error(`unsupported cyberful-os architecture: ${machine.trim() || "<empty>"}`)
 }
 
 export interface EngagementRuntime {
@@ -1034,12 +1043,16 @@ async function verifyCore(container: string, signal?: AbortSignal) {
   })
 }
 
-// ── Network Authority Is Fixed At Container Creation ────────────
+// ── Network And Platform Authority Are Fixed At Startup ─────────
 // Code Audit starts this same image with Docker networking disabled and never
 // starts ZAP. Live-target workflows publish only ZAP's proxy on host loopback.
 // No phase may mutate those choices later, so sequential gateways reconnect to
-// stable engagement roles without phase-local privilege escalation.
+// stable engagement roles without phase-local privilege escalation. After core
+// attestation, kernel and machine identity are normalized into a host-owned
+// prompt fact so agents reject incompatible exact-build execution plans early.
 // The workarea remains writable by design; Ghidra alone also receives its store.
+//
+// @docs/concepts/execution-model.md
 // ─────────────────────────────────────────────────────────────────
 export async function startEngagement(input: {
   readonly sessionID: string
@@ -1094,6 +1107,7 @@ export async function startEngagement(input: {
   const zapTrustRelativePath = `${ZAP_TRUST_RELATIVE_PATH}/${zapScope}`
   const zapRuntimePath = zapEnabled ? await ensureWorkareaDirectory(input.workarea, zapRuntimeRelativePath) : undefined
   const zapTrustPath = zapEnabled ? await ensureWorkareaDirectory(input.workarea, zapTrustRelativePath) : undefined
+  let runtimePlatform: string
   if (zapRuntimePath && zapTrustPath) await Promise.all([chmod(zapRuntimePath, 0o700), chmod(zapTrustPath, 0o700)])
   let persistedProxyTrust: ProxyTrustAttestation | undefined
   if (zapTrustPath)
@@ -1166,6 +1180,11 @@ export async function startEngagement(input: {
     )
     await waitForContainer(input.container, input.signal)
     await verifyCore(input.container, input.signal)
+    const [kernel, machine] = await Promise.all([
+      docker(["docker", "exec", input.container, "uname", "-s"], { signal: input.signal }),
+      docker(["docker", "exec", input.container, "uname", "-m"], { signal: input.signal }),
+    ])
+    runtimePlatform = cyberfulOsRuntimePlatform(kernel, machine)
   } catch (error) {
     await Promise.all(containers.map((container) => SubsystemContainer.remove(container))).catch((cleanupError) => {
       throw new AggregateError([error, cleanupError], "unified engagement runtime startup and cleanup failed")
@@ -1176,6 +1195,7 @@ export async function startEngagement(input: {
 
   const env: Record<string, string> = {
     CYBERFUL_OS_CONTAINER: input.container,
+    CYBERFUL_OS_RUNTIME_PLATFORM: runtimePlatform,
     ...(zapEnabled ? { CYBERFUL_ZAP_RUNTIME_CONTAINER: zapContainer } : {}),
     CYBERFUL_OS_IMAGE: cyberfulOsImage(),
     CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER: "1",

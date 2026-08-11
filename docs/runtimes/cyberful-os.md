@@ -8,7 +8,7 @@ Release builds embed the complete filtered Docker build context and its content 
 cyberful-os:runtime-<sha256-context-fingerprint>
 ```
 
-Docker selects native Linux packages for the host architecture while building. Source runs default to the locally built `cyberful-os:latest`. `CYBERFUL_OS_IMAGE` overrides the complete image reference in either mode and is never pruned as a managed image.
+Docker selects native Linux packages for the host architecture while building. After core capability attestation, the host reads the running container's kernel and machine identity, accepts the supported Linux ARM64 or AMD64 combinations, and injects the normalized platform into every AgentRun system message. Source runs default to the locally built `cyberful-os:latest`. `CYBERFUL_OS_IMAGE` overrides the complete image reference in either mode and is never pruned as a managed image.
 
 ## Engagement lifecycle
 

@@ -9,6 +9,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import {
+  cyberfulOsRuntimePlatform,
   dockerChildContainerName,
   dockerHostname,
   dockerMemoryAllocationWarning,
@@ -35,6 +36,13 @@ test("bounds derived Docker hostnames without weakening container identity", () 
   expect(child.length).toBe(63)
   expect(child).toMatch(/^cyberful-os-expert-[b]+-[a-f0-9]{24}-zap$/)
   expect(child).not.toBe(dockerChildContainerName(`${"cyberful-os-expert-"}${"b".repeat(43)}c`, "zap"))
+})
+
+test("normalizes the attested cyberful-os Linux architecture for agent prompts", () => {
+  expect(cyberfulOsRuntimePlatform("Linux", "aarch64")).toBe("Linux/ARM64 (aarch64)")
+  expect(cyberfulOsRuntimePlatform("linux", "x86_64")).toBe("Linux/AMD64 (x86_64)")
+  expect(() => cyberfulOsRuntimePlatform("Darwin", "arm64")).toThrow("unsupported cyberful-os kernel")
+  expect(() => cyberfulOsRuntimePlatform("Linux", "riscv64")).toThrow("unsupported cyberful-os architecture")
 })
 
 test("requires ZAP for every live-target phase before a numeric policy exists", () => {
