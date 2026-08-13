@@ -76,6 +76,42 @@ describe("Pi credential store", () => {
     ])
   })
 
+  test("keeps Codex OAuth and Kimi subscription credentials independent through refresh and logout", async () => {
+    const harness = await temporaryStore()
+    const codex = {
+      type: "oauth" as const,
+      access: "codex-access-v1",
+      refresh: "codex-refresh",
+      expires: Date.now() + 60_000,
+    }
+    const kimi = {
+      type: "oauth" as const,
+      access: "kimi-access",
+      refresh: "kimi-refresh",
+      expires: Date.now() + 120_000,
+    }
+    await Promise.all([
+      harness.store.modify("openai-codex", async () => codex),
+      harness.store.modify("kimi", async () => kimi),
+    ])
+
+    await harness.store.modify("openai-codex", async (current) => ({
+      ...(current?.type === "oauth" ? current : codex),
+      access: "codex-access-v2",
+      expires: Date.now() + 180_000,
+    }))
+
+    expect(await harness.store.read("kimi")).toEqual(kimi)
+    expect(await harness.store.read("openai-codex")).toMatchObject({
+      type: "oauth",
+      access: "codex-access-v2",
+      refresh: "codex-refresh",
+    })
+    await harness.store.delete("openai-codex")
+    expect(await harness.store.read("openai-codex")).toBeUndefined()
+    expect(await harness.store.read("kimi")).toEqual(kimi)
+  })
+
   test("refuses a symbolic-link credential target", async () => {
     const harness = await temporaryStore()
     const outside = path.join(harness.root, "outside.json")

@@ -1,0 +1,16 @@
+diff --git a/dist/crypto.js b/dist/crypto.js
+index 8d8110ee4234766dc639b4c01b3cc6d6ba980d40..30ccfa4caf7fa6739f4a4b81509ed52bad62a6f5 100644
+--- a/dist/crypto.js
++++ b/dist/crypto.js
+@@ -51,7 +51,10 @@ function verify(data, key, signature, algorithm) {
+     // The try/catch is to work around an issue in Node 14.x where verify throws
+     // an error in some scenarios if the signature is invalid.
+     try {
+-        return crypto_1.default.verify(algorithm, data, key, signature);
++        const keyType = key.asymmetricKeyType;
++        const digestAlgorithm = algorithm ??
++            (keyType === 'ed25519' || keyType === 'ed448' ? null : 'sha256');
++        return crypto_1.default.verify(digestAlgorithm, data, key, signature);
+     }
+     catch (e) {
+         /* istanbul ignore next */

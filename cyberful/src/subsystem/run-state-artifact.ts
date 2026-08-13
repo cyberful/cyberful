@@ -28,7 +28,39 @@ interface ActorState {
   readonly last_activity_at: string
   readonly tool_calls: number
   readonly termination?: string
+  readonly termination_cause?: string
   readonly failure?: unknown
+}
+
+interface RecoveryState {
+  readonly chain_id: string
+  readonly run_id: string
+  readonly recovery_run_id?: string
+  readonly scope: string
+  readonly cause: string
+  readonly state: string
+  readonly source_route: string
+  readonly destination_route?: string
+  readonly quota_exempt: true
+  readonly bonus_ms: number
+  readonly available_runtime_ms: number
+  readonly available_output_tokens?: number
+  readonly deadline_at?: string
+  readonly denial_code?: string
+  readonly termination?: string
+  readonly termination_cause?: string
+  readonly updated_at: string
+}
+
+interface SteeringState {
+  readonly id: string
+  readonly run_id: string
+  readonly mode: string
+  readonly state: string
+  readonly accepted_at: string
+  readonly applied_at?: string
+  readonly reason?: string
+  readonly updated_at: string
 }
 
 export class RunStateArtifact {
@@ -40,6 +72,8 @@ export class RunStateArtifact {
   readonly #budgetClock?: PhaseBudgetClock
   readonly #closeoutReserveMs: number
   readonly #actors = new Map<string, ActorState>()
+  readonly #recoveries = new Map<string, RecoveryState>()
+  readonly #steering = new Map<string, SteeringState>()
   #mode: "work" | "closeout" = "work"
 
   #status: "starting" | "running" | "completed" | "failed" = "starting"
@@ -134,6 +168,41 @@ export class RunStateArtifact {
         ...(event.failure ? { failure: event.failure } : {}),
       }
       this.#lastProgressAt = now
+    } else if (event.type === "recovery") {
+      this.#recoveries.set(event.chainID, {
+        chain_id: event.chainID,
+        run_id: event.runID,
+        ...(event.recoveryRunID ? { recovery_run_id: event.recoveryRunID } : {}),
+        scope: event.scope,
+        cause: event.cause,
+        state: event.state,
+        source_route: event.sourceRoute,
+        ...(event.destinationRoute ? { destination_route: event.destinationRoute } : {}),
+        quota_exempt: true,
+        bonus_ms: event.bonusMs,
+        available_runtime_ms: event.availableRuntimeMs,
+        ...(event.availableOutputTokens === undefined
+          ? {}
+          : { available_output_tokens: event.availableOutputTokens }),
+        ...(event.deadlineAt === undefined ? {} : { deadline_at: new Date(event.deadlineAt).toISOString() }),
+        ...(event.denialCode ? { denial_code: event.denialCode } : {}),
+        ...(event.termination ? { termination: event.termination } : {}),
+        ...(event.terminationCause ? { termination_cause: event.terminationCause } : {}),
+        updated_at: now,
+      })
+      this.#lastProgressAt = now
+    } else if (event.type === "steering") {
+      this.#steering.set(event.steeringID, {
+        id: event.steeringID,
+        run_id: event.runID,
+        mode: event.mode,
+        state: event.state,
+        accepted_at: event.acceptedAt,
+        ...(event.appliedAt ? { applied_at: event.appliedAt } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        updated_at: now,
+      })
+      this.#lastProgressAt = now
     } else if (event.type === "phase_closeout") {
       this.#mode = "closeout"
       this.#lastProgressAt = now
@@ -156,6 +225,7 @@ export class RunStateArtifact {
         last_activity_at: now,
         tool_calls: event.toolCalls,
         termination: event.termination,
+        termination_cause: event.terminationCause,
         ...(event.failure ? { failure: event.failure } : {}),
       })
       this.#lastProgressAt = now
@@ -181,7 +251,7 @@ export class RunStateArtifact {
         RUN_STATE_PATH,
         `${JSON.stringify(
           {
-            version: 1,
+            version: 2,
             workflow: this.#workflow,
             phase: this.#phase,
             attempt: this.#attempt,
@@ -202,7 +272,8 @@ export class RunStateArtifact {
                   provider_wait_ms: Math.round(budget.retryWaitMs),
                   target_cooldown_wait_ms: Math.round(budget.targetCooldownWaitMs),
                   retry_compensation_ms: Math.round(budget.retryCompensationMs),
-                  phase_extension_ms: Math.round(budget.retryCompensationMs),
+                  phase_extension_ms: Math.round(budget.retryCompensationMs + budget.recoveryExtensionMs),
+                  recovery_extension_ms: Math.round(budget.recoveryExtensionMs),
                   retry_compensation_cap_ms: budget.retryCompensationCapMs,
                   phase_extension_cap_ms: budget.retryCompensationCapMs,
                   retry_compensation_cap_reached: budget.retryCompensationCapReached,
@@ -212,6 +283,8 @@ export class RunStateArtifact {
             updated_at: new Date().toISOString(),
             actors: [...this.#actors.values()],
             ...(this.#retry ? { retry: this.#retry } : {}),
+            recoveries: [...this.#recoveries.values()].slice(-100),
+            steering: [...this.#steering.values()].slice(-100),
           },
           null,
           2,

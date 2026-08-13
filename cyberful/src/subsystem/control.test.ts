@@ -5,11 +5,19 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterEach, describe, expect, test } from "bun:test"
-import { SubsystemControl } from "./control"
+import { SubsystemControl, type SteeringRequest } from "./control"
 
 afterEach(() => SubsystemControl.resetForTests())
 
-const accepted = { accepted: true, recipients: 1 } as const
+const accepted = (request: SteeringRequest) => ({
+  id: request.id,
+  accepted: true as const,
+  recipients: 1,
+  mode: request.mode,
+  state: "queued" as const,
+  runID: "run_root",
+  acceptedAt: request.acceptedAt,
+})
 
 describe("Subsystem live steering", () => {
   test("delivers to the one active sequential turn", async () => {
@@ -18,13 +26,13 @@ describe("Subsystem live steering", () => {
     const unregister = SubsystemControl.register("ses_one", {
       steer: async (request) => {
         received.push(request.text)
-        return accepted
+        return accepted(request)
       },
     })
 
-    expect(await SubsystemControl.steer({ sessionID: "ses_one", text: "focus on the authenticated path" })).toEqual(
-      accepted,
-    )
+    expect(
+      await SubsystemControl.steer({ sessionID: "ses_one", text: "focus on the authenticated path" }),
+    ).toMatchObject({ accepted: true, recipients: 1, mode: "queue", state: "queued", runID: "run_root" })
     expect(received).toEqual(["focus on the authenticated path"])
     unregister()
     close()
@@ -37,14 +45,16 @@ describe("Subsystem live steering", () => {
       SubsystemControl.register("ses_fanout", {
         steer: async (request) => {
           received.push(`${label}:${request.text}`)
-          return accepted
+          return accepted(request)
         },
       }),
     )
 
-    expect(await SubsystemControl.steer({ sessionID: "ses_fanout", text: "include the new hostname" })).toEqual({
+    expect(await SubsystemControl.steer({ sessionID: "ses_fanout", text: "include the new hostname" })).toMatchObject({
       accepted: true,
       recipients: 3,
+      mode: "queue",
+      state: "queued",
     })
     expect(received.sort()).toEqual([
       "one:include the new hostname",
@@ -63,11 +73,11 @@ describe("Subsystem live steering", () => {
     SubsystemControl.register("ses_gap", {
       steer: async (request) => {
         received.push(request.text)
-        return accepted
+        return accepted(request)
       },
     })
 
-    expect(await delivery).toEqual(accepted)
+    expect(await delivery).toMatchObject({ accepted: true, recipients: 1, state: "queued" })
     expect(received).toEqual(["recheck the role boundary"])
     close()
   })
@@ -76,7 +86,7 @@ describe("Subsystem live steering", () => {
     const close = SubsystemControl.open("ses_done")
     const delivery = SubsystemControl.steer({ sessionID: "ses_done", text: "too late" })
     close()
-    expect(await delivery).toEqual({ accepted: false, recipients: 0 })
+    expect(await delivery).toMatchObject({ accepted: false, recipients: 0, state: "rejected" })
   })
 
   test("bounds an unacknowledged active steer instead of waiting forever", async () => {
@@ -86,9 +96,10 @@ describe("Subsystem live steering", () => {
     })
 
     const startedAt = Date.now()
-    expect(await SubsystemControl.steer({ sessionID: "ses_stalled", text: "are you there?", timeoutMs: 20 })).toEqual({
+    expect(await SubsystemControl.steer({ sessionID: "ses_stalled", text: "are you there?", timeoutMs: 20 })).toMatchObject({
       accepted: false,
       recipients: 0,
+      state: "rejected",
     })
     expect(Date.now() - startedAt).toBeLessThan(500)
 
@@ -102,11 +113,11 @@ describe("Subsystem live steering", () => {
 
     expect(
       await SubsystemControl.steer({ sessionID: "ses_expired_gap", text: "stale direction", timeoutMs: 20 }),
-    ).toEqual({ accepted: false, recipients: 0 })
+    ).toMatchObject({ accepted: false, recipients: 0, state: "rejected" })
     SubsystemControl.register("ses_expired_gap", {
       steer: async (request) => {
         received.push(request.text)
-        return accepted
+        return accepted(request)
       },
     })
 

@@ -13,6 +13,7 @@ import * as Builtin from "./builtin"
 // used directly, NOT JSON.parse'd. Undefined in dev/source mode.
 declare const CYBERFUL_EMBEDDED_CONFIG: Record<string, string> | undefined
 declare const CYBERFUL_EMBEDDED_CYBERFUL_OS: Record<string, string> | undefined
+declare const CYBERFUL_RUNTIME_FINGERPRINT: string | undefined
 declare const CYBERFUL_BUILD_ID: string | undefined
 
 function buildIdSlug(): string {
@@ -71,10 +72,37 @@ function materializeEmbeddedCyberfulOs(): boolean {
   if (!files || Object.keys(files).length === 0) return false
   if (process.env.CYBERFUL_OS_DIR) return false
 
-  const cyberfulOsDir = path.join(Global.Path.cache, `cyberful-os-${buildIdSlug()}`)
-  materialize(cyberfulOsDir, files, "bin")
+  const fingerprint =
+    typeof CYBERFUL_RUNTIME_FINGERPRINT === "string" && /^[a-f0-9]{64}$/.test(CYBERFUL_RUNTIME_FINGERPRINT)
+      ? CYBERFUL_RUNTIME_FINGERPRINT
+      : buildIdSlug()
+  const contextDir = path.join(Global.Path.cache, `runtime-${fingerprint}`)
+  const stamp = path.join(contextDir, ".materialized")
+  if (!fs.existsSync(stamp)) {
+    const temporary = `${contextDir}.${process.pid}.${crypto.randomUUID()}.tmp`
+    fs.mkdirSync(temporary, { recursive: true, mode: 0o700 })
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        if (path.isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) throw new Error(`Unsafe runtime asset path: ${rel}`)
+        const target = path.join(temporary, rel)
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.writeFileSync(target, Buffer.from(content, "base64"))
+        if (rel.startsWith("cyberful-os/bin/")) fs.chmodSync(target, 0o755)
+      }
+      fs.writeFileSync(path.join(temporary, ".materialized"), fingerprint, { mode: 0o600 })
+      try {
+        fs.renameSync(temporary, contextDir)
+      } catch (error) {
+        if (!fs.existsSync(stamp)) throw error
+        fs.rmSync(temporary, { recursive: true, force: true })
+      }
+    } catch (error) {
+      fs.rmSync(temporary, { recursive: true, force: true })
+      throw error
+    }
+  }
 
-  process.env.CYBERFUL_OS_DIR = cyberfulOsDir
+  process.env.CYBERFUL_OS_DIR = path.join(contextDir, "cyberful-os")
   return true
 }
 

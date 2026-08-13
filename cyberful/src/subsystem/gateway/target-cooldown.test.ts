@@ -14,10 +14,12 @@ import {
 
 const policy: EngagementPolicy = {
   version: 1,
+  stage: "final",
   updated_at: "2026-08-06T00:00:00.000Z",
   profiles: [],
   authorized_http_hosts: ["app.example.test", "*.api.example.test"],
   global_http_rps: null,
+  required_http_headers: [],
 }
 
 function request(overrides: Record<string, unknown> = {}) {

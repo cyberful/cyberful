@@ -1,6 +1,6 @@
-// ── Live Finding Sidebar ─────────────────────────────────────────
-// Projects one workarea registry into severity-first preview cards and a
-//   read-only evidence dialog, with independent clipping and scrolling.
+// ── Findings And Hypotheses Sidebar ──────────────────────────────
+// Projects finding and active-hypothesis registries into ordered preview cards
+//   and read-only detail dialogs, with independent clipping and scrolling.
 // → cyberful/src/cli/cmd/tui/context/sync.tsx — supplies live registry snapshots.
 // ─────────────────────────────────────────────────────────────────
 
@@ -22,6 +22,14 @@ type FindingObservation = WorkareaFinding["observations"][number]
 type AssessedObservation = Extract<FindingObservation, { review: "ASSESSED" }>
 type FindingTechnicalState = AssessedObservation["disposition"]["state"]
 type FindingSeverity = FindingObservation["severity"]
+type FindingMaturation = NonNullable<FindingObservation["maturation"]>
+type HypothesisItem = SessionHypothesisRegistryView["activeHypotheses"][number]
+type FindingRewardValue = {
+  minimum: number | string
+  maximum: number | string
+  unit: "MONEY" | "POINTS"
+  currency?: string
+}
 
 type FindingRow = {
   finding: WorkareaFinding
@@ -109,6 +117,22 @@ function provisionalSeverity(row: FindingRow) {
   return row.observation.verification.result === "NOT_REVIEWED"
 }
 
+function rewardAmount(value: FindingRewardValue | undefined) {
+  if (!value || typeof value.minimum !== "number" || typeof value.maximum !== "number") return
+  const amount = value.minimum === value.maximum ? `${value.minimum}` : `${value.minimum}–${value.maximum}`
+  return value.unit === "MONEY" ? `${value.currency ?? "currency"} ${amount}` : `${amount} pts`
+}
+
+export function findingRewardSummary(maturation: FindingMaturation | undefined) {
+  const reward = maturation?.checkpoint?.reward
+  if (!reward) return
+  const current = rewardAmount(reward.current)
+  const target = rewardAmount(reward.target)
+  const upside = rewardAmount(reward.upside)
+  if (!current && !target) return reward.policyKind.replaceAll("_", " ")
+  return `${current ?? "unmapped"}${target ? ` → ${target}` : ""}${upside ? ` · +${upside}` : ""}`
+}
+
 export function findingTag(value: string) {
   return `[${value.replaceAll("_", " ")}]`
 }
@@ -117,6 +141,16 @@ export function activeHypothesisLabel(value: number): string | undefined {
   const count = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
   if (count === 0) return
   return `(i) ${count} active ${count === 1 ? "hypothesis" : "hypotheses"}`
+}
+
+export function sidebarContentKinds(
+  view: FindingRegistryView | undefined,
+  hypotheses: SessionHypothesisRegistryView | undefined,
+) {
+  return [
+    ...(findingGroups(view).length > 0 ? (["findings"] as const) : []),
+    ...((hypotheses?.activeHypotheses.length ?? 0) > 0 ? (["hypotheses"] as const) : []),
+  ]
 }
 
 export function findingSeverityTone(value: FindingSeverity) {
@@ -137,13 +171,16 @@ export function FindingSidebar(props: {
   view: FindingRegistryView | undefined
   hypotheses?: SessionHypothesisRegistryView
   onOpen: (finding: WorkareaFinding) => void
+  onOpenHypothesis: (hypothesis: HypothesisItem) => void
 }) {
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const groups = createMemo(() => findingGroups(props.view))
   const count = createMemo(() => props.view?.registry.findings.length ?? 0)
-  const activeHypotheses = createMemo(() => Number(props.hypotheses?.activeCount ?? 0))
-  const hypothesisLabel = createMemo(() => activeHypothesisLabel(activeHypotheses()))
+  const hypothesisItems = createMemo(() => props.hypotheses?.activeHypotheses ?? [])
+  const activeHypothesisCount = createMemo(() => Number(props.hypotheses?.activeCount ?? 0))
+  const hypothesisLabel = createMemo(() => activeHypothesisLabel(activeHypothesisCount()))
+  const contentKinds = createMemo(() => sidebarContentKinds(props.view, props.hypotheses))
   const [focused, setFocused] = createSignal<string>()
   const [hovered, setHovered] = createSignal<string>()
   const severityColor = (value: FindingSeverity) => theme[findingSeverityTone(value)]
@@ -174,7 +211,7 @@ export function FindingSidebar(props: {
       overflow="hidden"
     >
       <box
-        height={activeHypotheses() > 0 ? 4 : 3}
+        height={3}
         width="100%"
         flexShrink={0}
         flexDirection="column"
@@ -189,18 +226,13 @@ export function FindingSidebar(props: {
           </text>
           <text fg={theme.textMuted}>{`${count()} · #R${props.view?.registry.revision ?? 0}`}</text>
         </box>
-        <Show when={hypothesisLabel()}>
-          <text fg={theme.textMuted} wrapMode="none" truncate>
-            {hypothesisLabel()}
-          </text>
-        </Show>
       </box>
       <Show
-        when={groups().length > 0}
+        when={contentKinds().length > 0}
         fallback={
           <box paddingTop={1}>
             <text fg={theme.textMuted} wrapMode="word">
-              No supported findings recorded.
+              No findings or active hypotheses recorded.
             </text>
           </box>
         }
@@ -219,6 +251,11 @@ export function FindingSidebar(props: {
           }}
           horizontalScrollbarOptions={{ visible: false }}
         >
+          <Show when={groups().length === 0 && hypothesisItems().length > 0}>
+            <box width="100%" paddingTop={1} paddingBottom={1}>
+              <text fg={theme.textMuted}>0</text>
+            </box>
+          </Show>
           <For each={groups()}>
             {(section) => (
               <box width="100%" flexDirection="column" overflow="hidden">
@@ -231,7 +268,8 @@ export function FindingSidebar(props: {
                 </text>
                 <For each={section.findings}>
                   {(row) => {
-                    const active = () => focused() === row.finding.id || hovered() === row.finding.id
+                    const rowID = `finding:${row.finding.id}`
+                    const active = () => focused() === rowID || hovered() === rowID
                     const open = () => props.onOpen(row.finding)
                     return (
                       <box
@@ -243,9 +281,9 @@ export function FindingSidebar(props: {
                         marginBottom={2}
                         overflow="hidden"
                         backgroundColor={active() ? theme.backgroundElement : theme.background}
-                        on:focused={() => setFocused(row.finding.id)}
+                        on:focused={() => setFocused(rowID)}
                         on:blurred={() => setFocused(undefined)}
-                        onMouseOver={() => setHovered(row.finding.id)}
+                        onMouseOver={() => setHovered(rowID)}
                         onMouseOut={() => setHovered(undefined)}
                         onMouseDown={(event) => event.target?.focus()}
                         onMouseUp={open}
@@ -281,6 +319,19 @@ export function FindingSidebar(props: {
                         >
                           {findingTag(submission(row))}
                         </text>
+                        <Show
+                          when={
+                            row.finding.origin.workflow === "bug-bounty"
+                              ? findingRewardSummary(row.observation?.maturation)
+                              : undefined
+                          }
+                        >
+                          {(reward) => (
+                            <text width="100%" overflow="hidden" wrapMode="none" truncate fg={theme.success}>
+                              {`Reward ${reward()}`}
+                            </text>
+                          )}
+                        </Show>
                       </box>
                     )
                   }}
@@ -288,8 +339,215 @@ export function FindingSidebar(props: {
               </box>
             )}
           </For>
+          <Show when={hypothesisItems().length > 0}>
+            <box width="100%" height={1} flexShrink={0} border={["top"]} borderColor={theme.border} />
+          </Show>
+          <Show when={hypothesisLabel()}>
+            {(label) => (
+              <text marginBottom={1} fg={theme.textMuted} wrapMode="none" truncate>
+                {label()}
+              </text>
+            )}
+          </Show>
+          <For each={hypothesisItems()}>
+            {(hypothesis) => {
+              const rowID = `hypothesis:${hypothesis.id}`
+              const active = () => focused() === rowID || hovered() === rowID
+              const open = () => props.onOpenHypothesis(hypothesis)
+              return (
+                <box
+                  focusable={true}
+                  width="100%"
+                  flexDirection="column"
+                  paddingLeft={1}
+                  paddingRight={1}
+                  marginBottom={2}
+                  overflow="hidden"
+                  backgroundColor={active() ? theme.backgroundElement : theme.background}
+                  on:focused={() => setFocused(rowID)}
+                  on:blurred={() => setFocused(undefined)}
+                  onMouseOver={() => setHovered(rowID)}
+                  onMouseOut={() => setHovered(undefined)}
+                  onMouseDown={(event) => event.target?.focus()}
+                  onMouseUp={open}
+                  onKeyDown={(event: KeyEvent) => {
+                    if (event.name !== "return") return
+                    event.preventDefault()
+                    open()
+                  }}
+                >
+                  <text
+                    width="100%"
+                    overflow="hidden"
+                    wrapMode="none"
+                    truncate
+                    fg={theme.textMuted}
+                    attributes={TextAttributes.BOLD}
+                  >
+                    {hypothesis.id}
+                  </text>
+                  <text height={3} width="100%" overflow="hidden" wrapMode="word" fg={theme.textMuted}>
+                    {hypothesis.description}
+                  </text>
+                  <text width="100%" overflow="hidden" wrapMode="none" truncate fg={theme.textMuted}>
+                    {`${findingTag(hypothesis.state)}  ${hypothesis.phase}`}
+                  </text>
+                </box>
+              )
+            }}
+          </For>
         </scrollbox>
       </Show>
+    </box>
+  )
+}
+
+export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
+  const dialog = useDialog()
+  const dimensions = useTerminalDimensions()
+  const tuiConfig = useTuiConfig()
+  const { theme } = useTheme()
+  onMount(() => dialog.setSize("xlarge"))
+
+  return (
+    <box
+      height={findingDialogHeight(dimensions().height)}
+      minHeight={0}
+      flexDirection="column"
+      paddingLeft={2}
+      paddingRight={2}
+      paddingBottom={1}
+      overflow="hidden"
+    >
+      <box height={3} width="100%" flexShrink={0} flexDirection="column" gap={1} overflow="hidden">
+        <text
+          height={1}
+          width="100%"
+          overflow="hidden"
+          fg={theme.text}
+          attributes={TextAttributes.BOLD}
+          wrapMode="none"
+          truncate
+        >
+          {props.hypothesis.description}
+        </text>
+        <text height={1} width="100%" overflow="hidden" fg={theme.textMuted} wrapMode="none" truncate>
+          {`${props.hypothesis.id} · ${props.hypothesis.state} · ${props.hypothesis.phase}`}
+        </text>
+      </box>
+      <scrollbox
+        marginTop={1}
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={0}
+        width="100%"
+        stickyScroll={false}
+        scrollAcceleration={getScrollAcceleration(tuiConfig)}
+        verticalScrollbarOptions={{ visible: true }}
+        horizontalScrollbarOptions={{ visible: false }}
+      >
+        <text fg={theme.textMuted} wrapMode="word">
+          {`Owner: ${props.hypothesis.ownerDisplayName ?? props.hypothesis.owner}`}
+        </text>
+        <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+          ROOT CAUSE
+        </text>
+        <text fg={theme.text} wrapMode="word">
+          {props.hypothesis.rootCause}
+        </text>
+        <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+          SURFACE
+        </text>
+        <text fg={theme.text} wrapMode="word">
+          {props.hypothesis.surface}
+        </text>
+        <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+          DISCRIMINATOR
+        </text>
+        <text fg={theme.text} wrapMode="word">
+          {props.hypothesis.discriminator}
+        </text>
+        <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+          CANDIDATE TOOLS
+        </text>
+        <text fg={theme.text} wrapMode="word">
+          {props.hypothesis.candidateTools.join(", ") || "None recorded."}
+        </text>
+        <Show when={props.hypothesis.omittedTools.length > 0}>
+          <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+            OMITTED TOOLS
+          </text>
+          <For each={props.hypothesis.omittedTools}>
+            {(item) => <text fg={theme.text} wrapMode="word">{`• ${item.tool} — ${item.reason}`}</text>}
+          </For>
+        </Show>
+        <Show when={props.hypothesis.findingID}>
+          {(findingID) => <text marginTop={1} fg={theme.textMuted}>{`Linked finding: ${findingID()}`}</text>}
+        </Show>
+        <Show when={props.hypothesis.blocker}>
+          {(blocker) => (
+            <text marginTop={1} fg={theme.text} wrapMode="word">
+              {`Blocker${props.hypothesis.blockerReason ? ` (${props.hypothesis.blockerReason})` : ""}: ${blocker()}`}
+            </text>
+          )}
+        </Show>
+        <Show when={props.hypothesis.nextStep}>
+          {(nextStep) => (
+            <text marginTop={1} fg={theme.text} wrapMode="word">
+              {`Next step${props.hypothesis.nextPhase ? ` (${props.hypothesis.nextPhase})` : ""}: ${nextStep()}`}
+            </text>
+          )}
+        </Show>
+        <Show when={props.hypothesis.evidence.length > 0}>
+          <text marginTop={2} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+            EVIDENCE
+          </text>
+          <For each={props.hypothesis.evidence}>
+            {(item) => <text fg={theme.text} wrapMode="word">{`• ${item}`}</text>}
+          </For>
+        </Show>
+        <Show when={props.hypothesis.evidenceRefs.length > 0}>
+          <text marginTop={1} fg={theme.textMuted} wrapMode="word">
+            {`Evidence references: ${props.hypothesis.evidenceRefs.join(", ")}`}
+          </text>
+        </Show>
+        <Show when={props.hypothesis.graphRefs.length > 0}>
+          <text marginTop={1} fg={theme.textMuted} wrapMode="word">
+            {`Graph references: ${props.hypothesis.graphRefs.join(", ")}`}
+          </text>
+        </Show>
+        <Show when={props.hypothesis.transitions.length > 0}>
+          <text marginTop={2} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+            {`HISTORY · ${props.hypothesis.transitions.length}`}
+          </text>
+          <For each={props.hypothesis.transitions.toReversed()}>
+            {(transition) => (
+              <box
+                width="100%"
+                flexDirection="column"
+                marginTop={1}
+                paddingLeft={1}
+                border={["left"]}
+                borderColor={theme.border}
+                overflow="hidden"
+              >
+                <text width="100%" overflow="hidden" wrapMode="none" truncate fg={theme.textMuted}>
+                  {`${transition.from ? `${transition.from} → ` : ""}${transition.to} · ${transition.phase} · ${Locale.time(new Date(transition.time).getTime())}`}
+                </text>
+                <Show when={transition.reason}>
+                  {(reason) => <text fg={theme.text} wrapMode="word">{reason()}</text>}
+                </Show>
+                <For each={transition.evidence}>
+                  {(item) => <text fg={theme.textMuted} wrapMode="word">{`• ${item}`}</text>}
+                </For>
+              </box>
+            )}
+          </For>
+        </Show>
+      </scrollbox>
+      <text marginTop={1} fg={theme.textMuted}>
+        Esc closes · scroll for the complete details
+      </text>
     </box>
   )
 }
@@ -434,6 +692,44 @@ function FindingObservationCard(props: { observation: FindingObservation; runID:
               <Show when={item().submission.rationale}>
                 {(value) => <text fg={theme.textMuted} wrapMode="word">{`Submission: ${value()}`}</text>}
               </Show>
+              <Show when={item().maturation?.assessment}>
+                {(assessment) => (
+                  <>
+                    <text fg={theme.info} wrapMode="word">
+                      {`Maturation: ${assessment().status} · ${assessment().currentImpact}`}
+                    </text>
+                    <Show when={assessment().targetSeverity}>
+                      {(target) => <text fg={theme.textMuted}>{`Target severity: ${target()}`}</text>}
+                    </Show>
+                    <Show when={assessment().evidenceGap}>
+                      {(gap) => <text fg={theme.textMuted} wrapMode="word">{`Evidence gap: ${gap()}`}</text>}
+                    </Show>
+                    <Show when={assessment().nextTest}>
+                      {(next) => <text fg={theme.textMuted} wrapMode="word">{`Next test: ${next()}`}</text>}
+                    </Show>
+                    <Show when={assessment().conclusion}>
+                      {(conclusion) => (
+                        <text fg={theme.textMuted} wrapMode="word">{`Conclusion: ${conclusion()}`}</text>
+                      )}
+                    </Show>
+                  </>
+                )}
+              </Show>
+            </Show>
+            <Show when={findingRewardSummary(item().maturation)}>
+              {(reward) => <text fg={theme.success} wrapMode="word">{`Published reward: ${reward()}`}</text>}
+            </Show>
+            <Show when={item().maturation?.checkpoint}>
+              {(checkpoint) => (
+                <>
+                  <text fg={theme.info}>Finding maturation questions</text>
+                  <For each={checkpoint().questions}>
+                    {(question, index) => (
+                      <text fg={theme.textMuted} wrapMode="word">{`${index() + 1}. ${question}`}</text>
+                    )}
+                  </For>
+                </>
+              )}
             </Show>
           </>
         )}

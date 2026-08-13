@@ -13,6 +13,7 @@ import {
   cyberfulOsMcpCommand,
   cyberfulOsImage,
   cyberZapBridgeCommand,
+  cyberZapMaxHistoryResponseBytes,
   cyberZapProxyPort,
   cyberZapStartupTimeoutSeconds,
   expertSessionModel,
@@ -40,6 +41,7 @@ const ENV_KEYS = [
   "CYBER_BROWSER_THROUGH_ZAP",
   "CYBER_ZAP_IMAGE",
   "CYBER_ZAP_BRIDGE_IMAGE",
+  "CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES",
   "CYBER_ZAP_PROXY_PORT",
   "CYBER_ZAP_STARTUP_TIMEOUT_SECONDS",
   "CYBER_ZAP_CONTAINER",
@@ -167,6 +169,7 @@ describe("ZAP dependency config", () => {
       expect(shouldEnableCyberZap()).toBe(true)
       expect(shouldChainBrowserThroughZap()).toBe(true)
       expect(cyberfulOsImage()).toBe("cyberful-os:latest")
+      expect(cyberZapMaxHistoryResponseBytes()).toBe(1_073_741_824)
       expect(cyberZapProxyPort()).toBe(0)
       expect(cyberZapStartupTimeoutSeconds()).toBe(120)
     })
@@ -197,6 +200,18 @@ describe("ZAP dependency config", () => {
     )
     await withEnv({ CYBER_ZAP_ENABLED: "enabled" }, () =>
       expect(() => shouldEnableCyberZap()).toThrow("CYBER_ZAP_ENABLED"),
+    )
+  })
+
+  test("validates the ZAP history response body limit before container startup", async () => {
+    await withEnv({ CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES: "536870912" }, () =>
+      expect(cyberZapMaxHistoryResponseBytes()).toBe(536_870_912),
+    )
+    await withEnv({ CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES: "16MiB" }, () =>
+      expect(() => cyberZapMaxHistoryResponseBytes()).toThrow("decimal integer"),
+    )
+    await withEnv({ CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES: "16777215" }, () =>
+      expect(() => cyberZapMaxHistoryResponseBytes()).toThrow("between 16777216 and 2147483647"),
     )
   })
 

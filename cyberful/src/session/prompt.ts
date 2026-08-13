@@ -32,6 +32,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Event } from "@/event"
 import { SubsystemControl } from "@/subsystem/control"
+import type { AgentSteeringMode, AgentSteeringReceipt } from "@/subsystem/agent-subsystem"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemCompletion } from "@/subsystem/completion"
 import { SubsystemAskRuntime } from "@/subsystem/ask-runtime"
@@ -44,7 +45,7 @@ import { SubsystemUsage } from "@/subsystem/usage"
 import { RuntimeDiagnosticRecorder } from "@/subsystem/runtime-diagnostics"
 import { SubsystemVerdict } from "@/subsystem/verdict"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
-import { SubsystemEngagementRuntime } from "@/subsystem/engagement-runtime"
+import { SubsystemEngagementRuntime, type EngagementRuntimeProgress } from "@/subsystem/engagement-runtime"
 import { HostGhidraStore } from "@/ghidra-store"
 import { HostSourceStore } from "@/source-store"
 import { Question } from "@/question"
@@ -80,6 +81,7 @@ import { FindingRegistry } from "@/finding/registry"
 import { SessionFinding } from "./finding"
 import { SessionHypothesis } from "./hypothesis"
 import { readHypothesisRegistryView } from "@/subsystem/gateway/hypothesis-registry"
+import { readRewardPolicy } from "@/subsystem/gateway/reward-policy"
 import { createCodeGraphService } from "@/code-graph/service"
 import { findingHandoffWarning, findingWorkflow } from "./finding-handoff"
 import type { CommandInput, LoopInput, PromptInput, ShellInput } from "./prompt-input"
@@ -120,8 +122,9 @@ export interface Interface {
   readonly steer: (input: {
     sessionID: SessionID
     parts: PromptInput["parts"]
+    mode?: AgentSteeringMode
     expectedEpoch?: SessionPhaseEpoch.Identity
-  }) => Effect.Effect<boolean>
+  }) => Effect.Effect<AgentSteeringReceipt>
   readonly loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts>
@@ -132,6 +135,8 @@ type PromptInputInternal = PromptInput & {
   metadata?: Record<string, unknown>
   deliveryGuard?: (message: MessageV2.WithParts) => Effect.Effect<boolean>
   appendGuard?: Effect.Effect<boolean>
+  steeringMode?: AgentSteeringMode
+  onSteeringReceipt?: (receipt: AgentSteeringReceipt) => void
 }
 
 type JournalInputPart = MessageV2.TextPart | MessageV2.FilePart
@@ -677,7 +682,11 @@ export const layer = Layer.effect(
                   SubsystemControl.steer({
                     sessionID: input.sessionID,
                     text: objectiveFromMessage(candidate),
-                  }).then((acknowledgement) => acknowledgement.accepted),
+                    mode: input.steeringMode,
+                  }).then((acknowledgement) => {
+                    input.onSteeringReceipt?.(acknowledgement)
+                    return acknowledgement.accepted
+                  }),
                 )
             : undefined,
       })
@@ -706,18 +715,25 @@ export const layer = Layer.effect(
     })
 
     const steer: Interface["steer"] = Effect.fn("SessionPrompt.steer")(function* (input) {
-      if ((yield* status.get(input.sessionID)).type !== "busy") return false
+      const reject = (reason: string) => SubsystemControl.reject({ mode: input.mode, reason })
+      if ((yield* status.get(input.sessionID)).type !== "busy") return reject("session is not busy")
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      if (session.parentID) return false
+      if (session.parentID) return reject("only a root session can be steered")
       const canonical = MessageV2.active(
         yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orElseSucceed(() => [])),
       )
-      if (input.expectedEpoch && !SessionPhaseEpoch.matches(canonical, input.expectedEpoch)) return false
+      if (input.expectedEpoch && !SessionPhaseEpoch.matches(canonical, input.expectedEpoch))
+        return reject("the expected phase epoch is no longer active")
       const latest = MessageV2.latest(canonical)
+      let receipt: AgentSteeringReceipt | undefined
       const appended = yield* submitPrompt({
         sessionID: input.sessionID,
         delivery: "immediate",
         noReply: true,
+        steeringMode: input.mode,
+        onSteeringReceipt: (value) => {
+          receipt = value
+        },
         ...steerHeadFields(latest.user),
         parts: input.parts,
         appendGuard: Effect.gen(function* () {
@@ -729,14 +745,14 @@ export const layer = Layer.effect(
           return true
         }),
       })
-      if (!appended) return false
+      if (!appended) return receipt ?? reject("the steering message was not appended")
       yield* loop({ sessionID: input.sessionID }).pipe(
         Effect.catchCause((cause) =>
           Effect.logError("detached steered session loop failed", { sessionID: input.sessionID, cause }),
         ),
         Effect.forkDetach,
       )
-      return true
+      return receipt ?? reject("the active AgentRun did not return a steering receipt")
     })
 
     const promoteNextDeferred = Effect.fn("SessionPrompt.promoteNextDeferred")(function* (sessionID: SessionID) {
@@ -1041,7 +1057,19 @@ export const layer = Layer.effect(
                       SessionFinding.dynamicTool(
                         findingStore,
                         { runID: session.id, workflow: registryWorkflow, phase: spec.phase },
-                        { readonly: false },
+                        {
+                          readonly: false,
+                          rewardPolicy:
+                            registryWorkflow === "bug-bounty" ? () => readRewardPolicy(workareaCwd) : undefined,
+                          onMaturation: (notice) =>
+                            bridge.fork(
+                              publishPhase(
+                                spec.phase,
+                                "status",
+                                JSON.stringify({ findingMaturation: notice }),
+                              ),
+                            ),
+                        },
                       ),
                     ]
                   : undefined,
@@ -1257,6 +1285,13 @@ export const layer = Layer.effect(
       // failures abort before an autonomous phase can observe partial capability.
       // ─────────────────────────────────────────────────────────────────
       const engagementRuntime = yield* Effect.promise(async (signal) => {
+        let latestProgress: EngagementRuntimeProgress | undefined
+        const publishRuntimeProgress = (progress: EngagementRuntimeProgress) => {
+          latestProgress = progress
+          bridge.fork(
+            publishPhase(startPhase, "status", JSON.stringify({ runtimeBootstrap: progress })),
+          )
+        }
         const diagnostics = new RuntimeDiagnosticRecorder({
           workarea: workareaCwd,
           sessionID: session.id,
@@ -1273,6 +1308,7 @@ export const layer = Layer.effect(
             ...(ghidraStore ? { ghidraStore: ghidraStore.root } : {}),
             objective,
             signal,
+            onProgress: publishRuntimeProgress,
             onDiagnostic: (diagnostic) =>
               diagnostics.record({
                 component: diagnostic.component,
@@ -1283,6 +1319,27 @@ export const layer = Layer.effect(
                 message: diagnostic.message,
               }),
           })
+        } catch (error) {
+          const failedProgress: EngagementRuntimeProgress = latestProgress
+            ? {
+                ...latestProgress,
+                state: "failed",
+                message: "Engagement runtime failed to start",
+                services: latestProgress.services.map((service) =>
+                  service.state === "active" ? { ...service, state: "failed" as const } : service,
+                ),
+              }
+            : {
+                state: "failed",
+                message: "Engagement runtime failed to start",
+                completed: 0,
+                total: 1,
+                services: [{ id: "cyber-os", label: "CyberOS", state: "failed" }],
+              }
+          await bridge
+            .promise(publishPhase(startPhase, "status", JSON.stringify({ runtimeBootstrap: failedProgress })))
+            .catch(() => undefined)
+          throw error
         } finally {
           await diagnostics.close().catch(() => undefined)
         }
@@ -1336,7 +1393,15 @@ export const layer = Layer.effect(
               : {}),
           },
         },
-        { runPhase: runPhaseWithStatus },
+        {
+          runPhase: runPhaseWithStatus,
+          resolveClientName: async () => {
+            const variable = await bridge.promise(
+              variables.get({ sessionID: session.id, name: SessionVariable.Name.make("client_name") }),
+            )
+            return typeof variable?.value === "string" ? variable.value : undefined
+          },
+        },
       ).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {

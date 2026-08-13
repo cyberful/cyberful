@@ -8,8 +8,10 @@ import { describe, expect, test } from "bun:test"
 import {
   continuesExpertPhaseTurn,
   decodeExpertContextCompaction,
+  decodeExpertFindingMaturation,
   decodeExpertPhaseStatus,
   decodeExpertProviderRetry,
+  decodeExpertRuntimeBootstrap,
   decodeExpertRuntimeDiagnostic,
   decodeExpertToolActivity,
   expertActorIdentityText,
@@ -18,6 +20,7 @@ import {
   expertPhaseDuration,
   expertPhaseLabel,
   expertRuntimeDiagnosticText,
+  expertRewardText,
   foldExpertActivity,
   isExpertSemanticProgress,
   type ExpertPhaseEntry,
@@ -109,6 +112,105 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("keeps engagement startup in one updating runtime card", () => {
+    const starting = JSON.stringify({
+      runtimeBootstrap: {
+        state: "active",
+        message: "Attesting ZAP, proxy trust, and TLS clients",
+        completed: 1,
+        total: 2,
+        services: [
+          { id: "cyber-os", label: "CyberOS", state: "ready" },
+          { id: "zap", label: "OWASP ZAP", state: "active" },
+        ],
+      },
+    })
+    const ready = JSON.stringify({
+      runtimeBootstrap: {
+        state: "ready",
+        message: "Engagement runtime ready",
+        completed: 2,
+        total: 2,
+        services: [
+          { id: "cyber-os", label: "CyberOS", state: "ready" },
+          { id: "zap", label: "OWASP ZAP", state: "ready" },
+        ],
+      },
+    })
+
+    expect(decodeExpertRuntimeBootstrap(starting)).toMatchObject({ state: "active", completed: 1, total: 2 })
+    const updated = foldExpertActivity(
+      foldExpertActivity([], act("status", starting, "", "runtime-starting")),
+      act("status", ready, "", "runtime-ready"),
+    )
+    expect(updated).toHaveLength(1)
+    expect(updated[0]).toMatchObject({
+      id: "runtime-starting",
+      text: "Engagement runtime ready",
+      runtimeBootstrap: { state: "ready", completed: 2, total: 2 },
+    })
+    expect(
+      decodeExpertRuntimeBootstrap(
+        JSON.stringify({
+          runtimeBootstrap: {
+            state: "ready",
+            message: "invalid",
+            completed: 2,
+            total: 2,
+            services: [{ id: "cyber-os", label: "CyberOS", state: "ready" }],
+          },
+        }),
+      ),
+    ).toBeUndefined()
+  })
+
+  test("decodes a non-blocking finding maturation card with published upside", () => {
+    const payload = JSON.stringify({
+      findingMaturation: {
+        workflow: "bug-bounty",
+        phase: "exploit",
+        findingID: "fnd_001",
+        alias: "BBP-001",
+        title: "Cross-tenant export disclosure",
+        currentSeverity: "MEDIUM",
+        targetSeverity: "HIGH",
+        checkpoint: {
+          id: "mat_001",
+          signature: "signature",
+          promptedAt: "2026-08-10T08:00:00.000Z",
+          questions: [
+            "What is the strongest impact currently supported by the evidence?",
+            "Which authorized test would close that gap most efficiently?",
+          ],
+          reward: {
+            policyRevision: "reward-r1",
+            policyKind: "MONETARY",
+            groupID: "web",
+            current: { severity: "MEDIUM", minimum: 500, maximum: 1_000, unit: "MONEY", currency: "USD" },
+            target: { severity: "HIGH", minimum: 3_000, maximum: 5_000, unit: "MONEY", currency: "USD" },
+            upside: { minimum: 2_000, maximum: 4_500, unit: "MONEY", currency: "USD" },
+          },
+        },
+      },
+    })
+
+    const decoded = decodeExpertFindingMaturation(payload)
+    expect(decoded).toMatchObject({
+      findingID: "fnd_001",
+      checkpoint: { reward: { upside: { minimum: 2_000, maximum: 4_500 } } },
+    })
+    expect(expertRewardText(decoded?.checkpoint.reward?.upside)).toBe("USD 2000–4500")
+    const out = foldExpertActivity([], act("status", payload, "", "maturation"))
+    expect(out[0]?.findingMaturation).toEqual(decoded)
+    expect(out[0]?.text).toBe("Finding maturation checkpoint")
+  })
+
+  test("rejects malformed maturation envelopes without disturbing the status feed", () => {
+    const payload = JSON.stringify({ findingMaturation: { findingID: "fnd_001", questions: "not-an-array" } })
+    expect(decodeExpertFindingMaturation(payload)).toBeUndefined()
+    expect(foldExpertActivity([], act("status", payload, "", "malformed"))[0]?.text).toBe(payload)
+  })
+
   test("decodes provider retry telemetry for compact grouped styling", () => {
     expect(
       decodeExpertProviderRetry("Provider retry scheduled: attempt 1/3 after 624 ms (server_is_overloaded)."),

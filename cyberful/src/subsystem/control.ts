@@ -4,14 +4,17 @@
 // → cyberful/src/subsystem/pi-agent.ts — registers active Pi AgentRuns.
 // ─────────────────────────────────────────────────────────────────
 
+import { randomUUID } from "node:crypto"
+import type { AgentSteeringMode, AgentSteeringReceipt } from "./agent-subsystem"
+
 export interface SteeringRequest {
-  text: string
+  readonly id: string
+  readonly text: string
+  readonly mode: AgentSteeringMode
+  readonly acceptedAt: string
 }
 
-export interface SteeringAcknowledgement {
-  accepted: boolean
-  recipients: number
-}
+export type SteeringAcknowledgement = AgentSteeringReceipt
 
 export interface TurnControl {
   steer(request: SteeringRequest): Promise<SteeringAcknowledgement>
@@ -29,8 +32,34 @@ interface Entry {
 
 export const STEER_ACK_TIMEOUT_MS = 10_000
 
-const rejected = { accepted: false, recipients: 0 } satisfies SteeringAcknowledgement
 const sessions = new Map<string, Entry>()
+
+function rejected(request: SteeringRequest, reason: string): SteeringAcknowledgement {
+  return {
+    id: request.id,
+    accepted: false,
+    recipients: 0,
+    mode: request.mode,
+    state: "rejected",
+    acceptedAt: request.acceptedAt,
+    reason,
+  }
+}
+
+export function reject(input: {
+  mode?: AgentSteeringMode
+  reason: string
+}): SteeringAcknowledgement {
+  return rejected(
+    {
+      id: `steer_${randomUUID()}`,
+      text: "",
+      mode: input.mode ?? "queue",
+      acceptedAt: new Date().toISOString(),
+    },
+    input.reason,
+  )
+}
 
 function entry(sessionID: string): Entry {
   const current = sessions.get(sessionID)
@@ -46,11 +75,13 @@ function removeIfIdle(sessionID: string, current: Entry): void {
 
 async function deliverTo(turns: readonly TurnControl[], request: SteeringRequest): Promise<SteeringAcknowledgement> {
   const results = await Promise.allSettled(turns.map((turn) => Promise.resolve().then(() => turn.steer(request))))
-  const recipients = results.reduce(
-    (count, result) => count + (result.status === "fulfilled" && result.value.accepted ? result.value.recipients : 0),
-    0,
-  )
-  return { accepted: recipients > 0, recipients }
+  const accepted = results
+    .filter((result): result is PromiseFulfilledResult<SteeringAcknowledgement> => result.status === "fulfilled")
+    .map((result) => result.value)
+    .filter((result) => result.accepted)
+  const recipients = accepted.reduce((count, result) => count + result.recipients, 0)
+  const receipt = accepted[0]
+  return receipt ? { ...receipt, recipients } : rejected(request, "no active AgentRun accepted the steering message")
 }
 
 async function beforeDeadline<T>(
@@ -100,8 +131,12 @@ async function deliverToSuccessor(
     removeIfIdle(sessionID, current)
   }
   const turn = await beforeDeadline(turnReady.promise, timeoutMs, undefined, expire)
-  if (!turn) return rejected
-  return beforeDeadline(deliverTo([turn], request), deadlineAt - Date.now(), rejected)
+  if (!turn) return rejected(request, "no successor AgentRun registered before the steering deadline")
+  return beforeDeadline(
+    deliverTo([turn], request),
+    deadlineAt - Date.now(),
+    rejected(request, "the successor AgentRun did not acknowledge steering before the deadline"),
+  )
 }
 
 export function open(sessionID: string): () => void {
@@ -139,14 +174,25 @@ export function register(sessionID: string, turn: TurnControl): () => void {
 export function steer(input: {
   sessionID: string
   text: string
+  mode?: AgentSteeringMode
   timeoutMs?: number
 }): Promise<SteeringAcknowledgement> {
+  const request = {
+    id: `steer_${randomUUID()}`,
+    text: input.text,
+    mode: input.mode ?? "queue",
+    acceptedAt: new Date().toISOString(),
+  } satisfies SteeringRequest
   const current = sessions.get(input.sessionID)
-  if (!current) return Promise.resolve(rejected)
+  if (!current) return Promise.resolve(rejected(request, "session is not actively steerable"))
   const timeoutMs = input.timeoutMs ?? STEER_ACK_TIMEOUT_MS
-  const request = { text: input.text }
-  if (current.turns.size > 0) return beforeDeadline(deliverTo([...current.turns], request), timeoutMs, rejected)
-  if (current.scopes === 0) return Promise.resolve(rejected)
+  if (current.turns.size > 0)
+    return beforeDeadline(
+      deliverTo([...current.turns], request),
+      timeoutMs,
+      rejected(request, "active AgentRun steering acknowledgement timed out"),
+    )
+  if (current.scopes === 0) return Promise.resolve(rejected(request, "session is not actively steerable"))
   return deliverToSuccessor(input.sessionID, current, request, timeoutMs)
 }
 

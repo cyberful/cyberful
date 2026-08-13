@@ -55,6 +55,10 @@ export interface ModelContextCheckpoint {
   readonly working_notes: string
   readonly structured_state: StructuredState
   readonly what_i_would_do_next: string
+  readonly host_integrity: {
+    readonly evidence_refs_accepted: number
+    readonly evidence_refs_removed: number
+  }
 }
 
 export interface SemanticProjection {
@@ -211,10 +215,8 @@ export function parseModelCheckpoint(input: {
   const state = record(root?.structured_state)
   if (!root || !state) throw new Error("semantic checkpoint is missing its structured state")
   const sourceText = JSON.stringify(input.sourceMessages)
-  const evidenceRefs = stringList(state.evidence_refs, "structured_state.evidence_refs", input.sanitize)
-  for (const [index, reference] of evidenceRefs.entries())
-    if (!sourceText.includes(reference))
-      throw new Error(`semantic checkpoint 'structured_state.evidence_refs[${index}]' is not present in source context`)
+  const suppliedEvidenceRefs = stringList(state.evidence_refs, "structured_state.evidence_refs", input.sanitize)
+  const evidenceRefs = [...new Set(suppliedEvidenceRefs.filter((reference) => sourceText.includes(reference)))]
 
   return {
     working_notes: boundedString(root.working_notes, "working_notes", MAX_NOTES_CHARS, input.sanitize),
@@ -264,6 +266,10 @@ export function parseModelCheckpoint(input: {
       MAX_NEXT_CHARS,
       input.sanitize,
     ),
+    host_integrity: {
+      evidence_refs_accepted: evidenceRefs.length,
+      evidence_refs_removed: suppliedEvidenceRefs.length - evidenceRefs.length,
+    },
   }
 }
 

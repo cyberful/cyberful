@@ -8,7 +8,10 @@
 
 import { Event as EventDefinition } from "@/event"
 import { FindingRegistry } from "@/finding/registry"
+import { FindingMaturation } from "@/finding/maturation"
 import type { DynamicTool } from "@/subsystem/subsystem"
+import type { GatewayRewardPolicy } from "@/subsystem/gateway/reward-policy"
+import { isRecord } from "@/util/record"
 import { SessionID } from "./schema"
 import { Schema } from "effect"
 
@@ -40,6 +43,20 @@ const severitySchema = {
   enum: ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
 }
 const evidencePathsSchema = { type: "array", items: { type: "string" }, maxItems: 100 }
+const maturationSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    status: { type: "string", enum: ["PURSUE", "MAXIMIZED", "DEFERRED"] },
+    current_impact: { type: "string" },
+    target_severity: severitySchema,
+    evidence_gap: { type: "string" },
+    next_test: { type: "string" },
+    conclusion: { type: "string" },
+    reward_group_id: { type: "string" },
+  },
+  required: ["status", "current_impact"],
+}
 const decisionProperties = {
   verification: { type: "string", enum: ["NOT_REVIEWED", "SURVIVES", "REVISE", "DEMOTE"] },
   verification_rationale: { type: "string" },
@@ -78,6 +95,7 @@ function findingInputSchema(readonly: boolean) {
     summary: { type: "string" },
     severity: severitySchema,
     evidence_paths: evidencePathsSchema,
+    maturation: maturationSchema,
     ...decisionProperties,
   }
   return {
@@ -92,6 +110,7 @@ function findingInputSchema(readonly: boolean) {
           next_step: { type: "string" },
           severity: severitySchema,
           evidence_paths: evidencePathsSchema,
+          maturation: maturationSchema,
         },
         ["key", "title", "positive_evidence", "severity"],
       ),
@@ -181,7 +200,11 @@ function actionOf(input: unknown) {
 export function dynamicTool(
   store: FindingRegistry.Store,
   run: FindingRegistry.RunContext,
-  options: { readonly: boolean },
+  options: {
+    readonly: boolean
+    rewardPolicy?: () => Promise<GatewayRewardPolicy.RewardPolicy | undefined>
+    onMaturation?: (notice: MaturationNotice) => void
+  },
 ): DynamicTool {
   return {
     definition: {
@@ -189,7 +212,7 @@ export function dynamicTool(
       name: "finding",
       description: options.readonly
         ? "Read the authoritative workarea finding registry. Report is read-only: use list or get."
-        : "Record and maintain supported security findings in the authoritative workarea registry. Use record immediately after positive evidence and include a required provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity; revisit historical findings, update every technical/verification/submission decision, alias stable workflow IDs, and list/get before handoff.",
+        : "Record and maintain supported security findings in the authoritative workarea registry. Use record immediately after positive evidence and include a required provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity; answer host-authored maturation checkpoints with PURSUE, MAXIMIZED, or DEFERRED; revisit historical findings, update every technical/verification/submission decision, alias stable workflow IDs, and list/get before handoff.",
       deferLoading: false,
       inputSchema: findingInputSchema(options.readonly),
     },
@@ -206,8 +229,61 @@ export function dynamicTool(
           ),
         }
       try {
-        const result = await store.execute(input, run, context.signal)
-        return { success: true, text: JSON.stringify(result) }
+        const record = isRecord(input) ? input : {}
+        const current = await currentFinding(store, record)
+        let rewardPolicy: GatewayRewardPolicy.RewardPolicy | undefined
+        let rewardPolicyWarning: string | undefined
+        if (
+          run.workflow === "bug-bounty" &&
+          (record.action === "record" || record.action === "update") &&
+          options.rewardPolicy
+        )
+          try {
+            rewardPolicy = await options.rewardPolicy()
+          } catch (error) {
+            rewardPolicyWarning = `Reward policy could not be read; technical maturation continues without reward data: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          }
+        const advisory = FindingMaturation.buildAdvisory({
+          workflow: run.workflow,
+          phase: run.phase,
+          toolInput: record,
+          finding: current,
+          policy: rewardPolicy,
+        })
+        const result = await store.execute(
+          advisory ? { ...record, _maturation_checkpoint: advisory.checkpoint } : input,
+          run,
+          context.signal,
+        )
+        if (!advisory || !isRecord(result))
+          return {
+            success: true,
+            text: JSON.stringify(
+              rewardPolicyWarning && isRecord(result) ? { ...result, reward_policy_warning: rewardPolicyWarning } : result,
+            ),
+          }
+        const notice: MaturationNotice = {
+          workflow: run.workflow,
+          phase: run.phase,
+          findingID: typeof result.id === "string" ? result.id : String(record.id ?? record.key ?? "finding"),
+          alias:
+            Array.isArray(result.aliases) && typeof result.aliases[0] === "string" ? result.aliases[0] : undefined,
+          title: typeof result.title === "string" ? result.title : "Supported finding",
+          currentSeverity: advisory.currentSeverity,
+          targetSeverity: advisory.targetSeverity,
+          checkpoint: advisory.checkpoint,
+        }
+        options.onMaturation?.(notice)
+        return {
+          success: true,
+          text: JSON.stringify({
+            ...result,
+            maturation_advisory: notice,
+            ...(rewardPolicyWarning ? { reward_policy_warning: rewardPolicyWarning } : {}),
+          }),
+        }
       } catch (error) {
         return {
           success: false,
@@ -223,6 +299,28 @@ export function dynamicTool(
         }
       }
     },
+  }
+}
+
+export interface MaturationNotice {
+  readonly workflow: FindingRegistry.Workflow
+  readonly phase: string
+  readonly findingID: string
+  readonly alias?: string
+  readonly title: string
+  readonly currentSeverity: Exclude<FindingRegistry.Severity, "UNRATED">
+  readonly targetSeverity?: Exclude<FindingRegistry.Severity, "UNRATED">
+  readonly checkpoint: FindingRegistry.MaturationCheckpoint
+}
+
+async function currentFinding(store: FindingRegistry.Store, input: Record<string, unknown>) {
+  const reference = input.action === "record" ? input.key : input.action === "update" ? input.id : undefined
+  if (typeof reference !== "string" || !reference.trim()) return
+  try {
+    return await store.get(reference)
+  } catch (error) {
+    if (error instanceof FindingRegistry.FindingRegistryError && error.code === "FINDING_NOT_FOUND") return
+    throw error
   }
 }
 

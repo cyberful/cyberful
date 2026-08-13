@@ -20,10 +20,19 @@ import {
 import type { AssistantMessage, ToolResultMessage, UserMessage, Usage } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { Settings } from "@/config/settings"
-import { readWorkareaFileChunk, replaceWorkareaFile } from "@/workarea"
+import {
+  createEvidenceManifest,
+  listWorkareaFiles,
+  readWorkareaFileChunk,
+  readWorkareaImage,
+  replaceWorkareaFile,
+  verifyEvidenceManifest,
+  WorkareaToolError,
+} from "@/workarea"
 import { SubsystemControl } from "./control"
 import type {
   AgentEvent,
+  AgentRunCancellationCause,
   AgentRunRecoverySummary,
   AgentRun,
   AgentRunID,
@@ -31,7 +40,9 @@ import type {
   AgentRunResult,
   AgentRunSpec,
   AgentRunTermination,
+  AgentRunTerminationCause,
   AgentRunUsage,
+  AgentSteeringReceipt,
   AgentSubsystem,
   AgentTaskCapsule,
   ChildPromptInput,
@@ -70,6 +81,8 @@ import {
 import { clearFallbackLedger, fallbackLedgerForSession, type PiFallbackLedger } from "./pi-fallback-ledger"
 import type { PhaseActivity, PhaseActivityActor } from "./subsystem"
 import type { ProviderCallKind, ProviderUsageLedger } from "./provider-usage"
+import { decideRecovery, MINIMUM_RECOVERY_OUTPUT_TOKENS } from "./recovery-policy"
+import { reframeAuthorizedSecurityInput, supportsAuthorizationReframe } from "./security-reframe"
 
 function delegateTaskParameters(reasoningEfforts: readonly Settings.ReasoningEffort[]) {
   return Type.Object(
@@ -177,30 +190,44 @@ const ToolSearchParameters = Type.Object(
   { additionalProperties: false },
 )
 
-const WorkareaReadParameters = Type.Object(
-  {
-    path: Type.String({
-      minLength: 1,
-      maxLength: 1_024,
-      description: "Workarea-relative path to one existing regular text artifact.",
-    }),
-    offset: Type.Optional(
-      Type.Integer({
-        minimum: 0,
-        description: "Zero-based byte offset returned by the previous workarea_read page.",
+const WorkareaReadParameters = Type.Union([
+  Type.Object(
+    {
+      mode: Type.Optional(Type.Literal("text", { default: "text" })),
+      path: Type.String({
+        minLength: 1,
+        maxLength: 1_024,
+        description: "Workarea-relative path to one existing regular text artifact.",
       }),
-    ),
-    limit: Type.Optional(
-      Type.Integer({
-        minimum: 1,
-        maximum: 65_536,
-        default: 65_536,
-        description: "Maximum bytes to return from this page.",
+      offset: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description: "Zero-based byte offset returned by the previous workarea_read page.",
+        }),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 65_536,
+          default: 65_536,
+          description: "Maximum bytes to return from this page.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      mode: Type.Literal("image"),
+      path: Type.String({
+        minLength: 1,
+        maxLength: 1_024,
+        description: "Workarea-relative path to one bounded PNG, JPEG, or WebP image.",
       }),
-    ),
-  },
-  { additionalProperties: false },
-)
+    },
+    { additionalProperties: false },
+  ),
+])
 
 const WorkareaWriteParameters = Type.Object(
   {
@@ -216,6 +243,45 @@ const WorkareaWriteParameters = Type.Object(
   },
   { additionalProperties: false },
 )
+
+const WorkareaListParameters = Type.Object(
+  {
+    prefix: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 1_024,
+        description: "Existing workarea-relative directory to search; omit for the workarea root.",
+      }),
+    ),
+    pattern: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 256,
+        description: "Bounded * and ? wildcard matched against relative paths and basenames.",
+      }),
+    ),
+    max_depth: Type.Optional(Type.Integer({ minimum: 0, maximum: 12, default: 4 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_024, default: 256 })),
+  },
+  { additionalProperties: false },
+)
+
+const EvidenceManifestParameters = Type.Union([
+  Type.Object(
+    {
+      command: Type.Literal("create"),
+      directory: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, default: "." })),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      command: Type.Literal("verify"),
+      directory: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, default: "." })),
+    },
+    { additionalProperties: false },
+  ),
+])
 
 const DelegationStatusParameters = Type.Object({}, { additionalProperties: false })
 const RECOVERY_SUMMARY_BYTES = 4_096
@@ -260,7 +326,6 @@ interface RunState {
   toolCalls: number
   fallbackAdmissions: number
   fallbackDescendants: number
-  automaticFallbackUsed: boolean
   cumulativeUsage: AgentRunUsage
   providerRetryAttempt: number
   providerRetryActive: boolean
@@ -272,6 +337,10 @@ interface RunState {
     readonly messages: readonly AgentMessage[]
   }
   readonly contextRecoveryKeys: Set<string>
+  readonly recoveryChains: Set<string>
+  readonly pendingSteering: Map<string, AgentSteeringReceipt>
+  readonly validatedToolCalls: Set<string>
+  readonly blockedToolCalls: Set<string>
   contextRecoveryAttempted: boolean
   contextRecoveryProviderCallsRemaining?: number
   contextRotationGeneration: number
@@ -294,7 +363,10 @@ interface RunState {
     readonly name: string
     readonly input: unknown
   }
-  cancellation?: "budget" | "cancel"
+  cancellation?: {
+    readonly mode: "budget" | "cancel"
+    readonly cause: AgentRunCancellationCause
+  }
   finished: boolean
 }
 
@@ -445,18 +517,6 @@ function addUsage(total: AgentRunUsage, usage: Usage): AgentRunUsage {
 
 function agentRunUsage(usage: Usage): AgentRunUsage {
   return addUsage(emptyUsage(), usage)
-}
-
-function emptyProviderUsage(): Usage {
-  return {
-    input: 0,
-    output: 0,
-    reasoning: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  }
 }
 
 function checkpointSourceGroups(messages: readonly AgentMessage[]): AgentMessage[][] {
@@ -819,8 +879,10 @@ function closeoutToolAllowed(name: string): boolean {
       "hypothesis",
       "finding",
       "code_finding",
+      "evidence_manifest",
       "test_object",
       "engagement_policy",
+      "reward_policy",
       "variable",
       "skill_read",
       "tool_search",
@@ -844,8 +906,6 @@ function validateSpec(spec: AgentRunSpec): void {
   if (spec.prompt.manifest.handoffOwner !== spec.handoffOwner)
     throw new Error("AgentRun prompt handoff ownership does not match host policy")
   if (spec.handoffOwner && spec.role !== "root") throw new Error("Only the original root AgentRun may own handoff")
-  if (spec.role === "root" && spec.providerAffinity !== "main")
-    throw new Error("The original root AgentRun must use main provider affinity")
   if (spec.role === "fallback" && spec.providerAffinity !== "fallback")
     throw new Error("A fallback AgentRun must use fallback provider affinity")
   if (spec.role === "root" && (spec.parentID || spec.phaseRootID))
@@ -862,9 +922,15 @@ function validateSpec(spec: AgentRunSpec): void {
 }
 
 function terminationFor(state: RunState, failure: Failure | undefined): AgentRunTermination {
-  if (state.cancellation === "budget") return "budget_exhausted"
-  if (state.cancellation === "cancel" || failure?.kind === "cancelled") return "cancelled"
+  if (state.cancellation?.mode === "budget") return "budget_exhausted"
+  if (state.cancellation?.mode === "cancel" || failure?.kind === "cancelled") return "cancelled"
   if (failure) return "provider_failed"
+  return "completed"
+}
+
+function terminationCauseFor(state: RunState, failure: Failure | undefined): AgentRunTerminationCause {
+  if (state.cancellation) return state.cancellation.cause
+  if (failure) return failure.kind
   return "completed"
 }
 
@@ -913,11 +979,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
     const providers: SubsystemStatus["providers"][number][] = []
     const errors: string[] = []
     let mainAuthenticated = false
+    let fallbackAuthenticated = false
     for (const route of routes) {
       try {
         const model = this.#registry.model(route.id)
         const auth = await this.#registry.models.getAuth(model)
         if (route.route === "main") mainAuthenticated = Boolean(auth)
+        if (route.route === "fallback") fallbackAuthenticated = Boolean(auth)
         providers.push({
           id: route.id,
           model: model.id,
@@ -928,15 +996,27 @@ export class PiAgentSubsystem implements AgentSubsystem {
           effectiveReasoningEffort: PiReasoning.resolve(Settings.reasoningEffort(settings), model).effective,
           ...(auth?.source ? { authSource: auth.source } : {}),
         })
-        if (!auth)
-          errors.push(`Provider '${route.id}' has no configured ${settings.agent.providers[route.id]?.auth.type}`)
+        if (!auth) {
+          const login = settings.agent.providers[route.id]?.auth.type === "subscription"
+            ? `; run 'cyberful auth login ${route.id}'`
+            : ""
+          errors.push(`Provider '${route.id}' has no configured ${settings.agent.providers[route.id]?.auth.type}${login}`)
+        }
       } catch (error) {
         errors.push(error instanceof Error ? error.message : String(error))
       }
     }
+    const phaseRecovery = Settings.phaseRecoveryPolicy(settings)
+    const fallbackRequired = Boolean(
+      settings.agent.fallback_provider &&
+        (settings.agent.fallback.proactive.enabled ||
+          settings.agent.fallback.automatic_security_block.enabled ||
+          (phaseRecovery.enabled && phaseRecovery.use_fallback_provider)),
+    )
+    const ready = mainAuthenticated && (!fallbackRequired || fallbackAuthenticated)
     return {
-      ready: mainAuthenticated,
-      degraded: mainAuthenticated && errors.length > 0,
+      ready,
+      degraded: ready && errors.length > 0,
       subsystem: "pi",
       providers,
       errors,
@@ -995,7 +1075,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
       toolCalls: 0,
       fallbackAdmissions: 0,
       fallbackDescendants: 0,
-      automaticFallbackUsed: false,
       cumulativeUsage: emptyUsage(),
       providerRetryAttempt: 0,
       providerRetryActive: false,
@@ -1005,6 +1084,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
       contextArtifacts: new Map(),
       contextProjections: new Map(),
       contextRecoveryKeys: new Set(),
+      recoveryChains: new Set(),
+      pendingSteering: new Map(),
+      validatedToolCalls: new Set(),
+      blockedToolCalls: new Set(),
       contextRecoveryAttempted: false,
       contextRotationGeneration: 0,
       contextCompactionEmergency: false,
@@ -1028,8 +1111,12 @@ export class PiAgentSubsystem implements AgentSubsystem {
     if (spec.role === "root") {
       state.unregisterControl = SubsystemControl.register(spec.sessionID, {
         steer: async (request) => {
-          const accepted = await handle.steer({ content: request.text })
-          return { accepted, recipients: accepted ? 1 : 0 }
+          return handle.steer({
+            content: request.text,
+            mode: request.mode,
+            id: request.id,
+            acceptedAt: request.acceptedAt,
+          })
         },
       })
     }
@@ -1043,7 +1130,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     this.#notifyDelegationWaiters({ all: true })
     this.#shutdownPromise = (async () => {
       const roots = [...this.#states.values()].filter((state) => state.spec.role === "root")
-      await Promise.allSettled(roots.map((state) => this.#cancelState(state, "Pi phase owner shutdown", "cancel")))
+      await Promise.allSettled(roots.map((state) => this.#cancelState(state, "phase_shutdown")))
       await Promise.allSettled([...this.#states.values()].map((state) => state.resultPromise))
       await this.#onShutdown?.()
     })()
@@ -1057,11 +1144,59 @@ export class PiAgentSubsystem implements AgentSubsystem {
       result: state.resultPromise,
       steer: async (message) => {
         const content = message.content.trim()
-        if (!content || state.finished || state.cancellation || !state.agent) return false
+        const mode = message.mode ?? "queue"
+        const id = message.id ?? `steer_${randomUUID()}`
+        const acceptedAt = message.acceptedAt ?? new Date(this.#now()).toISOString()
+        if (!content || state.finished || state.cancellation || !state.agent) {
+          return {
+            id,
+            accepted: false,
+            recipients: 0,
+            mode,
+            state: "rejected",
+            runID: state.id,
+            acceptedAt,
+            reason: !content ? "steering text is empty" : "AgentRun is no longer steerable",
+          }
+        }
+        if (mode === "focus") {
+          this.#supersedePendingSteering(state, "superseded by explicit focus steering")
+          const children = [...state.children]
+            .map((childID) => this.#states.get(childID))
+            .filter((child): child is RunState => child !== undefined && !child.finished)
+          await Promise.allSettled(children.map((child) => this.#cancelState(child, "operator_focus")))
+        }
+        const accepted: AgentSteeringReceipt = {
+          id,
+          accepted: true,
+          recipients: 1,
+          mode,
+          state: "accepted",
+          runID: state.id,
+          acceptedAt,
+        }
+        this.#emit(state, {
+          type: "steering",
+          runID: state.id,
+          steeringID: id,
+          mode,
+          state: "accepted",
+          acceptedAt,
+        })
         state.agent.steer({ role: "user", content, timestamp: this.#now() })
-        return true
+        const queued = { ...accepted, state: "queued" as const }
+        state.pendingSteering.set(id, queued)
+        this.#emit(state, {
+          type: "steering",
+          runID: state.id,
+          steeringID: id,
+          mode,
+          state: "queued",
+          acceptedAt,
+        })
+        return queued
       },
-      cancel: (reason) => this.#cancelState(state, reason, "cancel"),
+      cancel: (_reason) => this.#cancelState(state, "user_cancel"),
     }
   }
 
@@ -1084,6 +1219,35 @@ export class PiAgentSubsystem implements AgentSubsystem {
       runID: state.id,
       activity: { ...activity, actor },
     })
+  }
+
+  #supersedePendingSteering(state: RunState, reason: string): void {
+    for (const receipt of state.pendingSteering.values())
+      this.#emit(state, {
+        type: "steering",
+        runID: state.id,
+        steeringID: receipt.id,
+        mode: receipt.mode,
+        state: "superseded",
+        acceptedAt: receipt.acceptedAt,
+        reason,
+      })
+    state.pendingSteering.clear()
+  }
+
+  #applyPendingSteering(state: RunState): void {
+    const appliedAt = new Date(this.#now()).toISOString()
+    for (const receipt of state.pendingSteering.values())
+      this.#emit(state, {
+        type: "steering",
+        runID: state.id,
+        steeringID: receipt.id,
+        mode: receipt.mode,
+        state: "applied",
+        acceptedAt: receipt.acceptedAt,
+        appliedAt,
+      })
+    state.pendingSteering.clear()
   }
 
   #recordProviderUsage(
@@ -1323,7 +1487,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         kind: "status",
         text: JSON.stringify({
           contextCompaction: {
-            state: event.state === "partial" ? "completed" : event.state,
+            state: event.state,
             mode: event.mode,
             reason: event.reason ?? (event.state === "completed" ? "context_rotation" : "context_rotation_failed"),
             estimatedTokensBefore: event.estimatedTokensBefore,
@@ -1331,7 +1495,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
             messagesRemoved: Math.max(0, event.sourceMessages - event.activeMessages),
             toolResultsVirtualized: event.toolResultsVirtualized,
             artifactsPreserved: event.artifactsPreserved,
-            modelSummary: Boolean(event.checkpoint),
+            modelSummary: event.checkpointKind === "model_summary",
+            ...(event.checkpointKind ? { checkpointKind: event.checkpointKind } : {}),
             ...(event.checkpoint ? { summaryArtifact: event.checkpoint.path } : {}),
             ...(event.detail ? { detail: event.detail } : {}),
           },
@@ -1342,9 +1507,11 @@ export class PiAgentSubsystem implements AgentSubsystem {
   // ── The Summarizer Produces Memory, Never Executes Work ─────────
   // A configured route receives a tool-free projection under the immutable
   // AgentRun system prompt. Context rejection permits one 50% source reduction;
-  // a distinct active route may then make one final attempt. Every response is
-  // charged to the run and recorded per attempt, but no security fallback or
-  // tool surface is available. Persistence happens only after strict parsing.
+  // a distinct active route may then make one final attempt. A recoverable
+  // failure can admit one quota-exempt recovery summary with the same immutable
+  // prompt and no tools. Without fallback, eligible live-target workflows retry
+  // once on main with an authorization-reframed checkpoint request. Persistence
+  // happens only after strict parsing.
   //
   // @docs/concepts/execution-model.md
   // ─────────────────────────────────────────────────────────────────
@@ -1367,6 +1534,16 @@ export class PiAgentSubsystem implements AgentSubsystem {
       readonly provider: string
       readonly messages: readonly AgentMessage[]
       readonly reduced: boolean
+      readonly recovery?: {
+        readonly chainID: string
+        readonly cause: "security_policy_block" | "retryable_provider_failure" | "context_rotation_failure"
+        readonly sourceRoute: ProviderAffinity
+        readonly destinationRoute: ProviderAffinity
+        readonly bonusMs: number
+        readonly availableRuntimeMs: number
+        readonly availableOutputTokens?: number
+        readonly deadlineAt: number
+      }
     }> = [
       {
         provider: configuredProvider,
@@ -1376,10 +1553,151 @@ export class PiAgentSubsystem implements AgentSubsystem {
     ]
     let activeRouteQueued = configuredProvider === input.state.spec.provider
     let reducedRouteQueued = false
+    const fallbackProvider = this.#settings.agent.fallback_provider
+    let recoveryRouteQueued =
+      input.state.spec.providerAffinity === "fallback" ||
+      (fallbackProvider !== undefined && configuredProvider === fallbackProvider)
     const attestPayload = PiSystemWire.createOnPayload({ prompt: input.state.spec.prompt })
 
-    while (plans.length > 0 && attempts.length < 3) {
+    const queueRecovery = (failure: Failure, sourceProvider: string) => {
+      if (plans.length > 0 || recoveryRouteQueued) return
+      const chainID = `recovery_${createHash("sha256")
+        .update(`${input.state.spec.sessionID}\0${input.state.id}\0summary\0${input.generation}`)
+        .digest("hex")
+        .slice(0, 24)}`
+      const remainingOutputTokens =
+        input.state.spec.budget.maxOutputTokens === undefined
+          ? undefined
+          : Math.max(0, input.state.spec.budget.maxOutputTokens - input.state.cumulativeUsage.output)
+      const recoveryPolicy = Settings.phaseRecoveryPolicy(this.#settings)
+      const sourceRoute =
+        input.state.spec.providerAffinity === "fallback" || sourceProvider === fallbackProvider ? "fallback" : "main"
+      const authorizationReframeAvailable =
+        !input.state.spec.fallback.providerConfigured &&
+        supportsAuthorizationReframe(input.state.spec.prompt.manifest.workflow)
+      const decision = decideRecovery({
+        scope: "summary_recovery",
+        sourceRoute,
+        failure,
+        enabled:
+          failure.kind === "security_policy_block"
+            ? authorizationReframeAvailable
+              ? recoveryPolicy.enabled
+              : input.state.spec.fallback.automaticSecurityBlockEnabled
+            : recoveryPolicy.enabled,
+        fallbackConfigured: input.state.spec.fallback.providerConfigured,
+        useFallbackProvider: true,
+        alreadyRecovered: input.state.recoveryChains.has(chainID),
+        remainingRuntimeMs: this.#remainingBudget(input.state) - Math.max(0, input.state.spec.budget.closeoutReserveMs ?? 0),
+        ...(remainingOutputTokens === undefined ? {} : { remainingOutputTokens }),
+        recoveryBonusMs:
+          input.state.spec.fallback.recoveryBonusMs ?? Settings.fallbackRecoveryBonusMs(this.#settings),
+        bonusAlreadyGranted: input.state.recoveryChains.has(chainID),
+        minimumResearchMs: 10_000,
+        minimumOutputTokens: 512,
+        authorizationReframeAvailable,
+      })
+      const cause = decision.kind === "admitted" ? decision.cause : decision.cause ?? "context_rotation_failure"
+      this.#emit(input.state, {
+        type: "recovery",
+        runID: input.state.id,
+        chainID,
+        scope: "summary_recovery",
+        cause,
+        state: decision.kind === "admitted" ? "requested" : "denied",
+        sourceRoute,
+        ...(decision.kind === "admitted" ? { destinationRoute: decision.route } : {}),
+        quotaExempt: true,
+        bonusMs: decision.kind === "admitted" ? decision.bonusMs : 0,
+        availableRuntimeMs: decision.availableRuntimeMs,
+        ...(decision.availableOutputTokens === undefined
+          ? {}
+          : { availableOutputTokens: decision.availableOutputTokens }),
+        ...(decision.kind === "denied" ? { denialCode: decision.code } : {}),
+      })
+      if (decision.kind === "denied") return
+      const recoveryProvider = decision.route === "fallback" ? fallbackProvider : sourceProvider
+      if (!recoveryProvider) return
+      if (decision.bonusMs > 0) {
+        const granted = input.state.spec.budget.clock
+          ? input.state.spec.budget.clock.grantRecoveryExtension(chainID, decision.bonusMs)
+          : !input.state.recoveryChains.has(chainID)
+        if (granted && !input.state.spec.budget.clock)
+          input.state.timerRemainingMs = Math.max(0, input.state.timerRemainingMs ?? 0) + decision.bonusMs
+      }
+      input.state.recoveryChains.add(chainID)
+      recoveryRouteQueued = true
+      this.#emit(input.state, {
+        type: "recovery",
+        runID: input.state.id,
+        chainID,
+        scope: "summary_recovery",
+        cause: decision.cause,
+        state: "admitted",
+        sourceRoute,
+        destinationRoute: decision.route,
+        quotaExempt: true,
+        bonusMs: decision.bonusMs,
+        availableRuntimeMs: decision.availableRuntimeMs,
+        ...(decision.availableOutputTokens === undefined
+          ? {}
+          : { availableOutputTokens: decision.availableOutputTokens }),
+        deadlineAt: this.#now() + decision.availableRuntimeMs,
+      })
+      plans.push({
+        provider: recoveryProvider,
+        messages:
+          decision.inputTreatment === "authorization_reframe" &&
+          supportsAuthorizationReframe(input.state.spec.prompt.manifest.workflow)
+            ? [
+                ...input.deterministicMessages,
+                {
+                  role: "user",
+                  content: reframeAuthorizedSecurityInput({
+                    workflow: input.state.spec.prompt.manifest.workflow,
+                    originalInput:
+                      "Create the required semantic checkpoint from the existing authorized engagement context. Do not execute tools or target activity.",
+                  }),
+                  timestamp: this.#now(),
+                } satisfies UserMessage,
+              ]
+            : input.deterministicMessages,
+        reduced: false,
+        recovery: {
+          chainID,
+          cause: decision.cause,
+          sourceRoute,
+          destinationRoute: decision.route,
+          bonusMs: decision.bonusMs,
+          availableRuntimeMs: decision.availableRuntimeMs,
+          ...(decision.availableOutputTokens === undefined
+            ? {}
+            : { availableOutputTokens: decision.availableOutputTokens }),
+          deadlineAt: this.#now() + decision.availableRuntimeMs,
+        },
+      })
+    }
+
+    while (plans.length > 0 && attempts.length < 4) {
       const plan = plans.shift()!
+      if (plan.recovery)
+        this.#emit(input.state, {
+          type: "recovery",
+          runID: input.state.id,
+          chainID: plan.recovery.chainID,
+          scope: "summary_recovery",
+          cause: plan.recovery.cause,
+          state: "started",
+          sourceRoute: plan.recovery.sourceRoute,
+          destinationRoute: plan.recovery.destinationRoute,
+          quotaExempt: true,
+          bonusMs: plan.recovery.bonusMs,
+          availableRuntimeMs: plan.recovery.availableRuntimeMs,
+          ...(plan.recovery.availableOutputTokens === undefined
+            ? {}
+            : { availableOutputTokens: plan.recovery.availableOutputTokens }),
+          deadlineAt: plan.recovery.deadlineAt,
+        })
       const model = this.#registry.model(plan.provider)
       const reasoning = PiReasoning.resolve(policy.summarizer.reasoning_effort, model)
       const adapter = this.#registry.adapter(plan.provider)
@@ -1462,6 +1780,27 @@ export class PiAgentSubsystem implements AgentSubsystem {
           })
           activeRouteQueued = true
         }
+        queueRecovery(
+          failure ?? { kind: "capacity", providerCode: "context_rotation_failed", retryable: false },
+          plan.provider,
+        )
+        if (plan.recovery)
+          this.#emit(input.state, {
+            type: "recovery",
+            runID: input.state.id,
+            chainID: plan.recovery.chainID,
+            scope: "summary_recovery",
+            cause: plan.recovery.cause,
+            state: "failed",
+            sourceRoute: plan.recovery.sourceRoute,
+            destinationRoute: plan.recovery.destinationRoute,
+            quotaExempt: true,
+            bonusMs: plan.recovery.bonusMs,
+            availableRuntimeMs: plan.recovery.availableRuntimeMs,
+            ...(plan.recovery.availableOutputTokens === undefined
+              ? {}
+              : { availableOutputTokens: plan.recovery.availableOutputTokens }),
+          })
         continue
       }
 
@@ -1516,6 +1855,27 @@ export class PiAgentSubsystem implements AgentSubsystem {
           })
           activeRouteQueued = true
         }
+        queueRecovery(
+          failure ?? { kind: "capacity", providerCode: "context_rotation_failed", retryable: false },
+          plan.provider,
+        )
+        if (plan.recovery)
+          this.#emit(input.state, {
+            type: "recovery",
+            runID: input.state.id,
+            chainID: plan.recovery.chainID,
+            scope: "summary_recovery",
+            cause: plan.recovery.cause,
+            state: "failed",
+            sourceRoute: plan.recovery.sourceRoute,
+            destinationRoute: plan.recovery.destinationRoute,
+            quotaExempt: true,
+            bonusMs: plan.recovery.bonusMs,
+            availableRuntimeMs: plan.recovery.availableRuntimeMs,
+            ...(plan.recovery.availableOutputTokens === undefined
+              ? {}
+              : { availableOutputTokens: plan.recovery.availableOutputTokens }),
+          })
         continue
       }
 
@@ -1545,6 +1905,23 @@ export class PiAgentSubsystem implements AgentSubsystem {
           outcome: "completed",
           usage,
         })
+        if (plan.recovery)
+          this.#emit(input.state, {
+            type: "recovery",
+            runID: input.state.id,
+            chainID: plan.recovery.chainID,
+            scope: "summary_recovery",
+            cause: plan.recovery.cause,
+            state: "completed",
+            sourceRoute: plan.recovery.sourceRoute,
+            destinationRoute: plan.recovery.destinationRoute,
+            quotaExempt: true,
+            bonusMs: plan.recovery.bonusMs,
+            availableRuntimeMs: plan.recovery.availableRuntimeMs,
+            ...(plan.recovery.availableOutputTokens === undefined
+              ? {}
+              : { availableOutputTokens: plan.recovery.availableOutputTokens }),
+          })
         return {
           projection,
           attempts,
@@ -1568,6 +1945,23 @@ export class PiAgentSubsystem implements AgentSubsystem {
           })
           activeRouteQueued = true
         }
+        if (plan.recovery)
+          this.#emit(input.state, {
+            type: "recovery",
+            runID: input.state.id,
+            chainID: plan.recovery.chainID,
+            scope: "summary_recovery",
+            cause: plan.recovery.cause,
+            state: "failed",
+            sourceRoute: plan.recovery.sourceRoute,
+            destinationRoute: plan.recovery.destinationRoute,
+            quotaExempt: true,
+            bonusMs: plan.recovery.bonusMs,
+            availableRuntimeMs: plan.recovery.availableRuntimeMs,
+            ...(plan.recovery.availableOutputTokens === undefined
+              ? {}
+              : { availableOutputTokens: plan.recovery.availableOutputTokens }),
+          })
       }
     }
     const last = attempts.at(-1)
@@ -1776,6 +2170,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           toolResultsVirtualized: result.toolResultsVirtualized,
           artifactsPreserved: result.artifactsPreserved + 1,
           checkpoint: semantic.projection.artifact,
+          checkpointKind: "model_summary",
           attempts: semantic.attempts,
           reason: "active_tail_too_large",
           detail: `Rotated input estimate ${estimatedTokensAfter} reached the hard input limit ${limits.hardInputTokens}.`,
@@ -1814,6 +2209,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         toolResultsVirtualized: result.toolResultsVirtualized,
         artifactsPreserved: result.artifactsPreserved + 1,
         checkpoint: semantic.projection.artifact,
+        checkpointKind: "model_summary",
         attempts: semantic.attempts,
         ...(rotationState === "partial" ? { reason: "target_unreachable" as const } : {}),
       })
@@ -1865,7 +2261,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           this.#emitContextRotation(state, {
             ...eventBase,
             limits: this.#contextLimits(state),
-            state: estimatedTokensAfter < limits.hardInputTokens ? "partial" : "failed",
+            state: estimatedTokensAfter < limits.hardInputTokens ? "completed_with_fallback" : "failed",
             estimatedTokensAfter,
             activeMessages: history.activeMessages,
             summarizedMessages: history.summarizedMessages,
@@ -1873,6 +2269,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
             toolResultsVirtualized: deterministicResult.toolResultsVirtualized,
             artifactsPreserved: deterministicResult.artifactsPreserved + 1,
             checkpoint: checkpoint.artifact,
+            checkpointKind: "deterministic_fallback",
             attempts,
             reason: "summary_failed",
             detail: boundedFailureDetail(error instanceof Error ? error.message : String(error)),
@@ -2047,6 +2444,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       "tool_search",
       "workarea_read",
       "workarea_write",
+      "workarea_list",
+      "evidence_manifest",
     ])
     for (const tool of allTools)
       if (reserved.has(tool.name)) throw new Error(`AgentRun tool name '${tool.name}' is reserved by Cyberful`)
@@ -2059,6 +2458,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
 
     const immediate = [
       this.#workareaReadTool(state),
+      this.#workareaListTool(state),
+      this.#evidenceManifestTool(state),
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading !== true),
       ...eligibleGatewayTools.filter((tool) => tool.name === "handoff"),
     ]
@@ -2096,36 +2497,101 @@ export class PiAgentSubsystem implements AgentSubsystem {
       name: "workarea_read",
       label: "Read Workarea Artifact",
       description:
-        "Read one bounded UTF-8 page from an existing regular file inside the current canonical workarea. Relative paths only; symlinks and escapes are rejected. Safe during closeout for output_artifact and local evidence reconciliation.",
+        "Read one bounded UTF-8 page or validated PNG, JPEG, or WebP image from the canonical workarea. Relative paths only; symlinks and escapes are rejected. Use this for regular evidence files rather than browser_artifact_read.",
       parameters: WorkareaReadParameters,
       executionMode: "sequential",
       execute: async (_callID, input) => {
-        const chunk = await readWorkareaFileChunk(state.spec.workarea, input.path, {
-          ...(input.offset === undefined ? {} : { offset: input.offset }),
-          ...(input.limit === undefined ? {} : { limit: input.limit }),
+        try {
+          if (input.mode === "image") {
+            const image = await readWorkareaImage(state.spec.workarea, input.path)
+            return {
+              content: [{ type: "image" as const, data: image.data, mimeType: image.mimeType }],
+              details: {
+                hostOwned: true,
+                mode: "image" as const,
+                path: input.path,
+                bytes: image.bytes,
+                width: image.width,
+                height: image.height,
+                mimeType: image.mimeType,
+              },
+            }
+          }
+          const chunk = await readWorkareaFileChunk(state.spec.workarea, input.path, {
+            ...(input.offset === undefined ? {} : { offset: input.offset }),
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+          })
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  path: input.path,
+                  content: chunk.content,
+                  offset: chunk.offset,
+                  end: chunk.end,
+                  total: chunk.total,
+                  ...(chunk.nextOffset === undefined ? {} : { next_offset: chunk.nextOffset }),
+                }),
+              },
+            ],
+            details: {
+              hostOwned: true,
+              mode: "text" as const,
+              path: input.path,
+              offset: chunk.offset,
+              end: chunk.end,
+              total: chunk.total,
+              nextOffset: chunk.nextOffset,
+            },
+          }
+        } catch (error) {
+          if (error instanceof WorkareaToolError) throw new Error(JSON.stringify(error.toolError()), { cause: error })
+          throw error
+        }
+      },
+    }
+  }
+
+  #workareaListTool(state: RunState): AgentTool<typeof WorkareaListParameters> {
+    return {
+      name: "workarea_list",
+      label: "List Workarea Artifacts",
+      description:
+        "Discover regular workarea files by bounded directory prefix, wildcard pattern, depth, and result count. Symlinks and special files are never followed or returned.",
+      parameters: WorkareaListParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const result = await listWorkareaFiles(state.spec.workarea, {
+          ...(input.prefix === undefined ? {} : { prefix: input.prefix }),
+          ...(input.pattern === undefined ? {} : { pattern: input.pattern }),
+          ...(input.max_depth === undefined ? {} : { maxDepth: input.max_depth }),
+          ...(input.limit === undefined ? {} : { maxResults: input.limit }),
         })
         return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                path: input.path,
-                content: chunk.content,
-                offset: chunk.offset,
-                end: chunk.end,
-                total: chunk.total,
-                ...(chunk.nextOffset === undefined ? {} : { next_offset: chunk.nextOffset }),
-              }),
-            },
-          ],
-          details: {
-            hostOwned: true,
-            path: input.path,
-            offset: chunk.offset,
-            end: chunk.end,
-            total: chunk.total,
-            nextOffset: chunk.nextOffset,
-          },
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: { hostOwned: true, files: result.files.length, truncated: result.truncated },
+        }
+      },
+    }
+  }
+
+  #evidenceManifestTool(state: RunState): AgentTool<typeof EvidenceManifestParameters> {
+    return {
+      name: "evidence_manifest",
+      label: "Manage Evidence Manifest",
+      description:
+        "Create or verify a deterministic EVIDENCE.sha256 for one workarea directory. Entries are sorted relative regular files; the manifest and temporary files exclude themselves.",
+      parameters: EvidenceManifestParameters,
+      executionMode: "sequential",
+      execute: async (_callID, input) => {
+        const directory = input.directory ?? "."
+        const result = input.command === "create"
+          ? await createEvidenceManifest(state.spec.workarea, directory)
+          : await verifyEvidenceManifest(state.spec.workarea, directory)
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: { hostOwned: true, command: input.command, ...result },
         }
       },
     }
@@ -2289,27 +2755,115 @@ export class PiAgentSubsystem implements AgentSubsystem {
           },
         })
         const initialChildState = this.#states.get(child.id)
-        const initialDeadlineAt = initialChildState?.spec.budget.deadlineAt
         const initialOutputBudget = initialChildState?.spec.budget.maxOutputTokens
         const initialResult = await child.result
         let result = initialResult
-        if (
-          initialResult.failure?.kind === "capacity" &&
-          initialResult.failure.providerCode === "context_rotation_failed" &&
-          !initialResult.recoveryOf &&
-          initialResult.recoveryCheckpoint &&
-          initialDeadlineAt !== undefined
-        ) {
-          const remainingRuntimeMs = Math.min(initialDeadlineAt - this.#now(), this.#remainingBudget(state))
-          const remainingOutputTokens =
+        const recoveryFailure = initialResult.failure
+        const recoveryEligible = Boolean(
+          recoveryFailure &&
+            (PiSecurity.isSecurityPolicyBlock(recoveryFailure) ||
+              recoveryFailure.retryable ||
+              (recoveryFailure.kind === "capacity" && recoveryFailure.providerCode === "context_rotation_failed")),
+        )
+        if (recoveryFailure && recoveryEligible) {
+          const recoveryPolicy = Settings.phaseRecoveryPolicy(this.#settings)
+          const parentCloseoutMs = Math.max(0, state.spec.budget.closeoutReserveMs ?? 0)
+          const childCloseoutMs = parentCloseoutMs
+          const residualOutputTokens =
             initialOutputBudget === undefined
               ? undefined
-              : Math.max(0, initialOutputBudget - initialResult.usage.output)
-          if (remainingRuntimeMs >= 1_000 && (remainingOutputTokens === undefined || remainingOutputTokens >= 512)) {
+              : Math.min(
+                  initialOutputBudget,
+                  Math.max(MINIMUM_RECOVERY_OUTPUT_TOKENS, initialOutputBudget - initialResult.usage.output),
+                )
+          const chainID = `recovery_${createHash("sha256")
+            .update(`${state.spec.sessionID}\0${initialResult.id}\0${recoveryFailure.kind}`)
+            .digest("hex")
+              .slice(0, 24)}`
+          const authorizationReframeAvailable =
+            !state.spec.fallback.providerConfigured &&
+            supportsAuthorizationReframe(state.spec.prompt.manifest.workflow)
+          const decision = decideRecovery({
+            scope: "subagent_replacement",
+            sourceRoute: initialResult.providerAffinity,
+            failure: recoveryFailure,
+            enabled: PiSecurity.isSecurityPolicyBlock(recoveryFailure)
+              ? authorizationReframeAvailable
+                ? recoveryPolicy.enabled
+                : state.spec.fallback.automaticSecurityBlockEnabled
+              : recoveryPolicy.enabled,
+            fallbackConfigured: state.spec.fallback.providerConfigured,
+            useFallbackProvider:
+              PiSecurity.isSecurityPolicyBlock(recoveryFailure) || recoveryPolicy.use_fallback_provider,
+            alreadyRecovered: Boolean(initialResult.recoveryOf),
+            remainingRuntimeMs: this.#remainingBudget(state) - parentCloseoutMs - childCloseoutMs,
+            ...(residualOutputTokens === undefined ? {} : { remainingOutputTokens: residualOutputTokens }),
+            recoveryBonusMs:
+              state.spec.fallback.recoveryBonusMs ?? Settings.fallbackRecoveryBonusMs(this.#settings),
+            bonusAlreadyGranted: state.recoveryChains.has(chainID),
+            authorizationReframeAvailable,
+          })
+          this.#emit(state, {
+            type: "recovery",
+            runID: state.id,
+            chainID,
+            scope: "subagent_replacement",
+            cause:
+              decision.kind === "admitted"
+                ? decision.cause
+                : decision.cause ?? "retryable_provider_failure",
+            state: decision.kind === "admitted" ? "requested" : "denied",
+            sourceRoute: initialResult.providerAffinity,
+            ...(decision.kind === "admitted" ? { destinationRoute: decision.route } : {}),
+            quotaExempt: true,
+            bonusMs: decision.kind === "admitted" ? decision.bonusMs : 0,
+            availableRuntimeMs: decision.availableRuntimeMs,
+            ...(decision.availableOutputTokens === undefined
+              ? {}
+              : { availableOutputTokens: decision.availableOutputTokens }),
+            ...(decision.kind === "denied" ? { denialCode: decision.code } : {}),
+          })
+          if (decision.kind === "admitted") {
+            if (decision.bonusMs > 0) {
+              const granted = state.spec.budget.clock
+                ? state.spec.budget.clock.grantRecoveryExtension(chainID, decision.bonusMs)
+                : !state.recoveryChains.has(chainID)
+              if (granted && !state.spec.budget.clock)
+                state.timerRemainingMs = Math.max(0, state.timerRemainingMs ?? 0) + decision.bonusMs
+              state.recoveryChains.add(chainID)
+            }
+            this.#emit(state, {
+              type: "recovery",
+              runID: state.id,
+              chainID,
+              scope: "subagent_replacement",
+              cause: decision.cause,
+              state: "admitted",
+              sourceRoute: initialResult.providerAffinity,
+              destinationRoute: decision.route,
+              quotaExempt: true,
+              bonusMs: decision.bonusMs,
+              availableRuntimeMs: decision.availableRuntimeMs,
+              ...(decision.availableOutputTokens === undefined
+                ? {}
+                : { availableOutputTokens: decision.availableOutputTokens }),
+              deadlineAt: this.#now() + decision.availableRuntimeMs + childCloseoutMs,
+            })
             const recoveryContext = [
               initialChildState?.spec.task.context,
-              `Host-owned context recovery of AgentRun ${initialResult.id}.`,
-              `Read deterministic checkpoint ${initialResult.recoveryCheckpoint.path} (sha256 ${initialResult.recoveryCheckpoint.sha256}).`,
+              recoveryFailure.kind === "capacity" &&
+              recoveryFailure.providerCode === "context_rotation_failed"
+                ? `Host-owned context recovery of AgentRun ${initialResult.id}.`
+                : `Host-owned provider recovery of AgentRun ${initialResult.id} after ${recoveryFailure.kind}.`,
+              initialResult.recoveryCheckpoint
+                ? `Read deterministic checkpoint ${initialResult.recoveryCheckpoint.path} (sha256 ${initialResult.recoveryCheckpoint.sha256}).`
+                : "Reconcile the existing workarea and durable registries before continuing unfinished work.",
+              initialResult.output
+                ? `Prior public result:\n${initialResult.output.slice(0, 4_000)}`
+                : undefined,
+              initialResult.recoverySummary?.narrative
+                ? `Prior pre-abort summary:\n${initialResult.recoverySummary.narrative.slice(0, 4_000)}`
+                : undefined,
               initialResult.recoveredHypotheses.length > 0
                 ? `Recovered hypothesis IDs: ${initialResult.recoveredHypotheses.map((item) => item.id).join(", ")}.`
                 : undefined,
@@ -2324,10 +2878,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
             try {
               const recovery = await this.#startChild(state, {
                 role: "subagent",
-                route: initialResult.providerAffinity,
+                route: decision.route,
                 task: {
                   ...initialChildState?.spec.task,
-                  objective: initialChildState?.spec.task.objective ?? input.task,
+                  objective:
+                    decision.inputTreatment === "authorization_reframe" &&
+                    supportsAuthorizationReframe(state.spec.prompt.manifest.workflow)
+                      ? reframeAuthorizedSecurityInput({
+                          workflow: state.spec.prompt.manifest.workflow,
+                          originalInput: initialChildState?.spec.task.objective ?? input.task,
+                        })
+                      : initialChildState?.spec.task.objective ?? input.task,
                   context: recoveryContext,
                   outputArtifact,
                 },
@@ -2335,24 +2896,79 @@ export class PiAgentSubsystem implements AgentSubsystem {
                 reasoningEffort: initialResult.reasoningEffort,
                 reasoningSelection: initialResult.reasoningSelection ?? "default",
                 recoveryOf: initialResult.id,
-                recoveryDeadlineAt: initialDeadlineAt,
-                ...(remainingOutputTokens === undefined ? {} : { recoveryOutputTokens: remainingOutputTokens }),
+                recoveryDeadlineAt: this.#now() + decision.availableRuntimeMs + childCloseoutMs,
+                ...(decision.availableOutputTokens === undefined
+                  ? {}
+                  : { recoveryOutputTokens: decision.availableOutputTokens }),
                 proposedIdentity: initialResult.identity,
               })
+              this.#emit(state, {
+                type: "recovery",
+                runID: state.id,
+                recoveryRunID: recovery.id,
+                chainID,
+                scope: "subagent_replacement",
+                cause: decision.cause,
+                state: "started",
+                sourceRoute: initialResult.providerAffinity,
+                destinationRoute: decision.route,
+                quotaExempt: true,
+                bonusMs: decision.bonusMs,
+                availableRuntimeMs: decision.availableRuntimeMs,
+                ...(decision.availableOutputTokens === undefined
+                  ? {}
+                  : { availableOutputTokens: decision.availableOutputTokens }),
+                deadlineAt: this.#now() + decision.availableRuntimeMs + childCloseoutMs,
+              })
               result = await recovery.result
+              this.#emit(state, {
+                type: "recovery",
+                runID: state.id,
+                recoveryRunID: recovery.id,
+                chainID,
+                scope: "subagent_replacement",
+                cause: decision.cause,
+                state:
+                  result.termination === "completed"
+                    ? "completed"
+                    : result.termination === "cancelled" || result.termination === "budget_exhausted"
+                      ? "cancelled"
+                      : "failed",
+                sourceRoute: initialResult.providerAffinity,
+                destinationRoute: decision.route,
+                quotaExempt: true,
+                bonusMs: decision.bonusMs,
+                availableRuntimeMs: decision.availableRuntimeMs,
+                ...(decision.availableOutputTokens === undefined
+                  ? {}
+                  : { availableOutputTokens: decision.availableOutputTokens }),
+                termination: result.termination,
+                terminationCause: result.terminationCause,
+              })
             } catch (error) {
               this.#emitActivity(state, {
                 kind: "status",
-                text: `Context recovery child could not start: ${boundedFailureDetail(
+                text: `AgentRun recovery child could not start: ${boundedFailureDetail(
                   error instanceof Error ? error.message : String(error),
                 )}`,
               })
+              this.#emit(state, {
+                type: "recovery",
+                runID: state.id,
+                chainID,
+                scope: "subagent_replacement",
+                cause: decision.cause,
+                state: "failed",
+                sourceRoute: initialResult.providerAffinity,
+                destinationRoute: decision.route,
+                quotaExempt: true,
+                bonusMs: decision.bonusMs,
+                availableRuntimeMs: decision.availableRuntimeMs,
+                ...(decision.availableOutputTokens === undefined
+                  ? {}
+                  : { availableOutputTokens: decision.availableOutputTokens }),
+              })
             }
-          } else {
-            this.#emitActivity(state, {
-              kind: "status",
-              text: `Context recovery child not started: residual budget is insufficient (${Math.max(0, Math.round(remainingRuntimeMs))} ms, ${remainingOutputTokens ?? "unbounded"} output tokens).`,
-            })
           }
         }
         const artifact = await readWorkareaFileChunk(state.spec.workarea, outputArtifact, { limit: 1 })
@@ -2580,15 +3196,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
     return Math.max(0, stored - Math.max(0, this.#now() - state.timerStartedAt))
   }
 
-  #canResumeAfterAutomaticFallback(state: RunState): boolean {
-    if (state.finished || state.cancellation) return false
-    if (this.#remainingBudget(state) > 0) return true
-    state.cancellation = "budget"
-    this.#captureRecoverySummary(state, "budget_exhausted")
-    state.agent?.abort()
-    return false
-  }
-
   async #startChild(parent: RunState, options: StartChildOptions): Promise<AgentRun> {
     await this.#waitForChildCapacity(parent, undefined, Boolean(options.recoveryOf))
     if (parent.finished || parent.cancellation || parent.closeout)
@@ -2724,165 +3331,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
     for (const wake of options.all ? waiters : waiters.slice(0, 1)) wake()
   }
 
-  async #automaticFallback(state: RunState, failure: Failure): Promise<boolean> {
-    if (
-      state.spec.providerAffinity !== "main" ||
-      state.closeout ||
-      state.automaticFallbackUsed ||
-      !state.spec.fallback.providerConfigured ||
-      !state.spec.fallback.automaticSecurityBlockEnabled ||
-      !PiSecurity.isSecurityPolicyBlock(failure)
-    )
-      return false
-
-    state.automaticFallbackUsed = true
-    this.#emit(state, {
-      type: "fallback",
-      runID: state.id,
-      mode: "automatic",
-      state: "requested",
-      quotaExempt: true,
-      reason: failure.providerCode,
-    })
-    const recentTool = state.lastTool
-      ? `Most recent host-observed tool request: ${state.lastTool.name} ${JSON.stringify(
-          PiAudit.redactValue(state.lastTool.input),
-        ).slice(0, 4_000)}`
-      : undefined
-    const automaticContext = [state.spec.task.context, recentTool].filter(Boolean).join("\n\n")
-    const automaticTask: AgentTaskCapsule = {
-      objective: [
-        "Complete only the next provider-blocked operational step of this assigned task:",
-        state.spec.task.objective.slice(0, 10_000),
-      ].join("\n\n"),
-      expectedResult:
-        state.spec.task.expectedResult ??
-        "Complete the provider-blocked operation and return its concrete result and preserved evidence to the parent.",
-      ...(automaticContext ? { context: automaticContext } : {}),
-      ...(state.spec.task.artifacts ? { artifacts: state.spec.task.artifacts } : {}),
-    }
-
-    let child: AgentRun
-    try {
-      child = await this.#startChild(state, {
-        role: "fallback",
-        route: "fallback",
-        task: automaticTask,
-        mode: "automatic",
-        quotaExempt: true,
-      })
-    } catch (error) {
-      this.#emit(state, {
-        type: "fallback",
-        runID: state.id,
-        mode: "automatic",
-        state: "denied",
-        quotaExempt: true,
-        reason: error instanceof Error ? error.message : String(error),
-      })
-      return false
-    }
-
-    this.#emit(state, {
-      type: "fallback",
-      runID: state.id,
-      fallbackRunID: child.id,
-      mode: "automatic",
-      state: "approved",
-      quotaExempt: true,
-    })
-    const result = await child.result
-    this.#emit(state, {
-      type: "fallback",
-      runID: state.id,
-      fallbackRunID: child.id,
-      mode: "automatic",
-      state: result.termination === "completed" ? "completed" : "failed",
-      quotaExempt: true,
-      ...(result.failure ? { reason: result.failure.kind } : {}),
-      subtreeSize: 1 + result.fallbackDescendants,
-    })
-    if (!this.#canResumeAfterAutomaticFallback(state)) return true
-
-    const syntheticCallID = `fallback_${randomUUID()}`
-    const syntheticRequest: AssistantMessage = {
-      role: "assistant",
-      api: state.spec.model.api,
-      provider: state.spec.model.provider,
-      model: state.spec.model.id,
-      content: [
-        {
-          type: "toolCall",
-          id: syntheticCallID,
-          name: "host_fallback_delegation",
-          arguments: { runID: result.id },
-        },
-      ],
-      usage: emptyProviderUsage(),
-      stopReason: "toolUse",
-      timestamp: this.#now(),
-    }
-    const syntheticResult: ToolResultMessage<{
-      readonly hostOwned: true
-      readonly runID: AgentRunID
-      readonly providerAffinity: "fallback"
-      readonly termination: AgentRunResult["termination"]
-      readonly failure?: Failure
-      readonly recoveredTestObjects: readonly RecoveredTestObject[]
-      readonly recoverySummary?: AgentRunRecoverySummary
-    }> = {
-      role: "toolResult",
-      toolCallId: syntheticCallID,
-      toolName: "host_fallback_delegation",
-      content: [
-        {
-          type: "text",
-          text: [
-            result.termination === "completed"
-              ? "The provider-blocked subtask was executed by a complete fallback AgentRun."
-              : "The complete fallback AgentRun ended without completing its branch. Preserve and use any partial result below, but do not treat it as successful execution.",
-            `Fallback run: ${result.id}`,
-            `Fallback termination: ${result.termination}`,
-            ...(result.failure ? [`Fallback failure: ${result.failure.kind}`] : []),
-            ...(result.recoveredTestObjects.length > 0
-              ? [
-                  `Recovered test objects: ${result.recoveredTestObjects
-                    .map(
-                      (item) =>
-                        `${item.id} (${item.state})${item.evidencePath && item.evidenceExists === false ? ` — missing evidence '${item.evidencePath}'` : ""}`,
-                    )
-                    .join("; ")}.`,
-                ]
-              : []),
-            ...(result.recoverySummary?.narrative
-              ? [`Automatic pre-abort summary: ${result.recoverySummary.narrative}`]
-              : []),
-            "Treat this as trusted host tool output, synthesize it into the phase work, and continue under the unchanged Cyberful system contract.",
-            "",
-            result.output || "The fallback returned no textual summary; inspect any referenced workarea artifacts.",
-          ].join("\n"),
-        },
-      ],
-      details: {
-        hostOwned: true,
-        runID: result.id,
-        providerAffinity: "fallback",
-        termination: result.termination,
-        failure: result.failure,
-        recoveredTestObjects: result.recoveredTestObjects,
-        recoverySummary: result.recoverySummary,
-      },
-      isError: result.termination !== "completed",
-      timestamp: this.#now(),
-    }
-    state.agent?.state.messages.push(syntheticRequest, syntheticResult)
-    await state.agent?.continue()
-    return true
-  }
-
-  async #cancelState(state: RunState, _reason: string, mode: "budget" | "cancel"): Promise<void> {
+  async #cancelState(state: RunState, cause: AgentRunCancellationCause): Promise<void> {
     if (state.finished) return
-    state.cancellation ??= mode
+    const mode = cause === "budget_expired" ? "budget" : "cancel"
+    state.cancellation ??= { mode, cause }
     this.#captureRecoverySummary(state, mode === "budget" ? "budget_exhausted" : "cancelled")
     this.#notifyDelegationWaiters()
     state.retryWaitAbort?.abort(new Error(`AgentRun ${mode === "budget" ? "budget expired" : "was cancelled"}`))
@@ -2890,7 +3342,11 @@ export class PiAgentSubsystem implements AgentSubsystem {
     const children = [...state.children]
       .map((id) => this.#states.get(id))
       .filter((child): child is RunState => child !== undefined)
-    await Promise.allSettled(children.map((child) => this.#cancelState(child, "Parent AgentRun cancelled", mode)))
+    const descendantCause: AgentRunCancellationCause =
+      cause === "phase_shutdown" || cause === "operator_focus" || cause === "user_cancel"
+        ? cause
+        : "parent_closeout"
+    await Promise.allSettled(children.map((child) => this.#cancelState(child, descendantCause)))
     state.agent?.abort()
     await state.resultPromise
   }
@@ -3004,7 +3460,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         event.message.stopReason !== "error" &&
         event.message.stopReason !== "aborted"
       ) {
-        state.cancellation ??= "budget"
+        state.cancellation ??= { mode: "budget", cause: "budget_expired" }
         state.agent?.abort()
       }
       if (state.providerRetryActive && event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
@@ -3035,6 +3491,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       return
     }
     if (event.type === "tool_execution_end") {
+      const validated = state.validatedToolCalls.delete(event.toolCallId)
+      const blocked = state.blockedToolCalls.delete(event.toolCallId)
       const details = record(event.result)?.details
       if (event.toolName === "skill_read" && !event.isError) {
         const skill = record(details)?.skill
@@ -3057,6 +3515,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         const remaining = this.#remainingBudget(state)
         state.closeout = true
         state.closeoutRequested = true
+        this.#supersedePendingSteering(state, "phase entered closeout before steering was applied")
         this.#emit(state, {
           type: "phase_closeout",
           runID: state.id,
@@ -3076,7 +3535,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           [...state.children]
             .map((id) => this.#states.get(id))
             .filter((child): child is RunState => child !== undefined)
-            .map((child) => this.#cancelState(child, "Hypothesis synthesis requested closeout", "cancel")),
+            .map((child) => this.#cancelState(child, "parent_closeout")),
         )
       }
       if (event.toolName === "hypothesis" && !event.isError && record(details)?.synthesisOutcome === "diversified")
@@ -3090,6 +3549,10 @@ export class PiAgentSubsystem implements AgentSubsystem {
           PiAudit.redactText(resultText(event.result)) ||
           (event.isError ? "Tool execution failed." : "Tool execution completed."),
         callID: event.toolCallId,
+        tool: event.toolName,
+        isError: event.isError,
+        preExecution: event.isError && (!validated || blocked),
+        blocked,
       })
     }
   }
@@ -3160,6 +3623,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     // resumes with local-only tools and any explicit task output artifact.
     // ────────────────────────────────────────────────────────────────
     state.timerRemainingMs = state.spec.budget.deadlineAt - this.#now()
+    let observedRecoveryExtensionMs = state.spec.budget.clock?.snapshot().recoveryExtensionMs ?? 0
     const stopBudgetTimer = () => {
       if (!state.timer) return
       clearTimeout(state.timer)
@@ -3175,6 +3639,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       state.timerRemainingMs = remainingMs
       state.closeout = true
       state.closeoutRequested = true
+      this.#supersedePendingSteering(state, "AgentRun entered closeout before steering was applied")
       if (state.spec.role === "root" && state.spec.handoffOwner)
         this.#emit(state, {
           type: "phase_closeout",
@@ -3196,7 +3661,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         [...state.children]
           .map((id) => this.#states.get(id))
           .filter((child): child is RunState => child !== undefined)
-          .map((child) => this.#cancelState(child, `${scope} entered closeout`, "cancel")),
+          .map((child) => this.#cancelState(child, "parent_closeout")),
       )
       restartTimer()
     }
@@ -3204,7 +3669,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       if (state.timer || state.finished || state.cancellation) return
       const remaining = state.timerRemainingMs ?? 0
       if (remaining <= 0) {
-        state.cancellation = "budget"
+        state.cancellation = { mode: "budget", cause: "budget_expired" }
         this.#captureRecoverySummary(state, "budget_exhausted")
         state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
@@ -3226,7 +3691,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           return
         }
         state.timerRemainingMs = 0
-        state.cancellation ??= "budget"
+        state.cancellation ??= { mode: "budget", cause: "budget_expired" }
         this.#captureRecoverySummary(state, "budget_exhausted")
         state.retryWaitAbort?.abort(new Error("AgentRun budget expired"))
         state.agent?.abort()
@@ -3235,13 +3700,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
     }
     if (state.spec.budget.clock)
       state.removePauseListener = state.spec.budget.clock.subscribe((snapshot) => {
-        if (snapshot.pending) stopBudgetTimer()
-        else startBudgetTimer()
+        stopBudgetTimer()
+        const recoveryExtensionDelta = Math.max(0, snapshot.recoveryExtensionMs - observedRecoveryExtensionMs)
+        observedRecoveryExtensionMs = snapshot.recoveryExtensionMs
+        if (recoveryExtensionDelta > 0)
+          state.timerRemainingMs = Math.max(0, state.timerRemainingMs ?? 0) + recoveryExtensionDelta
+        if (!snapshot.pending) startBudgetTimer()
       })
     else startBudgetTimer()
     if (state.spec.abort) {
       const abort = () => {
-        state.cancellation ??= "cancel"
+        state.cancellation ??= { mode: "cancel", cause: "user_cancel" }
         this.#captureRecoverySummary(state, "cancelled")
         state.retryWaitAbort?.abort(new Error("AgentRun was cancelled"))
         state.finishProviderRetryAttempt?.()
@@ -3269,6 +3738,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           },
           transformContext: (messages, signal) => this.#transformContext(state, messages, initialTools, signal),
           streamFn: (model, context, options) => {
+            this.#applyPendingSteering(state)
             if (state.contextRecoveryProviderCallsRemaining !== undefined) {
               if (state.contextRecoveryProviderCallsRemaining <= 0)
                 throw new Error("context_rotation_failed: emergency recovery permits one provider generation")
@@ -3300,26 +3770,26 @@ export class PiAgentSubsystem implements AgentSubsystem {
             },
           }),
           beforeToolCall: async ({ toolCall, args }) => {
+            state.validatedToolCalls.add(toolCall.id)
+            const block = (reason: string) => {
+              state.blockedToolCalls.add(toolCall.id)
+              return { block: true as const, reason }
+            }
             if (state.closeout && !closeoutToolAllowed(toolCall.name))
-              return {
-                block: true,
-                reason:
-                  "Closeout permits only local evidence reads, deliverable and ledger reconciliation, cleanup, and root-owned handoff.",
-              }
+              return block(
+                "Closeout permits only local evidence reads, deliverable and ledger reconciliation, cleanup, and root-owned handoff.",
+              )
             if (toolCall.name === "handoff" && !state.spec.handoffOwner)
-              return { block: true, reason: "Only the original phase root AgentRun may call handoff." }
+              return block("Only the original phase root AgentRun may call handoff.")
             if (toolCall.name === "request_fallback_delegation" && state.spec.providerAffinity === "fallback")
-              return { block: true, reason: "Fallback-affine runs cannot request another provider route." }
+              return block("Fallback-affine runs cannot request another provider route.")
             if (toolCall.name === "skill_read") {
               const request = record(args)
               const locator = typeof request?.skill === "string" ? request.skill.trim() : ""
               const requestedPath = typeof request?.path === "string" ? request.path.trim() : ""
               const skill = locator ? this.#skillName(state, locator) : undefined
               if (requestedPath && (!skill || !state.skillsRead.has(skill)))
-                return {
-                  block: true,
-                  reason: "Read this skill's complete SKILL.md in this AgentRun before requesting package resources.",
-                }
+                return block("Read this skill's complete SKILL.md in this AgentRun before requesting package resources.")
             }
           },
         })
@@ -3448,13 +3918,6 @@ export class PiAgentSubsystem implements AgentSubsystem {
           failure = this.#retryFailure(state, last)
           await settleRecoverableFailure()
         }
-        if (failure && (await this.#automaticFallback(state, failure))) {
-          last = latestAssistant(agent.state.messages)
-          failure = PiSecurity.classify(
-            providerObservation(adapter, state.spec.provider, state.spec.model.id, last, state.lastHTTPStatus),
-          )
-          await settleRecoverableFailure()
-        }
         if (failure?.retryable && state.providerRetryActive)
           this.#emitProviderRetry(state, {
             state: "exhausted",
@@ -3490,6 +3953,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       )
       output ||= state.agent ? PiAudit.redactText(assistantText(latestAssistant(state.agent.state.messages))) : ""
     } finally {
+      this.#supersedePendingSteering(state, "AgentRun finished before steering was applied")
       state.finishProviderRetryAttempt?.()
       stopBudgetTimer()
       state.removePauseListener?.()
@@ -3501,13 +3965,23 @@ export class PiAgentSubsystem implements AgentSubsystem {
         .filter((child): child is RunState => child !== undefined)
       if (state.cancellation)
         await Promise.allSettled(
-          children.map((child) => this.#cancelState(child, "Parent finished", state.cancellation!)),
+          children.map((child) =>
+            this.#cancelState(
+              child,
+              state.cancellation!.cause === "phase_shutdown" ||
+                state.cancellation!.cause === "operator_focus" ||
+                state.cancellation!.cause === "user_cancel"
+                ? state.cancellation!.cause
+                : "parent_closeout",
+            ),
+          ),
         )
       await Promise.allSettled(children.map((child) => child.resultPromise))
       state.fallbackDescendants += state.childResults.reduce((total, child) => total + child.fallbackDescendants, 0)
       state.fallbackAdmissions += state.childResults.reduce((total, child) => total + child.fallbackAdmissions, 0)
       failure = auditedFailure(failure)
       const termination = terminationFor(state, failure)
+      const terminationCause = terminationCauseFor(state, failure)
       const finalContextLimits = this.#contextLimits(state)
       await state.recoverySummaryWrite
       if (state.recoverySummaryWriteError)
@@ -3614,6 +4088,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         },
         output,
         termination,
+        terminationCause,
         ...(failure ? { failure } : {}),
         usage: state.cumulativeUsage,
         promptManifest: state.spec.prompt.manifest,
@@ -3649,6 +4124,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         ...(state.spec.recoveryOf ? { recoveryOf: state.spec.recoveryOf } : {}),
         role: state.spec.role,
         termination,
+        terminationCause,
         ...(failure ? { failure } : {}),
         usage: state.cumulativeUsage,
         skillsUsed: [...state.skillsUsed].toSorted(),

@@ -25,6 +25,11 @@ export type WorkflowCapability =
   | "zap"
   | "ghidra"
   | "evm-lab"
+  | "firmware-lab"
+  | "native-analysis"
+  | "native-debug"
+  | "fuzz-campaign"
+  | "protocol-campaign"
   | "cve-dictionary"
 
 // ── Phase Deliverable And Persona Contracts ─────────────────────
@@ -101,7 +106,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "pentest",
     sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "cve-dictionary"],
+    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
     zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
@@ -134,7 +139,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "bug-bounty",
     sourcePolicy: "read",
-    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "cve-dictionary"],
+    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
     zapLifecycle: "engagement",
     completionTitle: "Bug bounty assessment completed",
     nextWorkflow: "ask",
@@ -174,7 +179,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "code-audit",
     sourcePolicy: "read",
-    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "cve-dictionary"],
+    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "cve-dictionary"],
     zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
@@ -402,6 +407,25 @@ const GHIDRA_PHASES: Readonly<Record<string, ReadonlySet<string>>> = {
   "code-audit": new Set(["index", "trace", "hunt", "attack", "verify"]),
 }
 
+const NATIVE_CAPABILITY_PHASES: Readonly<Partial<Record<WorkflowCapability, Readonly<Record<string, ReadonlySet<string>>>>>> = {
+  "firmware-lab": GHIDRA_PHASES,
+  "native-analysis": GHIDRA_PHASES,
+  "native-debug": {
+    pentest: new Set(["exploit", "hacker", "verify"]),
+    "bug-bounty": new Set(["exploit", "hacker", "verify"]),
+    "code-audit": new Set(["attack", "verify"]),
+  },
+  "fuzz-campaign": {
+    pentest: new Set(["exploit", "hacker", "verify"]),
+    "bug-bounty": new Set(["exploit", "hacker", "verify"]),
+    "code-audit": new Set(["attack", "verify"]),
+  },
+  "protocol-campaign": {
+    pentest: new Set(["recon", "exploit", "hacker", "verify"]),
+    "bug-bounty": new Set(["recon", "exploit", "hacker", "verify"]),
+  },
+}
+
 // ── Persistent Ghidra State Outlives Its Tool Surface ────────────
 // The engagement runtime starts once and retains the project through every
 // handoff, but only investigation and verification phases may mutate or query
@@ -417,8 +441,9 @@ export function phaseHasCapability(
 ): boolean {
   if (!hasCapability(workflowName, capability)) return false
   if (phase === "brief" && capability === "zap") return false
-  if (capability !== "ghidra") return true
-  return phase !== undefined && GHIDRA_PHASES[workflowName]?.has(phase) === true
+  const phaseMap = capability === "ghidra" ? GHIDRA_PHASES : NATIVE_CAPABILITY_PHASES[capability]
+  if (!phaseMap) return true
+  return phase !== undefined && phaseMap[workflowName]?.has(phase) === true
 }
 
 export function zapLifecycleFor(workflowName: string): ZapLifecycle {

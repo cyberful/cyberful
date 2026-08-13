@@ -1,7 +1,7 @@
 // ── Runtime Diagnostics Tests ───────────────────────────────────
 // Proves bounded local retention strips secrets, URL values, and terminal
 // controls, keeps informational lifecycle noise out of operator alerts, and
-// retains a final aggregate count for repeated failures.
+// retains one immutable attributed row for every repeated failure.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
@@ -24,7 +24,7 @@ describe("runtime diagnostics", () => {
     expect(result).not.toContain("\u001b")
   })
 
-  test("persists a deduplicated final count with first and last timestamps", async () => {
+  test("persists immutable per-event rows with stable attribution", async () => {
     const workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-diagnostics-")))
     try {
       const recorder = new RuntimeDiagnosticRecorder({
@@ -39,6 +39,9 @@ describe("runtime diagnostics", () => {
         runID: "run-child-7",
         parentRunID: "run-root-1",
         role: "subagent" as const,
+        callID: "call-9",
+        server: "phase-gateway",
+        route: "cyberful-os/shell",
         termination: "budget_exhausted" as const,
         profile: "budget_exhausted",
         stage: "provider" as const,
@@ -55,12 +58,16 @@ describe("runtime diagnostics", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line))
+      expect(rows).toHaveLength(2)
       expect(rows.at(-1)).toMatchObject({
-        version: 2,
+        version: 3,
         component: "agent",
         runID: "run-child-7",
         parentRunID: "run-root-1",
         role: "subagent",
+        callID: "call-9",
+        server: "phase-gateway",
+        route: "cyberful-os/shell",
         termination: "budget_exhausted",
         profile: "budget_exhausted",
         phase: "recon",
@@ -68,8 +75,10 @@ describe("runtime diagnostics", () => {
         errorClass: "AgentRunFailure",
         outcome: "runtime_failure",
         blocking: false,
-        count: 2,
+        count: 1,
       })
+      expect(rows[0].eventID).not.toBe(rows[1].eventID)
+      expect(rows[0].signature).toBe(rows[1].signature)
       expect(rows.at(-1).message).not.toContain("session-secret")
       expect(rows.at(-1).firstTimestamp).toBeString()
       expect(rows.at(-1).lastTimestamp).toBeString()

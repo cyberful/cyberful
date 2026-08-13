@@ -5,14 +5,16 @@
 
 import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
-import type { FindingRegistryView } from "@/server/client"
+import type { FindingRegistryView, SessionHypothesisRegistryView } from "@/server/client"
 import {
   activeHypothesisLabel,
   findingDialogHeight,
   findingGroups,
+  findingRewardSummary,
   findingSeverityTone,
   findingSplitWidths,
   findingTag,
+  sidebarContentKinds,
 } from "./finding-sidebar"
 
 const view: FindingRegistryView = {
@@ -46,6 +48,27 @@ const view: FindingRegistryView = {
             submission: { result: "SUBMISSION_READY", rationale: "Ready in the old run." },
             summary: "Old confirmation.",
             evidencePaths: [],
+            maturation: {
+              assessment: {
+                status: "MAXIMIZED",
+                currentImpact: "Cross-tenant account access.",
+                conclusion: "The independent proof supports HIGH.",
+              },
+              checkpoint: {
+                id: "mat_old",
+                signature: "signature",
+                promptedAt: "2026-01-01T00:00:00.000Z",
+                questions: ["What is the strongest impact currently supported by the evidence?"],
+                reward: {
+                  policyRevision: "reward-r1",
+                  policyKind: "MONETARY",
+                  groupID: "web",
+                  current: { severity: "HIGH", minimum: 3_000, maximum: 5_000, unit: "MONEY", currency: "USD" },
+                  target: { severity: "CRITICAL", minimum: 8_000, maximum: 10_000, unit: "MONEY", currency: "USD" },
+                  upside: { minimum: 3_000, maximum: 7_000, unit: "MONEY", currency: "USD" },
+                },
+              },
+            },
           },
         ],
       },
@@ -77,6 +100,48 @@ const view: FindingRegistryView = {
   },
 }
 
+const hypothesisView: SessionHypothesisRegistryView = {
+  revision: 4,
+  workflow: "bug-bounty",
+  activeCount: 1,
+  countsByState: {
+    OPEN: 1,
+    QUEUED: 0,
+    TESTING: 0,
+    SUSPECTED: 0,
+    CONFIRMED: 0,
+    DISPROVED: 1,
+    INCONCLUSIVE: 0,
+    UNTESTABLE: 0,
+  },
+  activeHypotheses: [
+    {
+      id: "H-AUTH-1",
+      phase: "recon",
+      owner: "recon-root",
+      description: "A cross-tenant object read may bypass ownership checks",
+      rootCause: "The object lookup may omit the tenant predicate",
+      surface: "Project API",
+      discriminator: "Compare owner and non-owner reads of one synthetic object",
+      candidateTools: ["browser_request"],
+      omittedTools: [],
+      state: "OPEN",
+      evidence: [],
+      evidenceRefs: [],
+      graphRefs: [],
+      transitions: [
+        {
+          time: "2026-01-02T00:00:00.000Z",
+          phase: "recon",
+          owner: "recon-root",
+          to: "OPEN",
+          evidence: [],
+        },
+      ],
+    },
+  ],
+}
+
 test("findings are grouped globally by descending severity", () => {
   const groups = findingGroups(view)
   expect(groups.map((item) => item.group)).toEqual(["HIGH · 1", "MEDIUM · 1"])
@@ -92,6 +157,17 @@ test("active hypothesis copy is absent at zero and handles singular and plural",
   expect(activeHypothesisLabel(0)).toBeUndefined()
   expect(activeHypothesisLabel(1)).toBe("(i) 1 active hypothesis")
   expect(activeHypothesisLabel(12)).toBe("(i) 12 active hypotheses")
+})
+
+test("findings stay above active hypotheses and the hypothesis block remains visible without findings", () => {
+  expect(sidebarContentKinds(undefined, hypothesisView)).toEqual(["hypotheses"])
+  expect(sidebarContentKinds(view, hypothesisView)).toEqual(["findings", "hypotheses"])
+  expect(sidebarContentKinds(view, undefined)).toEqual(["findings"])
+})
+
+test("Bug Bounty reward previews retain current, target, and conservative upside", () => {
+  const maturation = view.registry.findings[0]?.observations[0]?.maturation
+  expect(findingRewardSummary(maturation)).toBe("USD 3000–5000 → USD 8000–10000 · +USD 3000–7000")
 })
 
 test("OpenTUI renders the feed at 2/3 and the divider-owned sidebar at 1/3", async () => {

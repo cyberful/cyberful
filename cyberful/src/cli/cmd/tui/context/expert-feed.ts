@@ -39,7 +39,9 @@ export type ExpertPhaseEntry = {
   phaseStatus?: ExpertPhaseStatus
   contextCompaction?: ExpertContextCompaction
   providerRetry?: ExpertProviderRetry
+  runtimeBootstrap?: ExpertRuntimeBootstrap
   runtimeDiagnostic?: ExpertRuntimeDiagnostic
+  findingMaturation?: ExpertFindingMaturation
   actor?: PhaseActivityActor
   actorState?: PhaseActivityActorState
   actorTransitionID?: string
@@ -97,6 +99,18 @@ export type ExpertProviderRetry = {
   providerCode?: string
 }
 
+export type ExpertRuntimeBootstrap = {
+  state: "active" | "ready" | "degraded" | "failed"
+  message: string
+  completed: number
+  total: number
+  services: {
+    id: "cyber-os" | "zap" | "ghidra"
+    label: string
+    state: "pending" | "active" | "ready" | "degraded" | "failed"
+  }[]
+}
+
 export type ExpertRuntimeDiagnostic = {
   component: "agent" | "phase" | "gateway" | "zap" | "ghidra" | "browser" | "mcp"
   runID?: string
@@ -111,6 +125,41 @@ export type ExpertRuntimeDiagnostic = {
   message: string
   path: string
 }
+
+export type ExpertFindingMaturation = {
+  workflow: "bug-bounty" | "pentest"
+  phase: string
+  findingID: string
+  alias?: string
+  title: string
+  currentSeverity: string
+  targetSeverity?: string
+  checkpoint: {
+    id: string
+    signature: string
+    promptedAt: string
+    questions: string[]
+    reward?: {
+      policyRevision: string
+      policyKind: string
+      groupID?: string
+      groupLabel?: string
+      current?: ExpertRewardBand
+      target?: ExpertRewardBand
+      upside?: ExpertRewardDelta
+    }
+  }
+}
+
+export type ExpertRewardBand = {
+  severity: string
+  minimum: number
+  maximum: number
+  unit: "MONEY" | "POINTS"
+  currency?: string
+}
+
+export type ExpertRewardDelta = Omit<ExpertRewardBand, "severity">
 
 // ── Public Updates Delimit Readable Phase Turns ──────────────────
 // One subsystem run can stream many public updates and tool calls. Each root
@@ -199,6 +248,62 @@ export function decodeExpertProviderRetry(text: string): ExpertProviderRetry | u
   }
 }
 
+// ── Runtime Bootstrap Is One Updating Operator Card ──────────────
+// Engagement startup can spend minutes proving container, proxy, TLS, and MCP
+// readiness before Pi can emit its first token. The host publishes bounded
+// snapshots through the existing status event, and this decoder rejects partial
+// or contradictory snapshots before they reach the renderer. Folding replaces
+// the prior snapshot so progress occupies one stable card instead of flooding
+// the transcript with every startup transition.
+// ─────────────────────────────────────────────────────────────────
+export function decodeExpertRuntimeBootstrap(text: string): ExpertRuntimeBootstrap | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.runtimeBootstrap)) return
+    const bootstrap = value.runtimeBootstrap
+    if (
+      !["active", "ready", "degraded", "failed"].includes(String(bootstrap.state)) ||
+      typeof bootstrap.message !== "string" ||
+      !Number.isSafeInteger(bootstrap.completed) ||
+      !Number.isSafeInteger(bootstrap.total) ||
+      (bootstrap.total as number) < 1 ||
+      !Array.isArray(bootstrap.services) ||
+      bootstrap.services.length !== bootstrap.total
+    )
+      return
+    const services = bootstrap.services.flatMap((service) => {
+      if (
+        !isRecord(service) ||
+        !["cyber-os", "zap", "ghidra"].includes(String(service.id)) ||
+        typeof service.label !== "string" ||
+        service.label.trim().length === 0 ||
+        !["pending", "active", "ready", "degraded", "failed"].includes(String(service.state))
+      )
+        return []
+      return [
+        {
+          id: service.id as ExpertRuntimeBootstrap["services"][number]["id"],
+          label: service.label,
+          state: service.state as ExpertRuntimeBootstrap["services"][number]["state"],
+        },
+      ]
+    })
+    if (services.length !== bootstrap.services.length || new Set(services.map((service) => service.id)).size !== services.length)
+      return
+    const completed = services.filter((service) => service.state === "ready" || service.state === "degraded").length
+    if (bootstrap.completed !== completed) return
+    return {
+      state: bootstrap.state as ExpertRuntimeBootstrap["state"],
+      message: bootstrap.message,
+      completed,
+      total: bootstrap.total as number,
+      services,
+    }
+  } catch {
+    return
+  }
+}
+
 // ── Runtime Notices Do Not Imply Phase Failure ───────────────────
 // The recorder has already sanitized and bounded the detail before publishing
 // this host-owned status payload. The feed validates that envelope once, then
@@ -244,6 +349,105 @@ export function decodeExpertRuntimeDiagnostic(text: string): ExpertRuntimeDiagno
       path: legacy[3]?.trim() || "raw/operations/runtime-diagnostics.jsonl",
     }
   }
+}
+
+function expertRewardBand(value: unknown): ExpertRewardBand | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.severity !== "string" ||
+    typeof value.minimum !== "number" ||
+    typeof value.maximum !== "number" ||
+    (value.unit !== "MONEY" && value.unit !== "POINTS") ||
+    (value.currency !== undefined && typeof value.currency !== "string")
+  )
+    return
+  return {
+    severity: value.severity,
+    minimum: value.minimum,
+    maximum: value.maximum,
+    unit: value.unit,
+    ...(value.currency ? { currency: value.currency } : {}),
+  }
+}
+
+function expertRewardDelta(value: unknown): ExpertRewardDelta | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.minimum !== "number" ||
+    typeof value.maximum !== "number" ||
+    (value.unit !== "MONEY" && value.unit !== "POINTS") ||
+    (value.currency !== undefined && typeof value.currency !== "string")
+  )
+    return
+  return {
+    minimum: value.minimum,
+    maximum: value.maximum,
+    unit: value.unit,
+    ...(value.currency ? { currency: value.currency } : {}),
+  }
+}
+
+export function decodeExpertFindingMaturation(text: string): ExpertFindingMaturation | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.findingMaturation)) return
+    const notice = value.findingMaturation
+    if (
+      (notice.workflow !== "bug-bounty" && notice.workflow !== "pentest") ||
+      typeof notice.phase !== "string" ||
+      typeof notice.findingID !== "string" ||
+      typeof notice.title !== "string" ||
+      typeof notice.currentSeverity !== "string" ||
+      (notice.alias !== undefined && typeof notice.alias !== "string") ||
+      (notice.targetSeverity !== undefined && typeof notice.targetSeverity !== "string") ||
+      !isRecord(notice.checkpoint) ||
+      typeof notice.checkpoint.id !== "string" ||
+      typeof notice.checkpoint.signature !== "string" ||
+      typeof notice.checkpoint.promptedAt !== "string" ||
+      !Array.isArray(notice.checkpoint.questions) ||
+      !notice.checkpoint.questions.every((question) => typeof question === "string")
+    )
+      return
+    const rawReward = notice.checkpoint.reward
+    const reward =
+      isRecord(rawReward) &&
+      typeof rawReward.policyRevision === "string" &&
+      typeof rawReward.policyKind === "string"
+        ? {
+            policyRevision: rawReward.policyRevision,
+            policyKind: rawReward.policyKind,
+            ...(typeof rawReward.groupID === "string" ? { groupID: rawReward.groupID } : {}),
+            ...(typeof rawReward.groupLabel === "string" ? { groupLabel: rawReward.groupLabel } : {}),
+            ...(expertRewardBand(rawReward.current) ? { current: expertRewardBand(rawReward.current) } : {}),
+            ...(expertRewardBand(rawReward.target) ? { target: expertRewardBand(rawReward.target) } : {}),
+            ...(expertRewardDelta(rawReward.upside) ? { upside: expertRewardDelta(rawReward.upside) } : {}),
+          }
+        : undefined
+    return {
+      workflow: notice.workflow,
+      phase: notice.phase,
+      findingID: notice.findingID,
+      ...(notice.alias ? { alias: notice.alias } : {}),
+      title: notice.title,
+      currentSeverity: notice.currentSeverity,
+      ...(notice.targetSeverity ? { targetSeverity: notice.targetSeverity } : {}),
+      checkpoint: {
+        id: notice.checkpoint.id,
+        signature: notice.checkpoint.signature,
+        promptedAt: notice.checkpoint.promptedAt,
+        questions: notice.checkpoint.questions,
+        ...(reward ? { reward } : {}),
+      },
+    }
+  } catch {
+    return
+  }
+}
+
+export function expertRewardText(value: ExpertRewardBand | ExpertRewardDelta | undefined) {
+  if (!value) return
+  const amount = value.minimum === value.maximum ? `${value.minimum}` : `${value.minimum}–${value.maximum}`
+  return value.unit === "MONEY" ? `${value.currency ?? "currency"} ${amount}` : `${amount} points`
 }
 
 export function expertRuntimeDiagnosticText(diagnostic: ExpertRuntimeDiagnostic): string {
@@ -489,26 +693,39 @@ export function foldExpertActivity(
     const status = decodeExpertPhaseStatus(a.text)
     const contextCompaction = decodeExpertContextCompaction(a.text)
     const providerRetry = decodeExpertProviderRetry(a.text)
+    const runtimeBootstrap = decodeExpertRuntimeBootstrap(a.text)
     const runtimeDiagnostic = decodeExpertRuntimeDiagnostic(a.text)
-    return [
-      ...entries,
-      {
-        ...base,
-        kind: "status",
-        text: status
-          ? phaseStatusText(status)
-          : contextCompaction
-            ? expertContextCompactionText(contextCompaction)
+    const findingMaturation = decodeExpertFindingMaturation(a.text)
+    const entry: ExpertPhaseEntry = {
+      ...base,
+      kind: "status",
+      text: status
+        ? phaseStatusText(status)
+        : contextCompaction
+          ? expertContextCompactionText(contextCompaction)
+          : runtimeBootstrap
+            ? runtimeBootstrap.message
             : runtimeDiagnostic
               ? expertRuntimeDiagnosticText(runtimeDiagnostic)
-              : a.text,
-        tool: "",
-        phaseStatus: status,
-        contextCompaction,
-        providerRetry,
-        runtimeDiagnostic,
-      },
-    ]
+              : findingMaturation
+                ? "Finding maturation checkpoint"
+                : a.text,
+      tool: "",
+      phaseStatus: status,
+      contextCompaction,
+      providerRetry,
+      runtimeBootstrap,
+      runtimeDiagnostic,
+      findingMaturation,
+    }
+    if (!runtimeBootstrap) return [...entries, entry]
+    const existing = entries.findIndex(
+      (candidate) => sameActivityScope(candidate, a) && candidate.runtimeBootstrap !== undefined,
+    )
+    if (existing < 0) return [...entries, entry]
+    const next = entries.slice()
+    next[existing] = { ...entry, id: entries[existing]!.id, timestamp: entries[existing]!.timestamp }
+    return next
   }
   if (a.kind === "output") {
     const callID = a.tool // an output activity carries the pairing callID in `tool`

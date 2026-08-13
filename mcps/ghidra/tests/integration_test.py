@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ── Dockerized Ghidra Persistence Contract ───────────────────────
-# Exercises a native fixture through import, analysis, decompilation, phase bridge
-# renewal, and runtime recreation inside the unified engagement image.
+# Exercises stale-job recovery and a native fixture through import, analysis,
+# decompilation, phase bridge renewal, and unified runtime recreation.
 # → mcps/cyberful-os/Dockerfile — builds the service and bridge under test.
 # @docs/runtimes/ghidra.md
 # ─────────────────────────────────────────────────────────────────
@@ -295,6 +295,31 @@ class DockerizedGhidraTests(unittest.TestCase):
                 raise RuntimeError(f"Ghidra job did not succeed: {job}")
             time.sleep(1)
         raise TimeoutError(f"Ghidra analysis job exceeded {ANALYSIS_TIMEOUT}s")
+
+    def test_missing_recovery_source_does_not_disable_the_service(self) -> None:
+        job_id = str(uuid.uuid4())
+        (self.store / "jobs.jsonl").write_text(
+            json.dumps(
+                {
+                    "id": job_id,
+                    "kind": "import",
+                    "status": "running",
+                    "request": {"source_path": "removed/fixture", "analyze": True},
+                    "created_at": 1,
+                    "updated_at": 2,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        key = uuid.uuid4().hex + uuid.uuid4().hex
+        container = self.start_runtime(key)
+        client = self.client(container, key)
+        recovered = client.tool("ghidra_job", {"action": "status", "job_id": job_id})
+        self.assertEqual(recovered["status"], "failed")
+        self.assertTrue(recovered["recovered"])
+        self.assertIn("source_path must resolve", recovered["error"])
+        self.assertEqual(client.tool("ghidra_project", {"action": "status"})["project"], "Cyberful")
 
     def test_project_and_annotations_survive_phase_and_runtime_restarts(self) -> None:
         first_key = uuid.uuid4().hex + uuid.uuid4().hex

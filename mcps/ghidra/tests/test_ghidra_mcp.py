@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_ROOT))
 
+from ghidra_engine import GhidraEngine  # noqa: E402
 from ghidra_mcp import GhidraApplication, JobManager, Protocol, TOOL_NAMES  # noqa: E402
 
 
@@ -25,6 +27,7 @@ class FakeEngine:
         self.import_calls: list[tuple[str, str | None, bool]] = []
         self.analysis_calls: list[tuple[str, int]] = []
         self.cancelled = False
+        self.reconciled: dict[tuple[str, str], dict[str, object]] = {}
 
     def import_program(self, source_path: str, name: str | None, analyze: bool) -> dict[str, object]:
         self.import_calls.append((source_path, name, analyze))
@@ -34,8 +37,12 @@ class FakeEngine:
         self.analysis_calls.append((program, timeout_seconds))
         return {"program": program, "analyzed": True}
 
-    def cancel_active_operation(self) -> None:
+    def cancel_active_operation(self) -> bool:
         self.cancelled = True
+        return True
+
+    def reconcile_job(self, kind: str, request: dict[str, object]) -> dict[str, object] | None:
+        return self.reconciled.get((kind, json.dumps(request, sort_keys=True)))
 
     def project_status(self) -> dict[str, object]:
         return {"project": "Cyberful", "busy": False, "programs": []}
@@ -75,6 +82,19 @@ class FakeEngine:
 
     def annotations(self, *_args: object) -> dict[str, object]:
         return {"items": []}
+
+
+class BlockingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def analyze_program(self, program: str, timeout_seconds: int) -> dict[str, object]:
+        self.analysis_calls.append((program, timeout_seconds))
+        self.started.set()
+        self.release.wait(timeout=2)
+        return {"program": program, "analyzed": True}
 
 
 def wait_for_status(manager: JobManager, job_id: str, expected: str) -> dict[str, object]:
@@ -131,6 +151,36 @@ class JobManagerTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    def test_missing_import_input_fails_only_the_recovered_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for child in ["store", "workarea", "ghidra"]:
+                (root / child).mkdir()
+            journal = root / "store" / "jobs.jsonl"
+            job_id = "5101986c-614d-48a0-92e6-0eb598bbb4e6"
+            journal.write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "kind": "import",
+                        "status": "running",
+                        "request": {"source_path": "removed/fixture.bin", "analyze": True},
+                        "created_at": 1,
+                        "updated_at": 2,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            engine = GhidraEngine(root / "store", root / "workarea", root / "ghidra")
+            manager = JobManager(engine, journal)
+            try:
+                recovered = wait_for_status(manager, job_id, "failed")
+                self.assertTrue(recovered["recovered"])
+                self.assertIn("source_path must resolve", recovered["error"])
+            finally:
+                manager.close()
+
     def test_cancels_a_queued_job_without_executing_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             engine = FakeEngine()
@@ -139,7 +189,60 @@ class JobManagerTests(unittest.TestCase):
             cancelled = manager.cancel(str(job["id"]))
             manager.close()
             self.assertEqual(cancelled["status"], "cancelled")
+            self.assertTrue(cancelled["cancel_acknowledged"])
             self.assertEqual(engine.analysis_calls, [])
+
+    def test_reconciles_committed_work_before_requeueing_an_interrupted_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "jobs.jsonl"
+            request = {"program": "/fixture", "timeout_seconds": 10}
+            job_id = "329fc857-cd2f-40f3-a71a-d6d53df2671d"
+            journal.write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "kind": "analyze",
+                        "status": "cancel_requested",
+                        "request": request,
+                        "created_at": 1,
+                        "updated_at": 2,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            engine = FakeEngine()
+            engine.reconciled[("analyze", json.dumps(request, sort_keys=True))] = {
+                "program": "/fixture",
+                "analyzed": True,
+            }
+            manager = JobManager(engine, journal)
+            try:
+                recovered = manager.status(job_id)
+                self.assertEqual(recovered["status"], "succeeded")
+                self.assertTrue(recovered["reconciled"])
+                self.assertTrue(recovered["cancel_requested"])
+                self.assertEqual(engine.analysis_calls, [])
+            finally:
+                manager.close()
+
+    def test_completed_result_wins_a_cancellation_race(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = BlockingEngine()
+            manager = JobManager(engine, Path(directory) / "jobs.jsonl")
+            try:
+                job = manager.submit("analyze", {"program": "/fixture", "timeout_seconds": 10})
+                self.assertTrue(engine.started.wait(timeout=2))
+                requested = manager.cancel(str(job["id"]))
+                self.assertEqual(requested["status"], "cancel_requested")
+                engine.release.set()
+                completed = wait_for_status(manager, str(job["id"]), "succeeded")
+                self.assertTrue(completed["cancel_requested"])
+                self.assertTrue(completed["cancel_acknowledged"])
+                self.assertEqual(completed["result"], {"program": "/fixture", "analyzed": True})
+            finally:
+                engine.release.set()
+                manager.close()
 
 
 class ProtocolTests(unittest.TestCase):

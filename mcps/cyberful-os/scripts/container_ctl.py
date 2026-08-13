@@ -197,6 +197,8 @@ def main(argv: list[str]) -> int:
             "-v", f"{workspace}:{mount}",
             "--cap-add=NET_ADMIN",
             "--cap-add=SYS_PTRACE",
+            "--security-opt=no-new-privileges",
+            "--security-opt=seccomp=unconfined",
             *(argument for item in labels.items() for argument in ("--label", f"{item[0]}={item[1]}")),
             image,
         ]

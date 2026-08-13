@@ -326,6 +326,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* promptSvc.steer({
         sessionID: ctx.params.sessionID,
         parts: [{ type: "text", text: ctx.payload.text }],
+        mode: ctx.payload.mode,
       })
     })
 

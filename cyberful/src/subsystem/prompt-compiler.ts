@@ -7,6 +7,7 @@
 
 import { createHash } from "node:crypto"
 import matter from "gray-matter"
+import { supportsAuthorizationReframe } from "./security-reframe"
 
 export type AgentRunRole = "root" | "subagent" | "fallback"
 export type ProviderRoute = "main" | "fallback"
@@ -274,7 +275,14 @@ function fallbackInstructions(input: CompileInput): string {
       "If this provider returns a policy block or terminal error, preserve partial evidence and fail the branch back to its parent without provider ping-pong.",
     ].join("\n")
   if (!policy.providerConfigured)
-    return "No fallback provider is configured. Complete the run and its delegated work on the main provider."
+    return [
+      "No fallback provider is configured. Complete the run and its delegated work on the main provider.",
+      ...(supportsAuthorizationReframe(input.workflow)
+        ? [
+            "After an exact structured security-policy block, the host may replace the blocked run once on main with the same task reframed to restate the recorded engagement authorization. This wording-only recovery never expands scope or repeats a completed target-side effect.",
+          ]
+        : []),
+    ].join("\n")
 
   return [
     "Fallback routing is exclusively host-owned; never select or name a provider yourself.",

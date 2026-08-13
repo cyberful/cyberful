@@ -210,13 +210,41 @@ class JobManager:
             for job_id, record in self._jobs.items()
             if record.get("status") in {"queued", "running", "cancel_requested"}
         ]
+        requeued: list[str] = []
         for job_id in recoverable:
-            record = {**self._jobs[job_id], "status": "queued", "recovered": True, "updated_at": time.time()}
+            current = self._jobs[job_id]
+            kind = current.get("kind")
+            request = current.get("request")
+            reconciled = (
+                self.engine.reconcile_job(kind, request)
+                if isinstance(kind, str) and isinstance(request, dict)
+                else None
+            )
+            if reconciled is not None:
+                record = {
+                    **current,
+                    "status": "succeeded",
+                    "result": reconciled,
+                    "recovered": True,
+                    "reconciled": True,
+                    "cancel_requested": current.get("status") == "cancel_requested",
+                    "completed_at": time.time(),
+                    "updated_at": time.time(),
+                }
+            else:
+                record = {
+                    **current,
+                    "status": "queued",
+                    "recovered": True,
+                    "cancel_requested": current.get("status") == "cancel_requested",
+                    "updated_at": time.time(),
+                }
+                requeued.append(job_id)
             self._jobs[job_id] = record
             append_json_line(self.path, record)
         if start_worker:
             self._worker.start()
-            for job_id in recoverable:
+            for job_id in requeued:
                 self._queue.put(job_id)
 
     def submit(self, kind: str, request: dict[str, object]) -> dict[str, object]:
@@ -272,12 +300,24 @@ class JobManager:
             if status in {"succeeded", "failed", "cancelled"}:
                 return dict(current)
             next_status = "cancelled" if status == "queued" else "cancel_requested"
-            record = {**current, "status": next_status, "updated_at": time.time()}
+            record = {
+                **current,
+                "status": next_status,
+                "cancel_requested": True,
+                "cancel_acknowledged": status == "queued",
+                "updated_at": time.time(),
+            }
             self._jobs[job_id] = record
             append_json_line(self.path, record)
             cancel_active = status in {"running", "cancel_requested"}
         if cancel_active:
-            self.engine.cancel_active_operation()
+            acknowledged = self.engine.cancel_active_operation()
+            if acknowledged:
+                with self._lock:
+                    current = self._jobs[job_id]
+                    record = {**current, "cancel_acknowledged": True, "updated_at": time.time()}
+                    self._jobs[job_id] = record
+                    append_json_line(self.path, record)
         return dict(record)
 
     def close(self) -> None:
@@ -334,16 +374,18 @@ class JobManager:
                 else:
                     raise RuntimeError(f"unsupported persistent Ghidra job kind: {kind}")
                 with self._lock:
-                    cancelled = self._jobs[job_id].get("status") == "cancel_requested"
+                    cancel_requested = bool(self._jobs[job_id].get("cancel_requested"))
                 self._transition(
                     job_id,
-                    "cancelled" if cancelled else "succeeded",
+                    "succeeded",
                     result=result,
+                    cancel_requested=cancel_requested,
                     completed_at=time.time(),
                 )
             except Exception as error:
                 with self._lock:
-                    cancelled = self._jobs[job_id].get("status") == "cancel_requested"
+                    current = self._jobs[job_id]
+                    cancelled = bool(current.get("cancel_requested")) and bool(current.get("cancel_acknowledged"))
                 self._transition(
                     job_id,
                     "cancelled" if cancelled else "failed",

@@ -1,9 +1,7 @@
-// ── Restartable Browser MCP Generations ─────────────────────────
-// A cancelled Playwright operation may force its profile-scoped MCP process to
-// exit after the cancellation grace period. The gateway never retries the
-// interrupted target action, but it does quarantine and probe that generation
-// before the next action. A dead generation is replaced once, in single-flight,
-// so concurrent callers cannot create competing owners for the same profile.
+// ── Managed MCP Generations ─────────────────────────────────────
+// A cancelled or disconnected stateful MCP process may need replacement. The
+// gateway never retries the interrupted action, but it probes before the next
+// action and opens one single-flight generation when the transport is dead.
 // → mcps/browser/browser_mcp.mjs — performs bounded cancellation teardown.
 // → cyberful/src/subsystem/gateway/server.ts — owns process creation and tools.
 // @docs/runtimes/browser.md
@@ -14,14 +12,15 @@ export interface RestartableBrowserConnection<T> {
   readonly close: () => Promise<void>
 }
 
-interface RestartableBrowserUpstreamOptions<T> {
+interface ManagedMcpUpstreamOptions<T> {
+  readonly label?: string
   readonly cancellationGraceMs: number
   readonly connect: (onClose: () => void) => Promise<RestartableBrowserConnection<T>>
   readonly probe: (value: T, signal: AbortSignal) => Promise<void>
   readonly probeTimeoutMs: number
 }
 
-interface BrowserGeneration<T> extends RestartableBrowserConnection<T> {
+interface ManagedGeneration<T> extends RestartableBrowserConnection<T> {
   readonly number: number
   closed: boolean
 }
@@ -68,34 +67,79 @@ function waitForResult<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
   })
 }
 
-export class RestartableBrowserUpstream<T> {
+export interface ManagedMcpUpstreamStatus {
+  readonly label: string
+  readonly state: "disconnected" | "connecting" | "ready" | "recovering" | "closing"
+  readonly generation: number
+  readonly quarantined: boolean
+}
+
+export class ManagedMcpUpstream<T> {
   // ── One Active Generation, One Replacement ───────────────────
   // Connection and quarantine state remain private so callers cannot bypass
   // the health gate or create a second profile owner during recovery.
   // Cancellation delays the next probe until the MCP teardown grace expires.
   // Replacement is single-flight and never replays the interrupted operation.
   // ──────────────────────────────────────────────────────────────
-  private readonly options: RestartableBrowserUpstreamOptions<T>
-  private active?: BrowserGeneration<T>
-  private connecting?: Promise<BrowserGeneration<T>>
-  private recovering?: Promise<BrowserGeneration<T>>
+  private readonly options: ManagedMcpUpstreamOptions<T>
+  private active?: ManagedGeneration<T>
+  private connecting?: Promise<ManagedGeneration<T>>
+  private recovering?: Promise<ManagedGeneration<T>>
   private closing = false
   private generation = 0
   private quarantinedUntil = 0
 
-  constructor(options: RestartableBrowserUpstreamOptions<T>) {
+  constructor(options: ManagedMcpUpstreamOptions<T>) {
     if (
       !Number.isSafeInteger(options.cancellationGraceMs) ||
       options.cancellationGraceMs < 0 ||
       !Number.isSafeInteger(options.probeTimeoutMs) ||
       options.probeTimeoutMs <= 0
     )
-      throw new Error("browser cancellation grace and probe timeout must be bounded integers")
+      throw new Error("managed MCP cancellation grace and probe timeout must be bounded integers")
     this.options = options
   }
 
   async start() {
     return (await this.connection()).value
+  }
+
+  status(): ManagedMcpUpstreamStatus {
+    return {
+      label: this.options.label ?? "mcp",
+      state: this.closing
+        ? "closing"
+        : this.recovering
+          ? "recovering"
+          : this.connecting
+            ? "connecting"
+            : this.active && !this.active.closed
+              ? "ready"
+              : "disconnected",
+      generation: this.generation,
+      quarantined: this.quarantinedUntil > Date.now(),
+    }
+  }
+
+  async health(signal?: AbortSignal): Promise<ManagedMcpUpstreamStatus> {
+    const generation = await this.connection(signal)
+    const controller = new AbortController()
+    const timeout = setTimeout(
+      () => controller.abort(new DOMException("managed MCP health probe timed out", "TimeoutError")),
+      this.options.probeTimeoutMs,
+    )
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    try {
+      await waitForResult(this.options.probe(generation.value, combined), combined)
+    } catch (error) {
+      await this.invalidate(generation)
+      if (signal?.aborted || this.closing) throw error
+      const replacement = await this.connection(signal)
+      await waitForResult(this.options.probe(replacement.value, combined), combined)
+    } finally {
+      clearTimeout(timeout)
+    }
+    return this.status()
   }
 
   async call<R>(operation: (value: T) => Promise<R>, signal?: AbortSignal): Promise<R> {
@@ -130,8 +174,8 @@ export class RestartableBrowserUpstream<T> {
     }
   }
 
-  private async connection(signal?: AbortSignal): Promise<BrowserGeneration<T>> {
-    if (this.closing) throw new Error("browser upstream is closing")
+  private async connection(signal?: AbortSignal): Promise<ManagedGeneration<T>> {
+    if (this.closing) throw new Error("managed MCP upstream is closing")
     signal?.throwIfAborted()
     const quarantineMs = this.quarantinedUntil - Date.now()
     if (quarantineMs > 0) await wait(quarantineMs, signal)
@@ -153,11 +197,11 @@ export class RestartableBrowserUpstream<T> {
     return waitForResult(this.openConnection(), signal)
   }
 
-  private openConnection(): Promise<BrowserGeneration<T>> {
-    if (this.closing) return Promise.reject(new Error("browser upstream is closing"))
+  private openConnection(): Promise<ManagedGeneration<T>> {
+    if (this.closing) return Promise.reject(new Error("managed MCP upstream is closing"))
     if (this.connecting) return this.connecting
     const number = ++this.generation
-    let generation: BrowserGeneration<T> | undefined
+    let generation: ManagedGeneration<T> | undefined
     let closedBeforeReady = false
     const connecting = this.options
       .connect(() => {
@@ -175,8 +219,8 @@ export class RestartableBrowserUpstream<T> {
           return generation.close().then(() => {
             throw new Error(
               closedBeforeReady
-                ? "browser upstream transport closed while a generation was starting"
-                : "browser upstream closed while a generation was starting",
+                ? "managed MCP upstream transport closed while a generation was starting"
+                : "managed MCP upstream closed while a generation was starting",
             )
           })
         }
@@ -190,10 +234,10 @@ export class RestartableBrowserUpstream<T> {
     return connecting
   }
 
-  private async recover(generation: BrowserGeneration<T>) {
+  private async recover(generation: ManagedGeneration<T>) {
     const controller = new AbortController()
     const timeout = setTimeout(() => {
-      controller.abort(new DOMException("browser upstream health probe timed out", "TimeoutError"))
+      controller.abort(new DOMException("managed MCP upstream health probe timed out", "TimeoutError"))
     }, this.options.probeTimeoutMs)
     try {
       await waitForResult(this.options.probe(generation.value, controller.signal), controller.signal)
@@ -206,10 +250,12 @@ export class RestartableBrowserUpstream<T> {
     return this.openConnection()
   }
 
-  private async invalidate(generation: BrowserGeneration<T>) {
+  private async invalidate(generation: ManagedGeneration<T>) {
     if (generation.closed) return
     generation.closed = true
     if (this.active === generation) this.active = undefined
     await generation.close().catch(() => undefined)
   }
 }
+
+export { ManagedMcpUpstream as RestartableBrowserUpstream }

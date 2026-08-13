@@ -123,6 +123,36 @@ export interface HypothesisRegistryView {
   readonly workflow: string
   readonly activeCount: number
   readonly countsByState: Readonly<Record<HypothesisState, number>>
+  readonly activeHypotheses: ReadonlyArray<{
+    readonly id: string
+    readonly phase: string
+    readonly owner: string
+    readonly ownerDisplayName?: string
+    readonly description: string
+    readonly rootCause: string
+    readonly surface: string
+    readonly discriminator: string
+    readonly candidateTools: readonly string[]
+    readonly omittedTools: ReadonlyArray<{ readonly tool: string; readonly reason: string }>
+    readonly state: HypothesisState
+    readonly evidence: readonly string[]
+    readonly evidenceRefs: readonly string[]
+    readonly blocker?: string
+    readonly blockerReason?: string
+    readonly nextStep?: string
+    readonly nextPhase?: string
+    readonly findingID?: string
+    readonly graphRefs: readonly string[]
+    readonly transitions: ReadonlyArray<{
+      readonly time: string
+      readonly phase: string
+      readonly owner: string
+      readonly from?: HypothesisState
+      readonly to: HypothesisState
+      readonly evidence: readonly string[]
+      readonly reason?: string
+    }>
+  }>
 }
 
 interface HostActor {
@@ -136,7 +166,7 @@ export class HypothesisRegistryError extends Error {
   readonly retryable = true
 
   constructor(
-    readonly code: "HYPOTHESIS_NOT_FOUND" | "HYPOTHESIS_TRANSITION_INVALID",
+    readonly code: "HYPOTHESIS_NOT_FOUND" | "HYPOTHESIS_TRANSITION_INVALID" | "HYPOTHESIS_OWNED",
     message: string,
     readonly context: {
       readonly revision: number
@@ -144,6 +174,9 @@ export class HypothesisRegistryError extends Error {
       readonly requestedState?: string
       readonly allowedStates?: readonly string[]
       readonly availableIDs?: readonly string[]
+      readonly ownerRunID?: string
+      readonly allowedActions?: readonly string[]
+      readonly recoveryCalls?: readonly Readonly<Record<string, unknown>>[]
     },
   ) {
     super(message)
@@ -163,6 +196,13 @@ export class HypothesisRegistryError extends Error {
       ...(this.context.requestedState ? { requested_state: this.context.requestedState } : {}),
       ...(this.context.allowedStates ? { allowed_states: this.context.allowedStates } : {}),
       ...(this.context.availableIDs ? { available_ids: this.context.availableIDs } : {}),
+      ...(this.context.ownerRunID ? { owner_run_id: this.context.ownerRunID } : {}),
+      ...(this.context.allowedActions ? { allowed_actions: this.context.allowedActions } : {}),
+      recovery_calls:
+        this.context.recoveryCalls ??
+        (this.code === "HYPOTHESIS_NOT_FOUND"
+          ? [{ action: "list" }]
+          : [{ action: "get", id: "<hypothesis-id>" }]),
     }
   }
 }
@@ -186,7 +226,30 @@ function invalidHypothesisTransition(
     currentState: previous.state,
     requestedState,
     allowedStates,
+    allowedActions: ["get", "claim", "update"],
+    recoveryCalls: [
+      { action: "get", id: previous.id },
+      { action: "claim", id: previous.id, reason: "<required-when-revisiting>" },
+    ],
   })
+}
+
+function ownedHypothesis(registry: Registry, previous: Hypothesis, actor: HostActor) {
+  return new HypothesisRegistryError(
+    "HYPOTHESIS_OWNED",
+    `hypothesis '${previous.id}' is already TESTING under AgentRun '${previous.ownerRunID}' and cannot be claimed by '${actor.runID}'`,
+    {
+      revision: registry.revision,
+      currentState: previous.state,
+      requestedState: "TESTING",
+      ownerRunID: previous.ownerRunID,
+      allowedActions: ["get", "list"],
+      recoveryCalls: [
+        { action: "get", id: previous.id },
+        { action: "list", state: "TESTING" },
+      ],
+    },
+  )
 }
 
 function emptyRegistry(): Registry {
@@ -223,7 +286,29 @@ function textArray(value: unknown, label: string, maximumItems: number): readonl
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > maximumItems)
     throw new Error(`${label} must be an array of at most ${maximumItems} strings`)
-  return value.map((item, index) => boundedText(item, `${label}[${index}]`, 1_000))
+  return [...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 1_000)))]
+}
+
+function mergeUnique(previous: readonly string[], additions: readonly string[], label: string): readonly string[] {
+  const merged = [...new Set([...previous, ...additions])]
+  if (merged.length > 50) throw new Error(`${label} must contain at most 50 unique entries`)
+  return merged
+}
+
+function mergeOmissions(
+  previous: Hypothesis["omitted_tools"],
+  additions: Hypothesis["omitted_tools"],
+): Hypothesis["omitted_tools"] {
+  return [
+    ...previous,
+    ...additions.filter(
+      (omission) =>
+        !previous.some(
+          (previousOmission) =>
+            previousOmission.tool === omission.tool && previousOmission.reason === omission.reason,
+        ),
+    ),
+  ]
 }
 
 function state(value: unknown): HypothesisState {
@@ -377,6 +462,38 @@ export async function readHypothesisRegistryView(
       0,
     ),
     countsByState,
+    activeHypotheses: registry.hypotheses
+      .filter((hypothesis) => hypothesis.workflow === workflow && isActiveHypothesisState(hypothesis.state))
+      .map((hypothesis) => ({
+        id: hypothesis.id,
+        phase: hypothesis.phase,
+        owner: hypothesis.owner,
+        ...(hypothesis.ownerDisplayName ? { ownerDisplayName: hypothesis.ownerDisplayName } : {}),
+        description: hypothesis.description,
+        rootCause: hypothesis.root_cause,
+        surface: hypothesis.surface,
+        discriminator: hypothesis.discriminator,
+        candidateTools: hypothesis.candidate_tools ?? [],
+        omittedTools: hypothesis.omitted_tools ?? [],
+        state: hypothesis.state,
+        evidence: hypothesis.evidence ?? [],
+        evidenceRefs: hypothesis.evidence_refs ?? [],
+        ...(hypothesis.blocker ? { blocker: hypothesis.blocker } : {}),
+        ...(hypothesis.blocker_reason ? { blockerReason: hypothesis.blocker_reason } : {}),
+        ...(hypothesis.next_step ? { nextStep: hypothesis.next_step } : {}),
+        ...(hypothesis.next_phase ? { nextPhase: hypothesis.next_phase } : {}),
+        ...(hypothesis.finding_id ? { findingID: hypothesis.finding_id } : {}),
+        graphRefs: hypothesis.graph_refs ?? [],
+        transitions: (hypothesis.transitions ?? []).map((transition) => ({
+          time: transition.time_iso,
+          phase: transition.phase,
+          owner: transition.owner,
+          ...(transition.from ? { from: transition.from } : {}),
+          to: transition.to,
+          evidence: transition.evidence,
+          ...(transition.reason ? { reason: transition.reason } : {}),
+        })),
+      })),
   }
 }
 
@@ -458,10 +575,11 @@ export class HypothesisRegistry {
     }
     if (this.#readOnly) throw new Error("hypothesis registry is read-only in this phase")
     if (args.action === "record") return this.#record(args)
+    if (args.action === "update" && args.state === "TESTING") return this.#claim(args)
     if (args.action === "update") return this.#update(args)
-    if (args.action === "reopen") return this.#reopen(args)
+    if (args.action === "claim" || args.action === "reopen") return this.#claim(args)
     if (args.action === "synthesize") return this.#synthesize(args)
-    throw new Error("hypothesis action must be record, update, reopen, get, list, or synthesize")
+    throw new Error("hypothesis action must be record, claim, update, reopen, get, list, or synthesize")
   }
 
   async get(value: unknown) {
@@ -549,10 +667,30 @@ export class HypothesisRegistry {
         surface,
         discriminator,
       })
-      if (registry.hypotheses.some((item) => item.id === id)) throw new Error(`hypothesis '${id}' already exists`)
+      const owner = boundedText(args.owner, "hypothesis owner", 160)
+      const candidateTools = textArray(args.candidate_tools, "hypothesis candidate_tools", 30)
+      const omitted = omittedTools(args.omitted_tools)
+      const evidence = textArray(args.evidence, "hypothesis evidence", 50)
+      const evidenceRefs = textArray(args.evidence_refs, "hypothesis evidence_refs", 50)
+      const graphRefs = textArray(args.graph_refs, "hypothesis graph_refs", 50)
+      const existing = registry.hypotheses.find((item) => item.id === id)
+      if (existing) {
+        const repeated =
+          existing.fingerprint_sha256 === fingerprintSha256 &&
+          existing.workflow === this.#workflow &&
+          existing.phase === this.#phase &&
+          existing.owner === owner &&
+          existing.state === "OPEN" &&
+          JSON.stringify(existing.candidate_tools) === JSON.stringify(candidateTools) &&
+          JSON.stringify(existing.omitted_tools) === JSON.stringify(omitted) &&
+          JSON.stringify(existing.evidence) === JSON.stringify(evidence) &&
+          JSON.stringify(existing.evidence_refs) === JSON.stringify(evidenceRefs) &&
+          JSON.stringify(existing.graph_refs) === JSON.stringify(graphRefs)
+        if (repeated) return { registry, result: existing, changed: false }
+        throw new Error(`hypothesis '${id}' already exists with different content`)
+      }
       const duplicate = registry.hypotheses.find((item) => item.fingerprint_sha256 === fingerprintSha256)
       if (duplicate) throw new Error(`hypothesis duplicates '${duplicate.id}'`)
-      const owner = boundedText(args.owner, "hypothesis owner", 160)
       const actor = hostActor(args._cyberful_actor)
       const now = new Date().toISOString()
       const hypothesis: Hypothesis = {
@@ -572,12 +710,12 @@ export class HypothesisRegistry {
         root_cause: rootCause,
         surface,
         discriminator,
-        candidate_tools: textArray(args.candidate_tools, "hypothesis candidate_tools", 30),
-        omitted_tools: omittedTools(args.omitted_tools),
+        candidate_tools: candidateTools,
+        omitted_tools: omitted,
         state: "OPEN",
-        evidence: textArray(args.evidence, "hypothesis evidence", 50),
-        evidence_refs: textArray(args.evidence_refs, "hypothesis evidence_refs", 50),
-        graph_refs: textArray(args.graph_refs, "hypothesis graph_refs", 50),
+        evidence,
+        evidence_refs: evidenceRefs,
+        graph_refs: graphRefs,
         transitions: [{ time_iso: now, phase: this.#phase, owner, to: "OPEN", evidence: [] }],
         ...(actor
           ? {
@@ -605,6 +743,56 @@ export class HypothesisRegistry {
       const previous = registry.hypotheses[index]!
       const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
+      const evidence = textArray(args.evidence, "hypothesis evidence", 50)
+      const evidenceRefs = textArray(args.evidence_refs, "hypothesis evidence_refs", 50)
+      const graphRefs = textArray(args.graph_refs, "hypothesis graph_refs", 50)
+      const omissions = omittedTools(args.omitted_tools)
+      const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
+      const blocker = optionalText(args.blocker, "hypothesis blocker", 1_000)
+      const nextStep = optionalText(args.next_step, "hypothesis next_step", 1_000)
+      const nextPhase = optionalText(args.next_phase, "hypothesis next_phase", 80)
+      const findingID = args.finding_id === undefined ? undefined : identifier(args.finding_id, "hypothesis finding_id")
+      const reason = optionalText(args.reason, "hypothesis reason", 1_000)
+      const typedBlockerReason = blockerReason(args.blocker_reason)
+      const typedScopeResolution = scopeResolution(args.scope_resolution)
+      const mergedEvidence = mergeUnique(previous.evidence, evidence, "hypothesis evidence")
+      const mergedEvidenceRefs = mergeUnique(previous.evidence_refs ?? [], evidenceRefs, "hypothesis evidence_refs")
+      const mergedGraphRefs = mergeUnique(previous.graph_refs, graphRefs, "hypothesis graph_refs")
+      const mergedOmissions = mergeOmissions(previous.omitted_tools ?? [], omissions)
+
+      if (nextState === previous.state) {
+        const updated: Hypothesis = {
+          ...previous,
+          phase: this.#phase,
+          owner,
+          ...reassignedOwnership(previous, actor, new Date().toISOString(), "claimed"),
+          evidence: mergedEvidence,
+          evidence_refs: mergedEvidenceRefs,
+          graph_refs: args.graph_refs === undefined ? previous.graph_refs : mergedGraphRefs,
+          omitted_tools: mergedOmissions,
+          ...(blocker ? { blocker } : {}),
+          ...(typedBlockerReason ? { blocker_reason: typedBlockerReason } : {}),
+          ...(nextStep ? { next_step: nextStep } : {}),
+          ...(nextPhase ? { next_phase: nextPhase } : {}),
+          ...(findingID ? { finding_id: findingID } : {}),
+          ...(typedScopeResolution ? { scope_resolution: typedScopeResolution } : {}),
+        }
+        validateDisposition({
+          state: nextState,
+          evidence: updated.evidence,
+          blocker: updated.blocker,
+          blockerReason: updated.blocker_reason,
+          nextStep: updated.next_step,
+          nextPhase: updated.next_phase,
+          findingID: updated.finding_id,
+          reason: reason ?? previous.transitions.at(-1)?.reason,
+          scopeResolution: updated.scope_resolution,
+        })
+        if (JSON.stringify(updated) === JSON.stringify(previous)) return { registry, result: previous, changed: false }
+        const hypotheses = [...registry.hypotheses]
+        hypotheses[index] = updated
+        return { registry: { ...registry, hypotheses }, result: updated }
+      }
       if (
         EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState) &&
         previous.state !== "TESTING"
@@ -629,15 +817,6 @@ export class HypothesisRegistry {
           ["OPEN", "SUSPECTED", "CONFIRMED"],
           `hypothesis '${id}' cannot enter TESTING from ${previous.state}; queued work must use reopen`,
         )
-      const evidence = textArray(args.evidence, "hypothesis evidence", 50)
-      const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
-      const blocker = optionalText(args.blocker, "hypothesis blocker", 1_000)
-      const nextStep = optionalText(args.next_step, "hypothesis next_step", 1_000)
-      const nextPhase = optionalText(args.next_phase, "hypothesis next_phase", 80)
-      const findingID = args.finding_id === undefined ? undefined : identifier(args.finding_id, "hypothesis finding_id")
-      const reason = optionalText(args.reason, "hypothesis reason", 1_000)
-      const typedBlockerReason = blockerReason(args.blocker_reason)
-      const typedScopeResolution = scopeResolution(args.scope_resolution)
       validateDisposition({
         state: nextState,
         evidence,
@@ -656,23 +835,9 @@ export class HypothesisRegistry {
         owner,
         ...reassignedOwnership(previous, actor, now, "claimed"),
         state: nextState,
-        evidence: [...previous.evidence, ...evidence],
-        evidence_refs: [
-          ...new Set([
-            ...(previous.evidence_refs ?? []),
-            ...textArray(args.evidence_refs, "hypothesis evidence_refs", 50),
-          ]),
-        ],
-        omitted_tools: [
-          ...(previous.omitted_tools ?? []),
-          ...omittedTools(args.omitted_tools).filter(
-            (omission) =>
-              !(previous.omitted_tools ?? []).some(
-                (previousOmission) =>
-                  previousOmission.tool === omission.tool && previousOmission.reason === omission.reason,
-              ),
-          ),
-        ],
+        evidence: mergedEvidence,
+        evidence_refs: mergedEvidenceRefs,
+        omitted_tools: mergedOmissions,
         ...(blocker ? { blocker } : {}),
         ...(typedBlockerReason ? { blocker_reason: typedBlockerReason } : {}),
         ...(nextStep ? { next_step: nextStep } : {}),
@@ -689,9 +854,7 @@ export class HypothesisRegistry {
               scope_resolution: undefined,
             }
           : {}),
-        ...(args.graph_refs === undefined
-          ? {}
-          : { graph_refs: [...new Set([...previous.graph_refs, ...textArray(args.graph_refs, "hypothesis graph_refs", 50)])] }),
+        ...(args.graph_refs === undefined ? {} : { graph_refs: mergedGraphRefs }),
         transitions: [
           ...previous.transitions,
           {
@@ -711,21 +874,47 @@ export class HypothesisRegistry {
     })
   }
 
-  #reopen(args: Record<string, unknown>) {
+  // ── Claim Is The Sole Admission Into Active Testing ────────────
+  // Execution ownership and lifecycle state must change atomically or a live
+  // test can remain labelled UNTESTABLE, QUEUED, or owned by a finished actor.
+  // One serialized command therefore validates phase eligibility, rejects a
+  // competing owner, clears stale disposition metadata, and enters TESTING.
+  // Exact repeated claims by the same actor are semantic no-ops; `reopen` and
+  // historical `update(state=TESTING)` calls route through this same table.
+  // ────────────────────────────────────────────────────────────────
+  #claim(args: Record<string, unknown>) {
     return this.#mutate((registry) => {
       const id = identifier(args.id, "hypothesis id")
       const index = registry.hypotheses.findIndex((item) => item.id === id)
       if (index < 0) throw missingHypothesis(registry, id)
       const previous = registry.hypotheses[index]!
       const actor = hostActor(args._cyberful_actor)
-      if (previous.state !== "QUEUED" || previous.next_phase !== this.#phase)
+      if (
+        previous.state === "TESTING" &&
+        actor &&
+        previous.ownerRunID &&
+        previous.ownerRunID !== actor.runID
+      )
+        throw ownedHypothesis(registry, previous, actor)
+      if (previous.state === "TESTING" && (!actor || previous.ownerRunID === actor.runID))
+        return { registry, result: previous, changed: false }
+      if (previous.state === "QUEUED" && previous.next_phase !== this.#phase)
         throw invalidHypothesisTransition(
           registry,
           previous,
           "TESTING",
           ["QUEUED for the active phase"],
-          `hypothesis '${id}' cannot reopen in '${this.#phase}'; current state is ${previous.state}` +
-            (previous.next_phase ? ` and queued phase is '${previous.next_phase}'` : ""),
+          `hypothesis '${id}' cannot be claimed in '${this.#phase}'; it is queued for '${previous.next_phase}'`,
+        )
+      const revisit = previous.state !== "OPEN" && previous.state !== "QUEUED"
+      const reason = optionalText(args.reason, "hypothesis claim reason", 1_000)
+      if (revisit && !reason)
+        throw invalidHypothesisTransition(
+          registry,
+          previous,
+          "TESTING",
+          ["OPEN", "QUEUED for the active phase", "explicit revisit with reason"],
+          `hypothesis '${id}' requires a non-empty claim reason when revisiting ${previous.state}`,
         )
       const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
       const now = new Date().toISOString()
@@ -735,16 +924,22 @@ export class HypothesisRegistry {
         owner,
         ...reassignedOwnership(previous, actor, now, "claimed"),
         state: "TESTING",
+        blocker: undefined,
+        blocker_reason: undefined,
+        next_step: undefined,
         next_phase: undefined,
+        finding_id: undefined,
+        scope_resolution: undefined,
         transitions: [
           ...previous.transitions,
           {
             time_iso: now,
             phase: this.#phase,
             owner,
-            from: "QUEUED",
+            from: previous.state,
             to: "TESTING",
             evidence: [],
+            ...(reason ? { reason } : {}),
           },
         ],
       }
@@ -910,7 +1105,7 @@ function hypothesisActionSchema(
 export const HYPOTHESIS_TOOL_DEF = {
   name: "hypothesis",
   description:
-    "Record, test, carry, and close durable hypotheses across phases. OPEN and TESTING block handoff; QUEUED requires an exact successor and next step; positive states require a linked finding.",
+    "Record, claim, carry, and close durable hypotheses across phases. claim is the sole atomic admission into TESTING; OPEN and TESTING block handoff; QUEUED requires an exact successor and next step; positive states require a linked finding.",
   inputSchema: {
     type: "object" as const,
     oneOf: [
@@ -934,6 +1129,7 @@ export const HYPOTHESIS_TOOL_DEF = {
           id: { type: "string" },
           state: { type: "string", enum: ["TESTING"] },
           owner: { type: "string" },
+          reason: { type: "string" },
         },
         ["id", "state"],
       ),
@@ -1003,8 +1199,34 @@ export const HYPOTHESIS_TOOL_DEF = {
         ["id", "state", "blocker", "blocker_reason", "next_step", "reason"],
       ),
       hypothesisActionSchema(
+        "claim",
+        { id: { type: "string" }, owner: { type: "string" }, reason: { type: "string" } },
+        ["id"],
+      ),
+      hypothesisActionSchema(
+        "promote",
+        {
+          id: { type: "string", description: "TESTING hypothesis to link." },
+          disposition: { type: "string", enum: ["SUSPECTED", "CONFIRMED"] },
+          finding_key: { type: "string", description: "Stable finding alias; defaults to the hypothesis id." },
+          title: { type: "string" },
+          severity: { type: "string", enum: ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+          summary: { type: "string" },
+          positive_evidence: {
+            oneOf: [
+              { type: "string" },
+              { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } },
+            ],
+          },
+          evidence_paths: { type: "array", maxItems: 64, items: { type: "string" } },
+          next_step: { type: "string" },
+          reason: { type: "string" },
+        },
+        ["id", "disposition", "title", "severity", "summary", "positive_evidence", "evidence_paths", "reason"],
+      ),
+      hypothesisActionSchema(
         "reopen",
-        { id: { type: "string" }, owner: { type: "string" } },
+        { id: { type: "string" }, owner: { type: "string" }, reason: { type: "string" } },
         ["id"],
       ),
       hypothesisActionSchema("get", { id: { type: "string" } }, ["id"]),

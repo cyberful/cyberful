@@ -2,7 +2,7 @@
 
 Standalone stdio MCP server for browser-use style automation with an isolated Playwright Chromium on macOS.
 
-Cyberful starts one instance per numbered browser identity and adds the gateway-only `profile` selector to the tools. A standalone MCP process still owns exactly one `CYBER_BROWSER_USER_DATA_DIR`.
+Cyberful starts one instance per numbered target identity plus one named `search` identity and adds the gateway-only `profile` selector to ordinary browser tools. A standalone MCP process still owns exactly one `CYBER_BROWSER_USER_DATA_DIR`. The `search` instance alone publishes `web_search`, which never accepts a profile argument.
 
 ## Install
 
@@ -30,6 +30,7 @@ mcps/browser/bin/cyber-browser
 ## Tools
 
 - `browser_status`
+- `web_search` (only when `CYBER_BROWSER_PROFILE_ID=search`)
 - `browser_navigate`
 - `browser_snapshot`
 - `browser_captcha_status`
@@ -38,6 +39,8 @@ mcps/browser/bin/cyber-browser
 - `browser_fill`
 - `browser_type`
 - `browser_select`
+- `browser_set_input_files`
+- `browser_scroll`
 - `browser_check`
 - `browser_press`
 - `browser_wait`
@@ -65,6 +68,10 @@ If a navigation commits but the requested load state times out, the tool returns
 
 Ordinary requests for one profile remain serialized. MCP cancellation bypasses that queue: a gateway timeout or caller abort immediately invalidates the active browser context, waits at most two seconds for Playwright cleanup, suppresses the stale response, and frees later requests from the blocked operation. A cleanup that still cannot settle terminates only that profile's MCP process; it cannot leave the profile queue waiting for the original operation indefinitely. The owning gateway then probes the quarantined generation and recreates that one profile in single-flight if its transport died. The cancelled target action is never replayed automatically.
 
+## DuckDuckGo search
+
+`web_search` uses Chromium to load DuckDuckGo's official HTML surface, extracts one bounded page of organic and sponsored results, unwraps DuckDuckGo redirect URLs, and fails explicitly on an unknown layout or visible challenge. It performs no automatic retry. Cyberful forces the tool to the direct, persistent `search` profile; ordinary browser tools may also select that identity with `profile: "search"`.
+
 ## CAPTCHA/challenge handling
 
 `browser_captcha_status` detects common CAPTCHA and anti-bot challenge signals such as reCAPTCHA, hCaptcha, Cloudflare Turnstile, Cloudflare challenge pages, Arkose/FunCaptcha, Geetest, and generic CAPTCHA markers. Provider SDK requests, response fields, and a lone generic CAPTCHA mention remain visible in its diagnostics, but do not count as an active challenge without stronger visible page evidence.
@@ -81,7 +88,7 @@ Useful environment overrides:
 
 - `CYBER_BROWSER_BROWSERS_PATH`
 - `CYBER_BROWSER_USER_DATA_DIR`
-- `CYBER_BROWSER_PROFILE_ID` as an integer from `1` through `5` reported by `browser_status`
+- `CYBER_BROWSER_PROFILE_ID` as an integer from `1` through `5` or `search`, reported by `browser_status`
 - `CYBER_BROWSER_CLEAR_COOKIES_ON_START=true` to intentionally clear the persistent target login (default: preserve it)
 - `CYBER_BROWSER_ARTIFACTS_DIR`
 - `CYBER_BROWSER_HEADLESS=true`

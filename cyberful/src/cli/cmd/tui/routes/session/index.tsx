@@ -28,6 +28,7 @@ import {
   expertActorStateText,
   expertPhaseDuration,
   expertPhaseLabel,
+  expertRewardText,
   isExpertSemanticProgress,
 } from "@tui/context/expert-feed"
 import type { PhaseActivityActor, PhaseActivityActorState, PhaseActivityArtifact } from "@/session/event"
@@ -59,6 +60,7 @@ import type {
   UserMessage,
   TextPart,
   ReasoningPart,
+  SessionHypothesisRegistryView,
   WorkareaFinding,
 } from "@/server/client"
 import { useLocal } from "@tui/context/local"
@@ -114,7 +116,7 @@ import { OpenArtifact } from "../../util/open-artifact"
 import { CompletionCard } from "../../util/completion-card"
 import { workareaAbsolutePath } from "@/workarea"
 import { isRecord } from "@/util/record"
-import { DialogFinding, FindingSidebar, findingSplitWidths } from "./finding-sidebar"
+import { DialogFinding, DialogHypothesis, FindingSidebar, findingSplitWidths } from "./finding-sidebar"
 
 addDefaultParsers(parsers.parsers)
 
@@ -373,6 +375,9 @@ export function Session() {
   const dialog = useDialog()
   const openFinding = (finding: WorkareaFinding) => {
     dialog.replace(() => <DialogFinding finding={finding} runID={findings()?.runID ?? route.sessionID} />)
+  }
+  const openHypothesis = (hypothesis: SessionHypothesisRegistryView["activeHypotheses"][number]) => {
+    dialog.replace(() => <DialogHypothesis hypothesis={hypothesis} />)
   }
   // Tracks whether the todo overlay is the current dialog, so `session.toggle.todo` can toggle it.
   const [todoDialogOpen, setTodoDialogOpen] = createSignal(false)
@@ -1326,7 +1331,13 @@ export function Session() {
             <Toast />
           </box>
           <Show when={findingsOpen()}>
-            <FindingSidebar width={findingsWidth()} view={findings()} hypotheses={hypotheses()} onOpen={openFinding} />
+            <FindingSidebar
+              width={findingsWidth()}
+              view={findings()}
+              hypotheses={hypotheses()}
+              onOpen={openFinding}
+              onOpenHypothesis={openHypothesis}
+            />
           </Show>
         </box>
       </context.Provider>
@@ -1400,7 +1411,39 @@ function ExpertPhaseRow(props: {
   const semanticProgress = createMemo(() => isExpertSemanticProgress(props.entry.text))
   const contextCompaction = createMemo(() => props.entry.contextCompaction)
   const providerRetry = createMemo(() => props.entry.providerRetry)
+  const runtimeBootstrap = createMemo(() => props.entry.runtimeBootstrap)
   const runtimeDiagnostic = createMemo(() => props.entry.runtimeDiagnostic)
+  const runtimeBootstrapColor = (state: NonNullable<ExpertPhaseEntry["runtimeBootstrap"]>["state"]) => {
+    if (state === "ready") return theme.success
+    if (state === "degraded") return theme.warning
+    if (state === "failed") return theme.error
+    return theme.info
+  }
+  const runtimeServiceColor = (
+    state: NonNullable<ExpertPhaseEntry["runtimeBootstrap"]>["services"][number]["state"],
+  ) => {
+    if (state === "ready") return theme.success
+    if (state === "degraded") return theme.warning
+    if (state === "failed") return theme.error
+    if (state === "active") return theme.info
+    return theme.textMuted
+  }
+  const runtimeServiceIcon = (
+    state: NonNullable<ExpertPhaseEntry["runtimeBootstrap"]>["services"][number]["state"],
+  ) => {
+    if (state === "ready") return "✓"
+    if (state === "degraded") return "!"
+    if (state === "failed") return "✕"
+    if (state === "active") return "◆"
+    return "◇"
+  }
+  const runtimeProgressBar = createMemo(() => {
+    const progress = runtimeBootstrap()
+    if (!progress) return { filled: "", remaining: "" }
+    const width = 18
+    const filled = Math.min(width, Math.round((progress.completed / progress.total) * width))
+    return { filled: "━".repeat(filled), remaining: "─".repeat(width - filled) }
+  })
   // Synthetic ToolPart props let a phase-feed tool render through the same GenericTool as session tools.
   const toolPart = createMemo<ToolPart>(() => {
     const e = props.entry
@@ -1545,6 +1588,108 @@ function ExpertPhaseRow(props: {
               </text>
             </Show>
           </box>
+        </Match>
+        <Match when={props.entry.kind === "status" ? runtimeBootstrap() : undefined}>
+          {(bootstrap) => (
+            <box marginTop={1} marginBottom={1} paddingLeft={3} flexShrink={0}>
+              <box
+                width="100%"
+                maxWidth={72}
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={2}
+                flexDirection="column"
+                backgroundColor={theme.backgroundPanel}
+                border={["left"]}
+                borderColor={runtimeBootstrapColor(bootstrap().state)}
+              >
+                <box flexDirection="row" justifyContent="space-between">
+                  <Show
+                    when={bootstrap().state === "active"}
+                    fallback={
+                      <text wrapMode="none" truncate>
+                        <span style={{ fg: runtimeBootstrapColor(bootstrap().state) }}>
+                          {bootstrap().state === "ready" ? "✓ " : bootstrap().state === "degraded" ? "! " : "✕ "}
+                        </span>
+                        <span style={{ fg: theme.text }}>Runtime bootstrap</span>
+                      </text>
+                    }
+                  >
+                    <Spinner color={theme.info}>Runtime bootstrap</Spinner>
+                  </Show>
+                  <text wrapMode="none">
+                    <span style={{ fg: theme.textMuted }}>{`${bootstrap().completed}/${bootstrap().total}`}</span>
+                  </text>
+                </box>
+                <text wrapMode="none">
+                  <span style={{ fg: theme.success }}>{runtimeProgressBar().filled}</span>
+                  <span style={{ fg: theme.textMuted }}>{runtimeProgressBar().remaining}</span>
+                </text>
+                <box flexDirection="row" gap={2} flexWrap="wrap">
+                  <For each={bootstrap().services}>
+                    {(service) => (
+                      <text wrapMode="none">
+                        <span style={{ fg: runtimeServiceColor(service.state) }}>{`${runtimeServiceIcon(service.state)} `}</span>
+                        <span style={{ fg: service.state === "pending" ? theme.textMuted : theme.text }}>
+                          {service.label}
+                        </span>
+                      </text>
+                    )}
+                  </For>
+                </box>
+                <text wrapMode="word">
+                  <span style={{ fg: theme.textMuted }}>{bootstrap().message}</span>
+                </text>
+              </box>
+            </box>
+          )}
+        </Match>
+        <Match when={props.entry.kind === "status" ? props.entry.findingMaturation : undefined}>
+          {(maturation) => (
+            <box marginTop={1} marginBottom={1} paddingLeft={3} flexDirection="column" flexShrink={0}>
+              <text wrapMode="none" truncate>
+                <span style={{ fg: theme.info }}>◆ Finding maturation</span>
+                <span style={{ fg: theme.textMuted }}>
+                  {` · ${maturation().alias ?? maturation().findingID} · ${maturation().title}`}
+                </span>
+              </text>
+              <text wrapMode="none" truncate>
+                <span style={{ fg: theme.textMuted }}>Severity </span>
+                <span style={{ fg: markerColor() }}>{maturation().currentSeverity}</span>
+                <Show when={maturation().targetSeverity}>
+                  {(target) => <span style={{ fg: theme.info }}>{` → ${target()}`}</span>}
+                </Show>
+              </text>
+              <Show when={maturation().checkpoint.reward}>
+                {(reward) => (
+                  <text wrapMode="none" truncate>
+                    <span style={{ fg: theme.textMuted }}>Published reward </span>
+                    <span style={{ fg: theme.text }}>
+                      {expertRewardText(reward().current) ??
+                        (!reward().groupID && ["MONETARY", "POINTS"].includes(reward().policyKind)
+                          ? "reward group unresolved"
+                          : reward().policyKind.replaceAll("_", " ").toLowerCase())}
+                    </span>
+                    <Show when={expertRewardText(reward().target)}>
+                      {(target) => <span style={{ fg: theme.info }}>{` → ${target()}`}</span>}
+                    </Show>
+                    <Show when={expertRewardText(reward().upside)}>
+                      {(upside) => <span style={{ fg: theme.success }}>{` · upside ${upside()}`}</span>}
+                    </Show>
+                  </text>
+                )}
+              </Show>
+              <For each={maturation().checkpoint.questions}>
+                {(question, index) => (
+                  <text wrapMode="word">
+                    <span style={{ fg: theme.textMuted }}>{`${index() + 1}. `}</span>
+                    <span style={{ fg: theme.text }}>{question}</span>
+                  </text>
+                )}
+              </For>
+            </box>
+          )}
         </Match>
         <Match when={props.entry.kind === "status"}>
           {/* Host-authored terminal telemetry remains raw when it is not the final phase status. Semantic

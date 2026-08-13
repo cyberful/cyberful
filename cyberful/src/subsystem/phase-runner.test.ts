@@ -381,6 +381,37 @@ describe("runPhase transcript persistence", () => {
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
+  test("phase prompts keep reward-aware maturation specific to Bug Bounty", () => {
+    const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const brief = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "brief" }), 30)
+    const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
+    const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "exploit" }), 120)
+    const codeAudit = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "code-audit", phase: "attack" }), 120)
+
+    expect(bugBounty).toMatch(/finding maturation checkpoint/i)
+    expect(bugBounty).toMatch(/host-derived published monetary upside/i)
+    expect(brief).toMatch(/reward_policy set.*NOT_PUBLISHED.*UNAVAILABLE/i)
+    expect(report).toMatch(/reward_policy get.*BUG_BOUNTY_REPORT\.md.*portable BBP-###/i)
+    expect(pentest).toMatch(/technical finding maturation checkpoint/i)
+    expect(pentest).toMatch(/monetary reward policy does not apply/i)
+    expect(codeAudit).not.toMatch(/finding maturation|reward_policy/i)
+  })
+
+  test("live-target prompts require an evidence-backed end-to-end attacker path", () => {
+    const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
+    const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "verify" }), 120)
+    const pentestRecon = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "recon" }), 120)
+    const codeAudit = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "code-audit", phase: "attack" }), 120)
+
+    expect(bugBounty).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(bugBounty).toMatch(/prerequisites.*entry point.*attacker actions.*security boundaries.*concrete outcome/i)
+    expect(report).toMatch(/end-to-end attack path.*unsupported link/i)
+    expect(pentest).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(pentestRecon).not.toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(codeAudit).not.toMatch(/What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i)
+  })
+
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
     let system = ""
     let privateEnv: Readonly<Record<string, string>> | undefined
@@ -491,8 +522,11 @@ describe("runPhase transcript persistence", () => {
       }),
     )
 
-    expect(system).toMatch(/Browser profiles 1–5 are separate identities/i)
+    expect(system).toMatch(/Browser profiles 1–5 are separate target identities/i)
     expect(system).toMatch(/keep their state and evidence separate/i)
+    expect(system).toContain("`web_search`")
+    expect(system).toContain('profile: "search"')
+    expect(system).toMatch(/never as target identity, scope authority/i)
   })
 
   test("routes imported-source execution through cyberful-os without hardcoding a host path", async () => {
@@ -500,6 +534,10 @@ describe("runPhase transcript persistence", () => {
     await SubsystemPhaseRunner.runPhase(
       spec(),
       deps({
+        preparePhase: async () => ({
+          warnings: [],
+          env: { CYBERFUL_OS_RUNTIME_PLATFORM: "Linux/ARM64 (aarch64)" },
+        }),
         run: async (input) => {
           baseInstructions = input.spec.baseInstructions ?? ""
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
@@ -514,6 +552,8 @@ describe("runPhase transcript persistence", () => {
     expect(baseInstructions).toContain("host shell remains available for all other purposes")
     expect(baseInstructions).toContain("cyberful-os `shell` MCP tool")
     expect(baseInstructions).toContain("`relative/path` to `/workspace/relative/path`")
+    expect(baseInstructions).toContain("available cyberful-os laboratory build is Linux/ARM64 (aarch64)")
+    expect(baseInstructions).toContain("target binary built for another OS or architecture is not natively executable")
     expect(baseInstructions).toContain("Network access remains available inside cyberful-os")
     expect(baseInstructions).toContain("# Cyberful Workarea")
     expect(baseInstructions).not.toContain("</CYBERFUL WORKAREA>")
@@ -1274,6 +1314,9 @@ describe("interactive Ask excursion", () => {
     expect(result.ok).toBe(true)
     expect(permission).toBe("autonomous")
     expect(system).toContain("one autonomous Ask turn")
+    expect(system).toContain("`web_search`")
+    expect(system).toContain('profile: "search"')
+    expect(system).toMatch(/never expand the recorded scope/i)
     expect(userMessage).toContain("Explain the report")
     expect(system).not.toContain("Required deliverable")
     expect(privateEnv?.CYBERFUL_SUBSYSTEM_HANDOFF_PATH).toBeUndefined()

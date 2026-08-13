@@ -111,7 +111,11 @@ describe("hypothesis registry", () => {
           reason: "The cross-tenant differential is positive and reproducible.",
         }),
       ).rejects.toThrow("must enter TESTING")
-      await registry.handle({ action: "update", id: "H-LIVE-1", state: "TESTING" })
+      await registry.handle({
+        action: "claim",
+        id: "H-LIVE-1",
+        reason: "Revisit the suspected result under a fresh control.",
+      })
       await registry.handle({
         action: "update",
         id: "H-LIVE-1",
@@ -124,7 +128,11 @@ describe("hypothesis registry", () => {
         state: "SUSPECTED",
         finding_id: "F-LIVE-1",
       })
-      await registry.handle({ action: "update", id: "H-LIVE-1", state: "TESTING" })
+      await registry.handle({
+        action: "claim",
+        id: "H-LIVE-1",
+        reason: "Retest the suspected result under the same controls.",
+      })
       const testing = await registry.get("H-LIVE-1")
       expect(testing).toMatchObject({ state: "TESTING" })
       expect(testing.finding_id).toBeUndefined()
@@ -138,6 +146,65 @@ describe("hypothesis registry", () => {
       const disproved = await registry.get("H-LIVE-1")
       expect(disproved).toMatchObject({ state: "DISPROVED" })
       expect(disproved.finding_id).toBeUndefined()
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("makes exact record and same-state updates idempotent while merging new evidence", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      const record = {
+        action: "record",
+        id: "H-IDEM-1",
+        owner: "exploit-root",
+        description: "A stable authorization candidate",
+        root_cause: "missing ownership check",
+        surface: "object API",
+        discriminator: "cross-tenant object differential",
+        candidate_tools: ["browser_request"],
+      }
+      await registry.handle(record)
+      const afterRecord = await registry.list()
+      await registry.handle(record)
+      expect((await registry.list()).revision).toBe(afterRecord.revision)
+
+      await registry.handle({ action: "update", id: "H-IDEM-1", state: "TESTING" })
+      const afterTesting = await registry.list()
+      await registry.handle({ action: "update", id: "H-IDEM-1", state: "TESTING" })
+      expect((await registry.list()).revision).toBe(afterTesting.revision)
+
+      const suspected = {
+        action: "update",
+        id: "H-IDEM-1",
+        state: "SUSPECTED",
+        finding_id: "F-IDEM-1",
+        evidence: ["The second tenant received the synthetic object."],
+        evidence_refs: ["raw/evidence/one.json"],
+        reason: "The controlled cross-tenant differential is positive.",
+      }
+      await registry.handle(suspected)
+      const afterSuspected = await registry.list()
+      await registry.handle(suspected)
+      expect((await registry.list()).revision).toBe(afterSuspected.revision)
+      expect((await registry.get("H-IDEM-1")).transitions).toHaveLength(3)
+
+      await registry.handle({
+        ...suspected,
+        evidence: [
+          "The second tenant received the synthetic object.",
+          "A repeat control produced the same tenant differential.",
+        ],
+        evidence_refs: ["raw/evidence/one.json", "raw/evidence/two.json"],
+      })
+      const merged = await registry.get("H-IDEM-1")
+      expect(merged.evidence).toEqual([
+        "The second tenant received the synthetic object.",
+        "A repeat control produced the same tenant differential.",
+      ])
+      expect(merged.evidence_refs).toEqual(["raw/evidence/one.json", "raw/evidence/two.json"])
+      expect(merged.transitions).toHaveLength(3)
     } finally {
       await rm(workarea, { recursive: true, force: true })
     }
@@ -190,6 +257,18 @@ describe("hypothesis registry", () => {
       expect(await readHypothesisRegistryView(workarea, "pentest")).toMatchObject({
         activeCount: 1,
         countsByState: { OPEN: 1, DISPROVED: 1 },
+        activeHypotheses: [
+          {
+            id: "H-OWN-1",
+            owner: "model-label-is-not-authoritative",
+            ownerDisplayName: "api-monster",
+            description: "A child-owned object boundary remains open",
+            rootCause: "missing object authorization",
+            surface: "project API",
+            discriminator: "cross-tenant read differential",
+            state: "OPEN",
+          },
+        ],
       })
 
       const recovered = await registry.handle({
@@ -231,6 +310,69 @@ describe("hypothesis registry", () => {
         }),
       ).toEqual([])
       expect((await readHypothesisRegistryView(workarea, "pentest")).activeCount).toBe(1)
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("claims active testing atomically and requires an explicit terminal-state revisit", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      const firstActor = { runID: "run_first", displayName: "first", kind: "subagent" } as const
+      const secondActor = { runID: "run_second", displayName: "second", kind: "subagent" } as const
+      await registry.handle({
+        action: "record",
+        id: "H-CLAIM-1",
+        owner: "first",
+        description: "A parser boundary needs a controlled discriminator",
+        root_cause: "ambiguous dispatch",
+        surface: "document parser",
+        discriminator: "controlled parser differential",
+        _cyberful_actor: firstActor,
+      })
+
+      await registry.handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: firstActor })
+      const claimedRevision = (await registry.list()).revision
+      await registry.handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: firstActor })
+      expect((await registry.list()).revision).toBe(claimedRevision)
+
+      const owned = await registry
+        .handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: secondActor })
+        .catch((error) => error)
+      expect(owned).toBeInstanceOf(HypothesisRegistryError)
+      expect((owned as HypothesisRegistryError).toolError({ action: "claim" })).toMatchObject({
+        code: "HYPOTHESIS_OWNED",
+        current_state: "TESTING",
+        owner_run_id: "run_first",
+        allowed_actions: ["get", "list"],
+      })
+
+      await registry.handle({
+        action: "update",
+        id: "H-CLAIM-1",
+        state: "UNTESTABLE",
+        blocker: "The required fixture is not yet available.",
+        blocker_reason: "TOOL_UNAVAILABLE",
+        next_step: "Retry after preparing the fixture.",
+        reason: "The current environment cannot execute the discriminator.",
+        _cyberful_actor: firstActor,
+      })
+      await expect(
+        registry.handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: secondActor }),
+      ).rejects.toThrow("requires a non-empty claim reason")
+      const revisited = await registry.handle({
+        action: "claim",
+        id: "H-CLAIM-1",
+        reason: "The missing fixture is now available.",
+        _cyberful_actor: secondActor,
+      })
+      expect(revisited).toMatchObject({
+        state: "TESTING",
+        ownerRunID: "run_second",
+      })
+      expect("blocker" in revisited ? revisited.blocker : undefined).toBeUndefined()
+      expect("next_step" in revisited ? revisited.next_step : undefined).toBeUndefined()
     } finally {
       await rm(workarea, { recursive: true, force: true })
     }

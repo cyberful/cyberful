@@ -59,6 +59,25 @@ describe("passive egress observation", () => {
     })
   })
 
+  test("distinguishes declared local-only shell work from missing network telemetry", () => {
+    expect(
+      EgressObservation.observe("shell", {}, {
+        content: [],
+        _meta: {
+          "cyberful.dev/egress": {
+            route: "cyberful-os/docker-direct",
+            observability: "not_applicable",
+            destination_changed: false,
+          },
+        },
+      }),
+    ).toMatchObject({
+      egress_host: undefined,
+      egress_route: "cyberful-os/docker-direct",
+      egress_observability: "not_applicable",
+    })
+  })
+
   test("collapses personal and opaque path segments instead of persisting them", () => {
     expect(EgressObservation.pathFamily("/users/alice@example.test/sessions/opaqueBearerValue12345")).toBe(
       "/users/:id/sessions/:id",

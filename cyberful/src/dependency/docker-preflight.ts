@@ -8,15 +8,28 @@
 import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { isRecord } from "@/util/record"
-import { cyberfulOsBuildCommand, cyberfulOsDir, cyberfulOsImage, validateUnifiedRuntimeEnvironment } from "./config"
+import { Global } from "@/global"
+import fs from "node:fs"
+import path from "node:path"
+import {
+  cyberfulOsBuildCommand,
+  cyberfulOsDir,
+  cyberfulOsImage,
+  cyberfulOsImageIsManaged,
+  cyberfulOsRuntimeFingerprint,
+  validateUnifiedRuntimeEnvironment,
+} from "./config"
 
 const log = Log.create({ service: "docker-preflight" })
 const DOCKER_COMMAND_TIMEOUT_MS = 30_000
-const DOCKER_BUILD_TIMEOUT_MS = 3 * 60 * 60_000
+const DOCKER_BUILD_TIMEOUT_MS = 6 * 60 * 60_000
 const DOCKER_PULL_TIMEOUT_MS = 2 * 60 * 60_000
 const DOCKER_VERIFY_TIMEOUT_MS = 2 * 60_000
 const DOCKER_OUTPUT_LIMIT_BYTES = 1024 * 1024
 const DOCKER_KILL_GRACE_MS = 1_000
+const MINIMUM_BUILD_FREE_BYTES = 100 * 1024 ** 3
+const IMAGE_STATE_PATH = path.join(Global.Path.state, "runtime-images.json")
+const BUILD_LOCK_PATH = path.join(Global.Path.state, "runtime-build.lock")
 
 const useColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR
 const paint = (code: string, text: string) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text)
@@ -48,6 +61,37 @@ async function runExitCode(
   }
 }
 
+async function runLogged(command: string[], logPath: string, timeoutMs: number): Promise<number | null> {
+  fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 })
+  const handle = fs.openSync(logPath, "a", 0o600)
+  fs.writeSync(handle, `\n[${new Date().toISOString()}] ${command.join(" ")}\n`)
+  try {
+    const proc = Bun.spawn(command, {
+      env: process.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+    })
+    const forward = async (stream: ReadableStream<Uint8Array>) => {
+      const reader = stream.getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const chunk = Buffer.from(value)
+        fs.writeSync(handle, chunk)
+        process.stderr.write(chunk)
+      }
+    }
+    const [, , code] = await Promise.all([forward(proc.stdout), forward(proc.stderr), proc.exited])
+    return code
+  } catch {
+    return null
+  } finally {
+    fs.closeSync(handle)
+  }
+}
+
 export async function requireDockerDaemon(
   run: (command: string[]) => Promise<number | null> = (command) => runExitCode(command),
 ): Promise<void> {
@@ -65,6 +109,181 @@ async function runText(command: string[]) {
     timeout: DOCKER_KILL_GRACE_MS,
   })
   return result.code === 0 ? result.text.trim() : ""
+}
+
+function processAlive(pid: number) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return isRecord(error) && error.code === "EPERM"
+  }
+}
+
+async function acquireBuildLock(): Promise<() => void> {
+  fs.mkdirSync(path.dirname(BUILD_LOCK_PATH), { recursive: true, mode: 0o700 })
+  const deadline = Date.now() + DOCKER_BUILD_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    try {
+      fs.mkdirSync(BUILD_LOCK_PATH, { mode: 0o700 })
+      fs.writeFileSync(path.join(BUILD_LOCK_PATH, "owner.json"), JSON.stringify({ pid: process.pid, started_at: Date.now() }), {
+        mode: 0o600,
+      })
+      return () => fs.rmSync(BUILD_LOCK_PATH, { recursive: true, force: true })
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "EEXIST") throw error
+      try {
+        const owner = JSON.parse(fs.readFileSync(path.join(BUILD_LOCK_PATH, "owner.json"), "utf8")) as unknown
+        if (!isRecord(owner) || typeof owner.pid !== "number" || !processAlive(owner.pid)) {
+          fs.rmSync(BUILD_LOCK_PATH, { recursive: true, force: true })
+          continue
+        }
+      } catch {
+        fs.rmSync(BUILD_LOCK_PATH, { recursive: true, force: true })
+        continue
+      }
+      await Bun.sleep(500)
+    }
+  }
+  throw new Error("Timed out waiting for another Cyberful runtime build to finish.")
+}
+
+function requireBuildDiskSpace(context: string) {
+  const stats = fs.statfsSync(context)
+  const available = stats.bavail * stats.bsize
+  if (available >= MINIMUM_BUILD_FREE_BYTES) return
+  throw new Error(
+    `Building cyberful-os requires at least 100 GB free; ${(available / 1024 ** 3).toFixed(1)} GB is available.`,
+  )
+}
+
+function readManagedHistory(): string[] {
+  try {
+    const value = JSON.parse(fs.readFileSync(IMAGE_STATE_PATH, "utf8")) as unknown
+    if (!isRecord(value) || !Array.isArray(value.images)) return []
+    return value.images.filter((item): item is string => typeof item === "string" && /^cyberful-os:runtime-[a-f0-9]{64}$/.test(item))
+  } catch {
+    return []
+  }
+}
+
+async function retainCurrentAndPrevious(image: string) {
+  const images = [image, ...readManagedHistory().filter((item) => item !== image)]
+  fs.mkdirSync(path.dirname(IMAGE_STATE_PATH), { recursive: true, mode: 0o700 })
+  const temporary = `${IMAGE_STATE_PATH}.${process.pid}.tmp`
+  fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, images: images.slice(0, 2) }, null, 2)}\n`, { mode: 0o600 })
+  fs.renameSync(temporary, IMAGE_STATE_PATH)
+  for (const stale of images.slice(2)) {
+    const code = await runExitCode(["docker", "image", "rm", stale])
+    if (code !== 0) log.warn("could not remove stale managed runtime image", { image: stale, code })
+  }
+}
+
+async function imageAttested(image: string, stream = false, fingerprint?: string) {
+  const runtimeReady =
+    (await runExitCode(["docker", "run", "--rm", "--entrypoint", "/opt/cyberful/runtime-attestation", image], {
+      stream,
+      timeoutMs: DOCKER_VERIFY_TIMEOUT_MS,
+    })) === 0
+  if (!runtimeReady || !fingerprint) return runtimeReady
+  return (
+    (await runText([
+      "docker",
+      "image",
+      "inspect",
+      "--format",
+      '{{index .Config.Labels "org.cyberful.runtime-fingerprint"}}',
+      image,
+    ])) === fingerprint
+  )
+}
+
+async function buildManagedRuntime(image: string, fingerprint: string, context: string, force = false) {
+  requireBuildDiskSpace(context)
+  const release = await acquireBuildLock()
+  const candidate = `cyberful-os:build-${fingerprint}-${process.pid}`
+  try {
+    if (!force && (await runExitCode(["docker", "image", "inspect", image])) === 0 && (await imageAttested(image, false, fingerprint))) return
+    const base = cyberfulOsBuildCommand(candidate)
+    const command = [
+      ...base.slice(0, -3),
+      "--build-arg",
+      `CYBERFUL_RUNTIME_FINGERPRINT=${fingerprint}`,
+      ...base.slice(-3),
+    ]
+    const buildLog = path.join(Global.Path.log, `runtime-build-${fingerprint}.log`)
+    line(dim(`    Persistent build log: ${buildLog}`))
+    const prepared = await runLogged(command, buildLog, DOCKER_BUILD_TIMEOUT_MS)
+    if (prepared !== 0) throw new Error(`Local cyberful-os build failed with exit ${prepared ?? "spawn error"}.`)
+    if (!(await imageAttested(candidate, true, fingerprint))) throw new Error("The locally built cyberful-os image failed attestation.")
+    if ((await runExitCode(["docker", "tag", candidate, image])) !== 0) throw new Error("Could not publish the local runtime tag.")
+    await retainCurrentAndPrevious(image)
+  } finally {
+    await runExitCode(["docker", "image", "rm", candidate])
+    release()
+  }
+}
+
+export async function runtimeStatus() {
+  const image = cyberfulOsImage()
+  const exists = (await runExitCode(["docker", "image", "inspect", image])) === 0
+  const fingerprint = cyberfulOsRuntimeFingerprint()
+  const attested = exists && (await imageAttested(image, false, cyberfulOsImageIsManaged() ? fingerprint : undefined))
+  const identity = exists
+    ? await runText([
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.Os}}/{{.Architecture}} {{index .Config.Labels \"org.cyberful.runtime-fingerprint\"}}",
+        image,
+      ])
+    : ""
+  return {
+    image,
+    managed: cyberfulOsImageIsManaged(),
+    fingerprint: fingerprint ?? null,
+    exists,
+    attested,
+    identity: identity || null,
+    retained: readManagedHistory(),
+  }
+}
+
+export async function buildRuntime(force = false) {
+  await requireDockerDaemon()
+  const image = cyberfulOsImage()
+  const fingerprint = cyberfulOsRuntimeFingerprint()
+  const context = cyberfulOsDir()
+  if (!fingerprint || !cyberfulOsImageIsManaged() || !context)
+    throw new Error("Explicit runtime builds require a packaged Cyberful runtime context without CYBERFUL_OS_IMAGE.")
+  await buildManagedRuntime(image, fingerprint, context, force)
+  return runtimeStatus()
+}
+
+export async function pruneRuntimeImages() {
+  await requireDockerDaemon()
+  const retained = readManagedHistory().slice(0, 2)
+  const listed = await runText([
+    "docker",
+    "image",
+    "ls",
+    "--filter",
+    "label=org.cyberful.managed-runtime=true",
+    "--format",
+    "{{.Repository}}:{{.Tag}}",
+  ])
+  const candidates = listed
+    .split("\n")
+    .filter((item) => item && !retained.includes(item) && item !== "<none>:<none>")
+  const removed: string[] = []
+  const preserved: string[] = []
+  for (const candidate of candidates) {
+    if ((await runExitCode(["docker", "image", "rm", candidate])) === 0) removed.push(candidate)
+    else preserved.push(candidate)
+  }
+  return { retained, removed, preserved }
 }
 
 function processIsAlive(value: string) {
@@ -152,39 +371,48 @@ export async function runDockerPreflight(): Promise<void> {
   if (reaped > 0) line(`  ${green("✓")} removed ${reaped} orphaned Cyberful Docker resource${reaped === 1 ? "" : "s"}`)
 
   const image = cyberfulOsImage()
+  const fingerprint = cyberfulOsRuntimeFingerprint()
   const verify = ["docker", "run", "--rm", "--entrypoint", "/opt/cyberful/runtime-attestation", image]
 
-  // ── Releases Pull One Immutable Index; Source Builds One Image ─────────
-  // A compiled CLI carries a GHCR index digest and never reconstructs its runtime
-  // from partial embedded Docker contexts. Source checkouts retain the local
-  // cyberful-os:latest build path for contributors. Both paths converge on the
-  // same in-image attestation before startup, and pull/build output remains on the
-  // terminal so a multi-gigabyte first download is never mistaken for a hang.
+  // ── Releases And Source Runs Both Build Locally ───────────────────────
+  // A compiled CLI materializes its complete fingerprinted Docker context and
+  // builds a managed local tag. Source checkouts retain cyberful-os:latest for
+  // contributor iteration. Explicit operator images remain pullable overrides.
+  // Every path converges on the same in-image attestation before startup.
   // ─────────────────────────────────────────────────────────────────
   const exists = (await runExitCode(["docker", "image", "inspect", image])) === 0
-  const attested = exists && (await runExitCode(verify, { timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) === 0
+  const attested =
+    exists &&
+    (await imageAttested(image, false, cyberfulOsImageIsManaged() ? fingerprint : undefined))
   if (!attested) {
+    const managedLocalImage = cyberfulOsImageIsManaged() && fingerprint
     const localSourceImage = image === "cyberful-os:latest"
-    const command = localSourceImage ? cyberfulOsBuildCommand() : ["docker", "pull", image]
+    const command = localSourceImage ? cyberfulOsBuildCommand(image) : ["docker", "pull", image]
     const cwd = localSourceImage ? cyberfulOsDir() : undefined
-    if (command.length === 0 || (localSourceImage && !cwd)) {
+    if (managedLocalImage) {
+      const context = cyberfulOsDir()
+      if (!context) throw new Error("The embedded cyberful-os build context is unavailable.")
+      line(
+        `  ${yellow("⏳")} unified runtime ${dim(`(${image})`)} ${exists ? "failed attestation" : "not found"} — building locally…`,
+      )
+      line(dim("    Docker build output follows. The first build needs at least 100 GB free and may take several hours."))
+      await buildManagedRuntime(image, fingerprint, context)
+    } else if (command.length === 0 || (localSourceImage && !cwd)) {
       line(`  ${red("✗")} unified runtime build context is unavailable`)
       throw new Error("The unified cyberful-os build context is unavailable; startup cannot continue safely.")
-    }
-    line(
-      `  ${yellow("⏳")} unified runtime ${dim(`(${image})`)} ${
-        exists ? "failed attestation" : "not found"
-      } — ${localSourceImage ? "building" : "pulling"}…`,
-    )
-    if (!localSourceImage) line(dim("    First download may exceed 6 GB; keep at least 40 GB of disk space free."))
-    const prepared = await runExitCode(command, {
-      stream: true,
-      ...(cwd ? { cwd } : {}),
-      timeoutMs: localSourceImage ? DOCKER_BUILD_TIMEOUT_MS : DOCKER_PULL_TIMEOUT_MS,
-    })
-    if (prepared !== 0) {
-      line(`  ${red("✗")} unified runtime preparation failed ${dim(`(exit ${prepared ?? "spawn error"})`)}`)
-      throw new Error("The unified cyberful-os image could not be prepared; startup cannot continue safely.")
+    } else {
+      line(
+        `  ${yellow("⏳")} unified runtime ${dim(`(${image})`)} ${exists ? "failed attestation" : "not found"} — ${localSourceImage ? "building" : "pulling"}…`,
+      )
+      const prepared = await runExitCode(command, {
+        stream: true,
+        ...(cwd ? { cwd } : {}),
+        timeoutMs: localSourceImage ? DOCKER_BUILD_TIMEOUT_MS : DOCKER_PULL_TIMEOUT_MS,
+      })
+      if (prepared !== 0) {
+        line(`  ${red("✗")} unified runtime preparation failed ${dim(`(exit ${prepared ?? "spawn error"})`)}`)
+        throw new Error("The unified cyberful-os image could not be prepared; startup cannot continue safely.")
+      }
     }
   }
   if ((await runExitCode(verify, { stream: true, timeoutMs: DOCKER_VERIFY_TIMEOUT_MS })) !== 0) {

@@ -29,6 +29,12 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any, Callable
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+if MODULE_DIR not in sys.path:
+    sys.path.insert(0, MODULE_DIR)
+
+import native_security
+
 from mcp_framing import (
     bounded_json_lines as read_bounded_json_lines,
     reject_nonfinite_json,
@@ -102,9 +108,9 @@ ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_SINGLE_RE = re.compile(r"\x1b[@-Z\\-_]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-HTTP_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
-HTTP_METHOD_RE = re.compile(r"(?:^|\s)(?:-X|--request)\s+([A-Za-z]{2,20})(?:\s|$)")
 EGRESS_META_KEY = "cyberful.dev/egress"
+TERMINATION_GRACE_SECONDS = 1.0
+TERMINATION_DRAIN_SECONDS = 0.25
 
 # ── Speak JSON-RPC On Stdout And Diagnostics On Stderr ────────────────
 # MCP clients parse stdout as a protocol stream, so diagnostics belong only on
@@ -547,6 +553,8 @@ def ensure_container(timeout_seconds: int) -> None:
         f"{workspace}:{target}",
         "--cap-add=NET_ADMIN",
         "--cap-add=SYS_PTRACE",
+        "--security-opt=no-new-privileges",
+        "--security-opt=seccomp=unconfined",
         *docker_extra_args(),
         *container_owner_args(),
         image_name(),
@@ -596,6 +604,9 @@ class CommandResult:
     stdout: str
     stderr: str
     truncated: bool
+    execution_ms: int = 0
+    termination_grace_ms: int = 0
+    total_duration_ms: int = 0
 
 
 def trim_streams(stdout: bytes, stderr: bytes, max_bytes: int) -> tuple[str, str, bool]:
@@ -613,16 +624,28 @@ def trim_streams(stdout: bytes, stderr: bytes, max_bytes: int) -> tuple[str, str
     )
 
 
+def _signal_process_tree(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, sig)
+        elif sig == signal.SIGTERM:
+            proc.terminate()
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+
+
 def terminate_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         proc.wait()
         return
-    proc.terminate()
+    _signal_process_tree(proc, signal.SIGTERM)
     try:
-        proc.wait(timeout=2)
+        proc.wait(timeout=TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
+        _signal_process_tree(proc, signal.SIGKILL)
+        proc.wait(timeout=TERMINATION_GRACE_SECONDS)
 
 
 def run_process(
@@ -651,6 +674,7 @@ def run_process(
             shell=False,
             text=False,
             close_fds=True,
+            start_new_session=os.name == "posix",
         )
     except FileNotFoundError as exc:
         return CommandResult(
@@ -678,6 +702,9 @@ def run_process(
     stdout_seen = 0
     stderr_seen = 0
     timed_out = False
+    execution_ms = 0
+    termination_grace_ms = 0
+    timeout_drain_deadline: float | None = None
     capture_limit = max_output_bytes + 8192
     deadline = started + timeout_seconds
 
@@ -694,7 +721,11 @@ def run_process(
             now = time.monotonic()
             if not timed_out and proc.poll() is None and now >= deadline:
                 timed_out = True
+                execution_ms = int((now - started) * 1000)
+                termination_started = time.monotonic()
                 terminate_process(proc)
+                termination_grace_ms = int((time.monotonic() - termination_started) * 1000)
+                timeout_drain_deadline = time.monotonic() + TERMINATION_DRAIN_SECONDS
                 timeout_text = f"\nTimed out after {timeout_seconds}s.\n".encode()
                 stderr_seen += len(timeout_text)
                 if len(stderr_bytes) < capture_limit:
@@ -704,6 +735,12 @@ def run_process(
                     del preview_bytes[:-PROGRESS_PREVIEW_BYTES]
                 if emit_progress:
                     progress_output(preview_bytes.decode("utf-8", errors="replace"), force=True)
+
+            if timed_out and timeout_drain_deadline is not None and now >= timeout_drain_deadline:
+                for key in list(selector.get_map().values()):
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                break
 
             for key, _ in selector.select(timeout=0.1):
                 try:
@@ -743,15 +780,19 @@ def run_process(
     stdout, stderr, truncated = trim_streams(bytes(stdout_bytes), bytes(stderr_bytes), max_output_bytes)
     if emit_progress:
         progress_output(preview_bytes.decode("utf-8", errors="replace").strip(), force=True)
+    total_duration_ms = int((time.monotonic() - started) * 1000)
     return CommandResult(
         target=argv[0],
         command=" ".join(shlex.quote(part) for part in argv),
         exit_code=None if timed_out else exit_code,
         timed_out=timed_out,
-        duration_ms=int((time.monotonic() - started) * 1000),
+        duration_ms=total_duration_ms,
         stdout=stdout,
         stderr=stderr,
         truncated=truncated or stdout_seen + stderr_seen > max_output_bytes,
+        execution_ms=execution_ms or total_duration_ms,
+        termination_grace_ms=termination_grace_ms,
+        total_duration_ms=total_duration_ms,
     )
 
 
@@ -861,15 +902,20 @@ def tool_result(text: str, is_error: bool = False) -> dict[str, Any]:
     }
 
 
-def result_from_run(r: CommandResult) -> dict[str, Any]:
+def result_from_run(r: CommandResult, accepted_exit_codes: frozenset[int] = frozenset()) -> dict[str, Any]:
     """Format a CommandResult into an MCP tool response."""
-    is_error = r.timed_out or (r.exit_code is not None and r.exit_code != 0)
+    accepted_exit = r.exit_code is not None and r.exit_code in accepted_exit_codes
+    is_error = r.timed_out or (r.exit_code is not None and r.exit_code != 0 and not accepted_exit)
     stdout = sanitize_terminal_text(r.stdout).rstrip()
     stderr = sanitize_terminal_text(r.stderr).rstrip()
     lines = [
         f"target: {r.target}",
         f"exit_code: {r.exit_code if r.exit_code is not None else 'timeout'}",
         f"duration_ms: {r.duration_ms}",
+        f"execution_ms: {r.execution_ms or r.duration_ms}",
+        f"termination_grace_ms: {r.termination_grace_ms}",
+        f"total_duration_ms: {r.total_duration_ms or r.duration_ms}",
+        f"accepted_exit_code: {str(accepted_exit).lower()}",
         f"timed_out: {str(r.timed_out).lower()}",
         f"truncated: {str(r.truncated).lower()}",
         "",
@@ -1046,6 +1092,23 @@ def _validate_schema_value(
     if depth > MAX_JSON_DEPTH:
         _input_error(path_label, f"nesting exceeds {MAX_JSON_DEPTH} levels")
 
+    alternatives = schema.get("oneOf")
+    if alternatives is not None:
+        matches: list[int] = []
+        failures: list[str] = []
+        for alternative in alternatives:
+            candidate_state = [state[0]]
+            try:
+                _validate_schema_value(value, alternative, path_label, depth, candidate_state)
+                matches.append(candidate_state[0])
+            except ValueError as exc:
+                failures.append(str(exc))
+        if len(matches) != 1:
+            detail = failures[0] if not matches and failures else f"matched {len(matches)} operation schemas"
+            _input_error(path_label, f"expected exactly one operation schema ({detail})")
+        state[0] = matches[0]
+        return
+
     choices = schema.get("enum")
     if choices is not None and not any(type(value) is type(choice) and value == choice for choice in choices):
         _input_error(path_label, f"expected one of {', '.join(json.dumps(choice) for choice in choices)}")
@@ -1177,6 +1240,10 @@ def _egress_hint_schema() -> dict[str, Any]:
             "rewrite, approve, redirect, or retry the command."
         ),
         "properties": {
+            "network": {
+                "type": "boolean",
+                "description": "Whether this shell command performs target-network egress. Use false for local/offline commands.",
+            },
             "host": {"type": "string", "maxLength": 253},
             "method": {"type": "string", "maxLength": 20},
             "path_family": {"type": "string", "maxLength": 180},
@@ -1219,33 +1286,25 @@ def _safe_egress_host(value: Any) -> str | None:
 
 def _shell_egress_metadata(command: str, hint: Any, timeout_seconds: int) -> dict[str, Any]:
     declared = hint if isinstance(hint, dict) else {}
-    inferred_url = HTTP_URL_RE.search(command)
-    inferred_host: str | None = None
-    inferred_path: str | None = None
-    if inferred_url:
-        parsed = urllib.parse.urlsplit(inferred_url.group(0))
-        inferred_host = _safe_egress_host(parsed.netloc.rsplit("@", 1)[-1])
-        inferred_path = _redacted_path_family(parsed.path)
     declared_host = _safe_egress_host(declared.get("host"))
-    method_match = HTTP_METHOD_RE.search(command)
     declared_method = declared.get("method")
     method = (
         declared_method.strip().upper()
         if isinstance(declared_method, str) and re.fullmatch(r"[A-Za-z]{2,20}", declared_method.strip())
-        else method_match.group(1).upper() if method_match else None
+        else None
     )
-    destination_changed = bool(declared_host and inferred_host and declared_host != inferred_host)
+    not_applicable = declared.get("network") is False
     metadata: dict[str, Any] = {
         "version": 1,
         "route": "cyberful-os/docker-direct",
-        "observability": "declared" if declared else "inferred" if inferred_host else "degraded",
+        "observability": "not_applicable" if not_applicable else "declared" if declared else "degraded",
         "deadline_ms": declared.get("deadline_ms", timeout_seconds * 1000),
-        "destination_changed": destination_changed,
+        "destination_changed": False,
     }
     optional = {
-        "host": inferred_host or declared_host,
+        "host": None if not_applicable else declared_host,
         "method": method,
-        "path_family": inferred_path or (
+        "path_family": (
             _redacted_path_family(declared["path_family"])
             if isinstance(declared.get("path_family"), str)
             else None
@@ -1273,7 +1332,8 @@ def handle_shell(args: dict[str, Any]) -> dict[str, Any]:
         return tool_result("`command` must be a non-empty string.\n", is_error=True)
     to, mo, cwd, env_map = safe_container_args(args)
     r = run_in_container(command, cwd=cwd, timeout_seconds=to, max_output_bytes=mo, extra_env=env_map)
-    result = result_from_run(r)
+    accepted_exit_codes = frozenset(args.get("accepted_exit_codes", [0]))
+    result = result_from_run(r, accepted_exit_codes)
     # ── Egress Observation Is Strictly Fail-Open ──────────────────────
     # The command has already executed directly when metadata is derived. The
     # declared host is never an allowlist and a mismatch is merely recorded. If
@@ -1518,6 +1578,38 @@ CLI_TOOL_SPECS: tuple[CliToolSpec, ...] = (
     _cli("clangxx", "clang++", "fuzzing", "Clang C++ compiler for sanitizer-enabled harnesses, libFuzzer targets, and native audit reproductions.", "Pass normal clang++ arguments. For libFuzzer, compile and link LLVMFuzzerTestOneInput with -fsanitize=fuzzer,address,undefined and preserve the exact compiler/runtime versions with every crash artifact.", examples=("-O1 -g -fsanitize=fuzzer,address,undefined /workspace/fuzz_target.cc /workspace/parser.cc -o /workspace/fuzz_target",), aliases=("clang++",)),
     _cli("libfuzzer_clang", "clang", "fuzzing", "Explicit C libFuzzer build entrypoint backed by Clang and the bundled compiler-rt runtime.", "Pass compile/link arguments including -fsanitize=fuzzer or -fsanitize=fuzzer-no-link. This tool names the libFuzzer workflow directly while retaining argv-only execution; it does not inject flags or hide the build recipe.", examples=("-O1 -g -fsanitize=fuzzer,address /workspace/fuzz_target.c -o /workspace/fuzz_target",)),
     _cli("libfuzzer_clangxx", "clang++", "fuzzing", "Explicit C++ libFuzzer build entrypoint backed by Clang++ and the bundled compiler-rt runtime.", "Pass compile/link arguments including -fsanitize=fuzzer and selected bug sanitizers. The resulting binary accepts libFuzzer corpus, artifact_prefix, timeout, rss_limit_mb, jobs, and workers flags directly.", examples=("-O1 -g -fsanitize=fuzzer,address,undefined /workspace/fuzz_target.cc -o /workspace/fuzz_target",), aliases=("libfuzzer-clang++",)),
+    _cli("gdb_multiarch", "gdb-multiarch", "native-debug", "Multi-architecture GDB debugger.", "Prefer native_debug for owned sessions; pass ordinary non-interactive GDB arguments here.", examples=("--batch -ex 'file /workspace/target' -ex 'info files'",)),
+    _cli("gdbserver", "gdbserver", "native-debug", "Remote GDB stub for lab-owned processes.", "Bind only inside an authorized native lab and stop it before handoff.", examples=("127.0.0.1:2345 /workspace/target",)),
+    _cli("pwn", "pwn", "exploitation", "Pwntools command-line utilities for exploit development and cyclic patterns.", "Pass a pwntools subcommand and arguments.", examples=("cyclic 256",)),
+    _cli("checksec", "checksec", "reversing", "Inspect executable hardening such as PIE, RELRO, NX, and stack canaries.", "Pass --file and an ELF path.", examples=("--file=/workspace/target",)),
+    _cli("readelf", "readelf", "reversing", "Inspect ELF headers, sections, symbols, and relocations.", "Pass binutils readelf flags and paths.", examples=("-a /workspace/target",)),
+    _cli("xxd", "xxd", "reversing", "Render bounded binary hex dumps and reverse synthetic hex fixtures.", "Pass explicit offsets, lengths, and paths; prefer a bounded -l value for evidence inspection.", examples=("-g 1 -l 256 /workspace/target",)),
+    _cli("objdump", "objdump", "reversing", "Disassemble and inspect native object files.", "Pass binutils objdump flags and paths.", examples=("-d /workspace/target",)),
+    _cli("strace", "strace", "native-debug", "Trace Linux system calls and signals.", "Run only lab-owned processes and retain trace output under /workspace.", examples=("-f -o /workspace/trace.log /workspace/target",)),
+    _cli("ltrace", "ltrace", "native-debug", "Trace dynamic library calls.", "Run only lab-owned processes and retain trace output under /workspace.", examples=("-f -o /workspace/ltrace.log /workspace/target",)),
+    _cli("eu_stack", "eu-stack", "crash-triage", "Render native stacks from processes or core files using elfutils.", "Pass an owned PID or core/executable pair.", examples=("--core=/workspace/core -e /workspace/target",), aliases=("eu-stack",)),
+    _cli("llvm_symbolizer", "llvm-symbolizer", "crash-triage", "Resolve native addresses to source symbols.", "Pass an object and addresses.", examples=("--obj=/workspace/target 0x401000",), aliases=("llvm-symbolizer",)),
+    _cli("ropgadget", "ROPgadget", "exploitation", "Search ELF, PE, Mach-O, and raw binaries for ROP gadgets.", "Pass a binary and bounded gadget filters.", examples=("--binary /workspace/target --only 'pop|ret'",), aliases=("ROPgadget",)),
+    _cli("ropper", "ropper", "exploitation", "Find and filter ROP/JOP gadgets across architectures.", "Pass --file and search flags.", examples=("--file /workspace/target --search 'pop rdi; ret'",)),
+    _cli("patchelf", "patchelf", "reversing", "Inspect or modify ELF interpreter and dynamic dependencies on scratch copies.", "Never patch the original evidence file; operate on a lab copy.", examples=("--print-interpreter /workspace/target",)),
+    _cli("valgrind", "valgrind", "crash-triage", "Dynamic memory and undefined-behavior analysis for native lab processes.", "Pass bounded Valgrind flags and a local target.", examples=("--tool=memcheck --error-exitcode=99 /workspace/target",)),
+    _cli("unblob", "unblob", "firmware", "Recursive firmware extraction and format identification.", "Prefer firmware_lab so manifests and evidence are retained.", examples=("/workspace/firmware.bin --extract-dir /workspace/unpacked",)),
+    _cli("binwalk", "binwalk", "firmware", "Firmware signature scanning and fallback extraction.", "Pass a local firmware path; do not execute extracted files directly.", examples=("/workspace/firmware.bin",)),
+    _cli("seven_zip", "7zz", "archive", "Native 7-Zip CLI for archive inspection and recovery.", "Prefer archive_extract for atomic bounded extraction; use this direct wrapper for read-only listing or unsupported local formats.", examples=("l -slt /workspace/omni.ja",), aliases=("7zz",)),
+    _cli("unsquashfs", "unsquashfs", "firmware", "Extract SquashFS filesystems.", "Write into a dedicated lab directory.", examples=("-d /workspace/rootfs /workspace/rootfs.squashfs",)),
+    _cli("ubireader_extract_files", "ubireader_extract_files", "firmware", "Extract files from UBI/UBIFS images.", "Pass an image and explicit output directory.", examples=("-o /workspace/ubi /workspace/flash.ubi",), aliases=("ubireader-extract-files",)),
+    _cli("dumpimage", "dumpimage", "firmware", "Inspect and extract U-Boot images.", "Pass listing or extraction flags and a local image.", examples=("-l /workspace/uImage",)),
+    _cli("dtc", "dtc", "firmware", "Compile and decompile Device Tree blobs.", "Pass explicit input/output formats and paths.", examples=("-I dtb -O dts /workspace/device.dtb",)),
+    _cli("qemu_aarch64", "qemu-aarch64", "firmware", "Explicit AArch64 Linux userspace emulation without binfmt registration.", "Use native_lab and provide the extracted rootfs with -L.", examples=("-L /workspace/rootfs /workspace/rootfs/bin/busybox",), aliases=("qemu-aarch64",)),
+    _cli("qemu_arm", "qemu-arm", "firmware", "Explicit ARM Linux userspace emulation without binfmt registration.", "Use native_lab and provide the extracted rootfs with -L.", examples=("-L /workspace/rootfs /workspace/rootfs/bin/busybox",), aliases=("qemu-arm",)),
+    _cli("clang_tidy", "clang-tidy", "static-analysis", "Compiler-aware C/C++ checks using a compile database.", "Pass source paths, checks, and -p explicitly.", examples=("/workspace/src/file.cc -p /workspace/build",), aliases=("clang-tidy",)),
+    _cli("scan_build", "scan-build", "static-analysis", "Clang Static Analyzer build wrapper.", "Pass a bounded local build command and retain reports under /workspace.", examples=("-o /workspace/scan-build cmake --build /workspace/build",), aliases=("scan-build",)),
+    _cli("cppcheck", "cppcheck", "static-analysis", "C/C++ static analysis independent of a compiler frontend.", "Pass explicit source and output options.", examples=("--enable=warning,style /workspace/src",)),
+    _cli("bear", "bear", "static-analysis", "Generate compile_commands.json from a native build.", "Run only inside a mutable lab copy.", examples=("-- make -C /workspace/project",)),
+    _cli("afl_showmap", "afl-showmap", "fuzzing", "Record AFL++ coverage tuples for one input.", "Use the same target and instrumentation as the campaign.", examples=("-o /workspace/map -- /workspace/target @@",), aliases=("afl-showmap",)),
+    _cli("afl_tmin", "afl-tmin", "fuzzing", "Minimize one crashing or coverage-relevant AFL++ input.", "Preserve the exact target and environment.", examples=("-i /workspace/crash -o /workspace/min -- /workspace/target @@",), aliases=("afl-tmin",)),
+    _cli("afl_whatsup", "afl-whatsup", "fuzzing", "Summarize synchronized AFL++ campaign status.", "Pass an AFL output directory.", examples=("/workspace/afl-out",), aliases=("afl-whatsup",)),
+    _cli("zgrab2", "zgrab2", "protocol", "Perform bounded application-layer handshakes without authentication.", "Use explicit targets and concurrency compatible with the engagement policy.", examples=("http --port 8080",)),
     _cli("jeb", "jeb", "reversing", "Optional JEB reverse engineering suite entrypoint when installed in private builds.", "Pass JEB CLI flags in args; this tool is optional and appears missing unless JEB_INSTALLER_URL was used at image build time.", examples=("--help",), optional=True),
     _cli("testssl", "testssl", "tls", "TLS/SSL protocol, cipher suite, certificate, and configuration scanner (testssl.sh; the system package installs the binary as `testssl`). Report deprecated protocols (TLS 1.0/1.1) as a protocol-support problem, not a key-length one.", "The target (host, host:port, or https URL) MUST be the LAST argument; put all flags BEFORE it (testssl aborts with 'URI comes last' otherwise). Use --quiet --color 0 for clean machine-readable output.", examples=("https://example.com", "--quiet --color 0 --severity LOW example.com:443", "-p -S example.com:443"), expected_paths=("/usr/bin/testssl",)),
     _cli("sslscan", "sslscan", "tls", "TLS/SSL cipher suite and protocol version enumeration scanner.", "Pass the target host:port and sslscan flags in args.", examples=("example.com:443", "--no-failed example.com"), expected_paths=("/usr/bin/sslscan",)),
@@ -2460,6 +2552,16 @@ register_tool(
 )(handle_tool_inventory)
 for _spec in CLI_TOOL_SPECS:
     register_tool(_spec.name, _cli_tool_description(_spec), _cli_tool_schema())(_make_cli_handler(_spec))
+
+for _native_name, _native_operations in native_security.OPERATIONS.items():
+    def _native_handler(args: dict[str, Any], name: str = _native_name) -> dict[str, Any]:
+        return tool_result(json.dumps(native_security.invoke(name, args), indent=2, sort_keys=True) + "\n")
+
+    register_tool(
+        _native_name,
+        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.",
+        native_security.SCHEMAS[_native_name],
+    )(_native_handler)
 register_tool(
     "nuclei_templates",
     "Optionally list the installed Nuclei templates matching filter arguments. This runs offline with -tl and sends no target request.",
@@ -2565,6 +2667,13 @@ register_tool(
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS, "default": DEFAULT_TIMEOUT_SECONDS, "description": "Wall-clock timeout for the command."},
             "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": MAX_OUTPUT_BYTES, "default": DEFAULT_MAX_OUTPUT_BYTES, "description": "Maximum combined stdout/stderr bytes returned."},
             "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Extra environment variables for this command."},
+            "accepted_exit_codes": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                "maxItems": 32,
+                "default": [0],
+                "description": "Exit codes that represent an expected completed outcome for this command, such as 1 for a bounded grep with no matches.",
+            },
             "egress": _egress_hint_schema(),
         },
         "required": ["command"],
@@ -2853,6 +2962,7 @@ def main() -> int:
     except KeyboardInterrupt:
         eprint("shutdown requested")
     finally:
+        native_security.shutdown()
         eprint("stdio closed")
     return 0
 

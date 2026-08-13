@@ -132,6 +132,12 @@ function snapshot(ledger: PiFallbackLedger): PiFallbackLedgerSnapshot {
 }
 
 function proactiveLimit(mainActorRuns: number, percentage: number): number {
+  // ── Deterministic Burst Slot ───────────────────────────────────
+  // The final slot is intentional session capacity, not random admission or
+  // percentage rounding: configured 2% therefore means exactly "2% + 1".
+  // Main-route actor count remains the denominator across phase restarts.
+  // Fallback-affine descendants never enlarge this proactive allowance.
+  // ───────────────────────────────────────────────────────────────
   return Math.floor((mainActorRuns * percentage) / 100) + 1
 }
 

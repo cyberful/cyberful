@@ -28,6 +28,26 @@ afterEach(async () => {
 })
 
 describe("durable fallback quota ledger", () => {
+  test.each([
+    [49, 1],
+    [50, 2],
+    [99, 2],
+    [100, 3],
+  ] as const)("applies the deterministic 2%% + 1 boundary at %i main actors", async (actors, expected) => {
+    const root = await temporaryRoot()
+    const sessionID = `ses_boundary_${actors}`
+    const ledger = await durableFallbackLedgerForSession(sessionID, root)
+    for (let index = 0; index < actors; index++) await ledger.recordMainActor()
+
+    const admissions = []
+    for (let index = 0; index < expected + 1; index++) admissions.push(await ledger.tryAdmitProactive(2))
+
+    expect(admissions.filter((admission) => admission.admitted)).toHaveLength(expected)
+    expect(admissions.at(-1)?.admitted).toBe(false)
+    expect(admissions.at(-1)?.limit).toBe(expected)
+    clearFallbackLedger(sessionID)
+  })
+
   test("persists session counters across independent phase-worker loads", async () => {
     const root = await temporaryRoot()
     const sessionID = "ses_durable_fallback"

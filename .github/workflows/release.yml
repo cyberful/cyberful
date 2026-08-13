@@ -25,66 +25,10 @@ env:
   BUN_VERSION: 1.3.14
   NODE_VERSION: 24.4.0
   NPM_VERSION: 11.5.1
-  RUNTIME_IMAGE: ghcr.io/cyberful/cyberful-os
 
 jobs:
-  runtime:
-    name: Resolve and verify the immutable runtime
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    outputs:
-      digest: ${{ steps.runtime.outputs.digest }}
-      reference: ${{ steps.runtime.outputs.reference }}
-    steps:
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - id: runtime
-        name: Require a signed two-platform index built from main
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          main_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)"
-          if [[ "$main_status" != ahead && "$main_status" != identical ]]; then
-            echo "$GITHUB_SHA is not an ancestor of main." >&2
-            exit 1
-          fi
-          sha_ref="$RUNTIME_IMAGE:sha-$GITHUB_SHA"
-          manifest="$(mktemp)"
-          docker buildx imagetools inspect "$sha_ref" --format '{{json .Manifest}}' > "$manifest"
-          digest="$(jq -r .digest "$manifest")"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          reference="$RUNTIME_IMAGE@$digest"
-          docker buildx imagetools inspect --raw "$reference" > runtime-index.json
-          jq -e '
-            [.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
-            | length == 2
-          ' runtime-index.json
-          jq -e '
-            [.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]
-          ' runtime-index.json
-          for platform in linux/amd64 linux/arm64; do
-            docker buildx imagetools inspect "$reference" \
-              --format "{{json (index .Provenance \"$platform\").SLSA}}" \
-              | jq -e '
-                  (.buildType // .buildDefinition.buildType) as $build_type
-                  | $build_type == "https://mobyproject.org/buildkit@v1"
-                    or $build_type == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
-                '
-            docker buildx imagetools inspect "$reference" \
-              --format "{{json (index .SBOM \"$platform\").SPDX}}" \
-              | jq -e '.SPDXID == "SPDXRef-DOCUMENT"'
-          done
-          cosign verify \
-            --certificate-identity "https://github.com/cyberful/cyberful/.github/workflows/runtime.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "$reference"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "reference=$reference" >> "$GITHUB_OUTPUT"
-
   verify:
     name: Verify release input and source
-    needs: [runtime]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -144,7 +88,7 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: [runtime, verify]
+    needs: [verify]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -175,7 +119,6 @@ jobs:
       CYBERFUL_VERSION: ${{ inputs.version }}
       CYBERFUL_CHANNEL: latest
       CYBERFUL_BUILD_ID: ${{ inputs.version }}-${{ github.sha }}
-      CYBERFUL_RUNTIME_IMAGE: ${{ needs.runtime.outputs.reference }}
       BUILD_TARGETS: ${{ matrix.targets }}
       PACKAGE_ARCHITECTURE: ${{ matrix.architecture }}
       PACKAGE_PLATFORM: ${{ matrix.platform }}
@@ -213,20 +156,20 @@ jobs:
       - name: Build native binaries
         shell: bash
         run: bun run --cwd cyberful build --target "$BUILD_TARGETS" --skip-install
-      - name: Verify every binary embeds the published runtime digest
+      - name: Verify every binary embeds the local runtime context
         shell: bash
         run: |
           bun -e '
             import fs from "node:fs";
             import path from "node:path";
             const root = path.resolve("cyberful/dist");
-            const expected = Buffer.from(process.env.CYBERFUL_RUNTIME_IMAGE ?? "");
+            const manifest = JSON.parse(fs.readFileSync(path.join(root, "runtime-manifest.json"), "utf8"));
             const binaries = fs.readdirSync(root, { recursive: true, withFileTypes: true })
               .filter((entry) => entry.isFile() && (entry.name === "cyberful" || entry.name === "cyberful.exe"))
               .map((entry) => path.join(entry.parentPath, entry.name));
-            if (!expected.length || !binaries.length) throw new Error("Runtime reference or release binary is missing");
+            if (!/^[0-9a-f]{64}$/.test(manifest.fingerprint) || !manifest.files.includes("cyberful-os/Dockerfile") || !binaries.length) throw new Error("Embedded runtime manifest or release binary is missing");
             for (const binary of binaries) {
-              if (!fs.readFileSync(binary).includes(expected)) throw new Error(`${binary} does not embed ${expected}`);
+              if (!fs.readFileSync(binary).includes(Buffer.from(manifest.fingerprint))) throw new Error(`${binary} does not embed runtime fingerprint ${manifest.fingerprint}`);
             }
           '
       - name: Pack platform package
@@ -315,50 +258,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  promote-runtime:
-    name: Promote the verified runtime digest
-    if: inputs.dry_run != true
-    needs: [runtime, assemble]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write # Promote the already-verified runtime digest in GHCR.
-    steps:
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Promote the verified runtime digest without rebuilding
-        env:
-          RUNTIME_DIGEST: ${{ needs.runtime.outputs.digest }}
-          RELEASE_VERSION: ${{ inputs.version }}
-        shell: bash
-        run: |
-          immutable="$RUNTIME_IMAGE:v$RELEASE_VERSION"
-          if docker buildx imagetools inspect "$immutable" >/dev/null 2>&1; then
-            manifest="$(mktemp)"
-            docker buildx imagetools inspect "$immutable" --format '{{json .Manifest}}' > "$manifest"
-            test "$(jq -r .digest "$manifest")" = "$RUNTIME_DIGEST"
-          else
-            docker buildx imagetools create --tag "$immutable" "$RUNTIME_IMAGE@$RUNTIME_DIGEST"
-          fi
-          minor="${RELEASE_VERSION%.*}"
-          docker buildx imagetools create \
-            --tag "$RUNTIME_IMAGE:$minor" \
-            --tag "$RUNTIME_IMAGE:latest" \
-            "$RUNTIME_IMAGE@$RUNTIME_DIGEST"
-          for tag in "v$RELEASE_VERSION" "$minor" latest; do
-            promoted="$(docker buildx imagetools inspect "$RUNTIME_IMAGE:$tag" --format '{{json .Manifest}}' | jq -r .digest)"
-            test "$promoted" = "$RUNTIME_DIGEST"
-          done
-
   stage-release:
     name: Stage the GitHub Release
     if: inputs.dry_run != true
-    needs: [assemble, promote-runtime]
+    needs: [assemble]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -540,7 +443,7 @@ jobs:
   required:
     name: Release required
     if: always()
-    needs: [runtime, verify, build, assemble, promote-runtime, stage-release, publish-npm, publish-release]
+    needs: [verify, build, assemble, stage-release, publish-npm, publish-release]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -548,22 +451,18 @@ jobs:
       - name: Require the selected release path
         env:
           DRY_RUN: ${{ inputs.dry_run }}
-          RUNTIME_RESULT: ${{ needs.runtime.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           ASSEMBLE_RESULT: ${{ needs.assemble.result }}
-          PROMOTE_RESULT: ${{ needs.promote-runtime.result }}
           STAGE_RESULT: ${{ needs.stage-release.result }}
           NPM_RESULT: ${{ needs.publish-npm.result }}
           RELEASE_RESULT: ${{ needs.publish-release.result }}
         shell: bash
         run: |
-          test "$RUNTIME_RESULT" = success
           test "$VERIFY_RESULT" = success
           test "$BUILD_RESULT" = success
           test "$ASSEMBLE_RESULT" = success
           if [[ "$DRY_RUN" != true ]]; then
-            test "$PROMOTE_RESULT" = success
             test "$STAGE_RESULT" = success
             test "$NPM_RESULT" = success
             test "$RELEASE_RESULT" = success

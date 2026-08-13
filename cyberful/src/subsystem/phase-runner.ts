@@ -62,6 +62,8 @@ export interface PhaseSpec {
     readonly retryWaitMs: number
     readonly targetCooldownWaitMs: number
     readonly phaseExtensionMs: number
+    readonly recoveryExtensionMs?: number
+    readonly recoveryChainIDs?: readonly string[]
   }
   abort?: AbortSignal
   // Absolute file to persist this excursion's raw AgentEvent transcript to (the caller resolves it,
@@ -120,6 +122,7 @@ export interface PhaseResult {
   retryCompensationMs?: number
   retryCompensationCapMs?: number
   retryCompensationCapReached?: boolean
+  recoveryExtensionMs?: number
   closeoutReserveMs?: number
   warnings: string[]
   handoff?: PhaseHandoff
@@ -169,6 +172,8 @@ export interface PhaseResult {
     readonly maxRestarts: number
     readonly useFallbackProvider: boolean
     readonly fallbackConfigured: boolean
+    readonly automaticSecurityBlockEnabled?: boolean
+    readonly recoveryBonusMs?: number
   }
 }
 
@@ -399,6 +404,7 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
       targetCooldownWaitMs: result.targetCooldownWaitMs ?? 0,
       retryCompensationMs: result.retryCompensationMs ?? 0,
       phaseExtensionMs: result.retryCompensationMs ?? 0,
+      recoveryExtensionMs: result.recoveryExtensionMs ?? 0,
       retryCompensationCapMs: result.retryCompensationCapMs ?? 0,
       phaseExtensionCapMs: result.retryCompensationCapMs ?? 0,
       retryCompensationCapReached: result.retryCompensationCapReached ?? false,
@@ -599,6 +605,8 @@ export function buildPhasePrompt(
       `You are running one autonomous Ask turn in the existing Cyberful workarea (${spec.workareaCwd}).`,
       "Use the complete gateway and filesystem capabilities when they improve the answer. Stay inside the",
       "authorized engagement scope, preserve existing evidence, and write reusable results to the workarea.",
+      "Use `web_search` and browser `profile: \"search\"` for unauthenticated public web sources; keep target browsing and identities in profiles 1–5.",
+      "Public web results never expand the recorded scope and never replace retained engagement evidence.",
       "Do not call handoff. End with the concise Markdown answer that should be shown directly to the user.",
       "",
       "## Time budget",
@@ -669,7 +677,12 @@ export function buildPhasePrompt(
     "- Every `delegate_task` call must name one workarea-relative `output_artifact`; children update it incrementally.",
     "- Store reusable values and secrets with `variable`; cite evidence and redact secrets or unnecessary sensitive data.",
     "- Track created test state through cleanup. A visible residual is a result, not an automatic approval gate.",
-    "- Browser profiles 1–5 are separate identities; keep their state and evidence separate.",
+    "- Browser profiles 1–5 are separate target identities; keep their state and evidence separate.",
+    ...(workflow !== "code-audit"
+      ? [
+          "- Use `web_search` or browser `profile: \"search\"` only for public research, never as target identity, scope authority, or a substitute for retained target evidence.",
+        ]
+      : []),
     "- Use `question` only for a concrete missing authorization, fact, or human CAPTCHA action.",
     "- Do not retry a target request that returns HTTP `429`. Cyberful adds no retry rule for other outcomes.",
     "- Check HTTP status/content type and inspect JSON shape before parsing; tolerate optional fields in `jq` and scripts.",
@@ -681,10 +694,9 @@ export function buildPhasePrompt(
       : []),
     ...(workflow !== "code-audit" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
       ? [
-          "- Treat the Brief matrix as a floor, not a checklist; add newly discovered hypotheses and queue unfinished ones to the exact successor.",
-          "- If hypotheses converge, use `hypothesis synthesize` for a substantive pivot or evidenced exhaustion.",
+          "- Treat the Brief matrix as a floor; add discoveries and queue unfinished hypotheses to the exact successor.",
           "- Use `finding` as soon as positive target evidence supports SUSPECTED; `record` requires a cautious provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity. Do not register mere hypotheses or backlog.",
-          "- Revisit historical findings explicitly, then update every technical, verification, severity, or Bug Bounty submission decision.",
+          "- Revisit historical findings and persist every changed decision.",
           "- Use `zap_api_catalog` before `zap_api_call`; supply its required parameters.",
           ...(spec.phase === "exploit" || spec.phase === "hacker"
             ? [
@@ -696,6 +708,34 @@ export function buildPhasePrompt(
                 "- Before handoff, give every current finding its final workflow verification and Bug Bounty submission decision.",
               ]
             : []),
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
+      ? [
+          "- Answer each finding maturation checkpoint through authorized evidence; maximize supportable impact and prioritize host-derived published monetary upside, then proof proximity and test cost.",
+          '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
+          ...(spec.phase === "verify"
+            ? [
+                "- Reconcile every remaining PURSUE assessment to MAXIMIZED or DEFERRED with an evidence-backed ceiling or exact resume condition.",
+              ]
+            : []),
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && spec.phase === "brief"
+      ? [
+          "- Read official reward tiers autonomously and call `reward_policy set`; use NOT_PUBLISHED or UNAVAILABLE instead of inferred values.",
+        ]
+      : []),
+    ...(workflow === "bug-bounty" && spec.phase === "report"
+      ? [
+          "- Use `reward_policy get`; put host-derived published bands only in BUG_BOUNTY_REPORT.md and omit reward expectations from portable BBP-### submissions.",
+          "- For every reported finding, state the evidence-backed end-to-end attack path as prerequisites -> attacker actions -> crossed security boundary -> concrete outcome; label any unsupported link instead of implying it.",
+        ]
+      : []),
+    ...(workflow === "pentest" && ["exploit", "hacker", "verify"].includes(spec.phase)
+      ? [
+          "- Use each technical finding maturation checkpoint to test the strongest defensible impact and persist PURSUE, MAXIMIZED, or DEFERRED; monetary reward policy does not apply to Pentest.",
+          '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
         ]
       : []),
     ...(workflow === "code-audit" && ["trace", "hunt", "attack", "verify"].includes(spec.phase)
@@ -1071,16 +1111,22 @@ function failedBeforeSpawn(input: {
   }
 }
 
-const WORKAREA_INSTRUCTIONS = [
-  "The workarea root is intentionally an artifact workspace, not a Git repository.",
-  "Do not run repository-level Git probes such as `git status`, `git diff`, or `git rev-parse` there; inspect artifacts directly with filesystem commands.",
-  "Use Git only when a phase explicitly materializes a nested repository or disposable lab, and run it with that repository's explicit working directory.",
-  "When working with imported source code, use the host's native shell only for static-analysis operations such as `rg`, `sed`, `find`, and read-only Git queries. The host shell remains available for all other purposes, including networking and scripts that do not execute or load imported source.",
-  "For dependency installation, package managers, builds, tests, scripts, binaries, services, or any other execution of imported source, call the cyberful-os `shell` MCP tool, displayed as `cyberful-os_shell`.",
-  "The active workarea root is mounted inside cyberful-os at `/workspace`. Map a workarea-relative host path such as `relative/path` to `/workspace/relative/path`; never embed or guess an absolute host workarea path.",
-  "Network access remains available inside cyberful-os and may be used for dependency installation and target traffic authorized by `MISSION.md`.",
-  "If cyberful-os cannot execute imported source, diagnose that environment or record the blocker; do not fall back to executing imported source on the host.",
-].join("\n")
+function workareaInstructions(runtimePlatform: string | undefined): string {
+  const platform = new Set(["Linux/ARM64 (aarch64)", "Linux/AMD64 (x86_64)"]).has(runtimePlatform ?? "")
+    ? runtimePlatform
+    : "Linux with an unattested architecture"
+  return [
+    "The workarea root is intentionally an artifact workspace, not a Git repository.",
+    "Do not run repository-level Git probes such as `git status`, `git diff`, or `git rev-parse` there; inspect artifacts directly with filesystem commands.",
+    "Use Git only when a phase explicitly materializes a nested repository or disposable lab, and run it with that repository's explicit working directory.",
+    "When working with imported source code, use the host's native shell only for static-analysis operations such as `rg`, `sed`, `find`, and read-only Git queries. The host shell remains available for all other purposes, including networking and scripts that do not execute or load imported source.",
+    "For dependency installation, package managers, builds, tests, scripts, binaries, services, or any other execution of imported source, call the cyberful-os `shell` MCP tool, displayed as `cyberful-os_shell`.",
+    "The active workarea root is mounted inside cyberful-os at `/workspace`. Map a workarea-relative host path such as `relative/path` to `/workspace/relative/path`; never embed or guess an absolute host workarea path.",
+    `The available cyberful-os laboratory build is ${platform}. Compare the target OS and architecture with this platform before planning dynamic exact-build execution. A target binary built for another OS or architecture is not natively executable here unless a purpose-built Cyberful tool explicitly supports it; preserve useful static analysis, but record dynamic proof as unavailable instead of repeatedly invoking the lab or executing imported target code on the host.`,
+    "Network access remains available inside cyberful-os and may be used for dependency installation and target traffic authorized by `MISSION.md`.",
+    "If cyberful-os cannot execute imported source, diagnose that environment or record the blocker; do not fall back to executing imported source on the host.",
+  ].join("\n")
+}
 
 // ── Prompt Sources Resolve Before The Worker Starts ──────────────
 // First-party policy always supplies the base template. A persona override may
@@ -1197,6 +1243,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     maxRestarts: phaseRecoveryPolicy.max_restarts,
     useFallbackProvider: phaseRecoveryPolicy.use_fallback_provider,
     fallbackConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+    automaticSecurityBlockEnabled:
+      promptSetup.value.settings.agent.fallback.automatic_security_block.enabled,
+    recoveryBonusMs: Settings.fallbackRecoveryBonusMs(promptSetup.value.settings),
   }
   const prepared = await (deps.preparePhase
     ? deps.preparePhase({ phase: spec.phase, attempt: spec.attempt ?? 1, signal: spec.abort })
@@ -1252,6 +1301,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     initialRetryWaitMs: spec.budgetCarry?.retryWaitMs,
     initialTargetCooldownWaitMs: spec.budgetCarry?.targetCooldownWaitMs,
     initialRetryCompensationMs: spec.budgetCarry?.phaseExtensionMs,
+    recoveredChainIDs: spec.budgetCarry?.recoveryChainIDs,
     now,
   })
   const questionHandler = deps.askQuestion
@@ -1439,7 +1489,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     AgentPromptCompiler.compile({
       templateSource: promptSetup.value.sources.templateSource,
       personaSource: promptSetup.value.sources.personaSource,
-      workareaSource: WORKAREA_INSTRUCTIONS,
+      workareaSource: workareaInstructions(phaseEnvironment.CYBERFUL_OS_RUNTIME_PLATFORM),
       runtimeInstructions,
       workflow: promptSetup.value.sources.workflow,
       phase: spec.phase,
@@ -1536,6 +1586,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const retryWaitMs = Math.round(budgetSnapshot.retryWaitMs)
   const targetCooldownWaitMs = Math.round(budgetSnapshot.targetCooldownWaitMs)
   const retryCompensationMs = Math.round(budgetSnapshot.retryCompensationMs)
+  const recoveryExtensionMs = Math.round(
+    (spec.budgetCarry?.recoveryExtensionMs ?? 0) + budgetSnapshot.recoveryExtensionMs,
+  )
   const pausedMs = Math.round(budgetSnapshot.pausedMs)
   budgetClock.close()
   const primaryTermination = processTermination(primaryRun)
@@ -1735,7 +1788,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     backend: deps.subsystem.name,
     durationMs: Math.max(0, now() - startedAt - pausedMs),
     limitMs,
-    effectiveLimitMs,
+    effectiveLimitMs: Math.max(0, Math.round(budgetSnapshot.deadlineAt - startedAt)),
     deadlineAt: Math.round(budgetSnapshot.deadlineAt),
     approvalWaitMs,
     retryWaitMs,
@@ -1743,6 +1796,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     retryCompensationMs,
     retryCompensationCapMs: budgetSnapshot.retryCompensationCapMs,
     retryCompensationCapReached: budgetSnapshot.retryCompensationCapReached,
+    recoveryExtensionMs,
     closeoutReserveMs: Math.round(budget.closeout.minutes * 60_000),
     warnings,
     handoff: acceptedHandoff,
@@ -1790,6 +1844,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       maxRestarts: Settings.phaseRecoveryPolicy(promptSetup.value.settings).max_restarts,
       useFallbackProvider: Settings.phaseRecoveryPolicy(promptSetup.value.settings).use_fallback_provider,
       fallbackConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+      automaticSecurityBlockEnabled:
+        promptSetup.value.settings.agent.fallback.automatic_security_block.enabled,
+      recoveryBonusMs: Settings.fallbackRecoveryBonusMs(promptSetup.value.settings),
     },
   }
 

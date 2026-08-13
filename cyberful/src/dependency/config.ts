@@ -9,7 +9,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
-declare const CYBERFUL_RUNTIME_IMAGE: string | undefined
+declare const CYBERFUL_RUNTIME_FINGERPRINT: string | undefined
 
 const SIBLING_CYBERFUL_OS_DIR = "../../../cyberful-os"
 const SIBLING_MCPS_DIR = "../../../mcps"
@@ -148,6 +148,13 @@ export function cyberZapProxyPort() {
   return envInt("CYBER_ZAP_PROXY_PORT", 0, { minimum: 0, maximum: 65_535 })
 }
 
+export function cyberZapMaxHistoryResponseBytes() {
+  return envInt("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES", 1_073_741_824, {
+    minimum: 16_777_216,
+    maximum: 2_147_483_647,
+  })
+}
+
 export function cyberZapStartupTimeoutSeconds() {
   return envInt("CYBER_ZAP_STARTUP_TIMEOUT_SECONDS", 120, { minimum: 1, maximum: 3_600 })
 }
@@ -226,19 +233,38 @@ export function cyberfulOsContainerCommand() {
   return ["cyberful-os-container"]
 }
 
-export function cyberfulOsBuildCommand() {
+export function cyberfulOsBuildCommand(image = cyberfulOsImage()) {
   const configured = envValue("CYBERFUL_OS_BUILD_COMMAND")
   if (configured) return [configured]
 
   const root = cyberfulOsDir()
-  if (root) return [cyberfulOsBinaryPath(root, "cyberful-os-build")]
+  if (root)
+    return [
+      "docker",
+      "build",
+      "--progress=plain",
+      "--tag",
+      image,
+      "--file",
+      path.join(root, "Dockerfile"),
+      path.dirname(root),
+    ]
 
   return ["cyberful-os-build"]
 }
 
 export function cyberfulOsImage() {
-  const embedded = typeof CYBERFUL_RUNTIME_IMAGE === "string" ? CYBERFUL_RUNTIME_IMAGE.trim() : ""
-  return envValue("CYBERFUL_OS_IMAGE") ?? (embedded || "cyberful-os:latest")
+  const fingerprint = cyberfulOsRuntimeFingerprint()
+  return envValue("CYBERFUL_OS_IMAGE") ?? (fingerprint ? `cyberful-os:runtime-${fingerprint}` : "cyberful-os:latest")
+}
+
+export function cyberfulOsRuntimeFingerprint() {
+  const embedded = typeof CYBERFUL_RUNTIME_FINGERPRINT === "string" ? CYBERFUL_RUNTIME_FINGERPRINT.trim() : ""
+  return /^[a-f0-9]{64}$/.test(embedded) ? embedded : undefined
+}
+
+export function cyberfulOsImageIsManaged() {
+  return !envValue("CYBERFUL_OS_IMAGE") && Boolean(cyberfulOsRuntimeFingerprint())
 }
 
 const DEPRECATED_RUNTIME_ENV = [

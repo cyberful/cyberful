@@ -22,7 +22,7 @@ reports/<timestamp>/    generated report output
 
 Authoritative public-source imports and immutable source snapshots are the exception: Cyberful keeps them below the platform application-data directory in an owner-only `cyberful/source-store/<workarea-hash>/` tree, outside the model-writable workarea. The store is durable for resume and should follow the same engagement retention policy as the corresponding workarea. Its import key is host-only and independent from session variables and the Code Graph ledger.
 
-Session metadata is stored in a global local SQLite database keyed by launch directory. On Unix its database and sidecars use owner-only permissions. Resume from the same directory with `cyberful run --continue` or select an id with `cyberful run --session <id>`.
+Session metadata is stored in a global local SQLite database keyed by launch directory. On Unix its database and sidecars use owner-only permissions. A headless invocation can select an unambiguous workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Resume from the same directory with `cyberful run --continue` or select an id with `cyberful run --session <id>`; `--workflow` only starts new sessions.
 
 ## Steer an active session from another terminal
 
@@ -44,11 +44,13 @@ cyberful session steer ses_... \
   --message "No CAPTCHA is visible. Recheck the active page and continue without treating SDK traffic as a challenge."
 ```
 
+Routine steering defaults to `queue`: it is appended to the same root and applied at the next provider boundary. Add `--focus` only when the new direction must supersede still-queued guidance and cancel active delegated work before the root continues. Focus does not change authorization or answer a pending human request.
+
 Use the session ID shown by the TUI, or run `cyberful session list` from the same launch directory.
 
 `--attach` is required and must match the port chosen when the TUI started. A TUI that was started without an explicit `--port` is intentionally not reachable from another process; start future runs with a port when command steering will be needed. Add `--dir /remote/launch/directory` when that server hosts more than one launch directory. Basic Auth uses `-u`/`-p`, or `CYBERFUL_SERVER_USERNAME`/`CYBERFUL_SERVER_PASSWORD`.
 
-The command prints `Steering accepted` only after the active root AgentRun acknowledges the text. It exits with an error if the session is idle, finished, a child session, missing, or no longer able to accept steering. It never starts a new turn.
+The command prints the stable steering ID, mode, and lifecycle state only after the active root AgentRun acknowledges the text. The HTTP response is a structured receipt with `accepted`, `recipients`, `mode`, `state`, timestamps, and an exact rejection reason. Accepted steering is durably visible as `queued`, then `applied` or `superseded` in `raw/operations/run-state.json`. The command exits with an error if the session is idle, finished, a child session, missing, or no longer able to accept steering. It never starts a replacement turn.
 
 Steering is context, not authorization. It cannot answer a pending question, approve an action, or resolve a CAPTCHA handoff. For a pending CAPTCHA question, inspect its immutable choices and answer the exact request instead:
 
@@ -63,7 +65,7 @@ An active turn created by the removed Codex runtime cannot be resumed through Pi
 
 These files are local evidence, not telemetry. They may contain prompts, target data, cookies, tool output, findings, and proof-of-concept material. Apply the engagement retention policy and never attach them to a public issue without sanitization.
 
-Every local and upstream gateway tool call is summarized in the workarea's metadata-only `raw/operations/tool-usage.csv`, which omits tool arguments and response content. Host-owned columns identify run, role, parent, phase, and `tool_call_id`; additive fields retain action, duration, outcome, result count, a one-way argument digest, hypothesis correlation, bounded error code, tool exit code, and the resolved browser profile—including default profile `1`. Every error row has a controlled `error_class`: `timeout`, `nonzero_exit`, `tool_reported_error`, `invalid_arguments`, or `transport`. For `cve_dictionary`, the five actions can therefore be reconciled with the protected transcript through `tool_call_id` without placing raw queries or results in the CSV.
+Every local and upstream gateway tool call is summarized in the workarea's metadata-only `raw/operations/tool-usage.csv`, which omits tool arguments and response content. Host-owned columns identify run, role, parent, phase, and `tool_call_id`; additive fields retain action, duration, outcome, result count, a one-way argument digest, hypothesis correlation, bounded error code, tool exit code, and the resolved browser profile—including default profile `1` and named profile `search`. Search rows record route `browser/direct-search` without the query or result content. Every error row has a controlled `error_class`: `timeout`, `nonzero_exit`, `tool_reported_error`, `invalid_arguments`, or `transport`. For `cve_dictionary`, the five actions can therefore be reconciled with the protected transcript through `tool_call_id` without placing raw queries or results in the CSV.
 
 Phase transcripts are created owner-only at phase start and grow incrementally. They contain complete redacted tool events followed by a host-owned terminal status, so an interruption preserves the partial record already written. Provider credentials, private gateway environment, and the complete compiled system message are excluded. Provider failures retain their normalized kind, status and code when available, plus a bounded, credential-redacted operator diagnostic; raw provider diagnostics are not persisted.
 
@@ -85,6 +87,6 @@ Every confirmed Pentest finding includes its own evidence-backed proof of concep
 
 The generated contents measures every section title and adds a consistent gap after its wrapped text, so long entries remain legible without colliding. Introductory audit-use notes stay compact, section headings use stable point spacing, and every severity-led finding begins after a short, faint divider with balanced vertical spacing before its severity badge.
 
-Bug Bounty Program produces Markdown instead of a consolidated PDF. Its `BUG_BOUNTY_REPORT.md` index links one portable report per submission-ready finding under `reports/bug-bounty/`. Held and non-reportable candidates remain visible in the index without becoming submission files. Duplicate lookup, platform acceptance, reward estimation, and automatic submission are outside the workflow.
+Bug Bounty Program produces Markdown instead of a consolidated PDF. Its internal `BUG_BOUNTY_REPORT.md` index links one portable report per submission-ready finding under `reports/bug-bounty/` and may show each candidate's current/target bands and upside copied from the official published schedule. These values are policy context, not payout forecasts. Held and non-reportable candidates remain visible in the index without becoming submission files. Portable `BBP-###.md` submissions omit reward expectations. Duplicate lookup, platform acceptance, payout estimation, currency conversion, and automatic submission remain outside the workflow.
 
 PDF generation is local and uses redistributed fonts; it makes no external asset requests. Generated reports remain ignored by Git and should be shared only through the engagement's approved delivery channel.

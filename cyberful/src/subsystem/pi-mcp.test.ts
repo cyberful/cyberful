@@ -322,6 +322,14 @@ describe("Pi MCP worker bridge", () => {
         notificationCount: 0,
       },
       {
+        message: "[browser] launching patchright-core chromium with isolated profile",
+        component: "browser",
+        stage: "startup",
+        severity: "info",
+        errorClass: "GatewayLifecycle",
+        notificationCount: 0,
+      },
+      {
         message: "[browser] connection refused",
         component: "browser",
         stage: "startup",

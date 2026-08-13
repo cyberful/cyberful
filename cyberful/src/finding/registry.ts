@@ -84,6 +84,62 @@ export type Verification = typeof Verification.Type
 export const Submission = Decision(SubmissionResult, "FindingSubmission")
 export type Submission = typeof Submission.Type
 
+export const MaturationStatus = Schema.Literals(["PURSUE", "MAXIMIZED", "DEFERRED"])
+export type MaturationStatus = typeof MaturationStatus.Type
+
+export const MaturationAssessment = Schema.Struct({
+  status: MaturationStatus,
+  currentImpact: Schema.String,
+  targetSeverity: Schema.optional(Severity),
+  evidenceGap: Schema.optional(Schema.String),
+  nextTest: Schema.optional(Schema.String),
+  conclusion: Schema.optional(Schema.String),
+  rewardGroupID: Schema.optional(Schema.String),
+}).annotate({ identifier: "FindingMaturationAssessment" })
+export type MaturationAssessment = typeof MaturationAssessment.Type
+
+export const RewardBand = Schema.Struct({
+  severity: Severity,
+  minimum: Schema.Number,
+  maximum: Schema.Number,
+  unit: Schema.Literals(["MONEY", "POINTS"]),
+  currency: Schema.optional(Schema.String),
+}).annotate({ identifier: "FindingRewardBand" })
+export type RewardBand = typeof RewardBand.Type
+
+export const RewardSnapshot = Schema.Struct({
+  policyRevision: Schema.String,
+  policyKind: Schema.String,
+  groupID: Schema.optional(Schema.String),
+  groupLabel: Schema.optional(Schema.String),
+  current: Schema.optional(RewardBand),
+  target: Schema.optional(RewardBand),
+  upside: Schema.optional(
+    Schema.Struct({
+      minimum: Schema.Number,
+      maximum: Schema.Number,
+      unit: Schema.Literals(["MONEY", "POINTS"]),
+      currency: Schema.optional(Schema.String),
+    }),
+  ),
+}).annotate({ identifier: "FindingRewardSnapshot" })
+export type RewardSnapshot = typeof RewardSnapshot.Type
+
+export const MaturationCheckpoint = Schema.Struct({
+  id: Schema.String,
+  signature: Schema.String,
+  promptedAt: Schema.String,
+  questions: Schema.Array(Schema.String),
+  reward: Schema.optional(RewardSnapshot),
+}).annotate({ identifier: "FindingMaturationCheckpoint" })
+export type MaturationCheckpoint = typeof MaturationCheckpoint.Type
+
+export const Maturation = Schema.Struct({
+  assessment: Schema.optional(MaturationAssessment),
+  checkpoint: Schema.optional(MaturationCheckpoint),
+}).annotate({ identifier: "FindingMaturation" })
+export type Maturation = typeof Maturation.Type
+
 const ObservationBase = {
   id: Schema.String,
   runID: Schema.String,
@@ -94,6 +150,7 @@ const ObservationBase = {
   submission: Submission,
   summary: Schema.String,
   evidencePaths: Schema.Array(Schema.String),
+  maturation: Schema.optional(Maturation),
 }
 
 export const InReviewObservation = Schema.Struct({
@@ -188,6 +245,7 @@ const verificationResults = ["NOT_REVIEWED", "SURVIVES", "REVISE", "DEMOTE"] as 
 const submissionResults = ["NOT_ASSESSED", "SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"] as const
 const severities = ["UNRATED", "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as const
 const runStatuses = ["RUNNING", "COMPLETED", "BLOCKED", "FAILED", "INTERRUPTED"] as const
+const maturationStatuses = ["PURSUE", "MAXIMIZED", "DEFERRED"] as const
 
 const transitions: Readonly<Record<TechnicalState, readonly TechnicalState[]>> = {
   SUSPECTED: technicalStates,
@@ -229,6 +287,10 @@ export class FindingRegistryError extends Error {
       ...(this.context.requestedState ? { requested_state: this.context.requestedState } : {}),
       ...(this.context.allowedStates ? { allowed_states: this.context.allowedStates } : {}),
       ...(this.context.availableIDs ? { available_ids: this.context.availableIDs } : {}),
+      recovery_calls:
+        this.code === "FINDING_NOT_FOUND"
+          ? [{ action: "list" }]
+          : [{ action: "get", id: "<finding-id>" }, { action: "update", id: "<finding-id>", state: "<allowed-state>" }],
     }
   }
 }
@@ -335,6 +397,84 @@ function context(input: RunContext): RunContext {
 
 function latestAssessed(finding: Finding) {
   return finding.observations.findLast((item): item is typeof AssessedObservation.Type => item.review === "ASSESSED")
+}
+
+function observationCore(observation: Observation) {
+  const common = {
+    runID: observation.runID,
+    phase: observation.phase,
+    review: observation.review,
+    severity: observation.severity,
+    verification: observation.verification,
+    submission: observation.submission,
+    summary: observation.summary,
+    maturation: observation.maturation,
+  }
+  return observation.review === "ASSESSED"
+    ? { ...common, disposition: observation.disposition }
+    : { ...common, plan: observation.plan, carriedState: observation.carriedState }
+}
+
+function maturationAssessment(value: unknown): MaturationAssessment | undefined {
+  if (value === undefined) return
+  if (!isRecord(value)) throw new Error("finding maturation must be an object")
+  const status = enumValue(value.status, maturationStatuses, "finding maturation status")
+  const currentImpact = boundedText(value.current_impact, "finding maturation current_impact", 4_000)
+  const targetSeverity =
+    value.target_severity === undefined ? undefined : ratedSeverity(value.target_severity)
+  const evidenceGap = optionalText(value.evidence_gap, "finding maturation evidence_gap", 4_000)
+  const nextTest = optionalText(value.next_test, "finding maturation next_test", 4_000)
+  const conclusion = optionalText(value.conclusion, "finding maturation conclusion", 4_000)
+  const rewardGroupID =
+    value.reward_group_id === undefined ? undefined : reference(value.reward_group_id, "finding maturation reward_group_id")
+  if (status === "PURSUE" && (!targetSeverity || !evidenceGap || !nextTest))
+    throw new Error("PURSUE maturation requires target_severity, evidence_gap, and next_test")
+  if (status === "MAXIMIZED" && !conclusion)
+    throw new Error("MAXIMIZED maturation requires conclusion")
+  if (status === "DEFERRED" && (!conclusion || !nextTest))
+    throw new Error("DEFERRED maturation requires conclusion and next_test as the resume condition")
+  return {
+    status,
+    currentImpact,
+    ...(targetSeverity ? { targetSeverity } : {}),
+    ...(evidenceGap ? { evidenceGap } : {}),
+    ...(nextTest ? { nextTest } : {}),
+    ...(conclusion ? { conclusion } : {}),
+    ...(rewardGroupID ? { rewardGroupID } : {}),
+  }
+}
+
+function maturationCheckpoint(value: unknown): MaturationCheckpoint | undefined {
+  if (value === undefined) return
+  return Schema.decodeUnknownSync(MaturationCheckpoint)(value)
+}
+
+function maturation(input: Record<string, unknown>): Maturation | undefined {
+  const assessment = maturationAssessment(input.maturation)
+  const checkpoint = maturationCheckpoint(input._maturation_checkpoint)
+  return assessment || checkpoint
+    ? { ...(assessment ? { assessment } : {}), ...(checkpoint ? { checkpoint } : {}) }
+    : undefined
+}
+
+function mergeObservationEvidence(
+  found: Finding,
+  observation: Observation,
+  timestamp: string,
+): { readonly value: Finding; readonly changed: boolean } | undefined {
+  const previousIndex = found.observations.findLastIndex(
+    (item) => item.runID === observation.runID && item.review === observation.review,
+  )
+  if (previousIndex < 0) return
+  const previous = found.observations[previousIndex]!
+  if (JSON.stringify(observationCore(previous)) !== JSON.stringify(observationCore(observation))) return
+  const evidencePaths = [...new Set([...previous.evidencePaths, ...observation.evidencePaths])]
+  if (evidencePaths.length === previous.evidencePaths.length)
+    return { value: found, changed: false }
+  const observations = [...found.observations]
+  observations[previousIndex] = { ...previous, evidencePaths }
+  const updated = { ...found, updatedAt: timestamp, observations } satisfies Finding
+  return { value: updated, changed: true }
 }
 
 function findFinding(registry: Registry, value: unknown) {
@@ -597,6 +737,7 @@ export class Store {
     const paths = evidencePaths(input.evidence_paths)
     const timestamp = this.#now().toISOString()
     const decisionsValue = decisions(input, runContext.workflow, technical)
+    const maturationValue = maturation(input)
     const observation = {
       id: Identifier.create("obs", "ascending"),
       runID: runContext.runID,
@@ -608,16 +749,34 @@ export class Store {
       ...decisionsValue,
       summary,
       evidencePaths: paths,
+      ...(maturationValue ? { maturation: maturationValue } : {}),
     } satisfies Observation
 
     return this.#mutate((current) => {
       const found = current.findings.find((item) => item.id === key || item.aliases.includes(key))
       if (found) {
+        const previous = latestAssessed(found)
+        const currentObservation =
+          observation.maturation || !previous?.maturation
+            ? observation
+            : { ...observation, maturation: previous.maturation }
+        const repeated = mergeObservationEvidence(found, currentObservation, timestamp)
+        if (repeated && found.title === title) {
+          if (!repeated.changed) return { next: current, value: found, changed: false }
+          return {
+            next: {
+              ...current,
+              findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)),
+            },
+            value: repeated.value,
+            changed: true,
+          }
+        }
         const updated = {
           ...found,
           title,
           updatedAt: timestamp,
-          observations: [...found.observations, observation],
+          observations: [...found.observations, currentObservation],
         } satisfies Finding
         return {
           next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? updated : item)) },
@@ -661,6 +820,15 @@ export class Store {
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
       } satisfies Observation
+      const repeated = mergeObservationEvidence(found, observation, timestamp)
+      if (repeated) {
+        if (!repeated.changed) return { next: current, value: found, changed: false }
+        return {
+          next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)) },
+          value: repeated.value,
+          changed: true,
+        }
+      }
       const updated = {
         ...found,
         updatedAt: timestamp,
@@ -681,6 +849,7 @@ export class Store {
     const summary = boundedText(input.summary, "finding summary", 4_000)
     const timestamp = this.#now().toISOString()
     const decisionsValue = decisions(input, runContext.workflow, nextDisposition)
+    const maturationValue = maturation(input)
 
     return this.#mutate((current) => {
       const found = findFinding(current, id)
@@ -697,6 +866,16 @@ export class Store {
           allowedStates: transitions[previous.disposition.state],
           message: `finding '${id}' cannot transition from ${previous.disposition.state} to ${nextDisposition.state}`,
         })
+      const currentMaturation = maturationValue
+        ? {
+            ...(maturationValue.assessment
+              ? { assessment: maturationValue.assessment }
+              : previous?.maturation?.assessment
+                ? { assessment: previous.maturation.assessment }
+                : {}),
+            ...(maturationValue.checkpoint ? { checkpoint: maturationValue.checkpoint } : {}),
+          }
+        : previous?.maturation
       const observation = {
         id: Identifier.create("obs", "ascending"),
         runID: runContext.runID,
@@ -708,10 +887,21 @@ export class Store {
         ...decisionsValue,
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
+        ...(currentMaturation ? { maturation: currentMaturation } : {}),
       } satisfies Observation
+      const repeated = mergeObservationEvidence(found, observation, timestamp)
+      const requestedTitle = input.title === undefined ? found.title : boundedText(input.title, "finding title", 300)
+      if (repeated && requestedTitle === found.title) {
+        if (!repeated.changed) return { next: current, value: found, changed: false }
+        return {
+          next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? repeated.value : item)) },
+          value: repeated.value,
+          changed: true,
+        }
+      }
       const updated = {
         ...found,
-        ...(input.title === undefined ? {} : { title: boundedText(input.title, "finding title", 300) }),
+        ...(input.title === undefined ? {} : { title: requestedTitle }),
         updatedAt: timestamp,
         observations: [...found.observations, observation],
       } satisfies Finding

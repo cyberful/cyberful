@@ -112,11 +112,13 @@ class GhidraEngine:
         finally:
             self._operation_lock.release()
 
-    def cancel_active_operation(self) -> None:
+    def cancel_active_operation(self) -> bool:
         with self._monitor_lock:
             monitor = self._active_monitor
-        if monitor is not None:
-            monitor.cancel()
+        if monitor is None:
+            return False
+        monitor.cancel()
+        return True
 
     @contextlib.contextmanager
     def _monitor(self, timeout_seconds: int | None = None) -> Iterator[object]:
@@ -139,7 +141,10 @@ class GhidraEngine:
     def resolve_source(self, relative_path: str) -> Path:
         if not relative_path or Path(relative_path).is_absolute() or "\x00" in relative_path:
             raise InputError("source_path must be a relative path inside the engagement workarea")
-        source = (self.workarea_root / relative_path).resolve(strict=True)
+        try:
+            source = (self.workarea_root / relative_path).resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise InputError("source_path must resolve to a plain file inside the engagement workarea") from error
         if not node_is_contained(self.workarea_root, source) or not source.is_file() or source.is_symlink():
             raise InputError("source_path must resolve to a plain file inside the engagement workarea")
         if source.stat().st_size > MAX_BINARY_BYTES:
@@ -159,6 +164,37 @@ class GhidraEngine:
             raise RuntimeError("Ghidra manifest programs are malformed")
         item = programs.get(digest)
         return dict(item) if isinstance(item, dict) else None
+
+    def reconcile_job(self, kind: str, request: dict[str, object]) -> dict[str, object] | None:
+        """Return committed output for an interrupted job without starting Ghidra work."""
+        if kind == "import":
+            source_path = request.get("source_path")
+            if not isinstance(source_path, str):
+                return None
+            try:
+                source = self.resolve_source(source_path)
+                digest = self.source_digest(source)
+            except (InputError, OSError):
+                return None
+            existing = self.imported_program(digest)
+            if existing is None:
+                return None
+            if bool(request.get("analyze", True)) and existing.get("analyzed") is not True:
+                return None
+            return {"idempotent": True, **existing}
+        if kind == "analyze":
+            program_path = request.get("program")
+            if not isinstance(program_path, str):
+                return None
+            normalized = program_path if program_path.startswith("/") else f"/{program_path}"
+            for item in self.programs():
+                if item.get("program") == normalized and item.get("analyzed") is True:
+                    return {
+                        "program": normalized,
+                        "analyzed": True,
+                        "analysis_log_tail": str(item.get("analysis_log_tail", "")),
+                    }
+        return None
 
     def programs(self) -> list[dict[str, object]]:
         programs = self._manifest["programs"]
@@ -264,6 +300,8 @@ class GhidraEngine:
                     {
                         "name": str(function.getName()),
                         "entry": str(function.getEntryPoint()),
+                        "selector": str(function.getEntryPoint()),
+                        "signatures": sorted(self._function_aliases(function) - {str(function.getName())}),
                         "external": bool(function.isExternal()),
                         "thunk": bool(function.isThunk()),
                     }
@@ -296,8 +334,7 @@ class GhidraEngine:
     def listing(self, program_path: str, selector: str, offset: int, limit: int) -> dict[str, object]:
         normalized = self._program_path(program_path)
         with self.exclusive(), self._program(normalized) as program:
-            function = self._find_function(program, selector)
-            address = function.getEntryPoint() if function is not None else self._address(program, selector)
+            function, address, canonical = self._resolve_selector(program, selector)
             instructions = program.getListing().getInstructions(address, True)
             items = []
             skipped = 0
@@ -318,12 +355,18 @@ class GhidraEngine:
                         "text": str(instruction),
                     }
                 )
-        return {"items": items, "offset": offset, "limit": limit, "has_more": len(items) == limit}
+        return {
+            "selector": canonical,
+            "items": items,
+            "offset": offset,
+            "limit": limit,
+            "has_more": len(items) == limit,
+        }
 
     def decompile(self, program_path: str, selector: str, timeout_seconds: int) -> dict[str, object]:
         normalized = self._program_path(program_path)
         with self.exclusive(), self._program(normalized) as program, self._monitor(timeout_seconds) as monitor:
-            function = self._required_function(program, selector)
+            function, _address, canonical = self._resolve_selector(program, selector, require_function=True)
             from ghidra.app.decompiler import DecompInterface
 
             decompiler = DecompInterface()
@@ -343,6 +386,7 @@ class GhidraEngine:
             "program": normalized,
             "function": str(function.getName()),
             "entry": str(function.getEntryPoint()),
+            "selector": canonical,
             "decompiled": text[:MAX_DECOMPILE_CHARACTERS],
             "truncated": truncated,
         }
@@ -350,8 +394,7 @@ class GhidraEngine:
     def xrefs(self, program_path: str, selector: str, direction: str, offset: int, limit: int) -> dict[str, object]:
         normalized = self._program_path(program_path)
         with self.exclusive(), self._program(normalized) as program:
-            function = self._find_function(program, selector)
-            address = function.getEntryPoint() if function is not None else self._address(program, selector)
+            _function, address, canonical = self._resolve_selector(program, selector)
             manager = program.getReferenceManager()
             references = (
                 manager.getReferencesTo(address)
@@ -371,7 +414,7 @@ class GhidraEngine:
                 }
                 for reference in references
             ]
-        return self._page(items, offset, limit)
+        return {"selector": canonical, **self._page(items, offset, limit)}
 
     def call_graph(
         self,
@@ -384,7 +427,12 @@ class GhidraEngine:
         normalized = self._program_path(program_path)
         with self.exclusive(), self._program(normalized) as program, self._monitor(120) as monitor:
             manager = program.getFunctionManager()
-            roots = [self._required_function(program, root)] if root else list(manager.getFunctions(True))
+            if root:
+                resolved_root, _address, root_selector = self._resolve_selector(program, root, require_function=True)
+                roots = [resolved_root]
+            else:
+                root_selector = None
+                roots = list(manager.getFunctions(True))
             nodes: dict[str, dict[str, object]] = {}
             edges: list[dict[str, str]] = []
             queue: list[tuple[object, int]] = [(function, 0) for function in roots]
@@ -405,6 +453,7 @@ class GhidraEngine:
                         queue.append((called, level + 1))
             page = edges[offset : offset + limit]
         return {
+            "root_selector": root_selector,
             "nodes": list(nodes.values()),
             "edges": page,
             "offset": offset,
@@ -424,8 +473,7 @@ class GhidraEngine:
     ) -> dict[str, object]:
         normalized = self._program_path(program_path)
         with self.exclusive(), self._program(normalized) as program, self._monitor() as monitor:
-            function = self._find_function(program, selector)
-            address = function.getEntryPoint() if function is not None else self._address(program, selector)
+            function, address, canonical = self._resolve_selector(program, selector)
             with self._require_pyghidra().transaction(program, f"Cyberful {action}"):
                 if action == "comment":
                     from ghidra.program.model.listing import CodeUnit
@@ -457,7 +505,8 @@ class GhidraEngine:
             "program": normalized,
             "action": action,
             "address": str(address),
-            "selector": selector,
+            "selector": canonical,
+            "requested_selector": selector,
             "value": value,
             "comment_type": comment_type if action == "comment" else None,
         }
@@ -497,24 +546,76 @@ class GhidraEngine:
             raise InputError(f"address is not valid in this program: {selector}")
         return address
 
-    def _find_function(self, program: object, selector: str | None) -> object | None:
-        if selector is None:
-            return None
+    @staticmethod
+    def _function_aliases(function: object) -> set[str]:
+        aliases: set[str] = set()
+
+        def collect(callable_value: object, *args: object) -> None:
+            if not callable(callable_value):
+                return
+            try:
+                rendered = str(callable_value(*args))
+            except Exception:
+                return
+            if rendered:
+                aliases.add(rendered)
+
+        collect(getattr(function, "getName", None))
+        collect(getattr(function, "getName", None), True)
+        collect(getattr(function, "getSignature", None))
+        collect(getattr(function, "getPrototypeString", None), False, False)
+        collect(getattr(function, "getPrototypeString", None), True, False)
+        symbol_getter = getattr(function, "getSymbol", None)
+        if callable(symbol_getter):
+            try:
+                symbol = symbol_getter()
+            except Exception:
+                symbol = None
+            if symbol is not None:
+                collect(getattr(symbol, "getName", None))
+                collect(getattr(symbol, "getName", None), True)
+        return aliases
+
+    def _resolve_selector(
+        self,
+        program: object,
+        selector: str,
+        require_function: bool = False,
+    ) -> tuple[object | None, object, str]:
         manager = program.getFunctionManager()
         if ADDRESS_PATTERN.fullmatch(selector):
             address = self._address(program, selector)
-            return manager.getFunctionAt(address) or manager.getFunctionContaining(address)
+            function = manager.getFunctionAt(address) or manager.getFunctionContaining(address)
+            if require_function and function is None:
+                raise InputError(f"function was not found at address: {selector}")
+            canonical_address = function.getEntryPoint() if function is not None else address
+            return function, canonical_address, str(canonical_address)
+        matches: list[object] = []
         for function in manager.getFunctions(True):
-            if str(function.getName()) == selector:
-                return function
-        return None
+            if selector in self._function_aliases(function):
+                matches.append(function)
+        if not matches:
+            raise InputError(f"function was not found: {selector}")
+        if len(matches) > 1:
+            candidates = [
+                {
+                    "name": str(function.getName()),
+                    "selector": str(function.getEntryPoint()),
+                    "signatures": sorted(self._function_aliases(function))[:6],
+                }
+                for function in matches[:10]
+            ]
+            raise InputError(
+                f"function selector is ambiguous; use one canonical address: {json.dumps(candidates, sort_keys=True)}"
+            )
+        function = matches[0]
+        address = function.getEntryPoint()
+        return function, address, str(address)
 
     def _required_function(self, program: object, selector: str | None) -> object:
         if not selector:
             raise InputError("a function name or address is required")
-        function = self._find_function(program, selector)
-        if function is None:
-            raise InputError(f"function was not found: {selector}")
+        function, _address, _canonical = self._resolve_selector(program, selector, require_function=True)
         return function
 
     @staticmethod

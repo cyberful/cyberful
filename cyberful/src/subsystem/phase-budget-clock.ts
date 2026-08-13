@@ -1,6 +1,6 @@
 // ── Phase Budget Clock ──────────────────────────────────────────
-// Owns one phase's active-execution deadline, overlapping approval, target
-//   cooldown, and retry suspensions plus closeout timing projection.
+// Owns one phase's active-execution deadline, overlapping wait suspensions,
+// idempotent recovery extensions, and closeout timing projection.
 // → cyberful/src/subsystem/phase-runner.ts — creates one clock per phase.
 // → cyberful/src/subsystem/pi-agent.ts — pauses AgentRun timers through this clock.
 // @docs/concepts/execution-model.md
@@ -20,6 +20,7 @@ export interface Snapshot {
   readonly retryCompensationMs: number
   readonly retryCompensationCapMs: number
   readonly retryCompensationCapReached: boolean
+  readonly recoveryExtensionMs: number
 }
 
 export interface Controller {
@@ -29,6 +30,7 @@ export interface Controller {
   readonly snapshot: () => Snapshot
   readonly deadlineAt: () => number
   readonly pausedMs: (cause?: SuspensionCause) => number
+  readonly grantRecoveryExtension: (chainID: string, extensionMs: number) => boolean
   readonly close: () => void
 }
 
@@ -39,6 +41,8 @@ interface Options {
   readonly initialRetryWaitMs?: number
   readonly initialTargetCooldownWaitMs?: number
   readonly initialRetryCompensationMs?: number
+  readonly initialRecoveryExtensionMs?: number
+  readonly recoveredChainIDs?: readonly string[]
   readonly now?: () => number
 }
 
@@ -66,6 +70,8 @@ export function create(options: Options): Controller {
     retryCompensationCapMs,
     Math.max(0, options.initialRetryCompensationMs ?? 0),
   )
+  let recoveryExtensionMs = Math.max(0, options.initialRecoveryExtensionMs ?? 0)
+  const recoveredChainIDs = new Set(options.recoveredChainIDs ?? [])
   let capTimer: ReturnType<typeof setTimeout> | undefined
   let closed = false
 
@@ -98,7 +104,7 @@ export function create(options: Options): Controller {
       pending,
       count: counts.approval + counts.provider_retry + counts.target_cooldown,
       causes: { ...counts },
-      deadlineAt: options.deadlineAt + totalPausedMs,
+      deadlineAt: options.deadlineAt + totalPausedMs + recoveryExtensionMs,
       pausedMs: totalPausedMs,
       approvalWaitMs,
       retryWaitMs,
@@ -107,6 +113,7 @@ export function create(options: Options): Controller {
       retryCompensationCapMs,
       retryCompensationCapReached:
         retryCompensationCapMs > 0 && retryCompensationMs >= retryCompensationCapMs,
+      recoveryExtensionMs,
     }
   }
 
@@ -168,6 +175,26 @@ export function create(options: Options): Controller {
     if (cause === "target_cooldown") return value.targetCooldownWaitMs
     return value.pausedMs
   }
+
+  // ── Recovery Time Is A Named One-Shot Grant ────────────────────
+  // A recovery may span a replacement AgentRun or a fresh phase owner, so a
+  // caller-provided chain identifier is the durable unit of admission. The
+  // clock applies a finite non-negative extension only on the first grant and
+  // publishes the new deadline immediately, allowing every owned timer to
+  // restart from the same authority without compounding descendant bonuses.
+  // ────────────────────────────────────────────────────────────────
+  const grantRecoveryExtension = (chainID: string, extensionMs: number): boolean => {
+    if (closed) throw new Error("phase budget clock is closed")
+    const normalizedChainID = chainID.trim()
+    if (!normalizedChainID) throw new Error("recovery chain id is empty")
+    if (!Number.isSafeInteger(extensionMs) || extensionMs < 0)
+      throw new Error("recovery extension must be a non-negative safe integer")
+    if (recoveredChainIDs.has(normalizedChainID)) return false
+    recoveredChainIDs.add(normalizedChainID)
+    recoveryExtensionMs += extensionMs
+    publish()
+    return true
+  }
   const close = () => {
     if (closed) return
     advance()
@@ -177,7 +204,7 @@ export function create(options: Options): Controller {
     listeners.clear()
   }
 
-  return { wait, suspend, subscribe, snapshot, deadlineAt, pausedMs, close }
+  return { wait, suspend, subscribe, snapshot, deadlineAt, pausedMs, grantRecoveryExtension, close }
 }
 
 export * as SubsystemPhaseBudgetClock from "./phase-budget-clock"

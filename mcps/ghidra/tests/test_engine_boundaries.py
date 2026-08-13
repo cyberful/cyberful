@@ -18,6 +18,46 @@ sys.path.insert(0, str(MODULE_ROOT))
 from ghidra_engine import GhidraEngine, InputError  # noqa: E402
 
 
+class FakeAddress:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class FakeFunction:
+    def __init__(self, name: str, entry: str, signature: str) -> None:
+        self.name = name
+        self.entry = FakeAddress(entry)
+        self.signature = signature
+
+    def getName(self, qualified: bool = False) -> str:
+        return f"scope::{self.name}" if qualified else self.name
+
+    def getEntryPoint(self) -> FakeAddress:
+        return self.entry
+
+    def getSignature(self) -> str:
+        return self.signature
+
+
+class FakeFunctionManager:
+    def __init__(self, functions: list[FakeFunction]) -> None:
+        self.functions = functions
+
+    def getFunctions(self, _forward: bool) -> list[FakeFunction]:
+        return self.functions
+
+
+class FakeProgram:
+    def __init__(self, functions: list[FakeFunction]) -> None:
+        self.manager = FakeFunctionManager(functions)
+
+    def getFunctionManager(self) -> FakeFunctionManager:
+        return self.manager
+
+
 class EngineBoundaryTests(unittest.TestCase):
     def test_accepts_plain_workarea_files_and_rejects_escapes_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -42,6 +82,8 @@ class EngineBoundaryTests(unittest.TestCase):
                 engine.resolve_source("link.bin")
             with self.assertRaises(InputError):
                 engine.resolve_source(str(fixture))
+            with self.assertRaises(InputError):
+                engine.resolve_source("missing.bin")
 
     def test_project_status_does_not_retain_the_serialization_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -54,6 +96,20 @@ class EngineBoundaryTests(unittest.TestCase):
                 self.assertFalse(engine.project_status()["busy"])
             with engine.exclusive():
                 pass
+
+    def test_function_selector_accepts_signatures_and_never_guesses_duplicate_names(self) -> None:
+        engine = object.__new__(GhidraEngine)
+        first = FakeFunction("parse", "00401000", "int parse(char *)")
+        second = FakeFunction("parse", "00402000", "int parse(bytes *)")
+        program = FakeProgram([first, second])
+
+        resolved, _address, canonical = engine._resolve_selector(program, "int parse(bytes *)", True)
+        self.assertIs(resolved, second)
+        self.assertEqual(canonical, "00402000")
+        with self.assertRaisesRegex(InputError, "ambiguous") as context:
+            engine._resolve_selector(program, "parse", True)
+        self.assertIn("00401000", str(context.exception))
+        self.assertIn("00402000", str(context.exception))
 
 
 if __name__ == "__main__":

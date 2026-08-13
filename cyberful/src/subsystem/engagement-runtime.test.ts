@@ -9,6 +9,9 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import {
+  cyberfulOsRuntimePlatform,
+  dockerChildContainerName,
+  dockerHostname,
   dockerMemoryAllocationWarning,
   readPersistedProxyTrust,
   requiresZapUpstream,
@@ -22,12 +25,39 @@ test("requires at least ten decimal gigabytes dedicated to Docker", () => {
   expect(() => dockerMemoryAllocationWarning("unknown")).toThrow("non-decimal")
 })
 
+test("bounds derived Docker hostnames without weakening container identity", () => {
+  expect(dockerHostname("cyberful-os-short")).toBe("cyberful-os-short")
+  const derived = dockerHostname(`${"cyberful-os-expert-"}${"a".repeat(44)}-zap`)
+  expect(derived.length).toBe(63)
+  expect(derived).toMatch(/^cyberful-os-expert-[a]+-[a-f0-9]{24}$/)
+  expect(derived).not.toBe(dockerHostname(`${"cyberful-os-expert-"}${"a".repeat(43)}b-zap`))
+
+  const child = dockerChildContainerName(`${"cyberful-os-expert-"}${"b".repeat(44)}`, "zap")
+  expect(child.length).toBe(63)
+  expect(child).toMatch(/^cyberful-os-expert-[b]+-[a-f0-9]{24}-zap$/)
+  expect(child).not.toBe(dockerChildContainerName(`${"cyberful-os-expert-"}${"b".repeat(43)}c`, "zap"))
+})
+
+test("normalizes the attested cyberful-os Linux architecture for agent prompts", () => {
+  expect(cyberfulOsRuntimePlatform("Linux", "aarch64")).toBe("Linux/ARM64 (aarch64)")
+  expect(cyberfulOsRuntimePlatform("linux", "x86_64")).toBe("Linux/AMD64 (x86_64)")
+  expect(() => cyberfulOsRuntimePlatform("Darwin", "arm64")).toThrow("unsupported cyberful-os kernel")
+  expect(() => cyberfulOsRuntimePlatform("Linux", "riscv64")).toThrow("unsupported cyberful-os architecture")
+})
+
 test("requires ZAP for every live-target phase before a numeric policy exists", () => {
   expect(requiresZapUpstream("pentest")).toBe(true)
   expect(requiresZapUpstream("bug-bounty")).toBe(true)
   expect(requiresZapUpstream("ask")).toBe(false)
   expect(requiresZapUpstream("code-audit")).toBe(false)
   expect(requiresZapUpstream("ask", { global_http_rps: 4 })).toBe(true)
+  expect(
+    requiresZapUpstream("ask", {
+      required_http_headers: [
+        { name: "X-Request-Purpose", value: "Research", hosts: ["app.example.test"] },
+      ],
+    }),
+  ).toBe(true)
 })
 
 test("masks private ZAP state and exposes only a read-only public trust mount to the core", () => {

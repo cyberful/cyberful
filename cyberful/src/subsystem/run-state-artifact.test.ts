@@ -79,10 +79,36 @@ describe("run-state artifact", () => {
         compensationCapReached: false,
       })
       await state.observe({
+        type: "recovery",
+        runID: "run-1",
+        recoveryRunID: "run-2",
+        chainID: "recovery-1",
+        scope: "subagent_replacement",
+        cause: "security_policy_block",
+        state: "started",
+        sourceRoute: "main",
+        destinationRoute: "fallback",
+        quotaExempt: true,
+        bonusMs: 300_000,
+        availableRuntimeMs: 360_000,
+        deadlineAt: clockNow + 360_000,
+      })
+      await state.observe({
+        type: "steering",
+        runID: "run-1",
+        steeringID: "steer-1",
+        mode: "queue",
+        state: "applied",
+        acceptedAt: "2026-08-10T00:00:00.000Z",
+        appliedAt: "2026-08-10T00:00:01.000Z",
+      })
+      budgetClock.grantRecoveryExtension("recovery-1", 300_000)
+      await state.observe({
         type: "run_finished",
         runID: "run-1",
         role: "root",
         termination: "provider_failed",
+        terminationCause: "security_policy_block",
         failure: { kind: "timeout", providerCode: "23", retryable: true },
         usage: { input: 100, output: 20, reasoning: 10, cacheRead: 0, cacheWrite: 0 },
         skillsUsed: [],
@@ -120,6 +146,8 @@ describe("run-state artifact", () => {
         retry_compensation_ms: 2_000,
         retry_compensation_cap_ms: 30_000,
         retry_compensation_cap_reached: false,
+        recovery_extension_ms: 300_000,
+        phase_extension_ms: 302_000,
         session_id: "ses-1",
         session_status: "closed_with_cleanup_errors",
         cleanup: {
@@ -137,12 +165,24 @@ describe("run-state artifact", () => {
             id: "run-1",
             status: "failed",
             termination: "provider_failed",
+            termination_cause: "security_policy_block",
             tool_calls: 3,
             reasoning_effort: "ultra",
             effective_reasoning_effort: "max",
             failure: { kind: "timeout", providerCode: "23" },
           },
         ],
+        recoveries: [
+          {
+            chain_id: "recovery-1",
+            state: "started",
+            cause: "security_policy_block",
+            source_route: "main",
+            destination_route: "fallback",
+            bonus_ms: 300_000,
+          },
+        ],
+        steering: [{ id: "steer-1", state: "applied", mode: "queue", run_id: "run-1" }],
       })
       expect(JSON.stringify(artifact)).not.toContain("transcript")
     } finally {

@@ -47,9 +47,7 @@ import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { SubsystemPhase } from "@/subsystem/phase"
 import { Locale } from "@/util/locale"
-import { BOUNCING_BAR_FRAMES, BOUNCING_BAR_INTERVAL, bouncingBarColors } from "../../ui/spinner.ts"
 import { useDialog } from "@tui/ui/dialog"
-import { GenerationProgress } from "@/dependency/generation-progress"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useAnimationsEnabled } from "../../context/animation"
@@ -63,6 +61,7 @@ import { DockerPreflight } from "@/dependency/docker-preflight"
 import * as Log from "@/util/log"
 import { ClearInput } from "@tui/component/clear-input"
 import { providerUsageFooter } from "./provider-usage-footer"
+import { ComposerStatusHeader, composerStatusView } from "./status-header"
 
 export type PromptProps = {
   sessionID?: string
@@ -208,11 +207,6 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
-  const busyMessage = createMemo(() => {
-    const current = status()
-    if (current.type !== "busy") return
-    return current.message
-  })
   // The running Pi phase (if any) for this session. Its own feed drives live generation/tool status.
   const expertPhaseRunning = createMemo(() => sync.data.expert_phase_running?.[props.sessionID ?? ""])
   const latestExpertPhase = createMemo(() => sync.data.expert_phase[props.sessionID ?? ""]?.at(-1)?.phase)
@@ -326,6 +320,15 @@ export function Prompt(props: PromptProps) {
     if (startedAt === undefined) return undefined
     return Locale.clockDuration(now() - startedAt)
   })
+  const composerStatus = createMemo(() =>
+    composerStatusView({
+      label: props.label,
+      sessionID: props.sessionID,
+      status: status(),
+      runningPhase: expertPhaseRunning(),
+      now: now(),
+    }),
+  )
 
   const [store, setStore] = createStore<{
     prompt: PromptInfo
@@ -1370,11 +1373,16 @@ export function Prompt(props: PromptProps) {
     return `${prefix}... "${list()[store.placeholder % list().length]}"`
   })
 
-  const spinnerColor = createMemo(() => bouncingBarColors(theme.textMuted, highlight()))
-
   return (
     <>
       <box ref={(r: BoxRenderable) => (anchor = r)} visible={props.visible !== false}>
+        <ComposerStatusHeader
+          status={composerStatus()}
+          borderColor={borderHighlight()}
+          textColor={theme.text}
+          mutedColor={theme.textMuted}
+          animationsEnabled={animationsEnabled()}
+        />
         <box
           border={["left"]}
           borderColor={borderHighlight()}
@@ -1392,13 +1400,6 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
           >
             <box flexDirection="row" alignItems="flex-start" gap={1}>
-              <Show when={props.label}>
-                {(label) => (
-                  <text fg={theme.textMuted} attributes={TextAttributes.BOLD} selectable={false} width={8}>
-                    {label()}
-                  </text>
-                )}
-              </Show>
               <textarea
                 flexGrow={1}
                 placeholder={placeholderText()}
@@ -1599,51 +1600,13 @@ export function Prompt(props: PromptProps) {
             without it the two groups render touching ("esc canceltab workflow"). */}
         <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
           <Switch>
-            {/* A Pi phase still marks the host runLoop busy. This generic-busy Match would otherwise
-                shadow the phase Match below and
-                render a text-less spinner. Yield to it while a phase excursion owns the turn. */}
-            <Match when={status().type !== "idle" && !expertPhaseRunning()}>
-              <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
-                <box flexShrink={0} flexDirection="row" gap={1}>
-                  <box marginLeft={1}>
-                    <Show when={animationsEnabled()} fallback={<text fg={theme.textMuted}>[ == ]</text>}>
-                      <spinner color={spinnerColor()} frames={BOUNCING_BAR_FRAMES} interval={BOUNCING_BAR_INTERVAL} />
-                    </Show>
-                  </box>
-                  <box flexDirection="row" gap={1} flexShrink={0}>
-                    <Show when={busyMessage()}>{(message) => <GenerationStatusText message={message()} />}</Show>
-                  </box>
-                </box>
+            <Match when={status().type !== "idle" || expertPhaseRunning()}>
+              <box flexDirection="row" gap={2} flexGrow={1} justifyContent="flex-start">
                 <Show when={jumpToBottom()}>{(jump) => <JumpToBottomHint {...jump()} />}</Show>
                 <text fg={theme.text}>
                   esc <span style={{ fg: theme.textMuted }}>cancel</span>
                 </text>
               </box>
-            </Match>
-            <Match when={expertPhaseRunning()}>
-              {(ep) => (
-                <box flexDirection="row" gap={1} flexGrow={1} justifyContent="space-between">
-                  <box flexShrink={0} flexDirection="row" gap={1}>
-                    <box marginLeft={1}>
-                      <Show when={animationsEnabled()} fallback={<text fg={theme.textMuted}>[ == ]</text>}>
-                        <spinner color={spinnerColor()} frames={BOUNCING_BAR_FRAMES} interval={BOUNCING_BAR_INTERVAL} />
-                      </Show>
-                    </box>
-                    <Show
-                      when={ep().lastKind === "tool"}
-                      fallback={<text fg={theme.textMuted}>generating</text>}
-                    >
-                      <text fg={theme.textMuted}>executing job</text>
-                    </Show>
-                  </box>
-                  <box flexDirection="row" gap={2} flexShrink={0}>
-                    <Show when={jumpToBottom()}>{(jump) => <JumpToBottomHint {...jump()} />}</Show>
-                    <text fg={theme.text}>
-                      esc <span style={{ fg: theme.textMuted }}>cancel</span>
-                    </text>
-                  </box>
-                </box>
-              )}
             </Match>
             <Match when={true}>
               <box flexDirection="row" gap={2}>
@@ -1695,32 +1658,5 @@ export function Prompt(props: PromptProps) {
         promptPartTypeId={() => promptPartTypeId}
       />
     </>
-  )
-}
-
-function GenerationStatusText(props: { message: string }) {
-  const { theme } = useTheme()
-  const status = createMemo(() => {
-    const parsed = GenerationProgress.parseStatus(props.message)
-    if (!parsed) return
-    return {
-      ...parsed,
-      suffix: props.message.slice(`generating... ${parsed.leadingZeros}${parsed.tokenDigits}`.length),
-    }
-  })
-
-  return (
-    <text fg={theme.textMuted}>
-      <Show when={status()} fallback={props.message}>
-        {(value) => (
-          <>
-            generating...{" "}
-            <span style={{ fg: tint(theme.backgroundElement, theme.textMuted, 0.22) }}>{value().leadingZeros}</span>
-            <span style={{ fg: theme.text }}>{value().tokenDigits}</span>
-            {value().suffix}
-          </>
-        )}
-      </Show>
-    </text>
   )
 }

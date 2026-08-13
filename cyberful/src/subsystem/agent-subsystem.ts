@@ -10,6 +10,7 @@ import type { Settings } from "@/config/settings"
 import type { PromptSkill } from "./prompt-compiler"
 import type { CompiledAgentPrompt, ProviderRoute } from "./prompt-compiler"
 import type { Failure } from "./pi-security"
+import type { RecoveryCause, RecoveryDenialCode, RecoveryScope } from "./recovery-policy"
 import type { ModelContextCapacity } from "./pi-models"
 import type { ReasoningPlan } from "./pi-reasoning"
 import type { PhaseActivity, SubsystemMcpServer } from "./subsystem"
@@ -19,6 +20,27 @@ export type AgentRunID = string
 export type AgentRunRole = "root" | "subagent" | "fallback"
 export type ProviderAffinity = "main" | "fallback"
 export type AgentRunTermination = "completed" | "budget_exhausted" | "cancelled" | "provider_failed" | "failed"
+export type AgentRunCancellationCause =
+  | "budget_expired"
+  | "parent_closeout"
+  | "operator_focus"
+  | "phase_shutdown"
+  | "user_cancel"
+export type AgentRunTerminationCause = AgentRunCancellationCause | Failure["kind"] | "completed" | "runtime_failure"
+export type AgentSteeringMode = "queue" | "focus"
+export type AgentSteeringState = "accepted" | "queued" | "applied" | "superseded" | "rejected"
+
+export interface AgentSteeringReceipt {
+  readonly id: string
+  readonly accepted: boolean
+  readonly recipients: number
+  readonly mode: AgentSteeringMode
+  readonly state: AgentSteeringState
+  readonly runID?: AgentRunID
+  readonly acceptedAt: string
+  readonly appliedAt?: string
+  readonly reason?: string
+}
 
 export interface AgentRunIdentity {
   readonly displayName: string
@@ -67,6 +89,7 @@ export interface FallbackPolicy {
   readonly proactiveEnabled: boolean
   readonly proactivePercentage: number
   readonly automaticSecurityBlockEnabled: boolean
+  readonly recoveryBonusMs?: number
 }
 
 export interface TranscriptPolicy {
@@ -221,6 +244,35 @@ export type AgentEvent =
       readonly subtreeSize?: number
     }
   | {
+      readonly type: "recovery"
+      readonly runID: AgentRunID
+      readonly recoveryRunID?: AgentRunID
+      readonly chainID: string
+      readonly scope: RecoveryScope
+      readonly cause: RecoveryCause
+      readonly state: "requested" | "admitted" | "started" | "completed" | "failed" | "cancelled" | "denied"
+      readonly sourceRoute: ProviderAffinity
+      readonly destinationRoute?: ProviderAffinity
+      readonly quotaExempt: true
+      readonly bonusMs: number
+      readonly availableRuntimeMs: number
+      readonly availableOutputTokens?: number
+      readonly deadlineAt?: number
+      readonly denialCode?: RecoveryDenialCode
+      readonly termination?: AgentRunTermination
+      readonly terminationCause?: AgentRunTerminationCause
+    }
+  | {
+      readonly type: "steering"
+      readonly runID: AgentRunID
+      readonly steeringID: string
+      readonly mode: AgentSteeringMode
+      readonly state: AgentSteeringState
+      readonly acceptedAt: string
+      readonly appliedAt?: string
+      readonly reason?: string
+    }
+  | {
       readonly type: "provider_retry"
       readonly runID: AgentRunID
       readonly state: "scheduled" | "attempting" | "succeeded" | "timed_out" | "exhausted" | "cancelled"
@@ -272,7 +324,7 @@ export type AgentEvent =
   | {
       readonly type: "context_rotation"
       readonly runID: AgentRunID
-      readonly state: "started" | "completed" | "partial" | "failed"
+      readonly state: "started" | "completed" | "completed_with_fallback" | "partial" | "failed"
       readonly mode: "proactive" | "emergency"
       readonly generation: number
       readonly provider: string
@@ -306,6 +358,7 @@ export type AgentEvent =
         readonly path: string
         readonly sha256: string
       }
+      readonly checkpointKind?: "model_summary" | "deterministic_fallback"
       readonly attempts: readonly {
         readonly attempt: number
         readonly provider: string
@@ -326,6 +379,7 @@ export type AgentEvent =
       readonly recoveryOf?: AgentRunID
       readonly role: AgentRunRole
       readonly termination: AgentRunTermination
+      readonly terminationCause?: AgentRunTerminationCause
       readonly failure?: Failure
       readonly usage: AgentRunUsage
       readonly skillsUsed: readonly string[]
@@ -366,6 +420,7 @@ export interface AgentRunResult {
   readonly context: Extract<AgentEvent, { type: "run_started" }>["context"]
   readonly output: string
   readonly termination: AgentRunTermination
+  readonly terminationCause: AgentRunTerminationCause
   readonly failure?: Failure
   readonly usage: AgentRunUsage
   readonly promptManifest: CompiledAgentPrompt["manifest"]
@@ -386,7 +441,12 @@ export interface AgentRunResult {
 export interface AgentRun {
   readonly id: AgentRunID
   readonly events: AsyncIterable<AgentEvent>
-  steer(message: { readonly content: string }): Promise<boolean>
+  steer(message: {
+    readonly content: string
+    readonly mode?: AgentSteeringMode
+    readonly id?: string
+    readonly acceptedAt?: string
+  }): Promise<AgentSteeringReceipt>
   cancel(reason: string): Promise<void>
   readonly result: Promise<AgentRunResult>
 }

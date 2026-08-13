@@ -4,6 +4,7 @@
 // → cyberful/src/subsystem/phase-runner.ts — owns each phase execution lifecycle.
 // ─────────────────────────────────────────────────────────────────
 
+import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { SubsystemPhase } from "./phase"
 import type { PhaseSpec, PhaseResult } from "./phase-runner"
@@ -12,6 +13,8 @@ import type { SessionID } from "@/session/schema"
 import type { Candidate as CompletionCandidate } from "./completion"
 import type { RunTermination } from "./cli"
 import type { PhaseFailure } from "./phase-runner"
+import { decideRecovery, type RecoveryDecision } from "./recovery-policy"
+import { reframeAuthorizedSecurityInput, supportsAuthorizationReframe } from "./security-reframe"
 
 export interface AdvanceInput {
   sessionID: SessionID
@@ -35,6 +38,7 @@ export interface AdvanceInput {
 
 export interface AdvanceDeps {
   runPhase: (spec: PhaseSpec) => Promise<PhaseResult>
+  resolveClientName?: () => Promise<string | undefined>
 }
 
 export interface AdvanceOutcome {
@@ -121,13 +125,18 @@ function attemptTranscript(filePath: string, attempt: number) {
     : `${filePath}.attempt-${attempt}`
 }
 
-function recoveryObjective(phase: string, objective: string, result: PhaseResult) {
+function recoveryObjective(
+  phase: string,
+  objective: string,
+  result: PhaseResult,
+  authorizationReframe?: { readonly workflow: string; readonly clientName?: string },
+) {
   const failure = result.subsystemFailure
   const upstream = result.phaseFailure?.source === "upstream"
-  return [
+  const recoveredInput = [
     objective,
     "",
-    `Host recovery attempt for the ${phase} phase after a retryable ${upstream ? "required-upstream" : "provider"} failure.`,
+    `Host recovery attempt for the ${phase} phase after a recoverable ${upstream ? "required-upstream" : "provider"} failure.`,
     upstream
       ? `Previous termination: ${result.termination}; upstream failure: ${result.phaseFailure?.class ?? "unknown"}.`
       : `Previous termination: ${result.termination}; provider failure: ${failure?.kind ?? "unknown"}${failure?.providerCode ? ` (${failure.providerCode})` : ""}.`,
@@ -136,6 +145,13 @@ function recoveryObjective(phase: string, objective: string, result: PhaseResult
     "Reconcile completed calls before acting. Do not repeat an operation that may already have produced a target-side effect.",
     "Complete the original deliverable and handoff contract with the remaining phase budget.",
   ].join("\n")
+  return authorizationReframe && supportsAuthorizationReframe(authorizationReframe.workflow)
+    ? reframeAuthorizedSecurityInput({
+        workflow: authorizationReframe.workflow,
+        originalInput: recoveredInput,
+        ...(authorizationReframe.clientName ? { clientName: authorizationReframe.clientName } : {}),
+      })
+    : recoveredInput
 }
 
 export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input: AdvanceInput, deps: AdvanceDeps) {
@@ -164,6 +180,8 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         retryWaitMs: 0,
         targetCooldownWaitMs: 0,
         phaseExtensionMs: 0,
+        recoveryExtensionMs: 0,
+        recoveryChainIDs: [],
       }
       const results: PhaseResult[] = []
       while (true) {
@@ -200,28 +218,81 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
             result.targetCooldownWaitMs ?? 0,
           ),
           phaseExtensionMs: Math.max(budgetCarry.phaseExtensionMs, result.retryCompensationMs ?? 0),
+          recoveryExtensionMs: budgetCarry.recoveryExtensionMs ?? 0,
+          recoveryChainIDs: budgetCarry.recoveryChainIDs ?? [],
         }
-        const retryableFailure =
-          (result.phaseFailure?.source === "provider" && result.subsystemFailure?.retryable === true) ||
-          (result.phaseFailure?.source === "upstream" && result.phaseFailure.retryable === true)
+        const providerFailure =
+          result.phaseFailure?.source === "provider" ? result.subsystemFailure : undefined
+        const authorizationReframeAvailable =
+          policy?.fallbackConfigured === false && supportsAuthorizationReframe(input.workflow)
+        const recoveryChainID = providerFailure
+          ? `recovery_${createHash("sha256")
+              .update(`${input.sessionID}\0${phase}\0${attempt}\0${providerFailure.kind}`)
+              .digest("hex")
+              .slice(0, 24)}`
+          : undefined
+        const providerRecovery: RecoveryDecision | undefined =
+          providerFailure && policy
+            ? decideRecovery({
+                scope: "phase_restart",
+                sourceRoute: route,
+                failure: providerFailure,
+                enabled:
+                  policy.enabled &&
+                  (providerFailure.kind !== "security_policy_block" ||
+                    authorizationReframeAvailable ||
+                    policy.automaticSecurityBlockEnabled !== false),
+                fallbackConfigured: policy.fallbackConfigured,
+                useFallbackProvider:
+                  providerFailure.providerCode === "active_tail_too_large"
+                    ? false
+                    : providerFailure.kind === "security_policy_block" || policy.useFallbackProvider,
+                alreadyRecovered: attempt > 1,
+                remainingRuntimeMs:
+                  remainingTimeoutMs - Math.max(0, result.closeoutReserveMs ?? 0),
+                recoveryBonusMs: policy.recoveryBonusMs ?? 300_000,
+                bonusAlreadyGranted:
+                  recoveryChainID !== undefined &&
+                  (budgetCarry.recoveryChainIDs ?? []).includes(recoveryChainID),
+                authorizationReframeAvailable,
+              })
+            : undefined
+        const upstreamRecovery =
+          result.phaseFailure?.source === "upstream" && result.phaseFailure.retryable === true
+        const recoverableFailure = providerRecovery?.kind === "admitted" || upstreamRecovery
         if (
           result.ok ||
-          !retryableFailure ||
+          !recoverableFailure ||
           !policy?.enabled ||
           attempt > policy.maxRestarts ||
-          remainingTimeoutMs <= 0 ||
+          (upstreamRecovery && remainingTimeoutMs <= 0) ||
           abort.aborted
         )
           return { result, results }
-        attemptObjective = recoveryObjective(phase, objective, result)
-        route =
-          result.phaseFailure?.source === "upstream"
-            ? "main"
-            : result.subsystemFailure?.providerCode === "active_tail_too_large"
-            ? "main"
-            : policy.useFallbackProvider && policy.fallbackConfigured
-              ? "fallback"
-              : "main"
+        if (providerRecovery?.kind === "admitted" && providerRecovery.bonusMs > 0 && recoveryChainID) {
+          remainingTimeoutMs += providerRecovery.bonusMs
+          budgetCarry = {
+            ...budgetCarry,
+            recoveryExtensionMs: (budgetCarry.recoveryExtensionMs ?? 0) + providerRecovery.bonusMs,
+            recoveryChainIDs: [...(budgetCarry.recoveryChainIDs ?? []), recoveryChainID],
+          }
+        }
+        const clientName =
+          providerRecovery?.kind === "admitted" &&
+          providerRecovery.inputTreatment === "authorization_reframe" &&
+          input.workflow === "pentest"
+            ? await deps.resolveClientName?.().catch(() => undefined)
+            : undefined
+        attemptObjective = recoveryObjective(
+          phase,
+          objective,
+          result,
+          providerRecovery?.kind === "admitted" &&
+            providerRecovery.inputTreatment === "authorization_reframe"
+            ? { workflow: input.workflow, ...(clientName ? { clientName } : {}) }
+            : undefined,
+        )
+        route = providerRecovery?.kind === "admitted" ? providerRecovery.route : "main"
         attempt++
       }
     })

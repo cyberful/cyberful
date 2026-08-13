@@ -41,13 +41,15 @@ import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observa
 import { SurfaceCoverage, browserAction } from "./surface-coverage"
 import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry, HypothesisRegistryError } from "./hypothesis-registry"
 import {
-  applyEngagementRateLimit,
+  applyEngagementTrafficPolicy,
   ENGAGEMENT_POLICY_TOOL_DEF,
   EngagementPolicyStore,
+  engagementPolicyRequiresZap,
   readEngagementPolicy,
   type EngagementPolicy,
-  ZapRateLimitInstallError,
+  ZapEngagementPolicyInstallError,
 } from "./engagement-policy"
+import { REWARD_POLICY_READ_TOOL_DEF, REWARD_POLICY_TOOL_DEF, RewardPolicyStore } from "./reward-policy"
 import {
   TEST_OBJECT_TOOL_DEF,
   testObjectLifecycleFromEnvironment,
@@ -95,7 +97,7 @@ import { FindingRegistry } from "@/finding/registry"
 import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } from "../handoff-snapshot"
 import { CVE_DICTIONARY_TOOL_DEF, CveDictionaryTool } from "./cve-dictionary-tool"
 import { TARGET_COOLDOWN_TOOL_DEF, TARGET_COOLDOWN_TOOL_NAME, TargetCooldownController } from "./target-cooldown"
-import { RestartableBrowserUpstream } from "./restartable-browser-upstream"
+import { ManagedMcpUpstream, type ManagedMcpUpstreamStatus } from "./restartable-browser-upstream"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
@@ -105,6 +107,23 @@ const HUMAN_WAIT_HEARTBEAT_MS = 30_000
 const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HUMAN_WAIT_TOOL_NAMES = new Set(["question", SOURCE_IMPORT_TOOL_DEF.name])
 const TOOL_ACTOR_META_KEY = "io.cyberful/tool-actor"
+
+const RUNTIME_STATUS_TOOL_DEF = {
+  name: "runtime_status",
+  description:
+    "Inspect managed browser and Ghidra MCP connection generations or actively health-check them. First call action=status to discover active labels. Checks may replace a dead transport but never replay a failed research action; ZAP and cyberful-os are not managed by this tool.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      action: { type: "string", enum: ["status", "check"], default: "status" },
+      runtime: {
+        type: "string",
+        description:
+          "Optional exact label returned by action=status, such as ghidra, browser-1, or browser-search. Never use zap or cyberful-os.",
+      },
+    },
+  },
+}
 
 // ── Gateway Startup Rejects Unscoped Or Invalid Authority ───────────
 // A gateway may access variables for exactly one host-supplied session. Missing
@@ -292,6 +311,7 @@ function liveTargetToolDefinitions(input: {
   egress: boolean
   hypothesis: boolean
   engagementPolicy: boolean
+  rewardPolicy: false | "readonly" | "readwrite"
   targetCooldown: boolean
 }) {
   return [
@@ -299,6 +319,11 @@ function liveTargetToolDefinitions(input: {
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
     ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
     ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
+    ...(input.rewardPolicy === "readwrite"
+      ? [REWARD_POLICY_TOOL_DEF]
+      : input.rewardPolicy === "readonly"
+        ? [REWARD_POLICY_READ_TOOL_DEF]
+        : []),
     ...(input.targetCooldown ? [TARGET_COOLDOWN_TOOL_DEF] : []),
   ]
 }
@@ -310,6 +335,7 @@ function localToolDefinitions(
     egress: boolean
     hypothesis: boolean
     engagementPolicy: boolean
+    rewardPolicy: false | "readonly" | "readwrite"
     targetCooldown: boolean
   },
 ) {
@@ -323,6 +349,7 @@ function localToolDefinitions(
   const evmEvidence = policy.evmEvidence && evmEvidenceAvailable() ? [EVM_EVIDENCE_TOOL_DEF] : []
   const cveDictionary = policy.allows("cve-dictionary") ? [CVE_DICTIONARY_TOOL_DEF] : []
   return [
+    RUNTIME_STATUS_TOOL_DEF,
     ...sourceImport,
     ...source,
     ...codeGraph,
@@ -924,6 +951,16 @@ async function handleHandoff(
       hint: "The host must enforce and persist the traffic policy first.",
       message: "handoff requires engagement_policy to succeed in this Brief",
     })
+  if (guards.engagementPolicyRequired && guards.engagementPolicy?.stage !== "final")
+    return contractError({
+      code: "HANDOFF_ENGAGEMENT_POLICY_NOT_FINAL",
+      path: "engagement_policy.stage",
+      expected: "final",
+      received: guards.engagementPolicy?.stage,
+      retryable: true,
+      hint: "Finalize profile readiness after the traffic policy has been enforced.",
+      message: "handoff requires engagement_policy finalize to succeed in this Brief",
+    })
   const coverageError = await guards.coverage?.handoffError(guards.engagementPolicy)
   if (coverageError)
     return contractError({
@@ -1069,40 +1106,48 @@ function handleVariable(sessionID: SessionID, args: Record<string, unknown>) {
   }
 }
 
+export type ManagedRuntimeLabel = "ghidra" | `browser-${BrowserProfileId}`
+
 // An upstream tool re-exposed through the gateway: the definition the Expert sees, and how to invoke it.
 export interface UpstreamTool {
   def: { name: string; description?: string; inputSchema: unknown; _meta?: unknown }
   capability?: SubsystemPhase.WorkflowCapability
   browserProfile?: BrowserProfileId
+  managedRuntime?: ManagedRuntimeLabel
   call(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>
 }
 
-// ── One Browser Surface Selects Five Isolated Identities ────────────
-// Repeating every browser tool five times would obscure the useful tool surface
-// and weaken existing prompts that already know the `browser_*` names. The
-// gateway instead adds one bounded profile selector to each browser schema and
-// removes it before forwarding the call to that profile's unmodified MCP tool.
-// Profile one remains the default, preserving existing calls while natural
-// references such as "the second browser profile" map directly to `profile: 2`.
+// ── One Browser Surface Selects Target Or Research Identity ────────
+// Repeating every browser tool per identity would obscure the useful tool
+// surface. The gateway instead adds one bounded selector to ordinary browser
+// tools and removes it before forwarding. Profile one remains the compatibility
+// default, while `search` names the credential-free research identity. The
+// dedicated web_search tool is forced to that identity and never accepts a
+// caller-controlled profile.
 // ─────────────────────────────────────────────────────────────────────
 export function browserProfileToolDefinition(
   definition: UpstreamTool["def"],
   profiles: readonly BrowserProfileId[],
 ): UpstreamTool["def"] {
+  if (definition.name === "web_search") return definition
   if (!isRecord(definition.inputSchema)) return definition
   const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
+  const availableTargets = profiles.filter(BrowserProfile.isTargetBrowserProfileId)
+  const searchAvailable = profiles.includes(BrowserProfile.SEARCH_BROWSER_PROFILE_ID)
   return {
     ...definition,
-    description: `${definition.description ?? "Use the isolated browser."} Select profile 1-5 for a distinct authenticated browser identity; profile 1 is the default.`,
+    description: `${definition.description ?? "Use the isolated browser."} Select target profile 1-5 or the credential-free search profile; profile 1 is the default.`,
     inputSchema: {
       ...definition.inputSchema,
       properties: {
         ...properties,
         profile: {
-          type: "integer",
-          enum: profiles,
+          oneOf: [
+            ...(availableTargets.length > 0 ? [{ type: "integer", enum: availableTargets }] : []),
+            ...(searchAvailable ? [{ type: "string", enum: [BrowserProfile.SEARCH_BROWSER_PROFILE_ID] }] : []),
+          ],
           default: 1,
-          description: "Isolated browser identity: 1 is the first profile, through 5 for the fifth profile.",
+          description: "Isolated browser identity: target account 1-5, or search for unauthenticated web research.",
         },
       },
     },
@@ -1117,6 +1162,13 @@ export function selectBrowserProfileUpstream(
     (candidate): candidate is UpstreamTool & { browserProfile: BrowserProfileId } =>
       candidate.browserProfile !== undefined,
   )
+  if (candidates[0]?.def.name === "web_search") {
+    if (args.profile !== undefined) throw new Error("web_search does not accept a browser profile")
+    const upstream = profiled.find((candidate) => candidate.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID)
+    if (!upstream) throw new Error("web_search search profile is unavailable")
+    return { upstream, args }
+  }
+
   if (profiled.length === 0) {
     const upstream = candidates[0]
     if (!upstream) throw new Error("browser tool has no available upstream")
@@ -1125,7 +1177,7 @@ export function selectBrowserProfileUpstream(
 
   const requested = args.profile ?? 1
   if (!BrowserProfile.isBrowserProfileId(requested)) {
-    throw new Error("browser profile must be an integer from 1 through 5")
+    throw new Error("browser profile must be an integer from 1 through 5 or search")
   }
   const upstream = profiled.find((candidate) => candidate.browserProfile === requested)
   if (!upstream) throw new Error(`browser profile ${requested} is unavailable`)
@@ -1314,14 +1366,43 @@ function browserScope(
   profile: BrowserProfileId | undefined,
   coverage: SurfaceCoverage | undefined,
 ) {
-  if (profile === undefined || !tool.startsWith("browser_")) return
+  if (profile === undefined || (!tool.startsWith("browser_") && tool !== "web_search")) return
   const current = coverage?.currentScope(profile)
+  if (tool === "web_search") {
+    return {
+      profile,
+      origin: "https://html.duckduckgo.com",
+      pageID: current?.pageID ?? "pending",
+    }
+  }
   if (tool !== "browser_navigate" || typeof args.url !== "string") return current
   try {
     const url = new URL(args.url.includes("://") ? args.url : `http://${args.url}`)
     return { profile, origin: url.origin, pageID: current?.pageID ?? "pending" }
   } catch {
     return current
+  }
+}
+
+function browserProfileEgress(
+  tool: string,
+  args: Record<string, unknown>,
+  result: CallToolResult,
+  profile: BrowserProfileId | undefined,
+) {
+  const inferred = EgressObservation.observe(tool, args, result)
+  if (profile !== BrowserProfile.SEARCH_BROWSER_PROFILE_ID) return inferred
+  return {
+    ...inferred,
+    ...(tool === "web_search"
+      ? {
+          egress_host: "html.duckduckgo.com",
+          egress_method: "GET",
+          egress_path_family: "/html",
+        }
+      : {}),
+    egress_route: "browser/direct-search",
+    egress_observability: inferred?.egress_host ? inferred.egress_observability : ("inferred" as const),
   }
 }
 
@@ -1365,27 +1446,39 @@ function proxyEnabled(): boolean {
 export function resolveBrowserUpstreamEnv(input: {
   dedicated?: string
   artifactsDir: string
+  direct?: boolean
   livePort?: number
   tempProfileDir: string
 }): {
   set: Record<string, string>
   unset: string[]
 } {
-  if (input.dedicated && !input.livePort) {
-    return {
-      set: {
-        CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
-        CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
-      },
-      unset: [],
-    }
-  }
+  const resolved =
+    input.dedicated && !input.livePort
+      ? {
+          set: {
+            CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
+            CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
+          },
+        }
+      : {
+          set: {
+            CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
+            CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
+          },
+        }
   return {
-    set: {
-      CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
-      CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
-    },
-    unset: [],
+    ...resolved,
+    unset: input.direct
+      ? [
+          "CYBER_BROWSER_PROXY",
+          "CYBER_BROWSER_PROXY_CA_SPKI",
+          "CYBER_BROWSER_PROXY_WARNING",
+          "CYBER_BROWSER_CDP_ENDPOINT",
+          "CYBER_BROWSER_OWN_TAB",
+          "CYBER_BROWSER_SHARED_ATTESTATION",
+        ]
+      : [],
   }
 }
 
@@ -1447,6 +1540,7 @@ export function cyberfulOsProxyTrustEnv(
 // ZAP and Ghidra failures degrade visibly without inventing a capability that cannot run.
 // ──────────────────────────────────────────────────────────────
 const BRIEF_BROWSER_TOOLS = new Set([
+  "web_search",
   "browser_status",
   "browser_navigate",
   "browser_snapshot",
@@ -1468,6 +1562,54 @@ const BRIEF_BROWSER_TOOLS = new Set([
   "browser_close",
 ])
 
+const SPECIALIST_TOOL_CAPABILITIES: Readonly<Record<string, SubsystemPhase.WorkflowCapability>> = {
+  firmware_lab: "firmware-lab",
+  appliance_fingerprint: "firmware-lab",
+  unblob: "firmware-lab",
+  binwalk: "firmware-lab",
+  unsquashfs: "firmware-lab",
+  ubireader_extract_files: "firmware-lab",
+  dumpimage: "firmware-lab",
+  dtc: "firmware-lab",
+  qemu_aarch64: "firmware-lab",
+  qemu_arm: "firmware-lab",
+  native_static_analysis: "native-analysis",
+  binary_diff: "native-analysis",
+  checksec: "native-analysis",
+  readelf: "native-analysis",
+  objdump: "native-analysis",
+  xxd: "native-analysis",
+  archive_extract: "native-analysis",
+  seven_zip: "native-analysis",
+  clang_tidy: "native-analysis",
+  scan_build: "native-analysis",
+  cppcheck: "native-analysis",
+  bear: "native-analysis",
+  native_lab: "native-debug",
+  native_debug: "native-debug",
+  crash_triage: "native-debug",
+  gdb_multiarch: "native-debug",
+  gdbserver: "native-debug",
+  pwn: "native-debug",
+  strace: "native-debug",
+  ltrace: "native-debug",
+  eu_stack: "native-debug",
+  llvm_symbolizer: "native-debug",
+  ropgadget: "native-debug",
+  ropper: "native-debug",
+  patchelf: "native-debug",
+  valgrind: "native-debug",
+  harness_validate: "native-debug",
+  firefox_lab: "native-debug",
+  x11_clipboard: "native-debug",
+  fuzz_campaign: "fuzz-campaign",
+  afl_showmap: "fuzz-campaign",
+  afl_tmin: "fuzz-campaign",
+  afl_whatsup: "fuzz-campaign",
+  protocol_campaign: "protocol-campaign",
+  zgrab2: "protocol-campaign",
+}
+
 // ── Brief Publishes Preflight Capabilities, Not Research Tools ───
 // Brief still needs ordinary browser interaction for login and a local shell
 // for attachments and atomic MISSION.md replacement. Publishing a complete
@@ -1482,6 +1624,8 @@ function phaseUpstreamToolAllowed(
   capability: SubsystemPhase.WorkflowCapability | undefined,
   name: string,
 ) {
+  const specialistCapability = SPECIALIST_TOOL_CAPABILITIES[name]
+  if (specialistCapability) return policy.allows(specialistCapability)
   if (policy.phase !== "brief") return true
   if (capability === "isolated-exec") return name === "shell"
   if (capability === "browser") return BRIEF_BROWSER_TOOLS.has(name)
@@ -1494,20 +1638,28 @@ export function upstreamFailureIsBlocking(
 ) {
   return (
     key === "cyberful-os" ||
-    (key === "zap" && (env.CYBER_ZAP_REQUIRED_UPSTREAM === "1" || env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1"))
+    (key === "zap" &&
+      (env.CYBER_ZAP_REQUIRED_UPSTREAM === "1" ||
+        env.CYBER_ZAP_REQUIRED_BY_POLICY === "1" ||
+        env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1"))
   )
 }
 
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
   tools: UpstreamTool[]
   clients: Client[]
+  runtimeStatus: (input?: {
+    readonly check?: boolean
+    readonly runtime?: string
+    readonly signal?: AbortSignal
+  }) => Promise<readonly ManagedMcpUpstreamStatus[]>
   close: () => Promise<void>
 }> {
   const builtins = SubsystemUpstream.builtin()
   const out: UpstreamTool[] = []
   const clients: Client[] = []
   const ordinaryClients = new Set<Client>()
-  const browserUpstreams: RestartableBrowserUpstream<Client>[] = []
+  const managedUpstreams = new Map<string, ManagedMcpUpstream<Client>>()
   const ownedProcessRoots = new Set<number>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
@@ -1532,9 +1684,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   })
   const failurePolicyEnvironment = {
     ...process.env,
-    ...(workareaPolicy?.global_http_rps !== null && workareaPolicy?.global_http_rps !== undefined
-      ? { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" }
-      : {}),
+    ...(engagementPolicyRequiresZap(workareaPolicy) ? { CYBER_ZAP_REQUIRED_BY_POLICY: "1" } : {}),
   }
   for (const { key, capability, browserProfile } of upstreamCapabilities) {
     if (!policy.allows(capability)) continue
@@ -1551,6 +1701,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         const { set, unset } = resolveBrowserUpstreamEnv({
           dedicated,
           artifactsDir: BrowserProfile.browserArtifactsDir(browserProfile),
+          direct: browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID,
           livePort,
           tempProfileDir: path.join(
             os.tmpdir(),
@@ -1617,7 +1768,14 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           if (trust.code !== 0) throw new Error("cyberful-os engagement CA bundle is not readable")
         }
       }
-      let browserGeneration = 0
+      const managedRuntime: ManagedRuntimeLabel | undefined =
+        key === "ghidra"
+          ? "ghidra"
+          : key === "browser" && browserProfile !== undefined
+            ? `browser-${browserProfile}`
+            : undefined
+      const managedLabel = managedRuntime ?? key
+      let managedGeneration = 0
       const connectClient = async (onClose: () => void = () => undefined) => {
         const transport = new StdioClientTransport({
           command: cmd,
@@ -1656,12 +1814,12 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         }
         if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
         clients.push(client)
-        if (key === "browser") {
-          browserGeneration += 1
-          if (browserGeneration > 1)
-            log.warn("restarted profile-scoped browser MCP after transport loss", {
-              browserProfile,
-              generation: browserGeneration,
+        if (managedRuntime) {
+          managedGeneration += 1
+          if (managedGeneration > 1)
+            log.warn("restarted managed MCP after transport loss", {
+              upstream: managedLabel,
+              generation: managedGeneration,
             })
         } else {
           ordinaryClients.add(client)
@@ -1669,25 +1827,25 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         return { value: client, close: () => client.close() }
       }
 
-      let expectedBrowserTools: string[] | undefined
-      const browserUpstream =
-        key === "browser" && browserProfile !== undefined
-          ? new RestartableBrowserUpstream<Client>({
-              cancellationGraceMs: BROWSER_CANCELLATION_SETTLE_MS,
-              connect: connectClient,
-              probe: async (client, signal) => {
-                const names = (await client.listTools(undefined, { signal })).tools.map((tool) => tool.name).sort()
-                if (expectedBrowserTools && JSON.stringify(names) !== JSON.stringify(expectedBrowserTools))
-                  throw new Error(`browser profile ${browserProfile} tool catalog changed after restart`)
-              },
-              probeTimeoutMs: 5_000,
-            })
-          : undefined
-      const client = browserUpstream ? await browserUpstream.start() : (await connectClient()).value
+      let expectedManagedTools: string[] | undefined
+      const managedUpstream = managedRuntime
+        ? new ManagedMcpUpstream<Client>({
+            label: managedRuntime,
+            cancellationGraceMs: key === "browser" ? BROWSER_CANCELLATION_SETTLE_MS : 0,
+            connect: connectClient,
+            probe: async (client, signal) => {
+              const names = (await client.listTools(undefined, { signal })).tools.map((tool) => tool.name).sort()
+              if (expectedManagedTools && JSON.stringify(names) !== JSON.stringify(expectedManagedTools))
+                throw new Error(`${managedRuntime} tool catalog changed after restart`)
+            },
+            probeTimeoutMs: 5_000,
+          })
+        : undefined
+      const client = managedUpstream ? await managedUpstream.start() : (await connectClient()).value
       const { tools } = await client.listTools()
-      if (browserUpstream) {
-        expectedBrowserTools = tools.map((tool) => tool.name).sort()
-        browserUpstreams.push(browserUpstream)
+      if (managedUpstream && managedRuntime) {
+        expectedManagedTools = tools.map((tool) => tool.name).sort()
+        managedUpstreams.set(managedRuntime, managedUpstream)
       }
       for (const t of tools) {
         if (!phaseUpstreamToolAllowed(policy, capability, t.name)) continue
@@ -1696,6 +1854,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           def: t,
           capability,
           ...(browserProfile === undefined ? {} : { browserProfile }),
+          ...(managedRuntime ? { managedRuntime } : {}),
           // ── Tool Calls Share One Explicit Ten-Minute Ceiling ─────────────
           // Authorized scanners can legitimately run beyond the MCP SDK's
           // one-minute default. The gateway and Pi registration therefore
@@ -1712,7 +1871,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
               })
               return CallToolResultSchema.parse(result)
             }
-            return browserUpstream ? browserUpstream.call(invoke, signal) : invoke(client)
+            return managedUpstream ? managedUpstream.call(invoke, signal) : invoke(client)
           },
         })
       }
@@ -1777,6 +1936,11 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   return {
     tools: out,
     clients,
+    runtimeStatus: async (input = {}) => {
+      const candidates = [...managedUpstreams.entries()].filter(([label]) => !input.runtime || label === input.runtime)
+      if (!input.check) return candidates.map(([, upstream]) => upstream.status())
+      return Promise.all(candidates.map(([, upstream]) => upstream.health(input.signal)))
+    },
     close: async () => {
       const captured = await processSnapshot()
         .then((snapshot) => ownedProcessTree(snapshot, [...ownedProcessRoots]))
@@ -1786,7 +1950,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         })
       const operations = [
         ...Array.from(ordinaryClients, (client) => () => client.close()),
-        ...browserUpstreams.map((upstream) => () => upstream.close()),
+        ...Array.from(managedUpstreams.values(), (upstream) => () => upstream.close()),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
       const operationFailures = outcomes.flatMap((outcome) =>
@@ -1827,6 +1991,11 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
 export async function createGatewayServer(opts?: {
   upstreams?: UpstreamTool[]
   upstreamClients?: Client[]
+  runtimeStatus?: (input?: {
+    readonly check?: boolean
+    readonly runtime?: string
+    readonly signal?: AbortSignal
+  }) => Promise<readonly ManagedMcpUpstreamStatus[]>
   closeUpstreams?: () => Promise<void>
   upstreamDiagnosticSink?: (text: string) => void
 }): Promise<GatewayServer> {
@@ -1834,14 +2003,17 @@ export async function createGatewayServer(opts?: {
     ? {
         tools: opts.upstreams,
         clients: opts.upstreamClients ?? [],
+        runtimeStatus: opts.runtimeStatus ?? (async () => []),
         close: opts.closeUpstreams ?? (() => Promise.resolve()),
       }
     : proxyEnabled()
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
-      : { tools: [], clients: [], close: () => Promise.resolve() }
+      : { tools: [], clients: [], runtimeStatus: async () => [], close: () => Promise.resolve() }
   const policy = gatewayPhasePolicy()
-  const upstreams = connected.tools.filter((upstream) =>
-    phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name),
+  const upstreams = connected.tools.filter(
+    (upstream) =>
+      phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name) &&
+      (upstream.def.name !== "web_search" || upstream.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID),
   )
   const byName = new Map<string, UpstreamTool[]>()
   for (const upstream of upstreams) {
@@ -1868,8 +2040,14 @@ export async function createGatewayServer(opts?: {
     engagementPolicy: Boolean(
       workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
+    rewardPolicy:
+      workareaRoot && policy.workflow === "bug-bounty" && phase
+        ? phase === "brief"
+          ? "readwrite"
+          : "readonly"
+        : false,
     targetCooldown: liveTargetResearch,
-  }
+  } satisfies Parameters<typeof localToolDefinitions>[1]
   const localTools = localToolDefinitions(policy, liveTargetTools)
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
   const handoff = handoffConfig()
@@ -1894,7 +2072,9 @@ export async function createGatewayServer(opts?: {
       : undefined
   const engagementPolicy =
     workareaRoot && liveTargetTools.engagementPolicy ? new EngagementPolicyStore(workareaRoot) : undefined
-  let engagementPolicySetThisPhase = false
+  const rewardPolicy = workareaRoot && liveTargetTools.rewardPolicy ? new RewardPolicyStore(workareaRoot) : undefined
+  let engagementPolicyUpdatedThisPhase = false
+  let engagementTrafficConfiguredThisPhase = false
   const targetCooldown = localTools.some((tool) => tool.name === TARGET_COOLDOWN_TOOL_NAME)
     ? new TargetCooldownController()
     : undefined
@@ -1973,7 +2153,7 @@ export async function createGatewayServer(opts?: {
         testObjects,
         hypotheses,
         coverage,
-        engagementPolicy: engagementPolicy && !engagementPolicySetThisPhase ? undefined : enforcedEngagementPolicy,
+        engagementPolicy: engagementPolicy && !engagementPolicyUpdatedThisPhase ? undefined : enforcedEngagementPolicy,
         engagementPolicyRequired: engagementPolicy !== undefined,
         findings,
       })
@@ -1981,6 +2161,72 @@ export async function createGatewayServer(opts?: {
 
   for (const definition of localTools) {
     const name = definition.name
+    if (name === RUNTIME_STATUS_TOOL_DEF.name) {
+      tools.register(definition, async (args, context) => {
+        const action = args.action ?? "status"
+        if (action !== "status" && action !== "check")
+          return text({ error: "runtime_status action must be status or check" }, true)
+        if (args.runtime !== undefined && (typeof args.runtime !== "string" || !args.runtime.trim()))
+          return text({ error: "runtime_status runtime must be a non-empty exact label" }, true)
+        const runtime = typeof args.runtime === "string" ? args.runtime.trim() : undefined
+
+        // ── Discovery Errors Cannot Masquerade As Health Failures ─────
+        // Only browser and Ghidra bridges own reconnectable MCP generations.
+        // The gateway discovers their active labels before accepting a check, so
+        // a guessed ZAP or cyberful-os label is a non-retryable caller error and
+        // cannot produce a circular instruction to repeat the same invalid call.
+        // Actual probe failures retain their retryable health-error contract.
+        //
+        // @docs/runtimes/tool-catalog.md
+        // ──────────────────────────────────────────────────────────────
+        const available = await connected.runtimeStatus()
+        const availableRuntimes = available.map((status) => status.label).toSorted()
+        if (runtime && !availableRuntimes.includes(runtime))
+          return text(
+            {
+              error: {
+                code: "MCP_RUNTIME_UNKNOWN",
+                runtime,
+                retryable: false,
+                available_runtimes: availableRuntimes,
+                hint: "Use an exact managed runtime label returned by runtime_status action=status.",
+                recovery: { tool: "runtime_status", arguments: { action: "status" } },
+              },
+            },
+            true,
+          )
+        if (action === "status")
+          return text({
+            ok: true,
+            checked: false,
+            runtimes: runtime ? available.filter((status) => status.label === runtime) : available,
+          })
+        try {
+          const runtimes = await connected.runtimeStatus({
+            check: true,
+            ...(runtime ? { runtime } : {}),
+            signal: context.signal,
+          })
+          return text({ ok: true, checked: true, runtimes })
+        } catch (error) {
+          return text(
+            {
+              error: {
+                code: "MCP_RUNTIME_HEALTH_FAILED",
+                retryable: true,
+                hint: error instanceof Error ? error.message : String(error),
+                recovery: {
+                  tool: "runtime_status",
+                  arguments: { action: "check", ...(runtime ? { runtime } : {}) },
+                },
+              },
+            },
+            true,
+          )
+        }
+      })
+      continue
+    }
     if (name === SOURCE_IMPORT_TOOL_DEF.name) {
       tools.register(definition, async (args, context) => {
         try {
@@ -2155,8 +2401,83 @@ export async function createGatewayServer(opts?: {
     if (name === HYPOTHESIS_TOOL_DEF.name && hypotheses) {
       tools.register(definition, async (args) => {
         try {
+          if (args.action === "promote") {
+            if (
+              !findings ||
+              !phase ||
+              (policy.workflow !== "pentest" && policy.workflow !== "bug-bounty" && policy.workflow !== "code-audit")
+            )
+              return text({ error: "hypothesis promotion requires active finding and hypothesis registries" }, true)
+            const disposition = args.disposition
+            if (disposition !== "SUSPECTED" && disposition !== "CONFIRMED")
+              return text({ error: "hypothesis promotion disposition must be SUSPECTED or CONFIRMED" }, true)
+            const hypothesisID = typeof args.id === "string" ? args.id.trim() : ""
+            const findingKey =
+              typeof args.finding_key === "string" && args.finding_key.trim() ? args.finding_key.trim() : hypothesisID
+            const actor = isRecord(args._cyberful_actor) ? args._cyberful_actor : undefined
+            const runID = actor && typeof actor.runID === "string" ? actor.runID : boundSession()
+            const run = {
+              runID,
+              workflow: policy.workflow,
+              phase,
+            } satisfies FindingRegistry.RunContext
+            let finding: FindingRegistry.Finding
+            try {
+              finding = await findings.get(findingKey)
+              if (finding.title !== args.title)
+                return text({ error: `finding key '${findingKey}' already belongs to a different title` }, true)
+            } catch (error) {
+              if (!(error instanceof FindingRegistry.FindingRegistryError) || error.code !== "FINDING_NOT_FOUND")
+                throw error
+              finding = await findings.record(
+                {
+                  action: "record",
+                  key: findingKey,
+                  title: args.title,
+                  severity: args.severity,
+                  summary: args.summary,
+                  positive_evidence: args.positive_evidence,
+                  evidence_paths: args.evidence_paths,
+                  next_step: args.next_step,
+                },
+                run,
+              )
+            }
+            const latest = finding.observations.findLast((observation) => observation.review === "ASSESSED")
+            if (disposition === "CONFIRMED" && latest?.disposition.state !== "CONFIRMED")
+              finding = await findings.update(
+                {
+                  action: "update",
+                  id: finding.id,
+                  state: "CONFIRMED",
+                  proof: args.positive_evidence,
+                  severity: args.severity,
+                  summary: args.summary,
+                  evidence_paths: args.evidence_paths,
+                },
+                run,
+              )
+            const evidence = Array.isArray(args.positive_evidence) ? args.positive_evidence : [args.positive_evidence]
+            const hypothesis = await hypotheses.handle({
+              action: "update",
+              id: hypothesisID,
+              state: disposition,
+              finding_id: finding.id,
+              evidence,
+              evidence_refs: args.evidence_paths,
+              reason: args.reason,
+              ...(actor ? { _cyberful_actor: actor } : {}),
+            })
+            return text({
+              ok: true,
+              promotion: "ordered_idempotent",
+              finding,
+              hypothesis,
+            })
+          }
           return text(await hypotheses.handle(args))
         } catch (error) {
+          if (error instanceof HypothesisRegistryError) return text({ error: error.toolError(args) }, true)
           return text(
             {
               error: {
@@ -2178,7 +2499,13 @@ export async function createGatewayServer(opts?: {
       tools.register(definition, async (args) => {
         try {
           if (args.action === "get") return text((await engagementPolicy.get()) ?? { configured: false })
-          const policyResult = engagementPolicy.prepare(args)
+          if (args.action === "finalize" && !engagementTrafficConfiguredThisPhase)
+            return text({ error: "engagement_policy finalize requires configure to succeed in this Brief" }, true)
+          const current = await engagementPolicy.get()
+          const policyResult =
+            args.action === "configure"
+              ? engagementPolicy.prepareTraffic(args)
+              : engagementPolicy.finalize(current, args)
           const proxyUrl = process.env.CYBER_ZAP_PROXY_URL?.trim()
           const apiKey = process.env.CYBER_ZAP_API_KEY?.trim()
           if (!proxyUrl || !apiKey) {
@@ -2188,19 +2515,33 @@ export async function createGatewayServer(opts?: {
             })
             return text({ error: "engagement HTTP policy requires an active ZAP runtime" }, true)
           }
-          const enforcement = await applyEngagementRateLimit(policyResult as EngagementPolicy, { proxyUrl, apiKey })
+          const enforcement = await applyEngagementTrafficPolicy(policyResult, { proxyUrl, apiKey })
           await engagementPolicy.commit(policyResult)
           enforcedEngagementPolicy = policyResult
-          engagementPolicySetThisPhase = true
+          engagementPolicyUpdatedThisPhase = true
+          if (policyResult.stage === "traffic") engagementTrafficConfiguredThisPhase = true
           return text({ policy: policyResult, enforcement })
         } catch (error) {
-          if (error instanceof ZapRateLimitInstallError) {
+          if (error instanceof ZapEngagementPolicyInstallError) {
             await recordRequiredUpstreamFailure({
               code: error.validationCode ?? error.zapCode ?? error.kind,
               detail: "Required OWASP ZAP failed while enforcing the engagement policy.",
             })
             return text(error.toolResult(), true)
           }
+          return text({ error: error instanceof Error ? error.message : String(error) }, true)
+        }
+      })
+      continue
+    }
+    if (name === REWARD_POLICY_TOOL_DEF.name && rewardPolicy) {
+      tools.register(definition, async (args) => {
+        try {
+          if (args.action === "get") return text((await rewardPolicy.get()) ?? { configured: false })
+          if (phase !== "brief") return text({ error: "reward_policy set is available only in Bug Bounty Brief" }, true)
+          if (args.action !== "set") return text({ error: "reward_policy action must be set or get" }, true)
+          return text({ policy: await rewardPolicy.set(args) })
+        } catch (error) {
           return text({ error: error instanceof Error ? error.message : String(error) }, true)
         }
       })
@@ -2347,7 +2688,7 @@ export async function createGatewayServer(opts?: {
           }
         }
       }
-      const observedEgress = EgressObservation.observe(name, resolvedArgs, result)
+      const observedEgress = browserProfileEgress(name, resolvedArgs, result, upstream.browserProfile)
       const browserStatus = browserAction(result)?.status
       const egress =
         observedEgress && observedEgress.egress_http_status === undefined && browserStatus !== undefined
@@ -2382,7 +2723,7 @@ export async function createGatewayServer(opts?: {
           code: `${requiredUpstream}_transport_failed`,
           detail: `Required ${requiredUpstream} MCP upstream failed during a phase tool call.`,
         })
-      const egress = EgressObservation.observe(name, resolvedArgs, { content: [] })
+      const egress = browserProfileEgress(name, resolvedArgs, { content: [] }, upstream.browserProfile)
       await usage
         .record({
           ...callUsageMetadata({ name, args, meta: req.params._meta }),
@@ -2393,7 +2734,34 @@ export async function createGatewayServer(opts?: {
           ...(egress ? { egress_blocked: false, ...egress } : {}),
         })
         .catch((auditError) => log.warn("could not record failed phase tool call", { tool: name, error: auditError }))
-      throw error
+      if (requiredUpstream) throw error
+      const runtime =
+        upstream.managedRuntime ??
+        (upstream.browserProfile === undefined ? (upstream.capability ?? "mcp") : `browser-${upstream.browserProfile}`)
+      return text(
+        {
+          error: {
+            code: "UPSTREAM_TRANSPORT_FAILED",
+            runtime,
+            tool: name,
+            retryable: true,
+            action_replayed: false,
+            hint: errorMessage(error),
+            ...(upstream.managedRuntime
+              ? {
+                  recovery: {
+                    first: {
+                      tool: "runtime_status",
+                      arguments: { action: "check", runtime: upstream.managedRuntime },
+                    },
+                    then: { tool: name, arguments: adjusted.args },
+                  },
+                }
+              : {}),
+          },
+        },
+        true,
+      )
     }
   })
 

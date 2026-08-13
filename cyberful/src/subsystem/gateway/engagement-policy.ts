@@ -1,7 +1,7 @@
 // ── Host-Enforced Engagement Policy ─────────────────────────────
-// Stores the Brief's non-secret readiness and HTTP authority projection and
-//   applies one global ZAP rate-limit rule across matching authorized hosts.
-// → cyberful/src/subsystem/zap/runtime.ts — reapplies the rule to each fresh phase runtime.
+// Stores the Brief's non-secret readiness and HTTP traffic projection and
+//   applies host-scoped ZAP rate-limit and required-header rules.
+// → cyberful/src/subsystem/zap/runtime.ts — reapplies the rules to each fresh phase runtime.
 // → cyberful/src/subsystem/gateway/server.ts — exposes the Brief-owned policy tool.
 // @docs/runtimes/zap.md
 // @docs/user-guide/workflows.md
@@ -16,9 +16,25 @@ export const ENGAGEMENT_POLICY_PATH = "raw/policy/engagement.json"
 const ZAP_API_HOST = "zap"
 const ZAP_DIAGNOSTIC_LIMIT = 300
 const RATE_LIMIT_DESCRIPTION = "Cyberful engagement global HTTP budget"
+const REQUIRED_HEADER_DESCRIPTION_PREFIX = "Cyberful engagement required header: "
+const SENSITIVE_REQUEST_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "host",
+  "proxy-authorization",
+  "proxy-connection",
+  "set-cookie",
+])
+
+export interface EngagementRequiredHttpHeader {
+  readonly name: string
+  readonly value: string
+  readonly hosts: readonly string[]
+}
 
 export interface EngagementPolicy {
   readonly version: 1
+  readonly stage: "traffic" | "final"
   readonly updated_at: string
   readonly profiles: ReadonlyArray<{
     readonly profile: number
@@ -28,6 +44,7 @@ export interface EngagementPolicy {
   }>
   readonly authorized_http_hosts: readonly string[]
   readonly global_http_rps: number | null
+  readonly required_http_headers: readonly EngagementRequiredHttpHeader[]
 }
 
 function boundedText(value: unknown, label: string, maximum: number): string {
@@ -47,6 +64,50 @@ function hostPattern(value: unknown, index: number) {
   )
     throw new Error(`authorized_http_hosts[${index}] must be an exact host or *.domain wildcard`)
   return host
+}
+
+function hostIsAuthorized(host: string, authorizedHosts: readonly string[]) {
+  if (authorizedHosts.includes(host)) return true
+  if (host.startsWith("*.")) return false
+  return authorizedHosts.some(
+    (authorized) =>
+      authorized.startsWith("*.") &&
+      host.endsWith(`.${authorized.slice(2)}`) &&
+      host !== authorized.slice(2),
+  )
+}
+
+function requiredHttpHeader(
+  value: unknown,
+  index: number,
+  authorizedHosts: readonly string[],
+): EngagementRequiredHttpHeader {
+  if (!isRecord(value)) throw new Error(`required_http_headers[${index}] must be an object`)
+  if (typeof value.name !== "string") throw new Error(`required_http_headers[${index}].name must be a string`)
+  const name = value.name.trim()
+  if (!name || name.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name))
+    throw new Error(`required_http_headers[${index}].name is invalid`)
+  const normalizedName = name.toLowerCase()
+  if (
+    SENSITIVE_REQUEST_HEADERS.has(normalizedName) ||
+    /(?:^|-)(?:api-?key|password|secret|token)(?:-|$)/i.test(normalizedName)
+  )
+    throw new Error(`required_http_headers[${index}].name must identify a non-secret public header`)
+  if (typeof value.value !== "string") throw new Error(`required_http_headers[${index}].value must be a string`)
+  const headerValue = value.value.trim()
+  if (
+    !headerValue ||
+    headerValue.length > 2_000 ||
+    /[\u0000-\u001f\u007f]/.test(headerValue) ||
+    /\{\{\s*var:|\[session-variable:/i.test(headerValue)
+  )
+    throw new Error(`required_http_headers[${index}].value must be a non-secret public value`)
+  if (!Array.isArray(value.hosts) || value.hosts.length === 0 || value.hosts.length > 64)
+    throw new Error(`required_http_headers[${index}].hosts must contain 1..64 authorized host patterns`)
+  const hosts = [...new Set(value.hosts.map((host, hostIndex) => hostPattern(host, hostIndex)))]
+  if (hosts.some((host) => !hostIsAuthorized(host, authorizedHosts)))
+    throw new Error(`required_http_headers[${index}].hosts must be covered by authorized_http_hosts`)
+  return { name, value: headerValue, hosts }
 }
 
 function profile(value: unknown, index: number): EngagementPolicy["profiles"][number] {
@@ -88,15 +149,27 @@ function parse(value: unknown): EngagementPolicy {
         : undefined
   if (globalRps === undefined) throw new Error("engagement policy global_http_rps must be null or 1..1000")
   if (typeof value.updated_at !== "string") throw new Error("engagement policy timestamp is invalid")
+  const stage = value.stage === undefined ? "final" : value.stage
+  if (stage !== "traffic" && stage !== "final") throw new Error("engagement policy stage is invalid")
   const hosts = value.authorized_http_hosts.map(hostPattern)
   if (globalRps !== null && hosts.length === 0)
     throw new Error("engagement policy requires authorized HTTP hosts when global_http_rps is set")
+  const headerValues = value.required_http_headers === undefined ? [] : value.required_http_headers
+  if (!Array.isArray(headerValues) || headerValues.length > 16)
+    throw new Error("engagement policy required_http_headers must contain at most 16 entries")
+  const headers = headerValues.map((header, index) => requiredHttpHeader(header, index, hosts))
+  const duplicateHeader = headers.find(
+    (header, index) => headers.findIndex((candidate) => candidate.name.toLowerCase() === header.name.toLowerCase()) !== index,
+  )
+  if (duplicateHeader) throw new Error(`required_http_headers contains duplicate name ${duplicateHeader.name}`)
   return {
     version: 1,
+    stage,
     updated_at: value.updated_at,
     profiles: value.profiles.map(profile),
     authorized_http_hosts: [...new Set(hosts)],
     global_http_rps: globalRps,
+    required_http_headers: headers,
   }
 }
 
@@ -110,6 +183,15 @@ export async function readEngagementPolicy(workarea: string): Promise<Engagement
   return content === undefined ? undefined : parse(JSON.parse(content))
 }
 
+export function engagementPolicyRequiresZap(
+  policy?: Partial<Pick<EngagementPolicy, "global_http_rps" | "required_http_headers">>,
+) {
+  return (
+    (policy?.global_http_rps !== null && policy?.global_http_rps !== undefined) ||
+    (policy?.required_http_headers?.length ?? 0) > 0
+  )
+}
+
 function regexEscape(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
@@ -120,7 +202,7 @@ function rateLimitRegex(hosts: readonly string[]) {
       ? `(?:[^./:]+\\.)+${regexEscape(host.slice(2))}`
       : regexEscape(host),
   )
-  return `^https?://(?:${alternatives.join("|")})(?::[0-9]+)?(?:/|$)`
+  return `^https?://(?:${alternatives.join("|")})(?::[0-9]+)?(?:[/?#].*)?$`
 }
 
 interface ZapDiagnostic {
@@ -167,6 +249,7 @@ function sanitizedZapText(value: unknown, apiKey: string) {
     .replaceAll(apiKey, "[redacted:api-key]")
     .replace(/\bapikey\s*=\s*[^&\s"'<>]+/gi, "apikey=[redacted]")
     .replace(/\bmatchString\s*=\s*[^&\s"'<>]+/gi, "matchString=[redacted]")
+    .replace(/\breplacement\s*=\s*[^&\s"'<>]+/gi, "replacement=[redacted]")
     .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted:url]")
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
     .replace(/\s+/g, " ")
@@ -190,8 +273,8 @@ function zapDiagnostic(body: string, apiKey: string): ZapDiagnostic {
   }
 }
 
-export class ZapRateLimitInstallError extends Error {
-  readonly kind = "zap_rate_limit_install_failed"
+export class ZapEngagementPolicyInstallError extends Error {
+  readonly kind = "zap_engagement_policy_install_failed"
   readonly httpStatus?: number
   readonly zapCode?: string
   readonly zapMessage?: string
@@ -211,8 +294,8 @@ export class ZapRateLimitInstallError extends Error {
       : input.validation?.code
         ? `; Cyberful ${input.validation.code}`
         : ""
-    super(`could not install the engagement ZAP rate-limit rule (${status}${code})`)
-    this.name = "ZapRateLimitInstallError"
+    super(`could not install the engagement ZAP traffic policy (${status}${code})`)
+    this.name = "ZapEngagementPolicyInstallError"
     this.httpStatus = input.httpStatus
     this.zapCode = input.diagnostic?.code
     this.zapMessage = input.diagnostic?.message
@@ -260,16 +343,16 @@ async function zapNetworkRequest(
     })
   } catch {
     input.signal?.throwIfAborted()
-    throw new ZapRateLimitInstallError({ validation: { code: "transport_error" } })
+    throw new ZapEngagementPolicyInstallError({ validation: { code: "transport_error" } })
   }
   const body = await response.text()
   const diagnostic = zapDiagnostic(body, input.apiKey)
   if (!response.ok || diagnostic.code)
-    throw new ZapRateLimitInstallError({ httpStatus: response.status, diagnostic })
+    throw new ZapEngagementPolicyInstallError({ httpStatus: response.status, diagnostic })
   try {
     return JSON.parse(body) as unknown
   } catch {
-    throw new ZapRateLimitInstallError({
+    throw new ZapEngagementPolicyInstallError({
       httpStatus: response.status,
       validation: { code: "invalid_json", message: "ZAP returned a non-JSON network response" },
     })
@@ -283,7 +366,7 @@ function matchingRateLimitRules(value: unknown) {
       : value.getRateLimitRules
     : undefined
   if (!Array.isArray(registry))
-    throw new ZapRateLimitInstallError({
+    throw new ZapEngagementPolicyInstallError({
       validation: {
         code: "invalid_rule_registry",
         message: "ZAP Network API did not return a rate-limit rule array",
@@ -296,60 +379,194 @@ function matchingRateLimitRules(value: unknown) {
   )
 }
 
-// ── One ZAP Rule Owns The Aggregate HTTP Budget ─────────────────
+function matchingRequiredHeaderRules(value: unknown) {
+  const registry = isRecord(value) ? value.rules : undefined
+  if (!Array.isArray(registry))
+    throw new ZapEngagementPolicyInstallError({
+      validation: {
+        code: "invalid_replacer_registry",
+        message: "ZAP Replacer API did not return a rule array",
+        responseShape: sanitizedResponseShape(value),
+      },
+    })
+  return registry.filter(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) &&
+      typeof candidate.description === "string" &&
+      candidate.description.startsWith(REQUIRED_HEADER_DESCRIPTION_PREFIX),
+  )
+}
+
+function requiredHeaderDescription(header: EngagementRequiredHttpHeader) {
+  return `${REQUIRED_HEADER_DESCRIPTION_PREFIX}${header.name.toLowerCase()}`
+}
+
+function disabled(value: unknown) {
+  return value === false || String(value).toLowerCase() === "false"
+}
+
+function enabled(value: unknown) {
+  return value === true || String(value).toLowerCase() === "true"
+}
+
+function rateLimitRuleMatches(rule: Readonly<Record<string, unknown>>, policy: EngagementPolicy) {
+  return (
+    rule.description === RATE_LIMIT_DESCRIPTION &&
+    enabled(rule.enabled) &&
+    enabled(rule.matchRegex) &&
+    rule.matchString === rateLimitRegex(policy.authorized_http_hosts) &&
+    Number(rule.requestsPerSecond) === policy.global_http_rps &&
+    String(rule.groupBy).toLowerCase() === "rule"
+  )
+}
+
+function requiredHeaderRuleMatches(
+  rule: Readonly<Record<string, unknown>>,
+  header: EngagementRequiredHttpHeader,
+) {
+  return (
+    rule.description === requiredHeaderDescription(header) &&
+    rule.matchType === "REQ_HEADER" &&
+    disabled(rule.matchRegex) &&
+    rule.matchString === header.name &&
+    rule.replacement === header.value &&
+    rule.url === rateLimitRegex(header.hosts) &&
+    enabled(rule.enabled)
+  )
+}
+
+export type EngagementTrafficEnforcement = {
+  readonly state: "enforced"
+  readonly rate_limit:
+    | { readonly state: "not_required" }
+    | {
+        readonly state: "configured"
+        readonly requests_per_second: number
+        readonly hosts: readonly string[]
+        readonly group_by: "rule"
+      }
+  readonly required_headers:
+    | { readonly state: "not_required"; readonly count: 0 }
+    | {
+        readonly state: "configured"
+        readonly count: number
+        readonly names: readonly string[]
+        readonly hosts: readonly string[]
+      }
+}
+
+// ── ZAP Owns Every HTTP Traffic Invariant ────────────────────────
 // Browser profiles, ZAP replays, and proxy-aware clients all cross the same
-// Network add-on rule. groupBy=rule deliberately shares one counter across
-// every matching host instead of multiplying the advertised budget per host.
-// A configured policy is hard: inability to install the rule aborts startup so
-// a fresh phase cannot silently fall back to unthrottled target traffic.
+// host-scoped controls. The Network add-on shares one rate counter across the
+// authorized hosts, while Replacer adds only public program-required request
+// headers to their declared hosts. Absence of either requirement is explicitly
+// attested as not_required instead of being reported as failed configuration.
 //
 // @docs/runtimes/zap.md
 // ─────────────────────────────────────────────────────────────────
-export async function applyEngagementRateLimit(
+export async function applyEngagementTrafficPolicy(
   policy: EngagementPolicy | undefined,
   input: { readonly proxyUrl: string; readonly apiKey: string; readonly signal?: AbortSignal },
-) {
-  const existing = matchingRateLimitRules(
+): Promise<EngagementTrafficEnforcement> {
+  const existingRateLimits = matchingRateLimitRules(
     await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
   )
-  if (existing.length > 0)
+  if (existingRateLimits.length > 0)
     await zapNetworkRequest(
       "/JSON/network/action/removeRateLimitRule/",
       { description: RATE_LIMIT_DESCRIPTION },
       input,
     )
-  if (!policy || policy.global_http_rps === null) {
-    const remaining = matchingRateLimitRules(
-      await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
-    )
-    if (remaining.length !== 0)
-      throw new ZapRateLimitInstallError({ validation: { code: "rule_removal_attestation_failed" } })
-    return { configured: false as const }
-  }
-  await zapNetworkRequest(
-    "/JSON/network/action/addRateLimitRule/",
-    {
-      description: RATE_LIMIT_DESCRIPTION,
-      enabled: "true",
-      matchRegex: "true",
-      matchString: rateLimitRegex(policy.authorized_http_hosts),
-      requestsPerSecond: String(policy.global_http_rps),
-      groupBy: "rule",
-    },
-    input,
+  const existingHeaders = matchingRequiredHeaderRules(
+    await zapNetworkRequest("/JSON/replacer/view/rules/", {}, input),
   )
-  const installed = matchingRateLimitRules(
+  for (const rule of existingHeaders) {
+    await zapNetworkRequest(
+      "/JSON/replacer/action/removeRule/",
+      { description: String(rule.description) },
+      input,
+    )
+  }
+
+  if (policy?.global_http_rps !== null && policy?.global_http_rps !== undefined)
+    await zapNetworkRequest(
+      "/JSON/network/action/addRateLimitRule/",
+      {
+        description: RATE_LIMIT_DESCRIPTION,
+        enabled: "true",
+        matchRegex: "true",
+        matchString: rateLimitRegex(policy.authorized_http_hosts),
+        requestsPerSecond: String(policy.global_http_rps),
+        groupBy: "rule",
+      },
+      input,
+    )
+  for (const header of policy?.required_http_headers ?? []) {
+    await zapNetworkRequest(
+      "/JSON/replacer/action/addRule/",
+      {
+        description: requiredHeaderDescription(header),
+        enabled: "true",
+        matchType: "REQ_HEADER",
+        matchRegex: "false",
+        matchString: header.name,
+        replacement: header.value,
+        url: rateLimitRegex(header.hosts),
+      },
+      input,
+    )
+  }
+
+  const installedRateLimits = matchingRateLimitRules(
     await zapNetworkRequest("/JSON/network/view/getRateLimitRules/", {}, input),
   )
-  if (installed.length !== 1)
-    throw new ZapRateLimitInstallError({
-      validation: { code: "rule_attestation_failed", message: "expected exactly one Cyberful rate-limit rule" },
+  const expectedRateLimitCount = policy?.global_http_rps === null || policy?.global_http_rps === undefined ? 0 : 1
+  if (
+    installedRateLimits.length !== expectedRateLimitCount ||
+    (policy?.global_http_rps !== null &&
+      policy?.global_http_rps !== undefined &&
+      !installedRateLimits.some((rule) => rateLimitRuleMatches(rule, policy)))
+  )
+    throw new ZapEngagementPolicyInstallError({
+      validation: {
+        code: "rate_limit_attestation_failed",
+        message: `expected ${expectedRateLimitCount} exact Cyberful rate-limit rules`,
+      },
+    })
+  const installedHeaders = matchingRequiredHeaderRules(
+    await zapNetworkRequest("/JSON/replacer/view/rules/", {}, input),
+  )
+  const expectedHeaders = policy?.required_http_headers ?? []
+  if (
+    installedHeaders.length !== expectedHeaders.length ||
+    expectedHeaders.some((header) => !installedHeaders.some((rule) => requiredHeaderRuleMatches(rule, header)))
+  )
+    throw new ZapEngagementPolicyInstallError({
+      validation: {
+        code: "required_header_attestation_failed",
+        message: `expected ${expectedHeaders.length} exact Cyberful required-header rules`,
+      },
     })
   return {
-    configured: true as const,
-    requests_per_second: policy.global_http_rps,
-    hosts: policy.authorized_http_hosts,
-    group_by: "rule" as const,
+    state: "enforced",
+    rate_limit:
+      policy?.global_http_rps === null || policy?.global_http_rps === undefined
+        ? { state: "not_required" }
+        : {
+            state: "configured",
+            requests_per_second: policy.global_http_rps,
+            hosts: policy.authorized_http_hosts,
+            group_by: "rule",
+          },
+    required_headers:
+      expectedHeaders.length === 0
+        ? { state: "not_required", count: 0 }
+        : {
+            state: "configured",
+            count: expectedHeaders.length,
+            names: expectedHeaders.map((header) => header.name),
+            hosts: [...new Set(expectedHeaders.flatMap((header) => header.hosts))],
+          },
   }
 }
 
@@ -365,14 +582,34 @@ export class EngagementPolicyStore {
     return readEngagementPolicy(this.#workarea)
   }
 
-  prepare(args: Record<string, unknown>) {
-    if (args.action !== "set") throw new Error("engagement_policy action must be set")
+  prepareTraffic(args: Record<string, unknown>) {
+    if (args.action !== "configure") throw new Error("engagement_policy action must be configure")
+    if (args.profiles !== undefined) throw new Error("engagement_policy configure does not accept profiles")
     return parse({
       version: 1,
+      stage: "traffic",
       updated_at: new Date().toISOString(),
-      profiles: args.profiles,
+      profiles: [],
       authorized_http_hosts: args.authorized_http_hosts,
       global_http_rps: args.global_http_rps,
+      required_http_headers: args.required_http_headers,
+    })
+  }
+
+  finalize(current: EngagementPolicy | undefined, args: Record<string, unknown>) {
+    if (args.action !== "finalize") throw new Error("engagement_policy action must be finalize")
+    if (!current) throw new Error("engagement_policy finalize requires configure to succeed first")
+    if (
+      args.authorized_http_hosts !== undefined ||
+      args.global_http_rps !== undefined ||
+      args.required_http_headers !== undefined
+    )
+      throw new Error("engagement_policy finalize accepts only profiles")
+    return parse({
+      ...current,
+      stage: "final",
+      updated_at: new Date().toISOString(),
+      profiles: args.profiles,
     })
   }
 
@@ -391,12 +628,12 @@ export class EngagementPolicyStore {
 export const ENGAGEMENT_POLICY_TOOL_DEF = {
   name: "engagement_policy",
   description:
-    "Brief-owned non-secret projection of profile readiness, HTTP host authority, and the one aggregate HTTP requests-per-second limit enforced by ZAP. Call set once; retryable=false is a terminal host-runtime blocker for this Brief and never requires a human approval.",
+    "Brief-owned two-stage non-secret HTTP policy. Call configure before any numbered target-profile status or navigation so ZAP can attest authorized hosts, an optional aggregate requests-per-second limit, and public required request headers. Call finalize after profile readiness is known. retryable=false is a terminal host-runtime blocker for this Brief and never requires human repair.",
   inputSchema: {
     type: "object" as const,
     additionalProperties: false,
     properties: {
-      action: { type: "string", enum: ["set", "get"] },
+      action: { type: "string", enum: ["configure", "finalize", "get"] },
       profiles: {
         type: "array",
         maxItems: 5,
@@ -414,6 +651,22 @@ export const ENGAGEMENT_POLICY_TOOL_DEF = {
       },
       authorized_http_hosts: { type: "array", items: { type: "string" } },
       global_http_rps: { oneOf: [{ type: "integer", minimum: 1, maximum: 1_000 }, { type: "null" }] },
+      required_http_headers: {
+        type: "array",
+        maxItems: 16,
+        description:
+          "Public, non-secret request headers mandated by the engagement policy. Secret-bearing authorization, cookie, key, token, password, and secret headers are rejected.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" },
+            value: { type: "string" },
+            hosts: { type: "array", minItems: 1, maxItems: 64, items: { type: "string" } },
+          },
+          required: ["name", "value", "hosts"],
+        },
+      },
     },
     required: ["action"],
   },

@@ -80,7 +80,7 @@ class OutputSanitizerTest(unittest.TestCase):
         self.assertIn("stdout:\nok", text)
         self.assertNotIn("stderr:", text)
 
-    def test_shell_egress_metadata_records_host_changes_without_blocking(self) -> None:
+    def test_shell_egress_metadata_does_not_promote_command_text_to_observed_traffic(self) -> None:
         command_result = cyberful_os_mcp.CommandResult(
             target="cyberful-os",
             command="curl",
@@ -95,6 +95,7 @@ class OutputSanitizerTest(unittest.TestCase):
             result = cyberful_os_mcp.handle_shell({
                 "command": "curl -X POST https://other.example.test/v1/items/123?token=secret",
                 "egress": {
+                    "network": True,
                     "host": "expected.example.test",
                     "method": "POST",
                     "path_family": "/v1/items/:id",
@@ -104,9 +105,10 @@ class OutputSanitizerTest(unittest.TestCase):
 
         self.assertFalse(result["isError"])
         observation = result["_meta"][cyberful_os_mcp.EGRESS_META_KEY]
-        self.assertEqual(observation["host"], "other.example.test")
+        self.assertEqual(observation["host"], "expected.example.test")
         self.assertEqual(observation["path_family"], "/v1/items/:id")
-        self.assertTrue(observation["destination_changed"])
+        self.assertEqual(observation["observability"], "declared")
+        self.assertFalse(observation["destination_changed"])
         self.assertNotIn("token", str(observation))
 
     def test_shell_execution_survives_observation_failure(self) -> None:

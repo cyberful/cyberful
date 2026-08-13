@@ -51,6 +51,10 @@ const PhaseExtensionMinutes = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
   Schema.isLessThanOrEqualTo(60),
 )
+const RecoveryBonusMinutes = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(30),
+)
 const ReasoningEffort = Schema.Literals(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
 export type ReasoningEffort = Schema.Schema.Type<typeof ReasoningEffort>
 
@@ -111,6 +115,8 @@ export const DEFAULT_PHASE_RECOVERY = {
   max_restarts: 1,
   use_fallback_provider: true,
 } as const
+
+export const DEFAULT_FALLBACK_RECOVERY_BONUS_MINUTES = 5
 
 export interface PhaseRecoveryPolicy {
   readonly enabled: boolean
@@ -186,6 +192,7 @@ export const Info = Schema.Struct({
       }),
     ),
     fallback: Schema.Struct({
+      recovery_bonus_minutes: Schema.optional(RecoveryBonusMinutes),
       proactive: Schema.Struct({
         enabled: Schema.Boolean,
         percentage: Percentage,
@@ -243,6 +250,7 @@ agent:
     use_fallback_provider: true
 
   fallback:
+    recovery_bonus_minutes: 5
     proactive:
       enabled: false
       percentage: 2
@@ -497,6 +505,12 @@ export function subagentPolicy(settings: Info): SubagentPolicy {
 
 export function phaseRecoveryPolicy(settings: Info): PhaseRecoveryPolicy {
   return settings.agent.phase_recovery ?? DEFAULT_PHASE_RECOVERY
+}
+
+export function fallbackRecoveryBonusMs(settings: Info): number {
+  return (
+    settings.agent.fallback.recovery_bonus_minutes ?? DEFAULT_FALLBACK_RECOVERY_BONUS_MINUTES
+  ) * 60_000
 }
 
 export function compactionPolicy(settings: Info): CompactionPolicy {
