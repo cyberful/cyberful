@@ -33,4 +33,3 @@ After registration, rerun the failed npm job. Require two-factor authentication 
 - Keep `main` as the default protected branch and require **Typecheck, test, and docs** before merging.
 - Enable immutable GitHub Releases so publication locks the source tag and uploaded assets.
 - Configure the five npm trusted publishers exactly as described above.
-- Do not configure GHCR, Cosign, AWS runner roles, runtime environments, or container-package permissions for Cyberful releases; they are no longer part of the release path.
