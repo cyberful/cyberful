@@ -10,7 +10,7 @@ cyberful/builtin/
   cyberful.json
   agents/
     pentest/       brief, recon, exploit, hacker, verify, report, budgets
-    bug-bounty/    dedicated brief, verify, report, and shared-phase budgets
+    bug-bounty/    dedicated brief, recon, exploit, hacker, verify, report, and budgets
     code-audit/    scope, index, trace, hunt, attack, verify, report, budgets
     ask/           interactive follow-up persona and budget
   skills/*/SKILL.md
@@ -20,7 +20,7 @@ cyberful/builtin/
 
 ## Persona contract
 
-Each Markdown filename below a workflow or follow-up namespace is a phase or persona identifier used by the orchestrator. The host renders `baseInstructions.md` once for each phase, replacing its workflow authorization, hacker-profile, delegation, and workarea placeholders with the current runtime values. Workarea rules include the attested cyberful-os Linux architecture so agents can reject incompatible dynamic execution plans before invoking the lab. The authorization remains tied to the selected workflow even when Bug Bounty reuses a Pentest persona. The invariant target-content trust boundary lives directly in the template. Cyberful compiles the rendered document, host-owned phase rules, skill catalog, and run overlay into one immutable system message. Pi defaults, personal instructions, and ambient project configuration are not added.
+Each Markdown filename below a workflow or follow-up namespace is a phase or persona identifier used by the orchestrator. The host renders `baseInstructions.md` once for each phase, replacing its workflow authorization, hacker-profile, delegation, and workarea placeholders with the current runtime values. Workarea rules include the attested cyberful-os Linux architecture so agents can reject incompatible dynamic execution plans before invoking the lab. The invariant target-content trust boundary lives directly in the template. Cyberful compiles the rendered document, host-owned phase rules, skill catalog, and run overlay into one immutable system message. Pi defaults, personal instructions, and ambient project configuration are not added.
 
 Persona frontmatter declares a non-negative integer `subagents`. The host removes it from model-visible prose and combines it with the delegation limits in `settings.yaml`. Children remain inside the owning phase's workarea, private gateway, traffic policy, active-execution budget, and transcript boundary. Model, provider, tools, handoff, and context-sharing fields are not valid persona metadata.
 
@@ -38,7 +38,7 @@ The Bug Bounty Program chain is:
 brief → recon → exploit → hacker → verify → report → complete
 ```
 
-Its dedicated Brief writes the Pentest-compatible `MISSION.md`; Recon, Exploit, and Hacker resolve directly to the Pentest personas, including Recon's calibrated candidate and retained-coverage contract. Dedicated Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
+Its dedicated Brief writes the Pentest-compatible `MISSION.md`. Dedicated Recon, Exploit, and Hacker personas apply a qualitative reward lens, host-validated bounty context, and structurally checked portfolio convergence while retaining the standard `RECON.md`, `EXPLOIT.md`, and `HACKER.md` artifacts. Exploit and Hacker roots request one independent artifact-only `portfolio-critic` review in the first half of their phases; the review remains advisory and is not a host gate. Dedicated Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
 
 The Code Audit chain is:
 

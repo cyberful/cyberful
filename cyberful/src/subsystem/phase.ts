@@ -37,8 +37,8 @@ export type WorkflowCapability =
 // workarea. The phase runner includes that exact name in the prompt and rejects
 // completion when the file is absent, so a persona cannot substitute an
 // improvised filename that its successor will never read. A phase may also name
-// one first-party persona from another workflow, allowing Bug Bounty to reuse
-// Pentest execution policy without copied prompts that can silently drift.
+// one first-party persona from another workflow when sharing policy is explicit;
+// Bug Bounty research stays dedicated so reward strategy cannot drift to Pentest.
 // Extra evidence remains allowed; the deliverable identifies only the mandatory
 // handoff artifact.
 // ───────────────────────────────────────────────────────────────
@@ -145,9 +145,9 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     nextWorkflow: "ask",
     phases: [
       { name: "brief", deliverable: "MISSION.md" },
-      { name: "recon", deliverable: "RECON.md", persona: { workflow: "pentest", phase: "recon" } },
-      { name: "exploit", deliverable: "EXPLOIT.md", persona: { workflow: "pentest", phase: "exploit" } },
-      { name: "hacker", deliverable: "HACKER.md", persona: { workflow: "pentest", phase: "hacker" } },
+      { name: "recon", deliverable: "RECON.md" },
+      { name: "exploit", deliverable: "EXPLOIT.md" },
+      { name: "hacker", deliverable: "HACKER.md" },
       { name: "verify", deliverable: "BUG_BOUNTY_VERIFY.md" },
       { name: "report", deliverable: "BUG_BOUNTY_REPORT.md" },
     ],

@@ -13,6 +13,7 @@ Examples:
 - `nmap` runs `nmap`
 - `ffuf` runs `ffuf`
 - `certipy_ad` runs `certipy-ad`
+- `impacket_getuserspns` runs the CyberOS `impacket-GetUserSPNs` launcher with Kali's system Python
 - `evil_winrm` runs `evil-winrm`
 - `frida_ps` runs `frida-ps`
 - `jwt_cracker` runs `jwt-cracker`
@@ -33,7 +34,7 @@ Each CLI tool uses the same input shape:
 }
 ```
 
-The MCP server currently declares 223 tools: 202 CLI wrappers, three Python-library tools (`requests`, `bs4`, and `lxml`), thirteen managed specialist workflows, and five utility tools (`wordlists`, `capability_attestation`, optional `nuclei_templates`, `tool_inventory`, and the fallback `shell`). The public build exposes 222 because the optional JEB wrapper remains hidden until a private image proves it available.
+The MCP server currently declares 224 tools: 203 CLI wrappers, three Python-library tools (`requests`, `bs4`, and `lxml`), thirteen managed specialist workflows, and five utility tools (`wordlists`, `capability_attestation`, optional `nuclei_templates`, `tool_inventory`, and the fallback `shell`). The public build exposes 223 because the optional JEB wrapper remains hidden until a private image proves it available.
 
 TLS / web / recon scanners (added to the network/web surface):
 

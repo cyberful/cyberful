@@ -1,6 +1,7 @@
 // ── Cross-Workflow Hypothesis Registry ──────────────────────────
 // Persists investigation questions and their lifecycle once per workarea so
-//   Pentest, Bug Bounty, and Code Audit phases share one durable backlog.
+//   Pentest, Bug Bounty, and Code Audit phases share one durable backlog, while
+//   Bug Bounty research adds official reward context and portfolio convergence.
 // → cyberful/src/subsystem/gateway/server.ts — exposes the phase-scoped tool and handoff gate.
 // → cyberful/src/finding/registry.ts — remains the separate authority for reportable findings.
 // @docs/concepts/execution-model.md
@@ -13,6 +14,8 @@ import { readFile } from "node:fs/promises"
 import { isRecord } from "@/util/record"
 import { replaceWorkareaFile } from "@/workarea"
 import { BLOCKER_REASONS, type BlockerReason } from "../verdict"
+import type { Contract as NoveltyContract } from "../novelty"
+import { readRewardPolicy, type RewardPolicyKind, type RewardSeverity } from "./reward-policy"
 
 export const HYPOTHESIS_REGISTRY_PATH = "raw/hypotheses/registry.json"
 
@@ -29,6 +32,11 @@ const STATES = [
 export type HypothesisState = (typeof STATES)[number]
 const ACTIVE_HYPOTHESIS_STATES = ["OPEN", "QUEUED", "TESTING", "SUSPECTED"] as const
 const EXECUTED_DISPOSITIONS = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE"] as const
+const TERMINAL_PORTFOLIO_STATES = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE", "UNTESTABLE"] as const
+const TEST_COSTS = ["LOW", "MEDIUM", "HIGH"] as const
+const REWARD_GROUP_STATUSES = ["MAPPED", "UNRESOLVED", "NOT_APPLICABLE"] as const
+const REWARD_SEVERITIES = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as const
+const PIVOT_DIMENSIONS = ["impact_class", "boundary", "enforcement_owner"] as const
 const OMISSION_REASONS = [
   "not_discovered",
   "not_loaded",
@@ -55,6 +63,7 @@ interface ScopeResolution {
 
 interface Transition {
   readonly time_iso: string
+  readonly revision?: number
   readonly phase: string
   readonly owner: string
   readonly from?: HypothesisState
@@ -70,6 +79,39 @@ interface OwnershipTransition {
   readonly toDisplayName: string
   readonly toKind: "root" | "subagent" | "fallback"
   readonly reason: "recorded" | "claimed" | "phase_recovery" | "child_finished"
+}
+
+type TestCost = (typeof TEST_COSTS)[number]
+type RewardGroupStatus = (typeof REWARD_GROUP_STATUSES)[number]
+type PivotDimension = (typeof PIVOT_DIMENSIONS)[number]
+
+export interface BountyContext {
+  readonly cluster: string
+  readonly impact_class: string
+  readonly boundary: string
+  readonly enforcement_owner: string
+  readonly principals: readonly string[]
+  readonly objects: readonly string[]
+  readonly oracle: {
+    readonly vulnerable: string
+    readonly secure: string
+  }
+  readonly test_cost: TestCost
+  readonly reward: {
+    readonly target_severity: RewardSeverity
+    readonly group_status: RewardGroupStatus
+    readonly group_id?: string
+    readonly rationale: string
+    readonly policy_kind: RewardPolicyKind
+    readonly policy_revision?: string
+  }
+}
+
+interface BountyContextHistoryEntry {
+  readonly time_iso: string
+  readonly phase: string
+  readonly reason: string
+  readonly context: BountyContext
 }
 
 export interface Hypothesis {
@@ -99,6 +141,15 @@ export interface Hypothesis {
   readonly graph_refs: readonly string[]
   readonly transitions: readonly Transition[]
   readonly ownershipTransitions?: readonly OwnershipTransition[]
+  readonly bounty_context?: BountyContext
+  readonly bounty_context_history?: readonly BountyContextHistoryEntry[]
+}
+
+interface SynthesisPivot {
+  readonly hypothesis_id: string
+  readonly compared_to_hypothesis_ids: readonly string[]
+  readonly changed_dimensions: readonly PivotDimension[]
+  readonly distance_rationale: string
 }
 
 interface Synthesis {
@@ -108,6 +159,11 @@ interface Synthesis {
   readonly summary: string
   readonly evidence: readonly string[]
   readonly remaining_unknowns: readonly string[]
+  readonly evidence_refs?: readonly string[]
+  readonly pivots?: readonly SynthesisPivot[]
+  readonly exhausted_hypothesis_ids?: readonly string[]
+  readonly exhaustion_rationale?: string
+  readonly no_candidate_evidence_refs?: readonly string[]
 }
 
 interface Registry {
@@ -289,6 +345,103 @@ function textArray(value: unknown, label: string, maximumItems: number): readonl
   return [...new Set(value.map((item, index) => boundedText(item, `${label}[${index}]`, 1_000)))]
 }
 
+function requiredTextArray(value: unknown, label: string, maximumItems: number): readonly string[] {
+  const values = textArray(value, label, maximumItems)
+  if (values.length === 0) throw new Error(`${label} must contain at least one entry`)
+  return values
+}
+
+function exactObject(value: unknown, label: string, allowedKeys: readonly string[]): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) throw new Error(`${label} must be an object`)
+  const unexpected = Object.keys(value).filter((key) => !allowedKeys.includes(key))
+  if (unexpected.length > 0) throw new Error(`${label} contains unsupported field(s): ${unexpected.join(", ")}`)
+  return value
+}
+
+function enumValue<const Values extends readonly string[]>(
+  value: unknown,
+  label: string,
+  values: Values,
+): Values[number] {
+  if (typeof value !== "string" || !values.includes(value))
+    throw new Error(`${label} must be one of ${values.join(", ")}`)
+  return value as Values[number]
+}
+
+async function bountyContext(value: unknown, workarea: string): Promise<BountyContext> {
+  const input = exactObject(value, "hypothesis bounty_context", [
+    "cluster",
+    "impact_class",
+    "boundary",
+    "enforcement_owner",
+    "principals",
+    "objects",
+    "oracle",
+    "test_cost",
+    "reward",
+  ])
+  const oracle = exactObject(input.oracle, "hypothesis bounty_context.oracle", ["vulnerable", "secure"])
+  const reward = exactObject(input.reward, "hypothesis bounty_context.reward", [
+    "target_severity",
+    "group_status",
+    "group_id",
+    "rationale",
+  ])
+  const targetSeverity = enumValue(
+    reward.target_severity,
+    "hypothesis bounty_context.reward.target_severity",
+    REWARD_SEVERITIES,
+  )
+  const groupStatus = enumValue(
+    reward.group_status,
+    "hypothesis bounty_context.reward.group_status",
+    REWARD_GROUP_STATUSES,
+  )
+  const groupID = optionalText(reward.group_id, "hypothesis bounty_context.reward.group_id", 100)
+  const policy = await readRewardPolicy(workarea)
+  const policyKind = policy?.kind ?? "UNAVAILABLE"
+  const publishedGroups = policyKind === "MONETARY" || policyKind === "POINTS"
+
+  if (groupStatus === "MAPPED") {
+    if (!publishedGroups || !groupID)
+      throw new Error("MAPPED bounty reward context requires a published MONETARY or POINTS group_id")
+    const group = policy?.groups.find((candidate) => candidate.id === groupID)
+    if (!group) throw new Error(`bounty reward group '${groupID}' does not exist in the current official policy`)
+    if (!group.tiers.some((tier) => tier.severity === targetSeverity))
+      throw new Error(`bounty reward group '${groupID}' does not publish a ${targetSeverity} tier`)
+  }
+  if (groupStatus === "UNRESOLVED") {
+    if (!publishedGroups || groupID)
+      throw new Error("UNRESOLVED bounty reward context requires a published grouped policy and no group_id")
+    if (!policy?.groups.some((group) => group.tiers.some((tier) => tier.severity === targetSeverity)))
+      throw new Error(`the official grouped reward policy does not publish a ${targetSeverity} tier`)
+  }
+  if (groupStatus === "NOT_APPLICABLE" && (publishedGroups || groupID))
+    throw new Error("NOT_APPLICABLE bounty reward context is valid only without a published grouped reward policy")
+
+  return {
+    cluster: identifier(input.cluster, "hypothesis bounty_context.cluster"),
+    impact_class: boundedText(input.impact_class, "hypothesis bounty_context.impact_class", 500),
+    boundary: boundedText(input.boundary, "hypothesis bounty_context.boundary", 500),
+    enforcement_owner: boundedText(input.enforcement_owner, "hypothesis bounty_context.enforcement_owner", 500),
+    principals: requiredTextArray(input.principals, "hypothesis bounty_context.principals", 20),
+    objects: requiredTextArray(input.objects, "hypothesis bounty_context.objects", 20),
+    oracle: {
+      vulnerable: boundedText(oracle.vulnerable, "hypothesis bounty_context.oracle.vulnerable", 1_000),
+      secure: boundedText(oracle.secure, "hypothesis bounty_context.oracle.secure", 1_000),
+    },
+    test_cost: enumValue(input.test_cost, "hypothesis bounty_context.test_cost", TEST_COSTS),
+    reward: {
+      target_severity: targetSeverity,
+      group_status: groupStatus,
+      ...(groupID ? { group_id: groupID } : {}),
+      rationale: boundedText(reward.rationale, "hypothesis bounty_context.reward.rationale", 1_000),
+      policy_kind: policyKind,
+      ...(policy ? { policy_revision: policy.revision } : {}),
+    },
+  }
+}
+
 function mergeUnique(previous: readonly string[], additions: readonly string[], label: string): readonly string[] {
   const merged = [...new Set([...previous, ...additions])]
   if (merged.length > 50) throw new Error(`${label} must contain at most 50 unique entries`)
@@ -363,6 +516,193 @@ function isActiveHypothesisState(
   value: HypothesisState,
 ): value is (typeof ACTIVE_HYPOTHESIS_STATES)[number] {
   return ACTIVE_HYPOTHESIS_STATES.some((candidate) => candidate === value)
+}
+
+function isTerminalPortfolioState(value: HypothesisState): boolean {
+  return TERMINAL_PORTFOLIO_STATES.some((candidate) => candidate === value)
+}
+
+function transitionTime(hypothesis: Hypothesis, state: HypothesisState): number | undefined {
+  const transition = hypothesis.transitions.findLast((candidate) => candidate.to === state)
+  if (!transition) return undefined
+  const time = Date.parse(transition.time_iso)
+  return Number.isFinite(time) ? time : undefined
+}
+
+function transitionRevision(hypothesis: Hypothesis, state: HypothesisState): number | undefined {
+  return hypothesis.transitions.findLast((candidate) => candidate.to === state)?.revision
+}
+
+function isStrongNegative(hypothesis: Hypothesis): boolean {
+  return (
+    hypothesis.state === "DISPROVED" &&
+    hypothesis.transitions.some((transition) => transition.to === "TESTING") &&
+    transitionTime(hypothesis, "DISPROVED") !== undefined
+  )
+}
+
+interface ConvergenceSignal {
+  readonly cluster: string
+  readonly negative_hypothesis_ids: readonly [string, string]
+}
+
+function convergences(registry: Registry, workflow: string, phase: string): readonly ConvergenceSignal[] {
+  const groups = new Map<string, Hypothesis[]>()
+  for (const hypothesis of registry.hypotheses) {
+    if (
+      hypothesis.workflow !== workflow ||
+      hypothesis.phase !== phase ||
+      !hypothesis.bounty_context ||
+      !isStrongNegative(hypothesis)
+    )
+      continue
+    const grouped = groups.get(hypothesis.bounty_context.cluster) ?? []
+    grouped.push(hypothesis)
+    groups.set(hypothesis.bounty_context.cluster, grouped)
+  }
+  return [...groups.entries()].flatMap(([cluster, hypotheses]) => {
+    const ordered = hypotheses.toSorted(
+      (left, right) => transitionTime(left, "DISPROVED")! - transitionTime(right, "DISPROVED")!,
+    )
+    return ordered.length < 2 ? [] : [{ cluster, negative_hypothesis_ids: [ordered[0]!.id, ordered[1]!.id] as const }]
+  })
+}
+
+function newlyDetectedConvergence(
+  previous: Registry,
+  next: Registry,
+  workflow: string,
+  phase: string,
+): ConvergenceSignal | undefined {
+  const previousClusters = new Set(convergences(previous, workflow, phase).map((candidate) => candidate.cluster))
+  return convergences(next, workflow, phase).find((candidate) => !previousClusters.has(candidate.cluster))
+}
+
+function phaseHypothesis(
+  registry: Registry,
+  workflow: string,
+  phase: string,
+  value: unknown,
+  label: string,
+): Hypothesis {
+  const id = identifier(value, label)
+  const hypothesis = registry.hypotheses.find(
+    (candidate) => candidate.id === id && candidate.workflow === workflow && candidate.phase === phase,
+  )
+  if (!hypothesis) throw new Error(`${label} '${id}' does not identify a hypothesis owned by ${workflow}/${phase}`)
+  return hypothesis
+}
+
+function pivotValue(hypothesis: Hypothesis, dimension: PivotDimension): string {
+  const context = hypothesis.bounty_context
+  if (!context) throw new Error(`hypothesis '${hypothesis.id}' requires bounty_context`)
+  return context[dimension]
+}
+
+function parseSynthesisPivots(
+  value: unknown,
+  registry: Registry,
+  workflow: string,
+  phase: string,
+): readonly SynthesisPivot[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20)
+    throw new Error("diversified bounty synthesis requires between one and 20 pivots")
+  return value.map((candidate, index) => {
+    const input = exactObject(candidate, `hypothesis synthesis pivots[${index}]`, [
+      "hypothesis_id",
+      "compared_to_hypothesis_ids",
+      "changed_dimensions",
+      "distance_rationale",
+    ])
+    const pivot = phaseHypothesis(
+      registry,
+      workflow,
+      phase,
+      input.hypothesis_id,
+      `hypothesis synthesis pivots[${index}].hypothesis_id`,
+    )
+    if (!pivot.bounty_context) throw new Error(`pivot hypothesis '${pivot.id}' requires bounty_context`)
+    if (!pivot.transitions.some((transition) => transition.to === "TESTING"))
+      throw new Error(`pivot hypothesis '${pivot.id}' must be claimed into TESTING before synthesis`)
+    const comparedIDs = requiredTextArray(
+      input.compared_to_hypothesis_ids,
+      `hypothesis synthesis pivots[${index}].compared_to_hypothesis_ids`,
+      20,
+    ).map((id) => identifier(id, `hypothesis synthesis pivots[${index}].compared_to_hypothesis_ids`))
+    if (comparedIDs.includes(pivot.id)) throw new Error(`pivot hypothesis '${pivot.id}' cannot compare to itself`)
+    const compared = comparedIDs.map((id) =>
+      phaseHypothesis(
+        registry,
+        workflow,
+        phase,
+        id,
+        `hypothesis synthesis pivots[${index}].compared_to_hypothesis_ids`,
+      ),
+    )
+    if (compared.some((hypothesis) => !hypothesis.bounty_context))
+      throw new Error(`every comparison for pivot hypothesis '${pivot.id}' requires bounty_context`)
+    if (!Array.isArray(input.changed_dimensions) || input.changed_dimensions.length === 0)
+      throw new Error(`hypothesis synthesis pivots[${index}].changed_dimensions must not be empty`)
+    const dimensions = [
+      ...new Set(
+        input.changed_dimensions.map((dimension) =>
+          enumValue(dimension, `hypothesis synthesis pivots[${index}].changed_dimensions`, PIVOT_DIMENSIONS),
+        ),
+      ),
+    ]
+    const structurallyDifferent = dimensions.some((dimension) =>
+      compared.every((hypothesis) => pivotValue(pivot, dimension) !== pivotValue(hypothesis, dimension)),
+    )
+    if (!structurallyDifferent)
+      throw new Error(
+        `pivot hypothesis '${pivot.id}' does not differ from its comparison set on impact_class, boundary, or enforcement_owner`,
+      )
+    return {
+      hypothesis_id: pivot.id,
+      compared_to_hypothesis_ids: comparedIDs,
+      changed_dimensions: dimensions,
+      distance_rationale: boundedText(
+        input.distance_rationale,
+        `hypothesis synthesis pivots[${index}].distance_rationale`,
+        1_000,
+      ),
+    }
+  })
+}
+
+function synthesisResolvesConvergence(
+  synthesis: Synthesis,
+  convergence: ConvergenceSignal,
+  registry: Registry,
+  workflow: string,
+  phase: string,
+): boolean {
+  if (synthesis.outcome === "exhausted")
+    return convergence.negative_hypothesis_ids.every((id) => synthesis.exhausted_hypothesis_ids?.includes(id))
+  const negativeTimes = convergence.negative_hypothesis_ids.map((id) =>
+    transitionTime(phaseHypothesis(registry, workflow, phase, id, "convergence hypothesis"), "DISPROVED"),
+  )
+  const negativeRevisions = convergence.negative_hypothesis_ids.map((id) =>
+    transitionRevision(phaseHypothesis(registry, workflow, phase, id, "convergence hypothesis"), "DISPROVED"),
+  )
+  const detectedAt = Math.max(...negativeTimes.filter((time): time is number => time !== undefined))
+  const detectedRevision = Math.max(
+    ...negativeRevisions.filter((revision): revision is number => revision !== undefined),
+  )
+  return Boolean(
+    synthesis.pivots?.some((pivot) => {
+      if (!convergence.negative_hypothesis_ids.every((id) => pivot.compared_to_hypothesis_ids.includes(id)))
+        return false
+      const hypothesis = phaseHypothesis(registry, workflow, phase, pivot.hypothesis_id, "pivot hypothesis")
+      const claimedAt = transitionTime(hypothesis, "TESTING")
+      const claimedRevision = transitionRevision(hypothesis, "TESTING")
+      const claimedLater =
+        Number.isFinite(detectedRevision) && claimedRevision !== undefined
+          ? claimedRevision > detectedRevision
+          : claimedAt !== undefined && claimedAt > detectedAt
+      return claimedLater
+    }),
+  )
 }
 
 function blockerReason(value: unknown): BlockerReason | undefined {
@@ -548,6 +888,7 @@ export class HypothesisRegistry {
   readonly #phase: string
   readonly #readOnly: boolean
   readonly #synthesisRequired: boolean
+  readonly #bountyPortfolio: boolean
   #queue: Promise<void> = Promise.resolve()
 
   constructor(input: {
@@ -556,30 +897,34 @@ export class HypothesisRegistry {
     readonly phase: string
     readonly readOnly?: boolean
     readonly synthesisRequired?: boolean
+    readonly noveltyContract?: NoveltyContract
   }) {
     if (!path.isAbsolute(input.workarea)) throw new Error("hypothesis registry requires an absolute workarea root")
     this.#workarea = input.workarea
     this.#workflow = boundedText(input.workflow, "hypothesis workflow", 80)
     this.#phase = boundedText(input.phase, "hypothesis phase", 80)
     this.#readOnly = input.readOnly === true
-    this.#synthesisRequired = input.synthesisRequired === true
+    this.#synthesisRequired = input.synthesisRequired === true || input.noveltyContract?.required === true
+    this.#bountyPortfolio = input.noveltyContract?.mode === "bounty-portfolio"
   }
 
   handle(args: Record<string, unknown>) {
     if (args.action === "get") return this.get(args.id)
     if (args.action === "list") return this.list(args)
     if (args.action === "recover_ownership") {
-      if (args._cyberful_host !== true)
-        throw new Error("hypothesis ownership recovery is host-only")
+      if (args._cyberful_host !== true) throw new Error("hypothesis ownership recovery is host-only")
       return this.#recoverOwnership(args)
     }
     if (this.#readOnly) throw new Error("hypothesis registry is read-only in this phase")
     if (args.action === "record") return this.#record(args)
+    if (args.action === "set_bounty_context") return this.#setBountyContext(args)
     if (args.action === "update" && args.state === "TESTING") return this.#claim(args)
     if (args.action === "update") return this.#update(args)
     if (args.action === "claim" || args.action === "reopen") return this.#claim(args)
     if (args.action === "synthesize") return this.#synthesize(args)
-    throw new Error("hypothesis action must be record, claim, update, reopen, get, list, or synthesize")
+    throw new Error(
+      "hypothesis action must be record, set_bounty_context, claim, update, reopen, get, list, or synthesize",
+    )
   }
 
   async get(value: unknown) {
@@ -617,6 +962,30 @@ export class HypothesisRegistry {
     )
     if (invalidQueue.length > 0)
       return `hypothesis registry has entries queued to the wrong successor: ${invalidQueue.map((item) => item.id).join(", ")}`
+    if (this.#bountyPortfolio) {
+      const missingContext = owned.filter((hypothesis) => !hypothesis.bounty_context)
+      if (missingContext.length > 0)
+        return `Bug Bounty hypotheses require bounty_context before handoff: ${missingContext.map((item) => item.id).join(", ")}`
+      const synthesis = registry.syntheses.findLast((item) => item.phase === this.#phase)
+      if (
+        synthesis &&
+        ((synthesis.outcome === "diversified" && !synthesis.pivots?.length) ||
+          (synthesis.outcome === "exhausted" &&
+            !synthesis.exhausted_hypothesis_ids?.length &&
+            !synthesis.no_candidate_evidence_refs?.length))
+      )
+        return "Bug Bounty handoff requires a structured portfolio synthesis with real hypothesis references"
+      const unresolved = synthesis
+        ? convergences(registry, this.#workflow, this.#phase).filter(
+            (convergence) =>
+              !synthesisResolvesConvergence(synthesis, convergence, registry, this.#workflow, this.#phase),
+          )
+        : []
+      if (unresolved.length > 0)
+        return `Bug Bounty convergence requires a later structural pivot or evidenced exhaustion before handoff: ${unresolved
+          .map((item) => `${item.cluster} (${item.negative_hypothesis_ids.join(", ")})`)
+          .join("; ")}`
+    }
     if (this.#synthesisRequired && !registry.syntheses.some((item) => item.phase === this.#phase))
       return "hypothesis registry requires phase synthesis before handoff"
   }
@@ -653,7 +1022,10 @@ export class HypothesisRegistry {
     return this.#queue
   }
 
-  #record(args: Record<string, unknown>) {
+  async #record(args: Record<string, unknown>) {
+    if (!this.#bountyPortfolio && args.bounty_context !== undefined)
+      throw new Error("bounty_context is available only under the Bug Bounty portfolio contract")
+    const context = this.#bountyPortfolio ? await bountyContext(args.bounty_context, this.#workarea) : undefined
     return this.#mutate((registry) => {
       const description = boundedText(args.description ?? args.objective ?? args.title, "hypothesis description", 1_000)
       const rootCause = boundedText(args.root_cause, "hypothesis root_cause", 500)
@@ -685,7 +1057,8 @@ export class HypothesisRegistry {
           JSON.stringify(existing.omitted_tools) === JSON.stringify(omitted) &&
           JSON.stringify(existing.evidence) === JSON.stringify(evidence) &&
           JSON.stringify(existing.evidence_refs) === JSON.stringify(evidenceRefs) &&
-          JSON.stringify(existing.graph_refs) === JSON.stringify(graphRefs)
+          JSON.stringify(existing.graph_refs) === JSON.stringify(graphRefs) &&
+          JSON.stringify(existing.bounty_context) === JSON.stringify(context)
         if (repeated) return { registry, result: existing, changed: false }
         throw new Error(`hypothesis '${id}' already exists with different content`)
       }
@@ -716,7 +1089,15 @@ export class HypothesisRegistry {
         evidence,
         evidence_refs: evidenceRefs,
         graph_refs: graphRefs,
-        transitions: [{ time_iso: now, phase: this.#phase, owner, to: "OPEN", evidence: [] }],
+        transitions: [
+          { time_iso: now, revision: registry.revision + 1, phase: this.#phase, owner, to: "OPEN", evidence: [] },
+        ],
+        ...(context
+          ? {
+              bounty_context: context,
+              bounty_context_history: [{ time_iso: now, phase: this.#phase, reason: "recorded", context }],
+            }
+          : {}),
         ...(actor
           ? {
               ownershipTransitions: [
@@ -735,12 +1116,43 @@ export class HypothesisRegistry {
     })
   }
 
+  async #setBountyContext(args: Record<string, unknown>) {
+    if (!this.#bountyPortfolio)
+      throw new Error("set_bounty_context is available only under the Bug Bounty portfolio contract")
+    const context = await bountyContext(args.bounty_context, this.#workarea)
+    const reason = boundedText(args.reason, "hypothesis bounty_context change reason", 1_000)
+    return this.#mutate((registry) => {
+      const id = identifier(args.id, "hypothesis id")
+      const index = registry.hypotheses.findIndex((hypothesis) => hypothesis.id === id)
+      if (index < 0) throw missingHypothesis(registry, id)
+      const previous = registry.hypotheses[index]!
+      if (previous.workflow !== this.#workflow)
+        throw new Error(`hypothesis '${id}' belongs to workflow '${previous.workflow}'`)
+      if (JSON.stringify(previous.bounty_context) === JSON.stringify(context))
+        return { registry, result: previous, changed: false }
+      const now = new Date().toISOString()
+      const updated: Hypothesis = {
+        ...previous,
+        bounty_context: context,
+        bounty_context_history: [
+          ...(previous.bounty_context_history ?? []),
+          { time_iso: now, phase: this.#phase, reason, context },
+        ],
+      }
+      const hypotheses = [...registry.hypotheses]
+      hypotheses[index] = updated
+      return { registry: { ...registry, hypotheses }, result: updated }
+    })
+  }
+
   #update(args: Record<string, unknown>) {
     return this.#mutate((registry) => {
       const id = identifier(args.id, "hypothesis id")
       const index = registry.hypotheses.findIndex((item) => item.id === id)
       if (index < 0) throw missingHypothesis(registry, id)
       const previous = registry.hypotheses[index]!
+      if (this.#bountyPortfolio && !previous.bounty_context)
+        throw new Error(`hypothesis '${id}' requires set_bounty_context before a Bug Bounty state transition`)
       const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
       const evidence = textArray(args.evidence, "hypothesis evidence", 50)
@@ -859,6 +1271,7 @@ export class HypothesisRegistry {
           ...previous.transitions,
           {
             time_iso: now,
+            revision: registry.revision + 1,
             phase: this.#phase,
             owner,
             from: previous.state,
@@ -870,7 +1283,15 @@ export class HypothesisRegistry {
       }
       const hypotheses = [...registry.hypotheses]
       hypotheses[index] = updated
-      return { registry: { ...registry, hypotheses }, result: updated }
+      const nextRegistry = { ...registry, hypotheses }
+      const convergence =
+        this.#bountyPortfolio && nextState === "DISPROVED"
+          ? newlyDetectedConvergence(registry, nextRegistry, this.#workflow, this.#phase)
+          : undefined
+      return {
+        registry: nextRegistry,
+        result: convergence ? { ...updated, convergence } : updated,
+      }
     })
   }
 
@@ -888,6 +1309,8 @@ export class HypothesisRegistry {
       const index = registry.hypotheses.findIndex((item) => item.id === id)
       if (index < 0) throw missingHypothesis(registry, id)
       const previous = registry.hypotheses[index]!
+      if (this.#bountyPortfolio && !previous.bounty_context)
+        throw new Error(`hypothesis '${id}' requires set_bounty_context before a Bug Bounty claim`)
       const actor = hostActor(args._cyberful_actor)
       if (
         previous.state === "TESTING" &&
@@ -934,6 +1357,7 @@ export class HypothesisRegistry {
           ...previous.transitions,
           {
             time_iso: now,
+            revision: registry.revision + 1,
             phase: this.#phase,
             owner,
             from: previous.state,
@@ -953,21 +1377,94 @@ export class HypothesisRegistry {
     return this.#mutate((registry) => {
       if (args.outcome !== "diversified" && args.outcome !== "exhausted")
         throw new Error("hypothesis synthesis outcome must be diversified or exhausted")
+      const evidence = textArray(args.evidence, "hypothesis synthesis evidence", 30)
+      const evidenceRefs = textArray(args.evidence_refs, "hypothesis synthesis evidence_refs", 30)
+      if (evidence.length === 0) throw new Error("hypothesis synthesis requires evidence")
+      const phaseHypotheses = registry.hypotheses.filter(
+        (hypothesis) => hypothesis.workflow === this.#workflow && hypothesis.phase === this.#phase,
+      )
+      const activeBlockingHypotheses = phaseHypotheses.filter(
+        (hypothesis) => hypothesis.state === "OPEN" || hypothesis.state === "TESTING",
+      ).length
+      if (this.#bountyPortfolio) {
+        const missingContext = phaseHypotheses.filter((hypothesis) => !hypothesis.bounty_context)
+        if (missingContext.length > 0)
+          throw new Error(
+            `Bug Bounty synthesis requires bounty_context on ${missingContext.map((item) => item.id).join(", ")}`,
+          )
+      }
+      const pivots =
+        this.#bountyPortfolio && args.outcome === "diversified"
+          ? parseSynthesisPivots(args.pivots, registry, this.#workflow, this.#phase)
+          : undefined
+      let exhaustedHypothesisIDs: readonly string[] | undefined
+      let exhaustionRationale: string | undefined
+      let noCandidateEvidenceRefs: readonly string[] | undefined
+      if (this.#bountyPortfolio && args.outcome === "exhausted") {
+        if (activeBlockingHypotheses > 0)
+          throw new Error("exhausted Bug Bounty synthesis requires no OPEN or TESTING hypotheses")
+        exhaustedHypothesisIDs = textArray(
+          args.exhausted_hypothesis_ids,
+          "hypothesis synthesis exhausted_hypothesis_ids",
+          50,
+        ).map((id) => identifier(id, "hypothesis synthesis exhausted_hypothesis_ids"))
+        noCandidateEvidenceRefs = textArray(
+          args.no_candidate_evidence_refs,
+          "hypothesis synthesis no_candidate_evidence_refs",
+          30,
+        )
+        if (exhaustedHypothesisIDs.length === 0 && noCandidateEvidenceRefs.length === 0)
+          throw new Error(
+            "exhausted Bug Bounty synthesis requires terminal hypothesis IDs or no-candidate evidence references",
+          )
+        if (exhaustedHypothesisIDs.length === 0 && phaseHypotheses.length > 0)
+          throw new Error("no_candidate_evidence_refs is valid only when the phase contains no hypotheses")
+        const citedEvidenceRefs = new Set<string>()
+        for (const id of exhaustedHypothesisIDs) {
+          const hypothesis = phaseHypothesis(
+            registry,
+            this.#workflow,
+            this.#phase,
+            id,
+            "hypothesis synthesis exhausted_hypothesis_ids",
+          )
+          if (!isTerminalPortfolioState(hypothesis.state))
+            throw new Error(`exhaustion hypothesis '${id}' must have a terminal tested or untestable disposition`)
+          if (hypothesis.evidence_refs.length === 0)
+            throw new Error(`exhaustion hypothesis '${id}' requires target-specific evidence_refs`)
+          for (const reference of hypothesis.evidence_refs) citedEvidenceRefs.add(reference)
+        }
+        if (evidenceRefs.length === 0)
+          throw new Error("exhausted Bug Bounty synthesis requires target-specific evidence_refs")
+        if (
+          exhaustedHypothesisIDs.length > 0 &&
+          evidenceRefs.some((reference) => !citedEvidenceRefs.has(reference))
+        )
+          throw new Error("exhausted Bug Bounty synthesis evidence_refs must be linked by its cited hypotheses")
+        if (
+          noCandidateEvidenceRefs.length > 0 &&
+          noCandidateEvidenceRefs.some((reference) => !evidenceRefs.includes(reference))
+        )
+          throw new Error("no_candidate_evidence_refs must also appear in synthesis evidence_refs")
+        exhaustionRationale = boundedText(args.exhaustion_rationale, "hypothesis synthesis exhaustion_rationale", 2_000)
+      }
       const synthesis: Synthesis = {
         time_iso: new Date().toISOString(),
         phase: this.#phase,
         outcome: args.outcome,
         summary: boundedText(args.summary ?? args.contrarian_summary, "hypothesis synthesis summary", 4_000),
-        evidence: textArray(args.evidence, "hypothesis synthesis evidence", 30),
+        evidence,
         remaining_unknowns: textArray(args.remaining_unknowns, "hypothesis remaining_unknowns", 30),
+        ...(evidenceRefs.length > 0 ? { evidence_refs: evidenceRefs } : {}),
+        ...(pivots ? { pivots } : {}),
+        ...(exhaustedHypothesisIDs && exhaustedHypothesisIDs.length > 0
+          ? { exhausted_hypothesis_ids: exhaustedHypothesisIDs }
+          : {}),
+        ...(exhaustionRationale ? { exhaustion_rationale: exhaustionRationale } : {}),
+        ...(noCandidateEvidenceRefs && noCandidateEvidenceRefs.length > 0
+          ? { no_candidate_evidence_refs: noCandidateEvidenceRefs }
+          : {}),
       }
-      if (synthesis.evidence.length === 0) throw new Error("hypothesis synthesis requires evidence")
-      const activeBlockingHypotheses = registry.hypotheses.filter(
-        (hypothesis) =>
-          hypothesis.workflow === this.#workflow &&
-          hypothesis.phase === this.#phase &&
-          (hypothesis.state === "OPEN" || hypothesis.state === "TESTING"),
-      ).length
       return {
         registry: {
           ...registry,
@@ -1086,6 +1583,70 @@ const scopeResolutionSchema = {
   ],
 }
 
+const bountyContextSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    cluster: { type: "string" },
+    impact_class: { type: "string" },
+    boundary: { type: "string" },
+    enforcement_owner: { type: "string" },
+    principals: { type: "array", minItems: 1, maxItems: 20, items: { type: "string" } },
+    objects: { type: "array", minItems: 1, maxItems: 20, items: { type: "string" } },
+    oracle: {
+      type: "object",
+      additionalProperties: false,
+      properties: { vulnerable: { type: "string" }, secure: { type: "string" } },
+      required: ["vulnerable", "secure"],
+    },
+    test_cost: { type: "string", enum: TEST_COSTS },
+    reward: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        target_severity: { type: "string", enum: REWARD_SEVERITIES },
+        group_status: { type: "string", enum: REWARD_GROUP_STATUSES },
+        group_id: { type: "string" },
+        rationale: { type: "string" },
+      },
+      required: ["target_severity", "group_status", "rationale"],
+    },
+  },
+  required: [
+    "cluster",
+    "impact_class",
+    "boundary",
+    "enforcement_owner",
+    "principals",
+    "objects",
+    "oracle",
+    "test_cost",
+    "reward",
+  ],
+}
+
+const synthesisPivotSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    hypothesis_id: { type: "string" },
+    compared_to_hypothesis_ids: {
+      type: "array",
+      minItems: 1,
+      maxItems: 20,
+      items: { type: "string" },
+    },
+    changed_dimensions: {
+      type: "array",
+      minItems: 1,
+      maxItems: PIVOT_DIMENSIONS.length,
+      items: { type: "string", enum: PIVOT_DIMENSIONS },
+    },
+    distance_rationale: { type: "string" },
+  },
+  required: ["hypothesis_id", "compared_to_hypothesis_ids", "changed_dimensions", "distance_rationale"],
+}
+
 function hypothesisActionSchema(
   action: string,
   properties: Record<string, unknown> = {},
@@ -1105,7 +1666,7 @@ function hypothesisActionSchema(
 export const HYPOTHESIS_TOOL_DEF = {
   name: "hypothesis",
   description:
-    "Record, claim, carry, and close durable hypotheses across phases. claim is the sole atomic admission into TESTING; OPEN and TESTING block handoff; QUEUED requires an exact successor and next step; positive states require a linked finding.",
+    "Record, contextualize, claim, carry, and close durable hypotheses. Bug Bounty portfolio phases require reward-aware bounty_context and structurally referenced pivots; no numeric ranking is performed.",
   inputSchema: {
     type: "object" as const,
     oneOf: [
@@ -1119,9 +1680,15 @@ export const HYPOTHESIS_TOOL_DEF = {
           surface: { type: "string" },
           discriminator: { type: "string" },
           candidate_tools: { type: "array", maxItems: 30, items: { type: "string" } },
+          bounty_context: bountyContextSchema,
           ...hypothesisEvidenceProperties,
         },
         ["id", "owner", "description", "root_cause", "surface", "discriminator"],
+      ),
+      hypothesisActionSchema(
+        "set_bounty_context",
+        { id: { type: "string" }, bounty_context: bountyContextSchema, reason: { type: "string" } },
+        ["id", "bounty_context", "reason"],
       ),
       hypothesisActionSchema(
         "update",
@@ -1239,7 +1806,12 @@ export const HYPOTHESIS_TOOL_DEF = {
           outcome: { type: "string", enum: ["diversified", "exhausted"] },
           summary: { type: "string" },
           evidence: { type: "array", minItems: 1, maxItems: 30, items: { type: "string" } },
+          evidence_refs: { type: "array", maxItems: 30, items: { type: "string" } },
           remaining_unknowns: { type: "array", maxItems: 30, items: { type: "string" } },
+          pivots: { type: "array", maxItems: 20, items: synthesisPivotSchema },
+          exhausted_hypothesis_ids: { type: "array", maxItems: 50, items: { type: "string" } },
+          exhaustion_rationale: { type: "string" },
+          no_candidate_evidence_refs: { type: "array", maxItems: 30, items: { type: "string" } },
         },
         ["outcome", "summary", "evidence"],
       ),

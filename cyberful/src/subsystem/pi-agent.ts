@@ -3543,6 +3543,17 @@ export class PiAgentSubsystem implements AgentSubsystem {
           kind: "status",
           text: "Hypothesis synthesis diversified: continue only with the recorded discriminators; avoid repeating converged work.",
         })
+      const convergence = record(record(details)?.convergence)
+      if (
+        event.toolName === "hypothesis" &&
+        !event.isError &&
+        typeof convergence?.cluster === "string" &&
+        Array.isArray(convergence.negativeHypothesisIDs)
+      )
+        this.#emitActivity(state, {
+          kind: "status",
+          text: `Hypothesis convergence detected in '${convergence.cluster}' after ${convergence.negativeHypothesisIDs.join(", ")}. Prefer a different impact or enforcement boundary next; handoff will require that structural pivot or evidenced exhaustion.`,
+        })
       this.#emitActivity(state, {
         kind: "output",
         text:

@@ -422,7 +422,7 @@ describe("runPhase transcript persistence", () => {
           if (filePath.endsWith("budgets.json"))
             return JSON.stringify({
               recon: 60,
-              $novelty: { recon: { required: true } },
+              $novelty: { recon: { required: true, mode: "bounty-portfolio" } },
             })
           return phaseInstructionFile(filePath) ?? "{}"
         },
@@ -436,6 +436,7 @@ describe("runPhase transcript persistence", () => {
 
     expect(system).toContain("## Contrarian pass")
     expect(system).toMatch(/no numeric quotas/i)
+    expect(system).toMatch(/requires a reward-aware `bounty_context`/i)
     expect(JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"))
       .toEqual(result.noveltyContract)
   })

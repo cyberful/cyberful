@@ -44,6 +44,10 @@ export interface PiMcpToolDetails {
   readonly isError: false
   readonly synthesisOutcome?: "diversified" | "exhausted"
   readonly activeBlockingHypotheses?: number
+  readonly convergence?: {
+    readonly cluster: string
+    readonly negativeHypothesisIDs: readonly string[]
+  }
 }
 
 export interface PiMcpConnectOptions {
@@ -197,10 +201,10 @@ function classifyGatewayStderr(
   }
 }
 
-function hypothesisSynthesisDetails(
+function hypothesisDetails(
   name: string,
   result: McpCallResult,
-): Pick<PiMcpToolDetails, "synthesisOutcome" | "activeBlockingHypotheses"> {
+): Pick<PiMcpToolDetails, "synthesisOutcome" | "activeBlockingHypotheses" | "convergence"> {
   if (name !== "hypothesis" || "toolResult" in result) return {}
   const text = result.content.find(
     (block): block is Extract<(typeof result.content)[number], { type: "text" }> => block.type === "text",
@@ -208,11 +212,19 @@ function hypothesisSynthesisDetails(
   if (!text) return {}
   try {
     const value: unknown = JSON.parse(text)
-    if (!isRecord(value) || (value.outcome !== "diversified" && value.outcome !== "exhausted")) return {}
+    if (!isRecord(value)) return {}
+    const convergence = isRecord(value.convergence) ? value.convergence : undefined
+    const negativeHypothesisIDs = Array.isArray(convergence?.negative_hypothesis_ids)
+      ? convergence.negative_hypothesis_ids.filter((id): id is string => typeof id === "string")
+      : []
     return {
-      synthesisOutcome: value.outcome,
-      ...(typeof value.activeBlockingHypotheses === "number"
+      ...(value.outcome === "diversified" || value.outcome === "exhausted" ? { synthesisOutcome: value.outcome } : {}),
+      ...(typeof value.activeBlockingHypotheses === "number" &&
+      (value.outcome === "diversified" || value.outcome === "exhausted")
         ? { activeBlockingHypotheses: Math.max(0, Math.floor(value.activeBlockingHypotheses)) }
+        : {}),
+      ...(typeof convergence?.cluster === "string" && negativeHypothesisIDs.length >= 2
+        ? { convergence: { cluster: convergence.cluster, negativeHypothesisIDs } }
         : {}),
     }
   } catch {
@@ -498,14 +510,14 @@ function piTool(
         })
         throw new Error(message)
       }
-      const synthesis = hypothesisSynthesisDetails(definition.name, result)
+      const hypothesis = hypothesisDetails(definition.name, result)
       return {
         content: convertContent(result),
         details: {
           serverName,
           toolName: definition.name,
           isError: false,
-          ...synthesis,
+          ...hypothesis,
         },
       }
     },

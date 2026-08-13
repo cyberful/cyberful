@@ -134,7 +134,7 @@ export function parsePersona(source: string): Persona {
 export function delegationInstructions(
   subagents: number,
   enabled: boolean,
-  ownership: Pick<CompileInput, "role" | "handoffOwner">,
+  ownership: Pick<CompileInput, "role" | "handoffOwner" | "workflow" | "phase">,
 ): string {
   if (!enabled || subagents === 0) return "Do not spawn subagents during this phase; complete the work directly."
   const completion = ownership.handoffOwner
@@ -142,10 +142,14 @@ export function delegationInstructions(
     : ownership.role === "root"
       ? "Delegate only bounded, non-overlapping work that benefits from parallel execution, then synthesize the results and own this root run's final response. This run has no phase handoff."
       : "Delegate only bounded, non-overlapping work that benefits from parallel execution, then synthesize the results and return them to the parent AgentRun. Do not call the phase handoff."
+  const bountyPortfolioCritic =
+    ownership.workflow === "bug-bounty" && (ownership.phase === "exploit" || ownership.phase === "hacker")
   return [
     `Direct subagents are available for genuinely parallelizable work, with no more than ${subagents} subagents active at the same time.`,
     completion,
-    "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. It executes its task directly and returns a verdict; no passive, offline, discovery-only, or deferred-to-parent mode exists.",
+    bountyPortfolioCritic
+      ? "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. Operational children execute their discriminators directly. The original phase root may assign one artifact-only portfolio critic whose direct task is independent strategic review; that critic advises through its declared artifact and does not test the target or own handoff."
+      : "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. It executes its task directly and returns a verdict; no passive, offline, discovery-only, or deferred-to-parent mode exists.",
   ].join("\n")
 }
 

@@ -657,7 +657,13 @@ export function buildPhasePrompt(
       ? [
           "## Contrarian pass",
           "Use `hypothesis` for target-specific hypotheses and its `synthesize` action for the contrarian pass. If ideas converge, pivot across a genuinely different mechanism, boundary, protocol, state, capability, or oracle; route variation alone is coverage, not causal novelty.",
-          "Before handoff, synthesize either the semantic pivots you exercised or target-specific evidence that useful diversification is exhausted. There are no numeric quotas.",
+          ...(novelty.mode === "bounty-portfolio"
+            ? [
+                "Every Bug Bounty research hypothesis requires a reward-aware `bounty_context`. A diversified synthesis references claimed pivot IDs, their comparison IDs, changed impact/boundary dimensions, and distance rationale; exhausted synthesis references terminal hypotheses and target evidence.",
+                "Two tested DISPROVED hypotheses in one declared cluster create convergence. The next strategic move should change impact or enforcement boundary, while the host waits until handoff to require that pivot or evidenced exhaustion.",
+              ]
+            : []),
+          "Before handoff, synthesize either the semantic pivots you exercised or target-specific evidence that useful diversification is exhausted. There are no numeric quotas or automatic rankings.",
           "",
         ]
       : []),

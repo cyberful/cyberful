@@ -699,12 +699,14 @@ RUN mkdir -p /etc/kali-motd \
 # registry implementation shipped beside this image and fail the build if any
 # required command or Python module is absent. The smoke probes also catch
 # installations that leave a binary on PATH but cannot actually initialize.
+COPY --chmod=0755 cyberful-os/scripts/impacket-GetUserSPNs /usr/local/bin/impacket-GetUserSPNs
 COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
 COPY cyberful-os/mcp_framing.py /opt/cyberful-os/mcp_framing.py
 COPY cyberful-os/native_security.py /opt/cyberful-os/native_security.py
 COPY cyberful-os/prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
+  && impacket-GetUserSPNs -h >/dev/null \
   && rg --version \
   && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c 'import websocket; print(websocket.__version__)' \
   && nuclei -version \

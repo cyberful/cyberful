@@ -1,5 +1,5 @@
 // ── Built-In Bug Bounty Workflow Tests ──────────────────────────
-// Verifies the dedicated policy boundaries, shared Pentest execution personas,
+// Verifies dedicated reward-aware personas, policy boundaries,
 // submission artifacts, budgets, and live-target capability contract.
 // → cyberful/src/subsystem/phase.ts — owns workflow policy and persona resolution.
 // ─────────────────────────────────────────────────────────────────
@@ -66,26 +66,21 @@ describe("built-in Bug Bounty Program workflow", () => {
     ])
   })
 
-  test("uses dedicated boundary personas and the exact Pentest execution personas", async () => {
+  test("uses one dedicated persona for every Bug Bounty phase", async () => {
     const agents = await ConfigAgent.load(Builtin.DIR)
     expect(
       fs
         .readdirSync(home)
         .filter((file) => file.endsWith(".md"))
         .toSorted(),
-    ).toEqual(["brief.md", "report.md", "verify.md"])
+    ).toEqual(["brief.md", "exploit.md", "hacker.md", "recon.md", "report.md", "verify.md"])
 
-    for (const phase of ["brief", "verify", "report"] as const) {
+    for (const [phase] of PHASES) {
       expect(agents[`bug-bounty/${phase}`]).toBeDefined()
       expect(SubsystemPhase.personaPath(home, phase, "bug-bounty")).toBe(path.join(home, `${phase}.md`))
     }
-    for (const phase of ["recon", "exploit", "hacker"] as const) {
-      expect(SubsystemPhase.personaPath(home, phase, "bug-bounty")).toBe(
-        path.join(Builtin.DIR, "agents", "pentest", `${phase}.md`),
-      )
-    }
     expect(SubsystemPhase.personaPath("/custom/agents/bug-bounty", "recon", "bug-bounty")).toBe(
-      "/custom/agents/pentest/recon.md",
+      "/custom/agents/bug-bounty/recon.md",
     )
   })
 
@@ -100,9 +95,9 @@ describe("built-in Bug Bounty Program workflow", () => {
       expect(budgets[phase]).toBe(minutes)
     }
     expect(budgets.$novelty).toEqual({
-      recon: { required: true },
-      exploit: { required: true },
-      hacker: { required: true },
+      recon: { required: true, mode: "bounty-portfolio" },
+      exploit: { required: true, mode: "bounty-portfolio" },
+      hacker: { required: true, mode: "bounty-portfolio" },
     })
 
     expect(
@@ -117,21 +112,26 @@ describe("built-in Bug Bounty Program workflow", () => {
     ).toEqual({ brief: 0, recon: 3, exploit: 5, hacker: 5, verify: 0, report: 0 })
   })
 
-  test("research personas diversify qualitatively, execute directly, and preserve honest verdicts", () => {
+  test("research personas optimize reward, use a root critic, and nudge relevant skills", () => {
     const recon = fs.readFileSync(SubsystemPhase.personaPath(home, "recon", "bug-bounty"), "utf8")
     const exploit = fs.readFileSync(SubsystemPhase.personaPath(home, "exploit", "bug-bounty"), "utf8")
     const hacker = fs.readFileSync(SubsystemPhase.personaPath(home, "hacker", "bug-bounty"), "utf8")
 
-    expect(recon).toMatch(/maximize meaningful browser\s+navigation/i)
-    expect(recon).toMatch(/candidate findings and coverage hypotheses/i)
-    expect(recon).toMatch(/no route, click, hypothesis, or family quota/i)
-    expect(exploit).toMatch(/subagents inherit[\s\S]*execute their discriminators directly/i)
+    expect(recon).toMatch(/maximize the highest eligible, defensible bounty reward/i)
+    expect(recon).toContain("`bounty_context`")
+    expect(recon).toMatch(/without scores, quotas, or formulas/i)
+    expect(exploit).toContain('`display_name: "portfolio-critic"`')
+    expect(exploit).toContain('`output_artifact: "raw/strategy/exploit-portfolio-critic.md"`')
+    expect(exploit).toMatch(/original phase root[\s\S]*first half/i)
+    expect(exploit).toMatch(/advisory and artifact-only/i)
     expect(exploit).toContain("`UNTESTABLE`")
-    expect(exploit).toMatch(/typed blocker and next step/i)
-    expect(exploit).toMatch(/prerequisite-resolution pass[\s\S]*call\s+`question`/i)
-    expect(hacker).toMatch(/semantic pivots over endpoint or payload variants/i)
-    expect(hacker).toMatch(/resolve safe prerequisites[\s\S]*call\s+`question`/i)
-    for (const persona of [recon, exploit, hacker]) expect(persona).toMatch(/hypothesis/i)
+    expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-portfolio-critic.md"`')
+    expect(hacker).toMatch(/after two negatives converge[\s\S]*change impact, boundary, or enforcement owner/i)
+    for (const persona of [recon, exploit, hacker]) {
+      expect(persona).toMatch(/narrowest useful skill/i)
+      expect(persona).toMatch(/hypothesis/i)
+      expect(persona).toMatch(/not a score|never score|without scores/i)
+    }
   })
 
   test("brief records program policy without inventing missing rules", () => {
@@ -233,7 +233,7 @@ describe("built-in Bug Bounty Program workflow", () => {
           handoff: { successor: phase === "report" ? undefined : "next" },
         },
         1,
-        ["recon", "exploit", "hacker"].includes(phase) ? { required: true } : undefined,
+        ["recon", "exploit", "hacker"].includes(phase) ? { required: true, mode: "bounty-portfolio" } : undefined,
       ),
     )
     const runner = runners.toSorted((left, right) => right.split(/\s+/).length - left.split(/\s+/).length)[0] ?? ""

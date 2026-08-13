@@ -40,6 +40,7 @@ class CapabilityReportTest(unittest.TestCase):
             "anvil",
             "gitleaks",
             "grype",
+            "impacket_getuserspns",
             "jazzer",
             "kube_bench",
             "kubectl",
@@ -141,6 +142,7 @@ class CapabilityReportTest(unittest.TestCase):
         self.assertIn("recon", cyberful_os_mcp._fallback_tool_roles("nmap"))
         self.assertNotIn("active", cyberful_os_mcp._fallback_tool_roles("nmap"))
         self.assertIn("active", cyberful_os_mcp._fallback_tool_roles("afl_fuzz"))
+        self.assertEqual(cyberful_os_mcp._fallback_tool_roles("impacket_getuserspns"), ["active"])
         self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("tcpdump"))
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("wordlists"), [])
 
@@ -168,15 +170,20 @@ class CapabilityReportTest(unittest.TestCase):
         copy_at = dockerfile.index(
             "COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py"
         )
+        launcher_copy_at = dockerfile.index(
+            "COPY --chmod=0755 cyberful-os/scripts/impacket-GetUserSPNs /usr/local/bin/impacket-GetUserSPNs"
+        )
         verify_at = dockerfile.index("python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities")
         workdir_at = dockerfile.index("WORKDIR /workspace")
 
+        self.assertLess(launcher_copy_at, verify_at)
         self.assertLess(copy_at, verify_at)
         self.assertLess(verify_at, workdir_at)
         self.assertIn("msfconsole -q -x 'version; exit'", dockerfile[verify_at:workdir_at])
         self.assertIn("nuclei -version", dockerfile[verify_at:workdir_at])
         for smoke in (
             "rg --version",
+            "impacket-GetUserSPNs -h",
             "import websocket",
             "semgrep --version",
             "syft version",

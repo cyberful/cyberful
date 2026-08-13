@@ -268,29 +268,50 @@ describe("AgentPromptCompiler", () => {
     )
   })
 
-  test("keeps a shared Pentest persona under Bug Bounty authorization and identity", async () => {
-    const [baseInstructions, reconPersona] = await Promise.all([
+  test("keeps Bug Bounty research personas distinct and permits only their advisory portfolio critic", async () => {
+    const [baseInstructions, pentestReconPersona, bountyReconPersona, bountyExploitPersona] = await Promise.all([
       builtin("baseInstructions.md"),
       builtin("agents/pentest/recon.md"),
+      builtin("agents/bug-bounty/recon.md"),
+      builtin("agents/bug-bounty/exploit.md"),
     ])
     const pentest = AgentPromptCompiler.compile(
-      input({ templateSource: baseInstructions, personaSource: reconPersona }),
+      input({ templateSource: baseInstructions, personaSource: pentestReconPersona }),
     )
-    const bugBounty = AgentPromptCompiler.compile(
+    const bugBountyRecon = AgentPromptCompiler.compile(
       input({
         templateSource: baseInstructions,
-        personaSource: reconPersona,
+        personaSource: bountyReconPersona,
         workflow: "bug-bounty",
-        personaID: "pentest/recon",
+        personaID: "bug-bounty/recon",
+      }),
+    )
+    const bugBountyExploit = AgentPromptCompiler.compile(
+      input({
+        templateSource: baseInstructions,
+        personaSource: bountyExploitPersona,
+        workflow: "bug-bounty",
+        phase: "exploit",
+        personaID: "bug-bounty/exploit",
       }),
     )
 
-    expect(bugBounty.system).toStartWith("# Cyberful Instruction Authority")
-    expect(bugBounty.system).toContain("This is an authorized Bug Bounty Program session.")
-    expect(bugBounty.system).toContain("# Recon")
-    expect(bugBounty.system).not.toContain("subagents: 3")
-    expect(bugBounty.manifest.personaID).toBe("pentest/recon")
-    expect(bugBounty.manifest.componentHashes.persona).toBe(pentest.manifest.componentHashes.persona)
-    expect(bugBounty.manifest.componentHashes.authorization).not.toBe(pentest.manifest.componentHashes.authorization)
+    expect(bugBountyRecon.system).toStartWith("# Cyberful Instruction Authority")
+    expect(bugBountyRecon.system).toContain("This is an authorized Bug Bounty Program session.")
+    expect(bugBountyRecon.system).toContain("# Bug Bounty Recon")
+    expect(bugBountyRecon.system).toContain("bounty_context")
+    expect(bugBountyRecon.system).toContain("no passive, offline, discovery-only, or deferred-to-parent mode exists")
+    expect(bugBountyRecon.system).not.toContain("artifact-only portfolio critic")
+    expect(bugBountyRecon.system).not.toContain("subagents: 3")
+    expect(bugBountyRecon.manifest.personaID).toBe("bug-bounty/recon")
+    expect(bugBountyRecon.manifest.componentHashes.persona).not.toBe(pentest.manifest.componentHashes.persona)
+    expect(bugBountyRecon.manifest.componentHashes.authorization).not.toBe(
+      pentest.manifest.componentHashes.authorization,
+    )
+
+    expect(bugBountyExploit.system).toContain("artifact-only portfolio critic")
+    expect(bugBountyExploit.system).toContain("Operational children execute their discriminators directly")
+    expect(bugBountyExploit.system).toContain('display_name: "portfolio-critic"')
+    expect(bugBountyExploit.system).toContain("raw/strategy/exploit-portfolio-critic.md")
   })
 })

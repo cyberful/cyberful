@@ -65,21 +65,21 @@ const GOLDEN_CASES = [
     id: "bug-bounty/recon",
     workflow: "bug-bounty",
     phase: "recon",
-    personaID: "pentest/recon",
+    personaID: "bug-bounty/recon",
     successor: "exploit",
   },
   {
     id: "bug-bounty/exploit",
     workflow: "bug-bounty",
     phase: "exploit",
-    personaID: "pentest/exploit",
+    personaID: "bug-bounty/exploit",
     successor: "hacker",
   },
   {
     id: "bug-bounty/hacker",
     workflow: "bug-bounty",
     phase: "hacker",
-    personaID: "pentest/hacker",
+    personaID: "bug-bounty/hacker",
     successor: "verify",
   },
   {
@@ -150,15 +150,15 @@ type GoldenID = (typeof GOLDEN_CASES)[number]["id"]
 
 const EXPECTED_SYSTEM_SHA256 = {
   "pentest/brief": "7b589ed58c67ddceeb48be2eecde472b80c6a405b5c02e046583df3f8a02306a",
-  "pentest/recon": "87b17f0bd02c17f697c3f1f9ea708e2a941b1b2015282411b877dbe29cbf6d9d",
-  "pentest/exploit": "81a80b488be253d23c2556669dffe2c66807c929ca49757ff73a1a5177a7a8a7",
-  "pentest/hacker": "6893f6f471564ff2f276aa1f7e7ad785ba8fe722b8e1c95527a5899dbb7046da",
+  "pentest/recon": "f20e2a3dea6c7fd1587556c80c8714885836eddf99b60225088bc1a04f6b2857",
+  "pentest/exploit": "7f61c62c02ca62a3468fcc281fca93f27da5be59fd77e1035400debfa954d65e",
+  "pentest/hacker": "7313884e8f1e4fc97895a301ac85193cca45eacfc83d8ee845c4caf17de90d90",
   "pentest/verify": "bf0a4cee3510b5040c64a660d7e46b2b6bd24326cb0bba8441d930376c0d1f45",
   "pentest/report": "9836fb78f0bd26858919dd7f3aebbcd2d05fd5b146fbf9481dcd8db97719c47c",
   "bug-bounty/brief": "34e48572f358e2ce09615232e96d863afaa8b3fd4b5b2432b3ad967219fd9620",
-  "bug-bounty/recon": "2bc08751f7314d71b41506049e2cc565c51bd1b9ca1e5ed5cb5903aed0e27cc4",
-  "bug-bounty/exploit": "d8241eec451ce63601d0a6c9fefb7f177fa850fdbb057e5302e6c3a981538a74",
-  "bug-bounty/hacker": "74d70119eaca16ff63495250310c5fd0ea94dc726725bd87e608c555812460fe",
+  "bug-bounty/recon": "c4b5d23dba5116f2a211b7e01330807429b8c3e5cce49aea61ff749b64cf4235",
+  "bug-bounty/exploit": "af430285437922ea87186f5e56c53a3516d62257ff738f8a30d2bcba73a5f3d4",
+  "bug-bounty/hacker": "2e8c8c178960dccaffdb8c9cc366761a8fc060e2bc2baed7759ededc44cbd7e9",
   "bug-bounty/verify": "b313316db68ec058adef3f477d9420e6ab601d164ca02ae09fb1d6e4aaa42f7b",
   "bug-bounty/report": "430c42d6b7395533f1642ab857cc634d8bb3b1d1f3785e8e43df19f406a7fc9f",
   "code-audit/scope": "135d87f502524a6223869aea0afa028058529432448a0112d433d16a22eb116e",
@@ -383,8 +383,8 @@ test("every built-in workflow/persona compiles to its reviewed complete system c
   for (const phase of ["recon", "exploit", "hacker"] as const) {
     const pentest = required(compiledByID.get(`pentest/${phase}`), `missing pentest/${phase} golden`)
     const bugBounty = required(compiledByID.get(`bug-bounty/${phase}`), `missing bug-bounty/${phase} golden`)
-    expect(bugBounty.manifest.personaID).toBe(`pentest/${phase}`)
-    expect(bugBounty.manifest.componentHashes.persona).toBe(pentest.manifest.componentHashes.persona)
+    expect(bugBounty.manifest.personaID).toBe(`bug-bounty/${phase}`)
+    expect(bugBounty.manifest.componentHashes.persona).not.toBe(pentest.manifest.componentHashes.persona)
     expect(bugBounty.manifest.componentHashes.authorization).not.toBe(pentest.manifest.componentHashes.authorization)
   }
 

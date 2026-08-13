@@ -127,10 +127,10 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         declared = cli_names | library_names | workflow_names | utility_names
 
         self.assertEqual(declared - rows, set())
-        self.assertEqual(len(cli_names), 202)
+        self.assertEqual(len(cli_names), 203)
         self.assertEqual(len(workflow_names), 13)
-        self.assertEqual(len(declared), 223)
-        self.assertIn("202 cyberful-os CLI tools", catalog)
+        self.assertEqual(len(declared), 224)
+        self.assertIn("203 cyberful-os CLI tools", catalog)
         self.assertIn("13 cyberful-os managed workflows", catalog)
 
     def test_shell_schema_remains_the_bounded_fallback_contract(self):
@@ -232,6 +232,51 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("invalid environment variable name", result["content"][0]["text"])
         run_command.assert_not_called()
+
+    def test_kerberoasting_dispatches_structured_argv_to_the_dedicated_launcher(self):
+        completed = cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="impacket-GetUserSPNs",
+            exit_code=0,
+            timed_out=False,
+            duration_ms=1,
+            stdout="No entries found\n",
+            stderr="",
+            truncated=False,
+        )
+        arguments = [
+            "example.local/auditor:secret",
+            "-dc-ip",
+            "10.0.0.5",
+            "-request",
+            "-outputfile",
+            "/workspace/kerberoast.hashes",
+        ]
+
+        with mock.patch.object(
+            cyberful_os_mcp,
+            "run_argv_in_container",
+            return_value=completed,
+        ) as run_command:
+            result = cyberful_os_mcp.handle_tool_call({
+                "name": "impacket_getuserspns",
+                "arguments": {
+                    "args": arguments,
+                    "cwd": "/workspace",
+                    "timeout_seconds": 30,
+                    "max_output_bytes": 8192,
+                },
+            })
+
+        self.assertFalse(result["isError"])
+        run_command.assert_called_once_with(
+            ["impacket-GetUserSPNs", *arguments],
+            cwd="/workspace",
+            timeout_seconds=30,
+            max_output_bytes=8192,
+            extra_env=None,
+            stdin=None,
+        )
 
     def test_rejects_multiple_egress_hosts_before_shell_execution(self):
         with mock.patch.object(cyberful_os_mcp, "run_in_container") as run_command:

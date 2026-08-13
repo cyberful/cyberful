@@ -2063,7 +2063,7 @@ export async function createGatewayServer(opts?: {
           workflow: policy.workflow,
           phase,
           readOnly: policy.hypothesisReadOnly,
-          synthesisRequired: SubsystemNovelty.parseEnvironment()?.required === true,
+          noveltyContract: SubsystemNovelty.parseEnvironment(),
         })
       : undefined
   const findings =

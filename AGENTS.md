@@ -23,7 +23,7 @@ Pentest uses Pi Agent as its runtime. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
 
-Bug Bounty Program also uses Pi Agent, with a dedicated Brief, Verify, and Report around the shared Pentest Recon, Exploit, and Hacker personas. Its chain is:
+Bug Bounty Program also uses Pi Agent, with dedicated reward-oriented personas for every phase. Recon, Exploit, and Hacker maximize eligible, defensible reward qualitatively while preserving the same phase names, artifacts, authorization, and budgets. Its chain is:
 
 `brief -> recon -> exploit -> hacker -> verify -> report`
 

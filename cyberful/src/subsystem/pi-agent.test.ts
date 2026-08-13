@@ -610,6 +610,51 @@ function closeoutEvents(events: readonly AgentEvent[]): readonly PhaseCloseoutEv
 }
 
 describe("Pi complete root and main-route subagent runs", () => {
+  test("emits one strategic nudge for a hypothesis convergence signal without blocking the run", async () => {
+    const hypothesis: AgentTool<
+      typeof EMPTY_PARAMETERS,
+      { readonly convergence: { readonly cluster: string; readonly negativeHypothesisIDs: readonly string[] } }
+    > = {
+      name: "hypothesis",
+      label: "Hypothesis registry",
+      description: "Return a host-validated convergence signal.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "second negative recorded" }],
+        details: {
+          convergence: {
+            cluster: "object-authorization",
+            negativeHypothesisIDs: ["BB-NEG-1", "BB-NEG-2"],
+          },
+        },
+      }),
+    }
+    const provider = new InMemoryProvider((call) =>
+      toolResultCount(call) === 0 ? toolCall(call, "hypothesis", {}) : assistant(call, "continued after convergence"),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "hypothesis-convergence-nudge",
+        objective: "continue safely after a portfolio convergence signal",
+        tools: [hypothesis],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const nudges = activityEvents(events).filter(
+      (event) => event.activity.kind === "status" && event.activity.text.includes("Hypothesis convergence detected"),
+    )
+
+    expect(result).toMatchObject({ termination: "completed", output: "continued after convergence", toolCalls: 1 })
+    expect(nudges).toHaveLength(1)
+    expect(nudges[0]!.activity).toMatchObject({
+      kind: "status",
+      text: expect.stringContaining("handoff will require that structural pivot or evidenced exhaustion"),
+    })
+  })
+
   test("maps configured ultra to the supported Codex max payload and records both levels", async () => {
     const base = registry()
     const sol = {

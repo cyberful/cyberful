@@ -1,0 +1,22 @@
+#!/bin/sh
+# ── Impacket GetUserSPNs System-Python Launcher ──────────────────────
+# Runs Kali's packaged GetUserSPNs example with the system interpreter that
+# owns the matching Impacket module. CyberOS intentionally puts its isolated
+# application virtualenv first on PATH, so relying on the example's env-based
+# shebang would select an interpreter that cannot import the system package.
+# The fixed executable and script paths make an absent or changed Kali package
+# layout fail visibly instead of silently switching Python environments.
+# → mcps/cyberful-os/Dockerfile — installs and attests this launcher.
+# @docs/runtimes/tool-catalog.md
+# ─────────────────────────────────────────────────────────────────────
+
+set -eu
+
+IMPACKET_GETUSERSPNS=/usr/share/doc/python3-impacket/examples/GetUserSPNs.py
+
+if ! [ -r "${IMPACKET_GETUSERSPNS}" ]; then
+  printf '%s\n' "GetUserSPNs.py is missing from the installed python3-impacket package" >&2
+  exit 127
+fi
+
+exec /usr/bin/python3 "${IMPACKET_GETUSERSPNS}" "$@"

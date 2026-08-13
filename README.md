@@ -6,6 +6,8 @@ For authorized pentests, code audits, and bug bounty research.
 
 Cyberful combines coding-agent reasoning with isolated offensive tooling, independent verification, durable evidence, and report-ready outputs. It is open source, local-first, and emits no telemetry.
 
+Bug Bounty research uses dedicated reward-oriented Recon, Exploit, and Hacker personas. Their hypotheses retain host-validated official reward context, and portfolio convergence must be resolved by a structurally different tested pivot or target-specific evidence of exhaustion before handoff—without scores, automatic ranking, or minimum test quotas.
+
 *(i) Documentation:* installation, workflows, configuration, architecture, and security runtimes are documented at **[cyberful.io](https://cyberful.io/)**.
 
 <p align="center">
