@@ -127,6 +127,7 @@ describe("surface coverage", () => {
       expect(
         await coverage.handoffError({
           version: 1,
+          stage: "final",
           updated_at: new Date().toISOString(),
           profiles: [
             { profile: 2, readiness: "READY", scope: "IN_SCOPE", origin: "https://example.test" },
@@ -134,6 +135,7 @@ describe("surface coverage", () => {
           ],
           authorized_http_hosts: ["example.test"],
           global_http_rps: null,
+          required_http_headers: [],
         }),
       ).toContain("3")
     } finally {
@@ -151,10 +153,12 @@ describe("surface coverage", () => {
       const recon = new SurfaceCoverage(root, "recon")
       const policy = {
         version: 1 as const,
+        stage: "final" as const,
         updated_at: new Date().toISOString(),
         profiles: [{ profile: 2, readiness: "READY" as const, scope: "IN_SCOPE" as const, origin: "https://example.test" }],
         authorized_http_hosts: ["example.test"],
         global_http_rps: null,
+        required_http_headers: [],
       }
       expect(await recon.handoffError(policy)).toBeUndefined()
 
@@ -176,10 +180,12 @@ describe("surface coverage", () => {
       expect(
         await recon.handoffError({
           version: 1,
+          stage: "final",
           updated_at: new Date().toISOString(),
           profiles: [{ profile: 2, readiness: "READY", scope: "IN_SCOPE", origin: "https://example.test" }],
           authorized_http_hosts: ["example.test"],
           global_http_rps: null,
+          required_http_headers: [],
         }),
       ).toContain("2")
     } finally {

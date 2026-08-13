@@ -19,6 +19,7 @@ import {
   cyberGhidraStartupTimeoutSeconds,
   cyberfulOsImage,
   cyberZapBridgeCommand,
+  cyberZapMaxHistoryResponseBytes,
   cyberZapProxyPort,
   cyberZapStartupTimeoutSeconds,
   shouldChainBrowserThroughZap,
@@ -33,7 +34,12 @@ import { dockerOwnershipLabels } from "@/util/container-ownership"
 import { isRecord } from "@/util/record"
 import { appendWorkareaFile, ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import { SubsystemContainer } from "./container"
-import { applyEngagementRateLimit, readEngagementPolicy, type EngagementPolicy } from "./gateway/engagement-policy"
+import {
+  applyEngagementTrafficPolicy,
+  engagementPolicyRequiresZap,
+  readEngagementPolicy,
+  type EngagementPolicy,
+} from "./gateway/engagement-policy"
 import {
   attestProxyCertificate,
   CORE_PROXY_CA_BUNDLE,
@@ -100,6 +106,21 @@ export interface EngagementRuntime {
   readonly stop: () => Promise<void>
 }
 
+export type EngagementRuntimeServiceID = "cyber-os" | "zap" | "ghidra"
+export type EngagementRuntimeServiceState = "pending" | "active" | "ready" | "degraded" | "failed"
+
+export type EngagementRuntimeProgress = {
+  readonly state: "active" | "ready" | "degraded" | "failed"
+  readonly message: string
+  readonly completed: number
+  readonly total: number
+  readonly services: readonly {
+    readonly id: EngagementRuntimeServiceID
+    readonly label: string
+    readonly state: EngagementRuntimeServiceState
+  }[]
+}
+
 export class RequiredUpstreamUnavailableError extends Error {
   readonly kind = "required_upstream_unavailable"
   readonly retryable = true
@@ -110,15 +131,18 @@ export class RequiredUpstreamUnavailableError extends Error {
   }
 }
 
-export function requiresZapUpstream(workflow: string, policy?: Pick<EngagementPolicy, "global_http_rps">) {
+export function requiresZapUpstream(
+  workflow: string,
+  policy?: Partial<Pick<EngagementPolicy, "global_http_rps" | "required_http_headers">>,
+) {
   return (
     workflow === "pentest" ||
     workflow === "bug-bounty" ||
-    (policy?.global_http_rps !== null && policy?.global_http_rps !== undefined)
+    engagementPolicyRequiresZap(policy)
   )
 }
 
-type ZapAttestationStage = "api" | "ca" | "mcp" | "rate_limit" | "supervisor" | "tls_canary"
+type ZapAttestationStage = "api" | "ca" | "mcp" | "supervisor" | "tls_canary" | "traffic_policy"
 
 class ZapAttestationStageError extends Error {
   readonly stage: ZapAttestationStage
@@ -1062,6 +1086,7 @@ export async function startEngagement(input: {
   readonly ghidraStore?: string
   readonly objective?: string
   readonly signal?: AbortSignal
+  readonly onProgress?: (progress: EngagementRuntimeProgress) => void
   readonly onDiagnostic?: (input: {
     readonly component: "zap" | "ghidra"
     readonly severity: "warning" | "error"
@@ -1071,10 +1096,36 @@ export async function startEngagement(input: {
 }): Promise<EngagementRuntime> {
   input.signal?.throwIfAborted()
   const codeAudit = input.workflow === "code-audit"
-  const policy = await readEngagementPolicy(input.workarea)
-  const zapRequired = requiresZapUpstream(input.workflow, policy)
   const zapEnabled = !codeAudit && shouldEnableCyberZap()
   const ghidraEnabled = Boolean(input.ghidraStore) && shouldEnableCyberGhidra()
+  const progressServices = [
+    { id: "cyber-os", label: "CyberOS" },
+    ...(zapEnabled ? [{ id: "zap", label: "OWASP ZAP" } as const] : []),
+    ...(ghidraEnabled ? [{ id: "ghidra", label: "Ghidra" } as const] : []),
+  ] satisfies readonly { readonly id: EngagementRuntimeServiceID; readonly label: string }[]
+  const progressStates = new Map<EngagementRuntimeServiceID, EngagementRuntimeServiceState>(
+    progressServices.map((service) => [service.id, "pending"] as const),
+  )
+  const reportProgress = (
+    message: string,
+    updates: readonly { readonly id: EngagementRuntimeServiceID; readonly state: EngagementRuntimeServiceState }[],
+    state: EngagementRuntimeProgress["state"] = "active",
+  ) => {
+    for (const update of updates) progressStates.set(update.id, update.state)
+    const services = progressServices.map((service) => ({
+      ...service,
+      state: progressStates.get(service.id) ?? "pending",
+    }))
+    const completed = services.filter((service) => service.state === "ready" || service.state === "degraded").length
+    try {
+      input.onProgress?.({ state, message, completed, total: services.length, services })
+    } catch (error) {
+      log.warn("engagement runtime progress observer failed", { error })
+    }
+  }
+  reportProgress("Starting the isolated CyberOS runtime", [{ id: "cyber-os", state: "active" }])
+  let policy = await readEngagementPolicy(input.workarea)
+  const zapRequired = requiresZapUpstream(input.workflow, policy)
 
   const apiKey = zapEnabled ? secret() : undefined
   const zapMcpKey = zapEnabled ? secret() : undefined
@@ -1185,6 +1236,21 @@ export async function startEngagement(input: {
       docker(["docker", "exec", input.container, "uname", "-m"], { signal: input.signal }),
     ])
     runtimePlatform = cyberfulOsRuntimePlatform(kernel, machine)
+    reportProgress(
+      zapEnabled
+        ? "CyberOS is ready; starting OWASP ZAP"
+        : ghidraEnabled
+          ? "CyberOS is ready; starting headless Ghidra"
+          : "CyberOS startup checks passed",
+      [
+        { id: "cyber-os", state: "ready" },
+        ...(zapEnabled
+          ? ([{ id: "zap", state: "active" }] as const)
+          : ghidraEnabled
+            ? ([{ id: "ghidra", state: "active" }] as const)
+            : []),
+      ],
+    )
   } catch (error) {
     await Promise.all(containers.map((container) => SubsystemContainer.remove(container))).catch((cleanupError) => {
       throw new AggregateError([error, cleanupError], "unified engagement runtime startup and cleanup failed")
@@ -1199,9 +1265,7 @@ export async function startEngagement(input: {
     ...(zapEnabled ? { CYBERFUL_ZAP_RUNTIME_CONTAINER: zapContainer } : {}),
     CYBERFUL_OS_IMAGE: cyberfulOsImage(),
     CYBERFUL_OS_REQUIRE_ENGAGEMENT_CONTAINER: "1",
-    ...(policy?.global_http_rps !== null && policy?.global_http_rps !== undefined
-      ? { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" }
-      : {}),
+    ...(engagementPolicyRequiresZap(policy) ? { CYBER_ZAP_REQUIRED_BY_POLICY: "1" } : {}),
   }
   let degraded = Boolean(memoryWarning)
   let proxyUrl: string | undefined
@@ -1215,6 +1279,7 @@ export async function startEngagement(input: {
       CYBERFUL_GHIDRA_ENABLED: "0",
       CYBER_ZAP_API_KEY: apiKey,
       CYBER_ZAP_MCP_KEY: zapMcpKey,
+      CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES: String(cyberZapMaxHistoryResponseBytes()),
       CYBER_ZAP_SESSION_GENERATION: String(generation),
     }
     await docker(
@@ -1315,9 +1380,12 @@ export async function startEngagement(input: {
     }
     if (state.status !== "ready")
       throw new ZapAttestationStageError("supervisor", new Error(`ZAP supervisor state is ${state.status}`))
-    await attest("rate_limit", () =>
-      applyEngagementRateLimit(policy, { proxyUrl: activeProxyUrl, apiKey, ...(signal ? { signal } : {}) }),
+    policy = await readEngagementPolicy(input.workarea)
+    const trafficPolicy = await attest("traffic_policy", () =>
+      applyEngagementTrafficPolicy(policy, { proxyUrl: activeProxyUrl, apiKey, ...(signal ? { signal } : {}) }),
     )
+    if (engagementPolicyRequiresZap(policy)) env.CYBER_ZAP_REQUIRED_BY_POLICY = "1"
+    else delete env.CYBER_ZAP_REQUIRED_BY_POLICY
     const trust = await attest("ca", async () => {
       const certificate = await proxyCertificate(activeProxyUrl, apiKey, signal)
       const changed =
@@ -1359,12 +1427,13 @@ export async function startEngagement(input: {
         ? { CYBER_BROWSER_PROXY: activeProxyUrl, CYBER_BROWSER_PROXY_CA_SPKI: trust.spki }
         : {}),
     })
-    return { state, trust }
+    return { state, trust, trafficPolicy }
   }
 
   if (zapEnabled && apiKey && zapMcpKey) {
     try {
       await runZapContainer(sessionGeneration, input.signal)
+      reportProgress("Attesting ZAP, proxy trust, and TLS clients", [{ id: "zap", state: "active" }])
       const attestation = await attestZap({ allowCaRotation: expectedTrust === undefined, signal: input.signal })
       expectedTrust = attestation.trust
       zapOperational = true
@@ -1376,10 +1445,22 @@ export async function startEngagement(input: {
         session_generation: attestation.state.sessionGeneration,
         memory_events: attestation.state.memoryEvents,
         ...proxyTrustLifecycle(attestation.trust),
-        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
+        traffic_policy_attested: attestation.trafficPolicy.state === "enforced",
+        rate_limit_attested: attestation.trafficPolicy.rate_limit.state === "configured",
+        required_headers_attested:
+          attestation.trafficPolicy.required_headers.state === "configured"
+            ? attestation.trafficPolicy.required_headers.count
+            : 0,
       })
       const targetWarning = localTargetWarning(input.objective ?? "")
       if (targetWarning) warnings.push(targetWarning)
+      reportProgress(
+        ghidraEnabled ? "OWASP ZAP is ready; starting headless Ghidra" : "OWASP ZAP startup checks passed",
+        [
+          { id: "zap", state: "ready" },
+          ...(ghidraEnabled ? ([{ id: "ghidra", state: "active" }] as const) : []),
+        ],
+      )
     } catch (error) {
       input.signal?.throwIfAborted()
       const state = await readZapSupervisorState(zapContainer, input.signal).catch(() => undefined)
@@ -1410,6 +1491,15 @@ export async function startEngagement(input: {
         ? `OWASP ZAP failed startup attestation; target phases remain blocked until bounded preflight recovery succeeds: ${errorMessage(error)}`
         : `OWASP ZAP unavailable; browser traffic will use the direct fallback: ${errorMessage(error)}`
       warnings.push(warning)
+      reportProgress(
+        ghidraEnabled
+          ? "OWASP ZAP needs bounded recovery; starting headless Ghidra"
+          : "OWASP ZAP needs bounded recovery before target traffic",
+        [
+          { id: "zap", state: "degraded" },
+          ...(ghidraEnabled ? ([{ id: "ghidra", state: "active" }] as const) : []),
+        ],
+      )
       if (!zapRequired) {
         await SubsystemContainer.remove(zapContainer).catch(() => undefined)
         env.CYBER_BROWSER_PROXY_WARNING = warning
@@ -1439,7 +1529,12 @@ export async function startEngagement(input: {
         ...proxyTrustLifecycle(attestation.trust),
         ca_spki_changed: false,
         ca_certificate_changed: false,
-        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
+        traffic_policy_attested: attestation.trafficPolicy.state === "enforced",
+        rate_limit_attested: attestation.trafficPolicy.rate_limit.state === "configured",
+        required_headers_attested:
+          attestation.trafficPolicy.required_headers.state === "configured"
+            ? attestation.trafficPolicy.required_headers.count
+            : 0,
       })
       zapOperational = true
       return { warnings: phaseWarnings, env: { ...env } }
@@ -1524,7 +1619,12 @@ export async function startEngagement(input: {
         ca_spki_changed: spkiChanged,
         ca_certificate_changed: certificateChanged,
         continuity_reset: mode === "reset",
-        rate_limit_attested: policy?.global_http_rps !== null && policy?.global_http_rps !== undefined,
+        traffic_policy_attested: attestation.trafficPolicy.state === "enforced",
+        rate_limit_attested: attestation.trafficPolicy.rate_limit.state === "configured",
+        required_headers_attested:
+          attestation.trafficPolicy.required_headers.state === "configured"
+            ? attestation.trafficPolicy.required_headers.count
+            : 0,
       })
       return attestation
     }
@@ -1571,6 +1671,7 @@ export async function startEngagement(input: {
   }
 
   if (ghidraEnabled && ghidraMcpKey) {
+    reportProgress("Starting headless Ghidra and its MCP bridge", [{ id: "ghidra", state: "active" }])
     try {
       await waitForGhidra(input.container, input.signal)
       Object.assign(env, { CYBER_GHIDRA_READY: "1", CYBER_GHIDRA_MCP_KEY: ghidraMcpKey })
@@ -1581,6 +1682,7 @@ export async function startEngagement(input: {
         requiredTools: ["ghidra_project", "ghidra_import", "ghidra_decompile", "ghidra_call_graph"],
         ...(input.signal ? { signal: input.signal } : {}),
       })
+      reportProgress("Headless Ghidra startup checks passed", [{ id: "ghidra", state: "ready" }])
     } catch (error) {
       input.signal?.throwIfAborted()
       input.onDiagnostic?.({
@@ -1591,6 +1693,7 @@ export async function startEngagement(input: {
       })
       degraded = true
       warnings.push(`Headless Ghidra unavailable; binary analysis tools are disabled: ${errorMessage(error)}`)
+      reportProgress("Headless Ghidra is unavailable", [{ id: "ghidra", state: "degraded" }])
     }
   }
 
@@ -1617,6 +1720,11 @@ export async function startEngagement(input: {
     zap: env.CYBER_ZAP_READY === "1",
     ghidra: env.CYBER_GHIDRA_READY === "1",
   })
+  reportProgress(
+    degraded ? "Engagement runtime ready with limited capabilities" : "Engagement runtime ready",
+    [],
+    degraded ? "degraded" : "ready",
+  )
   return {
     container: input.container,
     containers,

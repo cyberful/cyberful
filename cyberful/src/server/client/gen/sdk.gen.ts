@@ -1621,7 +1621,7 @@ export class Session extends HeyApiClient {
   /**
    * Get active session hypotheses
    *
-   * Resolve the session workarea and return revisioned hypothesis counts for the current workflow.
+   * Resolve the session workarea and return revisioned hypothesis counts plus active item details for the current workflow.
    */
   public hypotheses<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2020,13 +2020,14 @@ export class Session extends HeyApiClient {
   /**
    * Steer an active session
    *
-   * Deliver routine text to the active root AgentRun. Returns false instead of starting a new turn when the session is not steerable.
+   * Queue routine text or focus the active root AgentRun. Returns a stable receipt without starting a replacement turn.
    */
   public steer<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
       directory?: string
       text: string
+      mode?: "queue" | "focus"
     },
     options?: Options<never, ThrowOnError>,
   ): RequestResult<SessionSteerResponses, SessionSteerErrors, ThrowOnError> {
@@ -2038,6 +2039,7 @@ export class Session extends HeyApiClient {
             { in: "path", key: "sessionID" },
             { in: "query", key: "directory" },
             { in: "body", key: "text" },
+            { in: "body", key: "mode" },
           ],
         },
       ],

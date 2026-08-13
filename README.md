@@ -39,7 +39,7 @@ Public web research uses a sixth persistent identity named `search`, kept separa
 
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.io/getting-started/)**.
 
-Choose a workarea in the TUI, select a workflow, and describe the objective. Every live-target request must include the exact authorized targets, exclusions, test window, account roles, and traffic constraints. Bug bounty requests should also supply the official program policy or its exact public URL; Brief reads published reward tiers autonomously, and finding maturation checkpoints make the technical frontier and potential published upside visible in the live feed. Code Audit can review the complete repository or an explicitly requested branch, commit range, or set of current changes.
+Choose a workarea in the TUI, select a workflow, and describe the objective. The composer's fixed status shoulder reports the active phase, its elapsed time, and whether Cyberful is generating or executing a job without claiming a completion percentage. Every live-target request must include the exact authorized targets, exclusions, test window, account roles, and traffic constraints. Bug bounty requests should also supply the official program policy or its exact public URL; Brief reads published reward tiers autonomously, and finding maturation checkpoints make the technical frontier and potential published upside visible in the live feed. Code Audit can review the complete repository or an explicitly requested branch, commit range, or set of current changes.
 
 ## Requirements
 
@@ -51,7 +51,7 @@ To install through npm and run a release:
 - at least 100 GB of free disk space before the first runtime build;
 - at least 10 GB of RAM dedicated to Docker.
 
-ZAP, Ghidra, Python, Ruby/Bundler, native debugging and fuzzing, managed Firefox/Marionette, Xvfb/X11 clipboard testing, archive extraction, and the offensive toolchain are included in the runtime image. Before a live-target AgentRun starts, an ephemeral private-network HTTPS canary verifies that curl/OpenSSL, Git, Requests/pip, Node, and Ruby/Bundler can traverse the real ZAP proxy with the attested engagement CA; it never contacts the target or Internet. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
+ZAP, Ghidra, Python, Ruby/Bundler, native debugging and fuzzing, managed Firefox/Marionette, Xvfb/X11 clipboard testing, archive extraction, and the offensive toolchain are included in the runtime image. Before a live-target AgentRun starts, an ephemeral private-network HTTPS canary verifies that curl/OpenSSL, Git, Requests/pip, Node, and Ruby/Bundler can traverse the real ZAP proxy with the attested engagement CA; it never contacts the target or Internet. Brief then installs and attests the engagement's host-scoped rate limit and mandatory public request headers in ZAP before numbered target-profile preflight. Cyberful separately downloads an isolated Chromium browser for agent-controlled browsing on first use, so it never needs access to a personal browser profile. Docker Compose is not required.
 
 See [What you need](https://cyberful.io/getting-started/requirements/) for the supported host platforms, release architectures, provider setup, and source development requirements.
 
@@ -77,7 +77,7 @@ Workareas live under `work/<name>/` and session logs under `logs/session-logs/`.
 
 The first local engagement also prepares the release-pinned CVE Dictionary in the foreground. Before downloading, Cyberful checks an explicit verified path, the managed pointer, verified orphan snapshots, and a source checkout's fixed `dist/cve-dictionary` directory; selecting an orphan repairs the missing pointer atomically. Release `2026.08.05` downloads about 5.18 GiB only when no verified local candidate exists, expands to about 24.47 GiB, requires approximately 31 GiB of additional free space during installation, and shows verified download and activation progress on stderr. Later startups reuse the local snapshot without a network update check.
 
-Start a specific headless workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`. Session lifecycle, out-of-band steering, CAPTCHA handoffs, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.io/user-guide/sessions-and-reports/).
+Start a specific headless workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`. Session lifecycle, queued or focused out-of-band steering, CAPTCHA handoffs, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.io/user-guide/sessions-and-reports/).
 
 ## Documentation
 

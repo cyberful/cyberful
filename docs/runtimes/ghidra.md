@@ -15,7 +15,7 @@ flowchart LR
     Service -->|"read/write, mode 0700"| Store["Host-owned project store"]
 ```
 
-The core engagement container and Ghidra JVM persist across phase handoffs. A fresh bridge process reconnects each eligible gateway; there is no bridge image, bridge container, published Ghidra port, or separate Ghidra network namespace.
+The core engagement container and Ghidra JVM persist across phase handoffs. A fresh bridge process reconnects each eligible gateway; there is no bridge image, bridge container, published Ghidra port, or separate Ghidra network namespace. The gateway owns the bridge through the same generic managed-MCP generation controller used by stateful browser profiles. A transport failure invalidates that generation without replaying the failed analysis call; the next call reconnects single-flight and verifies that the tool catalog is unchanged. `runtime_status` with `action=status` discovers whether the `ghidra` generation is active in the current phase; only a returned exact label may be passed to `action=check`.
 
 The host-owned store is a bind mount outside the model-writable workarea. Recreating the engagement container reopens programs, analysis, names, comments, bookmarks, import metadata, and the durable job journal. The workarea is deliberately writable under the unified trust-boundary decision.
 
@@ -35,7 +35,7 @@ In Code Audit the core engagement container starts with `--network none`. Ghidra
 | `ghidra_call_graph` | Bounded directed call graph |
 | `ghidra_annotations` | List or add names, comments, and bookmarks |
 
-Arbitrary scripts, binary mutation, debugger control, and generic Java/Python evaluation remain absent. One worker serializes JVM operations; imports and analysis use durable asynchronous jobs. On service restart, an interrupted import or analysis is reconciled against committed project and manifest state before it is requeued. If cancellation races with a verified result, the result wins as `succeeded` with `cancel_requested: true`; only an acknowledged cancellation without a completed result becomes `cancelled`.
+Arbitrary scripts, binary mutation, debugger control, and generic Java/Python evaluation remain absent. One worker serializes JVM operations; imports and analysis use durable asynchronous jobs. On service restart, an interrupted import or analysis is reconciled against committed project and manifest state before it is requeued. If an interrupted import's workarea source no longer exists, only that job becomes `failed`; the durable project and Ghidra service remain available. If cancellation races with a verified result, the result wins as `succeeded` with `cancel_requested: true`; only an acknowledged cancellation without a completed result becomes `cancelled`.
 
 Function selectors are resolved centrally across canonical addresses, simple or qualified names, and full/demangled signatures. Every successful function lookup returns the canonical address selector for reuse. When multiple functions match, the call fails with a bounded candidate list instead of selecting one implicitly.
 
@@ -51,7 +51,7 @@ The gateway writes redacted, content-addressed evidence under `raw/ghidra/`. Rep
 
 ## Failure and configuration
 
-The supervisor runs Ghidra with the host UID/GID and records its state under `/run/cyberful`. An unexpected JVM exit marks the core container degraded and is never restarted automatically. A new bridge then returns a diagnostic service error rather than creating another runtime.
+The supervisor runs Ghidra with the host UID/GID and records its state under `/run/cyberful`. An unexpected JVM exit marks the core container degraded and is never restarted automatically. Reconnecting the bridge cannot hide that service failure: the call returns a structured `UPSTREAM_TRANSPORT_FAILED` diagnostic with `action_replayed: false` and exact `runtime_status` recovery instructions rather than creating another JVM.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

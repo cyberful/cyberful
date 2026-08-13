@@ -397,6 +397,21 @@ describe("runPhase transcript persistence", () => {
     expect(codeAudit).not.toMatch(/finding maturation|reward_policy/i)
   })
 
+  test("live-target prompts require an evidence-backed end-to-end attacker path", () => {
+    const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
+    const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "verify" }), 120)
+    const pentestRecon = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "recon" }), 120)
+    const codeAudit = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "code-audit", phase: "attack" }), 120)
+
+    expect(bugBounty).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(bugBounty).toMatch(/prerequisites.*entry point.*attacker actions.*security boundaries.*concrete outcome/i)
+    expect(report).toMatch(/end-to-end attack path.*unsupported link/i)
+    expect(pentest).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(pentestRecon).not.toMatch(/What can an attacker actually achieve with this vulnerability\?/)
+    expect(codeAudit).not.toMatch(/What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i)
+  })
+
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
     let system = ""
     let privateEnv: Readonly<Record<string, string>> | undefined

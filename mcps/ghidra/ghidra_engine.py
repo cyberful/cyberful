@@ -141,7 +141,10 @@ class GhidraEngine:
     def resolve_source(self, relative_path: str) -> Path:
         if not relative_path or Path(relative_path).is_absolute() or "\x00" in relative_path:
             raise InputError("source_path must be a relative path inside the engagement workarea")
-        source = (self.workarea_root / relative_path).resolve(strict=True)
+        try:
+            source = (self.workarea_root / relative_path).resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise InputError("source_path must resolve to a plain file inside the engagement workarea") from error
         if not node_is_contained(self.workarea_root, source) or not source.is_file() or source.is_symlink():
             raise InputError("source_path must resolve to a plain file inside the engagement workarea")
         if source.stat().st_size > MAX_BINARY_BYTES:
@@ -168,8 +171,12 @@ class GhidraEngine:
             source_path = request.get("source_path")
             if not isinstance(source_path, str):
                 return None
-            source = self.resolve_source(source_path)
-            existing = self.imported_program(self.source_digest(source))
+            try:
+                source = self.resolve_source(source_path)
+                digest = self.source_digest(source)
+            except (InputError, OSError):
+                return None
+            existing = self.imported_program(digest)
             if existing is None:
                 return None
             if bool(request.get("analyze", True)) and existing.get("analyzed") is not True:

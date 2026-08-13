@@ -76,6 +76,7 @@ describe("Settings", () => {
     })
     expect(settings.agent.fallback.proactive.enabled).toBe(false)
     expect(settings.agent.fallback.automatic_security_block.enabled).toBe(false)
+    expect(Settings.fallbackRecoveryBonusMs(settings)).toBe(300_000)
     expect(Settings.phaseRecoveryPolicy(settings)).toEqual({
       enabled: true,
       max_restarts: 1,
@@ -377,6 +378,7 @@ agent:
     max_concurrent: 2
     max_depth: 2
   fallback:
+    recovery_bonus_minutes: 7
     proactive:
       enabled: true
       percentage: 2
@@ -404,10 +406,17 @@ instructions:
 `)
 
     expect(settings.agent.fallback_provider).toBe("glm-5-2")
+    expect(Settings.fallbackRecoveryBonusMs(settings)).toBe(420_000)
     expect(settings.agent.providers["glm-5-2"]?.auth).toEqual({
       type: "environment",
       variable: "ZAI_API_KEY",
     })
+  })
+
+  test("rejects a fallback recovery bonus outside zero through thirty minutes", () => {
+    expect(() =>
+      Settings.parse(validSettings().replace("  fallback:\n", "  fallback:\n    recovery_bonus_minutes: 31\n")),
+    ).toThrow(/recovery_bonus_minutes/)
   })
 
   test("rejects empty and dangling provider routing", () => {

@@ -10,7 +10,7 @@ Cyberful releases build the security image locally. Explicitly pinned dependenci
 
 | Tool / MCP | Version | Description | Use case |
 |---|---|---|---|
-| `workarea_read` | Cyberful release | Bounded workarea file reader. | Read engagement artifacts without exposing files outside the workarea. |
+| `workarea_read` | Cyberful release | Discriminated bounded reader for UTF-8 text slices or validated PNG, JPEG, and WebP image content, with typed wrong-namespace recovery. | Read engagement artifacts without exposing files outside the workarea or guessing a browser-artifact path. |
 | `workarea_list` | Cyberful release | Bounded workarea regular-file discovery by prefix, wildcard pattern, depth, and result count without symlink traversal. | Locate evidence and outputs from their actual workarea paths instead of guessing artifact names. |
 | `workarea_write` | Cyberful release | Bounded workarea file writer. | Create or update phase artifacts and evidence within the owned workarea. |
 | `evidence_manifest` | Cyberful release | Atomic creator and verifier for deterministic, sorted, self-excluding `EVIDENCE.sha256` manifests. | Seal or verify one evidence directory without accidentally hashing the manifest or temporary files into itself. |
@@ -29,12 +29,13 @@ The gateway MCP server is version 0.1.0. Its local tools are combined with polic
 | Tool / MCP | Version | Description | Use case |
 |---|---|---|---|
 | `variable` | Gateway 0.1.0 | Shared session variable store with redacted and explicit reveal reads. | Store tokens, target URLs, IDs, and other values reused safely across phases. |
+| `runtime_status` | Gateway 0.1.0 | Discovery, status, and active health check for managed browser and Ghidra MCP generations; unknown or inactive labels are non-retryable, while a dead valid transport may be replaced without replaying a failed research action. | Call `action=status` first, then health-check only an exact returned browser or Ghidra label before explicitly retrying the original tool call; never use it for ZAP or cyberful-os. |
 | `question` | Gateway 0.1.0 | Human decision and CAPTCHA handoff tool. | Pause only when authorization, a missing fact, or human CAPTCHA completion is required. |
 | `handoff` | Gateway 0.1.0 | Validated phase completion contract. | Submit the phase deliverable and transfer control to the next phase exactly once. |
 | `test_object` | Gateway 0.1.0 | Lifecycle registry for authorized targets and test identities. | Declare, inspect, update, and close test objects before target interaction. |
 | `egress_observation` | Gateway 0.1.0 | Engagement egress evidence recorder. | Record observed hosts, methods, effects, and scope-relevant outbound activity. |
-| `hypothesis` | Gateway 0.1.0 | Persistent vulnerability hypothesis registry. | Create, test, promote, disprove, and hand off evidence-backed research hypotheses. |
-| `engagement_policy` | Gateway 0.1.0 | Machine-readable engagement policy store. | Install and inspect the authorized scope, identities, traffic limits, and prohibited actions. |
+| `hypothesis` | Gateway 0.1.0 | Persistent vulnerability hypothesis registry with atomic ownership claims and ordered idempotent `promote` into the finding authority. | Create, claim, test, promote, disprove, and hand off evidence-backed research hypotheses without duplicate actors or lost positive candidates. |
+| `engagement_policy` | Gateway 0.1.0 | Two-stage machine-readable engagement traffic and readiness policy store. | Configure host-scoped ZAP rate and mandatory public-header controls before target preflight, finalize profile readiness afterward, and inspect their attested state. |
 | `reward_policy` | Gateway 0.1.0 | Official Bug Bounty reward schedule store. | Persist the program page provenance, asset groups, severity tiers, currency or non-monetary state, then read it without estimating payout. |
 | `target_cooldown` | Gateway 0.1.0 | Per-target cooldown controller. | Apply and inspect traffic pauses after throttling, instability, or explicit program limits. |
 | `source_import` | Gateway 0.1.0 | Controlled source import boundary. | Bring an authorized source tree into a bounded code-audit workarea. |
@@ -145,7 +146,7 @@ The persistent Ghidra service uses MCP 0.1.0 and Ghidra 12.1.2. The project and 
 |---|---|---|---|
 | `ghidra_project` | MCP 0.1.0; Ghidra 12.1.2 | Inspect the persistent project, list imported programs, or write a durable checkpoint. | Use persistent semantic analysis to inspect the persistent project, list imported programs, or write a durable checkpoint. |
 | `ghidra_import` | MCP 0.1.0; Ghidra 12.1.2 | Idempotently queue a workarea binary import by SHA-256, optionally followed by analysis. | Use persistent semantic analysis to idempotently queue a workarea binary import by SHA-256, optionally followed by analysis. |
-| `ghidra_job` | MCP 0.1.0; Ghidra 12.1.2 | Submit, inspect, list, and cancel persistent asynchronous jobs; restart reconciliation recognizes already committed results, and a verified completion wins a cancellation race. | Resume durable import or analysis work after a bridge restart without duplicating committed project changes. |
+| `ghidra_job` | MCP 0.1.0; Ghidra 12.1.2 | Submit, inspect, list, and cancel persistent asynchronous jobs; restart reconciliation recognizes already committed results, missing import sources fail only their job, and a verified completion wins a cancellation race. | Resume durable import or analysis work after a bridge restart without duplicating committed project changes. |
 | `ghidra_search` | MCP 0.1.0; Ghidra 12.1.2 | Search analyzed functions, symbols, or defined strings with stable pagination and canonical address selectors. | Discover a unique reusable selector before listing, decompilation, cross-reference, graph, or annotation calls. |
 | `ghidra_listing` | MCP 0.1.0; Ghidra 12.1.2 | Return bounded disassembly selected by canonical address, name, qualified name, or full/demangled signature. | Inspect instructions while retaining the canonical address selector returned for later calls. |
 | `ghidra_decompile` | MCP 0.1.0; Ghidra 12.1.2 | Decompile one uniquely resolved function with a finite timeout. Ambiguous names return bounded candidates instead of guessing. | Decompile overloaded or duplicated symbols safely by signature or canonical address. |
@@ -163,7 +164,7 @@ The cyberful-os MCP server is version 0.2.0. The five tools below manage capabil
 | `tool_inventory` | MCP 0.2.0 | List cyberful-os MCP tools, real commands/modules, aliases, categories, expected paths, optional flags, and live availability. | Inspect names, commands, categories, aliases, paths, optional status, and live availability. |
 | `nuclei_templates` | MCP 0.2.0 | Optionally list the installed Nuclei templates matching filter arguments. This runs offline with -tl and sends no target request. | Preview the pinned signed Nuclei template corpus offline. |
 | `wordlists` | MCP 0.2.0 | List and preview cyberful-os credential and discovery wordlists inside the container. | List and preview the bundled credential and content wordlists. |
-| `shell` | MCP 0.2.0 | Fallback only: execute an arbitrary shell command inside the Docker cyberful-os container when no dedicated lowercase tool fits. | Run a bounded fallback command only when no dedicated lowercase tool fits. |
+| `shell` | MCP 0.2.0 | Fallback only: execute an arbitrary shell command inside the Docker cyberful-os container with bounded output, process-group timeout, explicit accepted exit codes, and declared/not-applicable egress metadata. | Run a bounded fallback command only when no dedicated lowercase tool fits; declare expected non-zero probe exits and whether the command performs network egress. |
 
 ## cyberful-os stateful workflows
 
@@ -180,14 +181,14 @@ The cyberful-os MCP server is version 0.2.0. The five tools below manage capabil
 | `native_static_analysis` | MCP 0.2.0 | Compile-database import, source-validated native checks, source and sink tracing, and variadic-call inspection workflow; `run_checks` rejects ELF and other non-source inputs without launching an analyzer. | Use import_compile_db, run_checks, trace_source_sink, and inspect_variadic_calls on C/C++ source inputs; route binaries to the binary-analysis workflow. |
 | `harness_validate` | MCP 0.2.0 | Parse-only shell and JavaScript validation plus native executable/source architecture, ELF ABI, dependency, symbol, build-identity, real-header, and compile checks. | Operations: shell, javascript, native_executable, native_source. Reject malformed or ABI-inventing harnesses before execution. |
 | `archive_extract` | MCP 0.2.0; native 7-Zip build-resolved | Bounded archive inspection and extraction with ordinary ZIP handling plus a fresh-destination `7zz` retry for prepended or optimized ZIP layouts. | Operations: inspect, extract. Reliably unpack Mozilla `omni.ja` and similar archives before atomically publishing the result. |
-| `firefox_lab` | MCP 0.2.0; Firefox/Marionette build-resolved | Managed Firefox, Xvfb, profile, discovered Marionette socket, context, window, permission, and teardown owner for an arbitrary Firefox executable. | Operations: launch, status, new_window, navigate, execute, set_permission, close. Run loopback research harnesses in content or chrome context and verify privileged permission readback. |
+| `firefox_lab` | MCP 0.2.0; Firefox/Marionette build-resolved | Managed exact-build Firefox, Xvfb, profile, discovered Marionette socket, advertised BiDi URL, process identity, context, window, permission, handoff, and teardown owner. | Operations: launch, status, new_window, navigate, execute, set_permission, handoff_bidi, close. Create race prerequisites under Marionette, consume the advertised BiDi endpoint verbatim, and verify privileged permission readback. |
 | `x11_clipboard` | MCP 0.2.0; xclip build-resolved | Managed synthetic X11 clipboard ownership with UTF-8, `TARGETS`, status, and cleanup operations that do not persist real clipboard contents. | Operations: set, targets, status, clear. Exercise clipboard-sensitive Firefox paths inside an owned Xvfb display. |
 
 ## cyberful-os library tools
 
 | Tool / MCP | Version | Description | Use case |
 |---|---|---|---|
-| `requests` | MCP 0.2.0; build-resolved Python package | HTTP client capability backed by Python requests inside the cyberful-os container. | Fetch an HTTP(S) URL with method, headers, params, body, TLS, redirect, and timeout options. |
+| `requests` | MCP 0.2.0; build-resolved Python package | HTTP client capability backed by Python requests inside the cyberful-os container with observed destination, method, status, redirect, deadline, and route metadata. | Fetch an HTTP(S) URL with method, headers, params, body, TLS, redirect, and timeout options when auditable HTTP status is required. |
 | `bs4` | MCP 0.2.0; build-resolved Python package | HTML parsing and CSS selector extraction backed by Beautiful Soup inside the cyberful-os container. | Extract text, attributes, or HTML fragments from inline HTML or a file in /workspace. |
 | `lxml` | MCP 0.2.0; build-resolved Python package | HTML/XML parsing and XPath extraction backed by lxml inside the cyberful-os container. | Evaluate XPath against inline content or a file in /workspace. |
 

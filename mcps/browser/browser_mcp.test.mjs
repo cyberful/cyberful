@@ -432,6 +432,18 @@ describe("browser MCP retained data", () => {
     expect(result.content[0].text).not.toContain("must not escape")
   })
 
+  test("directs regular workarea image paths to the host-owned reader", async () => {
+    const result = await handleToolCall({
+      name: "browser_artifact_read",
+      arguments: { path: "evidence/render/screenshot.png" },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('"code":"wrong_artifact_namespace"')
+    expect(result.content[0].text).toContain('"tool":"workarea_read"')
+    expect(result.content[0].text).toContain('"mode":"image"')
+  })
+
   test("rejects a declared oversized response before requesting its body", async () => {
     let bodyRead = false
     const response = {

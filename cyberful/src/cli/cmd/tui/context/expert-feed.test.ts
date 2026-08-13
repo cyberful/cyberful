@@ -11,6 +11,7 @@ import {
   decodeExpertFindingMaturation,
   decodeExpertPhaseStatus,
   decodeExpertProviderRetry,
+  decodeExpertRuntimeBootstrap,
   decodeExpertRuntimeDiagnostic,
   decodeExpertToolActivity,
   expertActorIdentityText,
@@ -111,6 +112,58 @@ describe("decodeExpertToolActivity", () => {
 })
 
 describe("foldExpertActivity", () => {
+  test("keeps engagement startup in one updating runtime card", () => {
+    const starting = JSON.stringify({
+      runtimeBootstrap: {
+        state: "active",
+        message: "Attesting ZAP, proxy trust, and TLS clients",
+        completed: 1,
+        total: 2,
+        services: [
+          { id: "cyber-os", label: "CyberOS", state: "ready" },
+          { id: "zap", label: "OWASP ZAP", state: "active" },
+        ],
+      },
+    })
+    const ready = JSON.stringify({
+      runtimeBootstrap: {
+        state: "ready",
+        message: "Engagement runtime ready",
+        completed: 2,
+        total: 2,
+        services: [
+          { id: "cyber-os", label: "CyberOS", state: "ready" },
+          { id: "zap", label: "OWASP ZAP", state: "ready" },
+        ],
+      },
+    })
+
+    expect(decodeExpertRuntimeBootstrap(starting)).toMatchObject({ state: "active", completed: 1, total: 2 })
+    const updated = foldExpertActivity(
+      foldExpertActivity([], act("status", starting, "", "runtime-starting")),
+      act("status", ready, "", "runtime-ready"),
+    )
+    expect(updated).toHaveLength(1)
+    expect(updated[0]).toMatchObject({
+      id: "runtime-starting",
+      text: "Engagement runtime ready",
+      runtimeBootstrap: { state: "ready", completed: 2, total: 2 },
+    })
+    expect(
+      decodeExpertRuntimeBootstrap(
+        JSON.stringify({
+          runtimeBootstrap: {
+            state: "ready",
+            message: "invalid",
+            completed: 2,
+            total: 2,
+            services: [{ id: "cyber-os", label: "CyberOS", state: "ready" }],
+          },
+        }),
+      ),
+    ).toBeUndefined()
+  })
+
   test("decodes a non-blocking finding maturation card with published upside", () => {
     const payload = JSON.stringify({
       findingMaturation: {

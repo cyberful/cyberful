@@ -1,16 +1,16 @@
 // ── Sanitized Local Runtime Diagnostics ──────────────────────────
 // Retains bounded agent, phase, ZAP, browser, gateway, and MCP observations
 // without placing raw stderr, request bodies, prompts, or environment data in model context.
-// Only actionable severities notify the operator; repeated records are
-// summarized once at close.
+// Only actionable severities notify the operator; every raw event is immutable
+// and repeated signatures are summarized only by downstream readers.
 // → cyberful/src/subsystem/pi-mcp.ts — supplies gateway/MCP observations.
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { appendWorkareaFile } from "@/workarea"
 import { PiAudit } from "./pi-audit"
-import type { AgentRunID, AgentRunRole, AgentRunTermination } from "./agent-subsystem"
+import type { AgentRunID, AgentRunRole, AgentRunTermination, AgentRunTerminationCause } from "./agent-subsystem"
 
 export const RUNTIME_DIAGNOSTICS_PATH = "raw/operations/runtime-diagnostics.jsonl"
 const RECORD_BYTES = 8 * 1024
@@ -19,11 +19,15 @@ const MESSAGE_BYTES = 512
 const LABEL_BYTES = 256
 
 export interface RuntimeDiagnosticInput {
-  readonly component: "agent" | "phase" | "gateway" | "zap" | "ghidra" | "browser" | "mcp"
+  readonly component: "agent" | "phase" | "gateway" | "cyberful-os" | "zap" | "ghidra" | "browser" | "mcp"
   readonly runID?: AgentRunID
   readonly parentRunID?: AgentRunID
   readonly role?: AgentRunRole
+  readonly callID?: string
+  readonly server?: string
+  readonly route?: string
   readonly termination?: AgentRunTermination
+  readonly terminationCause?: AgentRunTerminationCause
   readonly profile?: string
   readonly stage: "startup" | "connect" | "context" | "provider" | "tool" | "shutdown"
   readonly severity: "info" | "warning" | "error"
@@ -48,7 +52,11 @@ export interface RuntimeDiagnosticSummary {
   readonly runID?: AgentRunID
   readonly parentRunID?: AgentRunID
   readonly role?: AgentRunRole
+  readonly callID?: string
+  readonly server?: string
+  readonly route?: string
   readonly termination?: AgentRunTermination
+  readonly terminationCause?: AgentRunTerminationCause
   readonly profile?: string
   readonly stage: RuntimeDiagnosticInput["stage"]
   readonly severity: Exclude<RuntimeDiagnosticInput["severity"], "info">
@@ -56,14 +64,6 @@ export interface RuntimeDiagnosticSummary {
   readonly code?: string
   readonly message: string
   readonly path: typeof RUNTIME_DIAGNOSTICS_PATH
-}
-
-type Aggregate = {
-  readonly input: RuntimeDiagnosticInput
-  readonly message: string
-  readonly firstTimestamp: string
-  lastTimestamp: string
-  count: number
 }
 
 function stripUrls(text: string) {
@@ -105,7 +105,11 @@ function diagnosticSignature(input: RuntimeDiagnosticInput): string {
     input.runID ?? "",
     input.parentRunID ?? "",
     input.role ?? "",
+    input.callID ?? "",
+    input.server ?? "",
+    input.route ?? "",
     input.termination ?? "",
+    input.terminationCause ?? "",
     input.profile ?? "",
     input.stage,
     input.severity,
@@ -121,7 +125,7 @@ export class RuntimeDiagnosticRecorder {
   readonly #phase: string
   readonly #attempt: number
   readonly #onFirst?: (summary: RuntimeDiagnosticSummary) => void
-  readonly #records = new Map<string, Aggregate>()
+  readonly #notified = new Set<string>()
   #queue: Promise<void> = Promise.resolve()
   #writtenBytes = 0
 
@@ -146,28 +150,19 @@ export class RuntimeDiagnosticRecorder {
     const message = sanitizeRuntimeDiagnostic(input.message)
     const key = diagnosticSignature(input)
     const now = new Date().toISOString()
-    const current = this.#records.get(key)
-    if (current) {
-      current.count++
-      current.lastTimestamp = now
-      return
-    }
-    const aggregate: Aggregate = {
-      input,
-      message,
-      firstTimestamp: now,
-      lastTimestamp: now,
-      count: 1,
-    }
-    this.#records.set(key, aggregate)
-    this.#append(aggregate)
-    if (input.severity !== "info")
+    this.#append(input, message, now)
+    if (input.severity !== "info" && !this.#notified.has(key)) {
+      this.#notified.add(key)
       this.#onFirst?.({
         component: input.component,
         ...(input.runID ? { runID: diagnosticLabel(input.runID) } : {}),
         ...(input.parentRunID ? { parentRunID: diagnosticLabel(input.parentRunID) } : {}),
         ...(input.role ? { role: input.role } : {}),
+        ...(input.callID ? { callID: diagnosticLabel(input.callID) } : {}),
+        ...(input.server ? { server: diagnosticLabel(input.server) } : {}),
+        ...(input.route ? { route: diagnosticLabel(input.route) } : {}),
         ...(input.termination ? { termination: input.termination } : {}),
+        ...(input.terminationCause ? { terminationCause: input.terminationCause } : {}),
         ...(input.profile ? { profile: diagnosticLabel(input.profile) } : {}),
         stage: input.stage,
         severity: input.severity,
@@ -176,49 +171,54 @@ export class RuntimeDiagnosticRecorder {
         message: diagnosticLabel(message),
         path: RUNTIME_DIAGNOSTICS_PATH,
       })
+    }
   }
 
   close(): Promise<void> {
-    for (const aggregate of this.#records.values()) if (aggregate.count > 1) this.#append(aggregate)
     return this.#queue
   }
 
-  #append(aggregate: Aggregate) {
+  #append(input: RuntimeDiagnosticInput, message: string, timestamp: string) {
     const signature = createHash("sha256")
-      .update(diagnosticSignature(aggregate.input))
+      .update(diagnosticSignature(input))
       .digest("hex")
     const row = {
-      version: 2,
-      timestamp: aggregate.lastTimestamp,
-      firstTimestamp: aggregate.firstTimestamp,
-      lastTimestamp: aggregate.lastTimestamp,
+      version: 3,
+      eventID: randomUUID(),
+      timestamp,
+      firstTimestamp: timestamp,
+      lastTimestamp: timestamp,
       sessionID: this.#sessionID,
       workflow: this.#workflow,
       phase: this.#phase,
       attempt: this.#attempt,
-      component: aggregate.input.component,
-      ...(aggregate.input.runID ? { runID: diagnosticLabel(aggregate.input.runID) } : {}),
-      ...(aggregate.input.parentRunID ? { parentRunID: diagnosticLabel(aggregate.input.parentRunID) } : {}),
-      ...(aggregate.input.role ? { role: aggregate.input.role } : {}),
-      ...(aggregate.input.termination ? { termination: aggregate.input.termination } : {}),
-      ...(aggregate.input.profile ? { profile: diagnosticLabel(aggregate.input.profile) } : {}),
-      stage: aggregate.input.stage,
-      severity: aggregate.input.severity,
-      errorClass: diagnosticLabel(aggregate.input.errorClass),
-      ...(aggregate.input.code ? { code: diagnosticLabel(aggregate.input.code) } : {}),
+      component: input.component,
+      ...(input.runID ? { runID: diagnosticLabel(input.runID) } : {}),
+      ...(input.parentRunID ? { parentRunID: diagnosticLabel(input.parentRunID) } : {}),
+      ...(input.role ? { role: input.role } : {}),
+      ...(input.callID ? { callID: diagnosticLabel(input.callID) } : {}),
+      ...(input.server ? { server: diagnosticLabel(input.server) } : {}),
+      ...(input.route ? { route: diagnosticLabel(input.route) } : {}),
+      ...(input.termination ? { termination: input.termination } : {}),
+      ...(input.terminationCause ? { terminationCause: input.terminationCause } : {}),
+      ...(input.profile ? { profile: diagnosticLabel(input.profile) } : {}),
+      stage: input.stage,
+      severity: input.severity,
+      errorClass: diagnosticLabel(input.errorClass),
+      ...(input.code ? { code: diagnosticLabel(input.code) } : {}),
       outcome:
-        aggregate.input.outcome ??
-        (aggregate.input.severity === "info"
+        input.outcome ??
+        (input.severity === "info"
           ? "lifecycle_info"
-          : aggregate.input.stage === "tool"
+          : input.stage === "tool"
             ? "tool_failure"
             : "runtime_failure"),
-      blocking: aggregate.input.blocking ?? false,
+      blocking: input.blocking ?? false,
       signature,
-      message: aggregate.message,
-      originalBytes: Buffer.byteLength(aggregate.input.message, "utf8"),
-      messageSha256: createHash("sha256").update(aggregate.input.message).digest("hex"),
-      count: aggregate.count,
+      message,
+      originalBytes: Buffer.byteLength(input.message, "utf8"),
+      messageSha256: createHash("sha256").update(input.message).digest("hex"),
+      count: 1,
     }
     const line = `${JSON.stringify(row)}\n`
     const bytes = Buffer.byteLength(line, "utf8")

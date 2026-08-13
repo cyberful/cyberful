@@ -1137,10 +1137,33 @@ async function resolveArtifactReadPath(requestedPath) {
   const resolved = path.resolve(
     path.isAbsolute(requestedPath) ? requestedPath : path.join(ARTIFACTS_DIR, requestedPath),
   )
-  const [artifactsRoot, canonicalFile] = await Promise.all([
-    fs.promises.realpath(ARTIFACTS_DIR),
-    fs.promises.realpath(resolved),
-  ])
+  let artifactsRoot
+  let canonicalFile
+  try {
+    ;[artifactsRoot, canonicalFile] = await Promise.all([
+      fs.promises.realpath(ARTIFACTS_DIR),
+      fs.promises.realpath(resolved),
+    ])
+  } catch (error) {
+    if (
+      error?.code === "ENOENT" &&
+      !path.isAbsolute(requestedPath) &&
+      String(requestedPath).split(/[\\/]/u).length > 1
+    )
+      throw new Error(
+        JSON.stringify({
+          code: "wrong_artifact_namespace",
+          path: requestedPath,
+          message: "The requested path is not a retained browser artifact. Read regular workarea evidence with workarea_read.",
+          recovery_call: {
+            tool: "workarea_read",
+            arguments: { mode: "image", path: requestedPath },
+          },
+        }),
+        { cause: error },
+      )
+    throw error
+  }
   const relative = path.relative(artifactsRoot, canonicalFile)
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`artifact reads are restricted to ${ARTIFACTS_DIR}`)

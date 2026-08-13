@@ -85,6 +85,24 @@ def _embedded_requests_runner(response, request_options):
 
 
 class ToolSchemaBoundaryTest(unittest.TestCase):
+    @staticmethod
+    def _minimal_schema_value(schema):
+        if "enum" in schema:
+            return schema["enum"][0]
+        if schema.get("type") == "string":
+            return "fixture"
+        if schema.get("type") == "integer":
+            return schema.get("minimum", 1)
+        if schema.get("type") == "number":
+            return schema.get("minimum", 1)
+        if schema.get("type") == "boolean":
+            return False
+        if schema.get("type") == "array":
+            return [ToolSchemaBoundaryTest._minimal_schema_value(schema.get("items", {}))]
+        if schema.get("type") == "object":
+            return {}
+        return None
+
     def test_registry_pairs_every_unique_public_name_with_a_handler_and_schema(self):
         registry = cyberful_os_mcp._exposed_tool_registry()
         names = [entry[0] for entry in registry]
@@ -122,7 +140,7 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertEqual(schema["required"], ["command"])
         self.assertEqual(
             set(schema["properties"]),
-            {"command", "cwd", "timeout_seconds", "max_output_bytes", "env", "egress"},
+            {"command", "cwd", "timeout_seconds", "max_output_bytes", "env", "accepted_exit_codes", "egress"},
         )
         self.assertEqual(schema["properties"]["timeout_seconds"]["default"], cyberful_os_mcp.DEFAULT_TIMEOUT_SECONDS)
         self.assertEqual(schema["properties"]["timeout_seconds"]["maximum"], cyberful_os_mcp.MAX_TIMEOUT_SECONDS)
@@ -163,6 +181,27 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertTrue(crossed["isError"])
         self.assertIn("exactly one operation schema", crossed["content"][0]["text"])
         ensure_container.assert_not_called()
+
+    def test_every_native_operation_schema_accepts_its_documented_required_properties(self):
+        for tool_name, operations in cyberful_os_mcp.native_security.OPERATION_FIELDS.items():
+            schema = cyberful_os_mcp.native_security.SCHEMAS[tool_name]
+            with self.subTest(tool=tool_name):
+                self.assertFalse(schema["additionalProperties"])
+            for operation, (_fields, required) in operations.items():
+                arguments = {"operation": operation}
+                arguments.update({
+                    field: self._minimal_schema_value(cyberful_os_mcp.native_security.SCHEMA_FIELDS[field])
+                    for field in required
+                })
+                with self.subTest(tool=tool_name, operation=operation):
+                    self.assertEqual(cyberful_os_mcp.validate_tool_arguments(schema, arguments), arguments)
+
+        firefox_schema = cyberful_os_mcp.native_security.SCHEMAS["firefox_lab"]
+        with self.assertRaises(ValueError):
+            cyberful_os_mcp.validate_tool_arguments(
+                firefox_schema,
+                {"operation": "status", "unexpected": True},
+            )
 
     def test_accepts_a_valid_inventory_call_without_starting_docker(self):
         with mock.patch.object(cyberful_os_mcp, "ensure_container") as ensure_container:
@@ -241,6 +280,52 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
             max_output_bytes=8192,
             extra_env={"CYBERFUL_TEST": "stable"},
         )
+
+    def test_shell_accepts_declared_benign_nonzero_exit_codes(self):
+        completed = cyberful_os_mcp.CommandResult(
+            target="cyberful-os",
+            command="grep absent fixture",
+            exit_code=1,
+            timed_out=False,
+            duration_ms=1,
+            stdout="",
+            stderr="",
+            truncated=False,
+        )
+        with mock.patch.object(cyberful_os_mcp, "run_in_container", return_value=completed):
+            accepted = cyberful_os_mcp.handle_tool_call({
+                "name": "shell",
+                "arguments": {"command": "grep absent fixture", "accepted_exit_codes": [0, 1]},
+            })
+            rejected = cyberful_os_mcp.handle_tool_call({
+                "name": "shell",
+                "arguments": {"command": "grep absent fixture"},
+            })
+
+        self.assertFalse(accepted["isError"])
+        self.assertIn("accepted_exit_code: true", accepted["content"][0]["text"])
+        self.assertTrue(rejected["isError"])
+
+    def test_shell_does_not_infer_egress_from_static_url_literals(self):
+        metadata = cyberful_os_mcp._shell_egress_metadata(
+            "rg 'https://www.w3.org/TR/CSP3/' local-source.js",
+            None,
+            120,
+        )
+        local = cyberful_os_mcp._shell_egress_metadata("rg fixture local-source.js", {"network": False}, 120)
+        declared = cyberful_os_mcp._shell_egress_metadata(
+            "curl --config request.txt",
+            {"network": True, "host": "example.test", "method": "get", "path_family": "/api/123"},
+            120,
+        )
+
+        self.assertEqual(metadata["observability"], "degraded")
+        self.assertNotIn("host", metadata)
+        self.assertEqual(local["observability"], "not_applicable")
+        self.assertNotIn("host", local)
+        self.assertEqual(declared["observability"], "declared")
+        self.assertEqual(declared["host"], "example.test")
+        self.assertEqual(declared["method"], "GET")
 
 
 class StdioBoundaryTest(unittest.TestCase):

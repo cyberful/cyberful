@@ -95,6 +95,7 @@ function fromMetadata(result: CallToolResult): Observation | undefined {
   const value = result._meta[META_KEY]
   const observation = typeof value.observability === "string" ? value.observability : undefined
   const observability =
+    observation === "not_applicable" ||
     observation === "observed" ||
     observation === "declared" ||
     observation === "inferred" ||
@@ -160,6 +161,7 @@ export function declared(args: Record<string, unknown>): Observation {
   if (!endpoint.egress_host) throw new Error("egress_observation requires a redacted destination host")
   const observation = args.observability
   if (
+    observation !== "not_applicable" &&
     observation !== "observed" &&
     observation !== "declared" &&
     observation !== "inferred" &&
@@ -200,7 +202,7 @@ export const EGRESS_OBSERVATION_TOOL_DEF = {
       redirects: { type: "integer", minimum: 0 },
       deadline_ms: { type: "integer", minimum: 0 },
       route: { type: "string", maxLength: 120 },
-      observability: { type: "string", enum: ["observed", "declared", "inferred", "degraded"] },
+      observability: { type: "string", enum: ["not_applicable", "observed", "declared", "inferred", "degraded"] },
       destination_changed: { type: "boolean" },
     },
     required: ["host", "observability"],

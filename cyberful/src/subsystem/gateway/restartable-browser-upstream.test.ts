@@ -202,3 +202,17 @@ test("invalidates transport failures but leaves the failed action for its caller
   expect(await upstream.call(async (connection) => connection.id)).toBe(2)
   await upstream.close()
 })
+
+test("reports generations and replaces a transport through a health-only check without replaying work", async () => {
+  const { connections, upstream } = fixture(0, async (value) => {
+    if (!value.alive) throw new Error("health probe failed")
+  })
+  await upstream.start()
+  expect(upstream.status()).toMatchObject({ state: "ready", generation: 1 })
+  connections[0]!.alive = false
+
+  expect(await upstream.health()).toMatchObject({ state: "ready", generation: 2 })
+  expect(connections).toHaveLength(2)
+  await upstream.close()
+  expect(upstream.status().state).toBe("closing")
+})

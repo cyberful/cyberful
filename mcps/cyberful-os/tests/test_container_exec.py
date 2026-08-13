@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -59,6 +60,29 @@ class RunProcessTest(unittest.TestCase):
         self.assertIsNone(result.exit_code)
         self.assertTrue(result.timed_out)
         self.assertIn("Timed out", result.stderr)
+        self.assertGreaterEqual(result.execution_ms, 40)
+        self.assertLessEqual(result.termination_grace_ms, 2_000)
+        self.assertEqual(result.duration_ms, result.total_duration_ms)
+
+    def test_timeout_terminates_descendants_that_keep_capture_pipes_open(self):
+        started = time.monotonic()
+        result = cyberful_os_mcp.run_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import subprocess,sys,time; "
+                    "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                    "print('child-started', flush=True); time.sleep(30)"
+                ),
+            ],
+            timeout_seconds=0.05,
+            max_output_bytes=4096,
+        )
+
+        self.assertTrue(result.timed_out)
+        self.assertIn("child-started", result.stdout)
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_retained_output_is_bounded(self):
         result = cyberful_os_mcp.run_process(

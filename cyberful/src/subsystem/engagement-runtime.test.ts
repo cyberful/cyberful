@@ -51,6 +51,13 @@ test("requires ZAP for every live-target phase before a numeric policy exists", 
   expect(requiresZapUpstream("ask")).toBe(false)
   expect(requiresZapUpstream("code-audit")).toBe(false)
   expect(requiresZapUpstream("ask", { global_http_rps: 4 })).toBe(true)
+  expect(
+    requiresZapUpstream("ask", {
+      required_http_headers: [
+        { name: "X-Request-Purpose", value: "Research", hosts: ["app.example.test"] },
+      ],
+    }),
+  ).toBe(true)
 })
 
 test("masks private ZAP state and exposes only a read-only public trust mount to the core", () => {

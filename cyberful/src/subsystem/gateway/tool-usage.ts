@@ -75,7 +75,7 @@ export interface ToolUsageEvent {
   egress_redirects?: number
   egress_deadline_ms?: number
   egress_route?: string
-  egress_observability?: "observed" | "declared" | "inferred" | "degraded"
+  egress_observability?: "not_applicable" | "observed" | "declared" | "inferred" | "degraded"
   egress_destination_changed?: boolean
   lead_count?: number
   suspected_count?: number
@@ -97,17 +97,22 @@ function safeName(value: string) {
 }
 
 export class ToolUsageRecorder {
-  private readonly root = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
-  private readonly phase = process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim() || "unknown"
-  private readonly agent = process.env.CYBERFUL_SUBSYSTEM_LABEL?.trim() || this.phase
-  private readonly directory = this.root ? path.join(this.root, "raw", "operations", "tool-calls") : undefined
-  private readonly shard = this.directory
-    ? path.join(this.directory, `${safeName(this.phase)}-${safeName(this.agent)}-${process.pid}.csv`)
-    : undefined
+  private readonly root: string | undefined
+  private readonly phase: string
+  private readonly agent: string
+  private readonly directory: string | undefined
+  private readonly shard: string | undefined
   private queue: Promise<void> = Promise.resolve()
   private readonly failures: unknown[] = []
 
-  constructor() {
+  constructor(input: { readonly root?: string; readonly phase?: string; readonly agent?: string } = {}) {
+    this.root = input.root?.trim() || process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
+    this.phase = input.phase?.trim() || process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim() || "unknown"
+    this.agent = input.agent?.trim() || process.env.CYBERFUL_SUBSYSTEM_LABEL?.trim() || this.phase
+    this.directory = this.root ? path.join(this.root, "raw", "operations", "tool-calls") : undefined
+    this.shard = this.directory
+      ? path.join(this.directory, `${safeName(this.phase)}-${safeName(this.agent)}-${process.pid}.csv`)
+      : undefined
     if (this.root && !path.isAbsolute(this.root))
       throw new Error("CYBERFUL_SUBSYSTEM_WORKAREA_ROOT must be an absolute path")
   }

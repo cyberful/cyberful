@@ -34,6 +34,7 @@ import { useKV } from "./kv"
 import { aggregateFailures } from "./aggregate-failures"
 import { foldExpertActivity, type ExpertPhaseEntry } from "./expert-feed"
 import { FrameBatcher } from "./frame-batcher"
+import { foldRunningPhase, type RunningPhase } from "./running-phase"
 
 export type SkillFeedEntry = {
   id: string
@@ -97,7 +98,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       // current user-facing activity label.
       // ─────────────────────────────────────────────────────────────────
       expert_phase_running: {
-        [sessionID: string]: { phase: string; lastKind?: string } | undefined
+        [sessionID: string]: RunningPhase | undefined
       }
       part: {
         [messageID: string]: Part[]
@@ -331,23 +332,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       let feed = store.expert_phase[sessionID] ?? []
       for (const frame of frames) {
         const activity = frame.properties
-        if (activity.kind === "start") {
-          running = { phase: activity.phase }
-          continue
-        }
-        if (activity.kind === "end") {
-          running = undefined
-          continue
-        }
+        running = foldRunningPhase(running, {
+          phase: activity.phase,
+          kind: activity.kind,
+          timestamp: timestampMillis(activity.timestamp),
+        })
+        if (activity.kind === "start" || activity.kind === "end") continue
         if (activity.kind === "progress") {
           observeProviderUsage(sessionID, activity)
-          running = running ?? { phase: activity.phase }
           continue
         }
-        if (activity.kind !== "status")
-          running = running
-            ? { ...running, phase: activity.phase, lastKind: activity.kind }
-            : { phase: activity.phase, lastKind: activity.kind }
         feed = foldExpertActivity(feed, {
           id: frame.id,
           sessionID,

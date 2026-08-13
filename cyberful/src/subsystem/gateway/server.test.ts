@@ -316,6 +316,7 @@ describe("expert-gateway workflow capability policy", () => {
     expect(upstreamFailureIsBlocking("zap", {})).toBe(false)
     expect(upstreamFailureIsBlocking("ghidra", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(false)
     expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_BY_RATE_LIMIT: "1" })).toBe(true)
+    expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_BY_POLICY: "1" })).toBe(true)
     expect(upstreamFailureIsBlocking("zap", { CYBER_ZAP_REQUIRED_UPSTREAM: "1" })).toBe(true)
     expect(upstreamFailureIsBlocking("cyberful-os", {})).toBe(true)
   })
@@ -384,6 +385,73 @@ describe("expert-gateway workflow capability policy", () => {
     expect(runtimeNetworkAllowed({ workflow: "ask", phase: "ask", authorized: false })).toBe(true)
   })
 
+  test("rejects unmanaged runtime labels without probing and preserves retryable health failures", async () => {
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+    }
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "code-audit"
+    process.env.CYBERFUL_SUBSYSTEM_PHASE = "scope"
+    let statusCalls = 0
+    let healthCalls = 0
+    const server = await createGatewayServer({
+      upstreams: [],
+      runtimeStatus: async (input) => {
+        if (input?.check) {
+          healthCalls += 1
+          throw new Error("ghidra probe failed")
+        }
+        statusCalls += 1
+        return [{ label: "ghidra", state: "ready", generation: 1, quarantined: false }]
+      },
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const runtimeClient = new Client({ name: "runtime-status-contract-test", version: "0" })
+    await runtimeClient.connect(clientTransport)
+    try {
+      const definition = (await runtimeClient.listTools()).tools.find((tool) => tool.name === "runtime_status")
+      expect(definition?.description).toContain("ZAP and cyberful-os are not managed by this tool")
+      expect(JSON.stringify(definition?.inputSchema)).toContain("returned by action=status")
+
+      const unknown = await runtimeClient.callTool({
+        name: "runtime_status",
+        arguments: { action: "check", runtime: "zap" },
+      })
+      expect(unknown.isError).toBe(true)
+      expect(errorContent(unknown)).toEqual({
+        code: "MCP_RUNTIME_UNKNOWN",
+        runtime: "zap",
+        retryable: false,
+        available_runtimes: ["ghidra"],
+        hint: "Use an exact managed runtime label returned by runtime_status action=status.",
+        recovery: { tool: "runtime_status", arguments: { action: "status" } },
+      })
+      expect(statusCalls).toBe(1)
+      expect(healthCalls).toBe(0)
+
+      const failedHealth = await runtimeClient.callTool({
+        name: "runtime_status",
+        arguments: { action: "check", runtime: "ghidra" },
+      })
+      expect(failedHealth.isError).toBe(true)
+      expect(errorContent(failedHealth)).toEqual({
+        code: "MCP_RUNTIME_HEALTH_FAILED",
+        retryable: true,
+        hint: "ghidra probe failed",
+        recovery: { tool: "runtime_status", arguments: { action: "check", runtime: "ghidra" } },
+      })
+      expect(healthCalls).toBe(1)
+    } finally {
+      await runtimeClient.close()
+      await server.closeGateway()
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+    }
+  })
+
   test("publishes source and lab tools only to eligible workflow phases", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-workflow-tools-"))
     const source = path.join(directory, "source")
@@ -441,6 +509,7 @@ describe("expert-gateway workflow capability policy", () => {
 
       expect(await toolNames("pentest", "recon")).toEqual([
         "variable",
+        "runtime_status",
         "cve_dictionary",
         "test_object",
         "egress_observation",
@@ -450,6 +519,7 @@ describe("expert-gateway workflow capability policy", () => {
       process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = JSON.stringify({ required: true })
       expect(await toolNames("bug-bounty", "recon")).toEqual([
         "variable",
+        "runtime_status",
         "source_import",
         "source_catalog",
         "source_inventory",
@@ -467,6 +537,7 @@ describe("expert-gateway workflow capability policy", () => {
       ])
       expect(await toolNames("bug-bounty", "brief")).toEqual([
         "variable",
+        "runtime_status",
         "source_import",
         "source_catalog",
         "source_inventory",
@@ -480,6 +551,7 @@ describe("expert-gateway workflow capability policy", () => {
       ])
       expect(await toolNames("bug-bounty", "report")).toEqual([
         "variable",
+        "runtime_status",
         "source_catalog",
         "source_inventory",
         "source_read",
@@ -654,6 +726,41 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     await server.closeGateway()
     await server.closeGateway()
     expect(closes).toBe(1)
+  })
+
+  test("offers runtime_status recovery only for explicitly managed upstreams", async () => {
+    const failedUpstream = (name: string, managedRuntime?: "ghidra"): UpstreamTool => ({
+      def: { name, description: name, inputSchema: { type: "object", properties: {} } },
+      ...(managedRuntime ? { managedRuntime } : {}),
+      call: async () => {
+        throw new Error(`${name} transport failed`)
+      },
+    })
+    const server = await createGatewayServer({
+      upstreams: [failedUpstream("ordinary_failure"), failedUpstream("managed_failure", "ghidra")],
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const recoveryClient = new Client({ name: "managed-recovery-contract-test", version: "0" })
+    await recoveryClient.connect(clientTransport)
+    try {
+      const ordinary = errorContent(await recoveryClient.callTool({ name: "ordinary_failure", arguments: {} }))
+      expect(ordinary).toMatchObject({ code: "UPSTREAM_TRANSPORT_FAILED", runtime: "mcp" })
+      expect(ordinary).not.toHaveProperty("recovery")
+
+      const managed = errorContent(await recoveryClient.callTool({ name: "managed_failure", arguments: {} }))
+      expect(managed).toMatchObject({
+        code: "UPSTREAM_TRANSPORT_FAILED",
+        runtime: "ghidra",
+        recovery: {
+          first: { tool: "runtime_status", arguments: { action: "check", runtime: "ghidra" } },
+          then: { tool: "managed_failure", arguments: {} },
+        },
+      })
+    } finally {
+      await recoveryClient.close()
+      await server.closeGateway()
+    }
   })
 
   test("re-exposes upstream tools, resolves simple and composed {{var}} args, and redacts replies", async () => {
@@ -834,7 +941,9 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       capability: "browser",
       browserProfile: "search",
       call: async (args) => ({
-        content: [{ type: "text", text: JSON.stringify({ engine: "duckduckgo", profile: "search", query: args.query }) }],
+        content: [
+          { type: "text", text: JSON.stringify({ engine: "duckduckgo", profile: "search", query: args.query }) },
+        ],
         _meta: {
           "cyberful.dev/browser-action": {
             profile: "search",
@@ -1095,7 +1204,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
 })
 
 describe("expert-gateway handoff tool", () => {
-  test("commits Brief policy only after ZAP enforcement and blocks handoff after a failed install", async () => {
+  test("enforces Brief traffic before preflight and blocks handoff until profile finalization", async () => {
     const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-policy-enforcement-test-")))
     const signal = path.join(dir, "handoff.json")
     const upstreamFailureSignal = path.join(dir, "upstream-failure.json")
@@ -1139,17 +1248,26 @@ describe("expert-gateway handoff tool", () => {
       await server.connect(st)
       c = new Client({ name: "policy-enforcement-test", version: "0" })
       await c.connect(ct)
-      const arguments_ = {
-        action: "set",
-        profiles: [],
+      const configure = {
+        action: "configure",
         authorized_http_hosts: ["app.example.test"],
-        global_http_rps: 4,
+        global_http_rps: null,
+        required_http_headers: [
+          { name: "X-Request-Purpose", value: "Research", hosts: ["app.example.test"] },
+        ],
       }
 
-      const failed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
+      const prematureFinalize = await c.callTool({
+        name: "engagement_policy",
+        arguments: { action: "finalize", profiles: [] },
+      })
+      expect(prematureFinalize.isError).toBe(true)
+      expect(jsonContent(prematureFinalize).error).toContain("configure")
+
+      const failed = await c.callTool({ name: "engagement_policy", arguments: configure })
       expect(failed.isError).toBe(true)
       expect(jsonContent(failed)).toMatchObject({
-        code: "zap_rate_limit_install_failed",
+        code: "zap_engagement_policy_install_failed",
         retryable: false,
         user_action_required: false,
         policy_stored: false,
@@ -1171,25 +1289,69 @@ describe("expert-gateway handoff tool", () => {
       expect(blocked.isError).toBe(true)
       expect(errorContent(blocked).message).toContain("engagement_policy")
 
-      fetch.mockImplementation((async (input) =>
-        new URL(String(input)).pathname.endsWith("getRateLimitRules/")
-          ? new Response(
-              JSON.stringify({
-                getRateLimitRules: [{ description: "Cyberful engagement global HTTP budget" }],
-              }),
-              { status: 200 },
-            )
-          : new Response('{"Result":"OK"}', { status: 200 })) as typeof globalThis.fetch)
-      const installed = await c.callTool({ name: "engagement_policy", arguments: arguments_ })
+      let headers: Record<string, unknown>[] = []
+      fetch.mockImplementation(
+        (async (input) => {
+          const url = new URL(String(input))
+          if (url.pathname.endsWith("getRateLimitRules/"))
+            return new Response(JSON.stringify({ getRateLimitRules: [] }), { status: 200 })
+          if (url.pathname.endsWith("replacer/view/rules/"))
+            return new Response(JSON.stringify({ rules: headers }), { status: 200 })
+          if (url.pathname.endsWith("replacer/action/removeRule/")) {
+            headers = headers.filter((rule) => rule.description !== url.searchParams.get("description"))
+            return new Response('{"Result":"OK"}', { status: 200 })
+          }
+          if (url.pathname.endsWith("replacer/action/addRule/")) {
+            headers.push({
+              description: url.searchParams.get("description"),
+              enabled: url.searchParams.get("enabled"),
+              matchType: url.searchParams.get("matchType"),
+              matchRegex: url.searchParams.get("matchRegex"),
+              matchString: url.searchParams.get("matchString"),
+              replacement: url.searchParams.get("replacement"),
+              url: url.searchParams.get("url"),
+            })
+            return new Response('{"Result":"OK"}', { status: 200 })
+          }
+          return new Response('{"Result":"OK"}', { status: 200 })
+        }) as typeof globalThis.fetch,
+      )
+      const installed = await c.callTool({ name: "engagement_policy", arguments: configure })
       expect(installed.isError).not.toBe(true)
       expect(jsonContent(installed)).toMatchObject({
-        policy: { authorized_http_hosts: ["app.example.test"], global_http_rps: 4 },
-        enforcement: { configured: true, requests_per_second: 4, group_by: "rule" },
+        policy: {
+          stage: "traffic",
+          authorized_http_hosts: ["app.example.test"],
+          global_http_rps: null,
+        },
+        enforcement: {
+          state: "enforced",
+          rate_limit: { state: "not_required" },
+          required_headers: { state: "configured", count: 1 },
+        },
       })
       expect(JSON.parse(await readFile(policyPath, "utf8"))).toMatchObject({
+        stage: "traffic",
         authorized_http_hosts: ["app.example.test"],
-        global_http_rps: 4,
+        global_http_rps: null,
       })
+
+      const notFinal = await c.callTool({
+        name: "handoff",
+        arguments: { summary: "brief recorded", artifact: "MISSION.md", target: "recon" },
+      })
+      expect(notFinal.isError).toBe(true)
+      expect(errorContent(notFinal).message).toContain("finalize")
+
+      const finalized = await c.callTool({
+        name: "engagement_policy",
+        arguments: {
+          action: "finalize",
+          profiles: [{ profile: 1, readiness: "READY", scope: "IN_SCOPE", origin: "https://app.example.test" }],
+        },
+      })
+      expect(finalized.isError).not.toBe(true)
+      expect(jsonContent(finalized)).toMatchObject({ policy: { stage: "final" } })
 
       const accepted = await c.callTool({
         name: "handoff",
@@ -1396,6 +1558,79 @@ describe("expert-gateway handoff tool", () => {
                   : "CYBERFUL_SUBSYSTEM_HANDOFF_SUCCESSOR"
         if (value === undefined) delete process.env[environment]
         else process.env[environment] = value
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("promotes a tested hypothesis into a durable finding idempotently", async () => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-hypothesis-promotion-test-")))
+    const environment = [
+      "CYBERFUL_SUBSYSTEM_PHASE",
+      "CYBERFUL_SUBSYSTEM_WORKFLOW",
+      "CYBERFUL_SUBSYSTEM_WORKAREA_ROOT",
+    ] as const
+    const previous = Object.fromEntries(environment.map((key) => [key, process.env[key]]))
+    Object.assign(process.env, {
+      CYBERFUL_SUBSYSTEM_PHASE: "exploit",
+      CYBERFUL_SUBSYSTEM_WORKFLOW: "bug-bounty",
+      CYBERFUL_SUBSYSTEM_WORKAREA_ROOT: dir,
+    })
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let client: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [] })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      client = new Client({ name: "hypothesis-promotion-test", version: "0" })
+      await client.connect(clientTransport)
+      await client.callTool({
+        name: "hypothesis",
+        arguments: {
+          action: "record",
+          id: "PDF-IPC-1",
+          owner: "exploit-root",
+          description: "An external handler may cross a process boundary incorrectly",
+          root_cause: "missing validation",
+          surface: "document action dispatch",
+          discriminator: "controlled external action",
+        },
+      })
+      await client.callTool({ name: "hypothesis", arguments: { action: "claim", id: "PDF-IPC-1" } })
+      const argumentsValue = {
+        action: "promote",
+        id: "PDF-IPC-1",
+        disposition: "SUSPECTED",
+        title: "External document action crosses the expected boundary",
+        severity: "MEDIUM",
+        summary: "A controlled document action reached an external handler.",
+        positive_evidence: ["Observed the controlled handler invocation."],
+        evidence_paths: ["evidence/pdf-ipc/control.json"],
+        next_step: "Complete the negative control.",
+        reason: "Positive evidence warrants durable finding tracking.",
+      }
+      const first = jsonContent(await client.callTool({ name: "hypothesis", arguments: argumentsValue }))
+      const second = jsonContent(await client.callTool({ name: "hypothesis", arguments: argumentsValue }))
+
+      expect(first.ok).toBe(true)
+      expect(second.ok).toBe(true)
+      expect(second.finding).toMatchObject({ id: recordValue(first.finding, "first finding").id })
+      const registry = JSON.parse(await readFile(path.join(dir, "raw/findings/registry.json"), "utf8"))
+      expect(registry.findings).toHaveLength(1)
+      expect(registry.findings[0].observations).toHaveLength(1)
+      const hypothesisRegistry = JSON.parse(await readFile(path.join(dir, "raw/hypotheses/registry.json"), "utf8"))
+      expect(hypothesisRegistry.hypotheses[0]).toMatchObject({
+        id: "PDF-IPC-1",
+        state: "SUSPECTED",
+        finding_id: registry.findings[0].id,
+      })
+    } finally {
+      await client?.close()
+      await server?.closeGateway()
+      for (const key of environment) {
+        const value = previous[key]
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
       }
       await rm(dir, { recursive: true, force: true })
     }

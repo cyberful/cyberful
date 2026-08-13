@@ -103,6 +103,23 @@ describe("AgentPromptCompiler", () => {
     ])
   })
 
+  test("describes the bounded authorization reframe when a live-target workflow has no fallback", () => {
+    const compiled = AgentPromptCompiler.compile(
+      input({
+        fallback: {
+          providerConfigured: false,
+          proactiveEnabled: false,
+          proactivePercentage: 2,
+          automaticSecurityBlockEnabled: false,
+        },
+      }),
+    )
+
+    expect(compiled.system).toContain("No fallback provider is configured")
+    expect(compiled.system).toContain("replace the blocked run once on main")
+    expect(compiled.system).toContain("wording-only recovery never expands scope")
+  })
+
   test("strips all persona frontmatter while preserving valid delegation metadata", () => {
     const compiled = AgentPromptCompiler.compile(
       input({

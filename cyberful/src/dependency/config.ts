@@ -148,6 +148,13 @@ export function cyberZapProxyPort() {
   return envInt("CYBER_ZAP_PROXY_PORT", 0, { minimum: 0, maximum: 65_535 })
 }
 
+export function cyberZapMaxHistoryResponseBytes() {
+  return envInt("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES", 1_073_741_824, {
+    minimum: 16_777_216,
+    maximum: 2_147_483_647,
+  })
+}
+
 export function cyberZapStartupTimeoutSeconds() {
   return envInt("CYBER_ZAP_STARTUP_TIMEOUT_SECONDS", 120, { minimum: 1, maximum: 3_600 })
 }

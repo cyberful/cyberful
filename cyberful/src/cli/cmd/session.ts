@@ -86,6 +86,11 @@ export const SessionSteerCommand = effectCmd({
         type: "string",
         demandOption: true,
       })
+      .option("focus", {
+        describe: "supersede queued steering and cancel active delegated work before applying this guidance",
+        type: "boolean",
+        default: false,
+      })
       .option("dir", {
         describe: "remote instance directory used for routing",
         type: "string",
@@ -115,12 +120,16 @@ export const SessionSteerCommand = effectCmd({
         {
           sessionID: args.sessionID,
           text: args.message,
+          mode: args.focus ? "focus" : "queue",
         },
         { throwOnError: true, signal: AbortSignal.timeout(15_000) },
       ),
     )
-    if (response.data !== true) return yield* fail(`Session ${args.sessionID} is not actively steerable.`)
-    process.stdout.write(`Steering accepted for ${args.sessionID}.${EOL}`)
+    if (!response.data?.accepted)
+      return yield* fail(response.data?.reason ?? `Session ${args.sessionID} is not actively steerable.`)
+    process.stdout.write(
+      `Steering ${response.data.state} for ${args.sessionID} (${response.data.id}, ${response.data.mode}).${EOL}`,
+    )
   }),
 })
 

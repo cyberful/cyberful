@@ -108,9 +108,9 @@ ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_SINGLE_RE = re.compile(r"\x1b[@-Z\\-_]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-HTTP_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
-HTTP_METHOD_RE = re.compile(r"(?:^|\s)(?:-X|--request)\s+([A-Za-z]{2,20})(?:\s|$)")
 EGRESS_META_KEY = "cyberful.dev/egress"
+TERMINATION_GRACE_SECONDS = 1.0
+TERMINATION_DRAIN_SECONDS = 0.25
 
 # ── Speak JSON-RPC On Stdout And Diagnostics On Stderr ────────────────
 # MCP clients parse stdout as a protocol stream, so diagnostics belong only on
@@ -604,6 +604,9 @@ class CommandResult:
     stdout: str
     stderr: str
     truncated: bool
+    execution_ms: int = 0
+    termination_grace_ms: int = 0
+    total_duration_ms: int = 0
 
 
 def trim_streams(stdout: bytes, stderr: bytes, max_bytes: int) -> tuple[str, str, bool]:
@@ -621,16 +624,28 @@ def trim_streams(stdout: bytes, stderr: bytes, max_bytes: int) -> tuple[str, str
     )
 
 
+def _signal_process_tree(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, sig)
+        elif sig == signal.SIGTERM:
+            proc.terminate()
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+
+
 def terminate_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         proc.wait()
         return
-    proc.terminate()
+    _signal_process_tree(proc, signal.SIGTERM)
     try:
-        proc.wait(timeout=2)
+        proc.wait(timeout=TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
+        _signal_process_tree(proc, signal.SIGKILL)
+        proc.wait(timeout=TERMINATION_GRACE_SECONDS)
 
 
 def run_process(
@@ -659,6 +674,7 @@ def run_process(
             shell=False,
             text=False,
             close_fds=True,
+            start_new_session=os.name == "posix",
         )
     except FileNotFoundError as exc:
         return CommandResult(
@@ -686,6 +702,9 @@ def run_process(
     stdout_seen = 0
     stderr_seen = 0
     timed_out = False
+    execution_ms = 0
+    termination_grace_ms = 0
+    timeout_drain_deadline: float | None = None
     capture_limit = max_output_bytes + 8192
     deadline = started + timeout_seconds
 
@@ -702,7 +721,11 @@ def run_process(
             now = time.monotonic()
             if not timed_out and proc.poll() is None and now >= deadline:
                 timed_out = True
+                execution_ms = int((now - started) * 1000)
+                termination_started = time.monotonic()
                 terminate_process(proc)
+                termination_grace_ms = int((time.monotonic() - termination_started) * 1000)
+                timeout_drain_deadline = time.monotonic() + TERMINATION_DRAIN_SECONDS
                 timeout_text = f"\nTimed out after {timeout_seconds}s.\n".encode()
                 stderr_seen += len(timeout_text)
                 if len(stderr_bytes) < capture_limit:
@@ -712,6 +735,12 @@ def run_process(
                     del preview_bytes[:-PROGRESS_PREVIEW_BYTES]
                 if emit_progress:
                     progress_output(preview_bytes.decode("utf-8", errors="replace"), force=True)
+
+            if timed_out and timeout_drain_deadline is not None and now >= timeout_drain_deadline:
+                for key in list(selector.get_map().values()):
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                break
 
             for key, _ in selector.select(timeout=0.1):
                 try:
@@ -751,15 +780,19 @@ def run_process(
     stdout, stderr, truncated = trim_streams(bytes(stdout_bytes), bytes(stderr_bytes), max_output_bytes)
     if emit_progress:
         progress_output(preview_bytes.decode("utf-8", errors="replace").strip(), force=True)
+    total_duration_ms = int((time.monotonic() - started) * 1000)
     return CommandResult(
         target=argv[0],
         command=" ".join(shlex.quote(part) for part in argv),
         exit_code=None if timed_out else exit_code,
         timed_out=timed_out,
-        duration_ms=int((time.monotonic() - started) * 1000),
+        duration_ms=total_duration_ms,
         stdout=stdout,
         stderr=stderr,
         truncated=truncated or stdout_seen + stderr_seen > max_output_bytes,
+        execution_ms=execution_ms or total_duration_ms,
+        termination_grace_ms=termination_grace_ms,
+        total_duration_ms=total_duration_ms,
     )
 
 
@@ -869,15 +902,20 @@ def tool_result(text: str, is_error: bool = False) -> dict[str, Any]:
     }
 
 
-def result_from_run(r: CommandResult) -> dict[str, Any]:
+def result_from_run(r: CommandResult, accepted_exit_codes: frozenset[int] = frozenset()) -> dict[str, Any]:
     """Format a CommandResult into an MCP tool response."""
-    is_error = r.timed_out or (r.exit_code is not None and r.exit_code != 0)
+    accepted_exit = r.exit_code is not None and r.exit_code in accepted_exit_codes
+    is_error = r.timed_out or (r.exit_code is not None and r.exit_code != 0 and not accepted_exit)
     stdout = sanitize_terminal_text(r.stdout).rstrip()
     stderr = sanitize_terminal_text(r.stderr).rstrip()
     lines = [
         f"target: {r.target}",
         f"exit_code: {r.exit_code if r.exit_code is not None else 'timeout'}",
         f"duration_ms: {r.duration_ms}",
+        f"execution_ms: {r.execution_ms or r.duration_ms}",
+        f"termination_grace_ms: {r.termination_grace_ms}",
+        f"total_duration_ms: {r.total_duration_ms or r.duration_ms}",
+        f"accepted_exit_code: {str(accepted_exit).lower()}",
         f"timed_out: {str(r.timed_out).lower()}",
         f"truncated: {str(r.truncated).lower()}",
         "",
@@ -1202,6 +1240,10 @@ def _egress_hint_schema() -> dict[str, Any]:
             "rewrite, approve, redirect, or retry the command."
         ),
         "properties": {
+            "network": {
+                "type": "boolean",
+                "description": "Whether this shell command performs target-network egress. Use false for local/offline commands.",
+            },
             "host": {"type": "string", "maxLength": 253},
             "method": {"type": "string", "maxLength": 20},
             "path_family": {"type": "string", "maxLength": 180},
@@ -1244,33 +1286,25 @@ def _safe_egress_host(value: Any) -> str | None:
 
 def _shell_egress_metadata(command: str, hint: Any, timeout_seconds: int) -> dict[str, Any]:
     declared = hint if isinstance(hint, dict) else {}
-    inferred_url = HTTP_URL_RE.search(command)
-    inferred_host: str | None = None
-    inferred_path: str | None = None
-    if inferred_url:
-        parsed = urllib.parse.urlsplit(inferred_url.group(0))
-        inferred_host = _safe_egress_host(parsed.netloc.rsplit("@", 1)[-1])
-        inferred_path = _redacted_path_family(parsed.path)
     declared_host = _safe_egress_host(declared.get("host"))
-    method_match = HTTP_METHOD_RE.search(command)
     declared_method = declared.get("method")
     method = (
         declared_method.strip().upper()
         if isinstance(declared_method, str) and re.fullmatch(r"[A-Za-z]{2,20}", declared_method.strip())
-        else method_match.group(1).upper() if method_match else None
+        else None
     )
-    destination_changed = bool(declared_host and inferred_host and declared_host != inferred_host)
+    not_applicable = declared.get("network") is False
     metadata: dict[str, Any] = {
         "version": 1,
         "route": "cyberful-os/docker-direct",
-        "observability": "declared" if declared else "inferred" if inferred_host else "degraded",
+        "observability": "not_applicable" if not_applicable else "declared" if declared else "degraded",
         "deadline_ms": declared.get("deadline_ms", timeout_seconds * 1000),
-        "destination_changed": destination_changed,
+        "destination_changed": False,
     }
     optional = {
-        "host": inferred_host or declared_host,
+        "host": None if not_applicable else declared_host,
         "method": method,
-        "path_family": inferred_path or (
+        "path_family": (
             _redacted_path_family(declared["path_family"])
             if isinstance(declared.get("path_family"), str)
             else None
@@ -1298,7 +1332,8 @@ def handle_shell(args: dict[str, Any]) -> dict[str, Any]:
         return tool_result("`command` must be a non-empty string.\n", is_error=True)
     to, mo, cwd, env_map = safe_container_args(args)
     r = run_in_container(command, cwd=cwd, timeout_seconds=to, max_output_bytes=mo, extra_env=env_map)
-    result = result_from_run(r)
+    accepted_exit_codes = frozenset(args.get("accepted_exit_codes", [0]))
+    result = result_from_run(r, accepted_exit_codes)
     # ── Egress Observation Is Strictly Fail-Open ──────────────────────
     # The command has already executed directly when metadata is derived. The
     # declared host is never an allowlist and a mismatch is merely recorded. If
@@ -2632,6 +2667,13 @@ register_tool(
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS, "default": DEFAULT_TIMEOUT_SECONDS, "description": "Wall-clock timeout for the command."},
             "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": MAX_OUTPUT_BYTES, "default": DEFAULT_MAX_OUTPUT_BYTES, "description": "Maximum combined stdout/stderr bytes returned."},
             "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Extra environment variables for this command."},
+            "accepted_exit_codes": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                "maxItems": 32,
+                "default": [0],
+                "description": "Exit codes that represent an expected completed outcome for this command, such as 1 for a bounded grep with no matches.",
+            },
             "egress": _egress_hint_schema(),
         },
         "required": ["command"],

@@ -107,6 +107,47 @@ describe("Pi provider registry", () => {
     })
   })
 
+  test("accepts Daybreak Blue through an OpenAI Codex subscription", () => {
+    const configured = Settings.parse(
+      Settings.DEFAULT_YAML.replace("model: gpt-5.6-sol", "model: gpt-daybreak-blue-latest"),
+    )
+    const registry = createPiModels(configured.agent, new InMemoryCredentialStore())
+
+    expect(registry.loginType("openai-codex")).toBe("oauth")
+    expect(registry.model("openai-codex")).toMatchObject({
+      provider: "openai-codex",
+      id: "gpt-daybreak-blue-latest",
+      name: "Daybreak Blue",
+      api: "openai-codex-responses",
+      contextWindow: 272_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: {
+        xhigh: "xhigh",
+        max: "max",
+      },
+      compat: {
+        supportsToolSearch: true,
+      },
+    })
+    expect(registry.contextCapacity("openai-codex")).toMatchObject({
+      catalogContextWindow: 272_000,
+      trustedRouteWindow: 272_000,
+      operationalContextWindow: 256_000,
+      source: "configured_operational",
+      warnings: [],
+    })
+  })
+
+  test("keeps other absent OpenAI Codex models closed", () => {
+    const configured = Settings.parse(
+      Settings.DEFAULT_YAML.replace("model: gpt-5.6-sol", "model: gpt-daybreak-red-latest"),
+    )
+
+    expect(() => createPiModels(configured.agent, new InMemoryCredentialStore())).toThrow(
+      "Model 'gpt-daybreak-red-latest' is not present",
+    )
+  })
+
   test("allows builtin limits to restrict but never enlarge the catalog", () => {
     const configured = Settings.parse(
       Settings.DEFAULT_YAML

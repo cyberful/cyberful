@@ -62,6 +62,8 @@ export interface PhaseSpec {
     readonly retryWaitMs: number
     readonly targetCooldownWaitMs: number
     readonly phaseExtensionMs: number
+    readonly recoveryExtensionMs?: number
+    readonly recoveryChainIDs?: readonly string[]
   }
   abort?: AbortSignal
   // Absolute file to persist this excursion's raw AgentEvent transcript to (the caller resolves it,
@@ -120,6 +122,7 @@ export interface PhaseResult {
   retryCompensationMs?: number
   retryCompensationCapMs?: number
   retryCompensationCapReached?: boolean
+  recoveryExtensionMs?: number
   closeoutReserveMs?: number
   warnings: string[]
   handoff?: PhaseHandoff
@@ -169,6 +172,8 @@ export interface PhaseResult {
     readonly maxRestarts: number
     readonly useFallbackProvider: boolean
     readonly fallbackConfigured: boolean
+    readonly automaticSecurityBlockEnabled?: boolean
+    readonly recoveryBonusMs?: number
   }
 }
 
@@ -399,6 +404,7 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
       targetCooldownWaitMs: result.targetCooldownWaitMs ?? 0,
       retryCompensationMs: result.retryCompensationMs ?? 0,
       phaseExtensionMs: result.retryCompensationMs ?? 0,
+      recoveryExtensionMs: result.recoveryExtensionMs ?? 0,
       retryCompensationCapMs: result.retryCompensationCapMs ?? 0,
       phaseExtensionCapMs: result.retryCompensationCapMs ?? 0,
       retryCompensationCapReached: result.retryCompensationCapReached ?? false,
@@ -707,6 +713,7 @@ export function buildPhasePrompt(
     ...(workflow === "bug-bounty" && ["recon", "exploit", "hacker", "verify"].includes(spec.phase)
       ? [
           "- Answer each finding maturation checkpoint through authorized evidence; maximize supportable impact and prioritize host-derived published monetary upside, then proof proximity and test cost.",
+          '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
           ...(spec.phase === "verify"
             ? [
                 "- Reconcile every remaining PURSUE assessment to MAXIMIZED or DEFERRED with an evidence-backed ceiling or exact resume condition.",
@@ -722,11 +729,13 @@ export function buildPhasePrompt(
     ...(workflow === "bug-bounty" && spec.phase === "report"
       ? [
           "- Use `reward_policy get`; put host-derived published bands only in BUG_BOUNTY_REPORT.md and omit reward expectations from portable BBP-### submissions.",
+          "- For every reported finding, state the evidence-backed end-to-end attack path as prerequisites -> attacker actions -> crossed security boundary -> concrete outcome; label any unsupported link instead of implying it.",
         ]
       : []),
     ...(workflow === "pentest" && ["exploit", "hacker", "verify"].includes(spec.phase)
       ? [
           "- Use each technical finding maturation checkpoint to test the strongest defensible impact and persist PURSUE, MAXIMIZED, or DEFERRED; monetary reward policy does not apply to Pentest.",
+          '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
         ]
       : []),
     ...(workflow === "code-audit" && ["trace", "hunt", "attack", "verify"].includes(spec.phase)
@@ -1234,6 +1243,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     maxRestarts: phaseRecoveryPolicy.max_restarts,
     useFallbackProvider: phaseRecoveryPolicy.use_fallback_provider,
     fallbackConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+    automaticSecurityBlockEnabled:
+      promptSetup.value.settings.agent.fallback.automatic_security_block.enabled,
+    recoveryBonusMs: Settings.fallbackRecoveryBonusMs(promptSetup.value.settings),
   }
   const prepared = await (deps.preparePhase
     ? deps.preparePhase({ phase: spec.phase, attempt: spec.attempt ?? 1, signal: spec.abort })
@@ -1289,6 +1301,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     initialRetryWaitMs: spec.budgetCarry?.retryWaitMs,
     initialTargetCooldownWaitMs: spec.budgetCarry?.targetCooldownWaitMs,
     initialRetryCompensationMs: spec.budgetCarry?.phaseExtensionMs,
+    recoveredChainIDs: spec.budgetCarry?.recoveryChainIDs,
     now,
   })
   const questionHandler = deps.askQuestion
@@ -1573,6 +1586,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const retryWaitMs = Math.round(budgetSnapshot.retryWaitMs)
   const targetCooldownWaitMs = Math.round(budgetSnapshot.targetCooldownWaitMs)
   const retryCompensationMs = Math.round(budgetSnapshot.retryCompensationMs)
+  const recoveryExtensionMs = Math.round(
+    (spec.budgetCarry?.recoveryExtensionMs ?? 0) + budgetSnapshot.recoveryExtensionMs,
+  )
   const pausedMs = Math.round(budgetSnapshot.pausedMs)
   budgetClock.close()
   const primaryTermination = processTermination(primaryRun)
@@ -1772,7 +1788,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     backend: deps.subsystem.name,
     durationMs: Math.max(0, now() - startedAt - pausedMs),
     limitMs,
-    effectiveLimitMs,
+    effectiveLimitMs: Math.max(0, Math.round(budgetSnapshot.deadlineAt - startedAt)),
     deadlineAt: Math.round(budgetSnapshot.deadlineAt),
     approvalWaitMs,
     retryWaitMs,
@@ -1780,6 +1796,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     retryCompensationMs,
     retryCompensationCapMs: budgetSnapshot.retryCompensationCapMs,
     retryCompensationCapReached: budgetSnapshot.retryCompensationCapReached,
+    recoveryExtensionMs,
     closeoutReserveMs: Math.round(budget.closeout.minutes * 60_000),
     warnings,
     handoff: acceptedHandoff,
@@ -1827,6 +1844,9 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       maxRestarts: Settings.phaseRecoveryPolicy(promptSetup.value.settings).max_restarts,
       useFallbackProvider: Settings.phaseRecoveryPolicy(promptSetup.value.settings).use_fallback_provider,
       fallbackConfigured: Boolean(promptSetup.value.settings.agent.fallback_provider),
+      automaticSecurityBlockEnabled:
+        promptSetup.value.settings.agent.fallback.automatic_security_block.enabled,
+      recoveryBonusMs: Settings.fallbackRecoveryBonusMs(promptSetup.value.settings),
     },
   }
 

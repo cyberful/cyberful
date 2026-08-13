@@ -103,7 +103,16 @@ export type PhaseActivity = PhaseActivityContext &
   (
     | { kind: "text"; text: string }
     | { kind: "tool"; tool: string; input: unknown; callID: string }
-    | { kind: "output"; text: string; callID: string; artifact?: PhaseActivityArtifact }
+    | {
+        kind: "output"
+        text: string
+        callID: string
+        tool?: string
+        isError?: boolean
+        preExecution?: boolean
+        blocked?: boolean
+        artifact?: PhaseActivityArtifact
+      }
     | { kind: "progress"; usage: SubsystemUsage.Snapshot }
     | { kind: "status"; text: string }
     | {

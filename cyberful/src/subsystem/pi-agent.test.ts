@@ -1365,6 +1365,57 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(attempts[1]?.sourceMessages).toBeLessThan(attempts[0]?.sourceMessages ?? 0)
   })
 
+  test("recovers one blocked main-route context summary on the quota-exempt fallback route", async () => {
+    const workarea = await temporaryWorkarea()
+    const evidenceDump: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "evidence_dump",
+      label: "Collect summary fallback evidence",
+      description: "Return one large authorized result.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "summary-fallback-evidence-".repeat(6_000) }],
+        details: { complete: true },
+      }),
+    }
+    let summaryCalls = 0
+    const provider = new InMemoryProvider((call) => {
+      if (userTexts(call).some((text) => text.includes("Create a loss-aware continuity checkpoint"))) {
+        summaryCalls++
+        return call.provider === MAIN_PROVIDER ? codexSecurityBlock(call) : contextCheckpoint(call)
+      }
+      if (toolResultCount(call) === 0) return toolCall(call, "evidence_dump", {})
+      return assistant(call, "continued after fallback summary recovery")
+    })
+    const runtime = subsystem(provider, registryWithLimits(40_000, 4_000))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "security-summary-recovery",
+        objective: "preserve context after a blocked semantic summary",
+        tools: [evidenceDump],
+        workarea,
+        maxOutputTokens: 4_000,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "continued after fallback summary recovery",
+      fallbackAdmissions: 0,
+      fallbackDescendants: 0,
+    })
+    expect(summaryCalls).toBe(2)
+    expect(provider.calls.map((call) => call.provider)).toEqual([
+      MAIN_PROVIDER,
+      MAIN_PROVIDER,
+      FALLBACK_PROVIDER,
+      MAIN_PROVIDER,
+    ])
+    const recoveries = (await collectEvents(run)).filter((event) => event.type === "recovery")
+    expect(recoveries.map((event) => event.state)).toEqual(["requested", "admitted", "started", "completed"])
+    expect(recoveries.every((event) => event.scope === "summary_recovery" && event.quotaExempt)).toBeTrue()
+    expect(recoveries[0]).toMatchObject({ cause: "security_policy_block", bonusMs: 300_000 })
+  })
+
   test("summarizes the settled prefix when one autonomous turn exceeds the trigger", async () => {
     const workarea = await temporaryWorkarea()
     const smallCheckpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
@@ -1738,6 +1789,76 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
   })
 
+  test("rephrases one policy-blocked Pentest subagent on main when no fallback is configured", async () => {
+    const provider = new InMemoryProvider((call) => {
+      if (runRole(call) === "root") {
+        if (toolResultCount(call) === 0)
+          return toolCall(call, "delegate_task", {
+            task: "finish the authorized client-side provider recovery probe",
+            expected_result: "return the recovered evidence",
+            output_artifact: "raw/recovery/reframed-provider.md",
+          })
+        return assistant(call, "root received same-route recovered evidence")
+      }
+      const text = userTexts(call).join("\n")
+      if (text.includes("# Authorized security-testing context")) {
+        expect(text).toContain("client named in the supplied engagement request and MISSION.md")
+        expect(text).toContain("finish the authorized client-side provider recovery probe")
+        return assistant(call, "main replacement completed the reframed child task")
+      }
+      return codexSecurityBlock(call)
+    })
+    const baseSettings = settings()
+    const { fallback_provider: _fallbackProvider, ...agentWithoutFallback } = baseSettings.agent
+    const configuredSettings: Settings.Info = {
+      ...baseSettings,
+      agent: {
+        ...agentWithoutFallback,
+        fallback: {
+          ...baseSettings.agent.fallback,
+          proactive: { ...baseSettings.agent.fallback.proactive, enabled: false },
+          automatic_security_block: {
+            ...baseSettings.agent.fallback.automatic_security_block,
+            enabled: false,
+          },
+        },
+      },
+    }
+    const runtime = subsystem(provider, registry(), undefined, { settings: configuredSettings })
+    const initialSpec = rootSpec(runtime.models, {
+      id: "subagent-provider-reframe",
+      objective: "delegate one task that needs an authorization reframe",
+      maxPerRun: 1,
+    })
+    const run = await runtime.subsystem.start({
+      ...initialSpec,
+      fallback: {
+        ...initialSpec.fallback,
+        providerConfigured: false,
+        proactiveEnabled: false,
+        automaticSecurityBlockEnabled: false,
+      },
+    })
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const starts = startedEvents(events).filter((event) => event.role === "subagent")
+
+    expect(result).toMatchObject({
+      termination: "completed",
+      output: "root received same-route recovered evidence",
+      fallbackAdmissions: 0,
+      fallbackDescendants: 0,
+    })
+    expect(starts).toHaveLength(2)
+    expect(starts[0]).toMatchObject({ providerAffinity: "main", provider: MAIN_PROVIDER })
+    expect(starts[1]).toMatchObject({
+      recoveryOf: starts[0]?.runID,
+      providerAffinity: "main",
+      provider: MAIN_PROVIDER,
+    })
+  })
+
   test("reports failed compaction and keeps the original result when artifact persistence is unavailable", async () => {
     const parent = await temporaryWorkarea()
     const unavailableWorkarea = path.join(parent, "missing-workarea")
@@ -1854,9 +1975,10 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(firstExecutions).toBe(1)
     expect(secondExecutions).toBe(1)
     const rotations = rotationEvents(await collectEvents(run))
-    expect(rotations.map((event) => event.state)).toEqual(["started", "partial"])
+    expect(rotations.map((event) => event.state)).toEqual(["started", "completed_with_fallback"])
     expect(rotations.at(-1)).toMatchObject({
       reason: "summary_failed",
+      checkpointKind: "deterministic_fallback",
       checkpoint: { path: expect.stringContaining("deterministic") },
     })
   })
@@ -2329,7 +2451,7 @@ describe("Pi complete root and main-route subagent runs", () => {
 })
 
 describe("Pi proactive and automatic fallback admission", () => {
-  test("normalizes Codex cyber_policy and completes one automatic fallback", async () => {
+  test("normalizes Codex cyber_policy for orchestrator-owned phase recovery", async () => {
     const provider = new InMemoryProvider((call) => {
       if (call.provider === FALLBACK_PROVIDER) return assistant(call, "fallback verified the blocked operation")
       if (
@@ -2352,17 +2474,14 @@ describe("Pi proactive and automatic fallback admission", () => {
     const events = fallbackEvents(await collectEvents(run))
 
     expect(result).toMatchObject({
-      termination: "completed",
-      output: "main route resumed after snake-case fallback",
+      termination: "provider_failed",
+      terminationCause: "security_policy_block",
+      failure: { kind: "security_policy_block", providerCode: "cyberPolicy" },
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER, MAIN_PROVIDER])
-    expect(events.map(({ state, reason, quotaExempt }) => ({ state, reason, quotaExempt }))).toEqual([
-      { state: "requested", reason: "cyberPolicy", quotaExempt: true },
-      { state: "approved", reason: undefined, quotaExempt: true },
-      { state: "completed", reason: undefined, quotaExempt: true },
-    ])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER])
+    expect(events).toEqual([])
   })
 
   test("audits host-policy denials and rolls back an unstarted proactive admission", async () => {
@@ -2456,7 +2575,7 @@ describe("Pi proactive and automatic fallback admission", () => {
     clearFallbackLedger(sessionID)
   })
 
-  test("applies the two-percent session formula and keeps structured automatic fallback quota-exempt", async () => {
+  test("applies the two-percent session formula and leaves root security recovery to the orchestrator", async () => {
     const provider = new InMemoryProvider((call) => {
       const objective = firstObjective(call)
       if (call.provider === FALLBACK_PROVIDER) return assistant(call, `fallback completed: ${objective}`)
@@ -2532,16 +2651,13 @@ describe("Pi proactive and automatic fallback admission", () => {
     const automaticEvents = fallbackEvents(await collectEvents(automaticRun))
 
     expect(automaticResult).toMatchObject({
-      termination: "completed",
-      output: "main route resumed after automatic fallback",
+      termination: "provider_failed",
+      terminationCause: "security_policy_block",
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(automaticEvents.map(({ mode, state, quotaExempt }) => ({ mode, state, quotaExempt }))).toEqual([
-      { mode: "automatic", state: "requested", quotaExempt: true },
-      { mode: "automatic", state: "approved", quotaExempt: true },
-      { mode: "automatic", state: "completed", quotaExempt: true },
-    ])
+    expect(automaticEvents).toEqual([])
+    expect(provider.calls.at(-1)?.provider).toBe(MAIN_PROVIDER)
 
     const afterAutomatic = await runtime.subsystem.start(
       rootSpec(runtime.models, {
@@ -2699,18 +2815,26 @@ describe("Pi complete fallback AgentRuns", () => {
     expect(fallbackCalls.every((call) => !call.toolNames.includes("request_fallback_delegation"))).toBeTrue()
   })
 
-  test("treats a fallback provider block as terminal without ping-ponging to main", async () => {
+  test("treats a fallback-affine root provider block as terminal without ping-ponging to main", async () => {
     const provider = new InMemoryProvider((call) => {
       if (call.provider === MAIN_PROVIDER) return codexSecurityBlock(call)
       return glmSecurityBlock(call)
     })
     const runtime = subsystem(provider)
-    const run = await runtime.subsystem.start(
-      rootSpec(runtime.models, {
+    const base = rootSpec(runtime.models, {
         id: "terminal-fallback-root",
         objective: "automatic fallback must remain terminal on a second provider block",
-      }),
-    )
+      })
+    const fallbackModel = runtime.models.model(FALLBACK_PROVIDER)
+    const run = await runtime.subsystem.start({
+      ...base,
+      provider: FALLBACK_PROVIDER,
+      model: fallbackModel,
+      context: runtime.models.contextCapacity(FALLBACK_PROVIDER),
+      providerAffinity: "fallback",
+      reasoning: PiReasoning.resolve("ultra", fallbackModel),
+      prompt: prompt("root", "fallback", base.task.objective, true),
+    })
 
     const result = await run.result
     const events = await collectEvents(run)
@@ -2719,33 +2843,19 @@ describe("Pi complete fallback AgentRuns", () => {
       termination: "provider_failed",
       failure: {
         kind: "security_policy_block",
-        providerCode: "cyberPolicy",
-        evidence: "codex_error_code",
+        providerCode: "sensitive",
       },
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER, MAIN_PROVIDER])
+    expect(provider.calls.map((call) => call.provider)).toEqual([FALLBACK_PROVIDER])
     expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(1)
-    expect(fallbackEvents(events).map(({ state, quotaExempt, reason }) => ({ state, quotaExempt, reason }))).toEqual([
-      { state: "requested", quotaExempt: true, reason: "cyberPolicy" },
-      { state: "approved", quotaExempt: true, reason: undefined },
-      { state: "failed", quotaExempt: true, reason: "security_policy_block" },
-    ])
+    expect(fallbackEvents(events)).toEqual([])
     const finished = events.filter((event) => event.type === "run_finished")
-    expect(finished).toHaveLength(2)
-    expect(
-      finished.some(
-        (event) =>
-          event.type === "run_finished" &&
-          event.runID !== "terminal-fallback-root" &&
-          event.failure?.kind === "security_policy_block" &&
-          event.failure.providerCode === "sensitive",
-      ),
-    ).toBeTrue()
+    expect(finished).toHaveLength(1)
   })
 
-  test("returns partial automatic-fallback evidence to the main parent after a terminal branch error", async () => {
+  test("does not hide a root policy block behind an in-run partial fallback", async () => {
     const provider = new InMemoryProvider((call) => {
       if (call.provider === FALLBACK_PROVIDER)
         return assistant(call, "partial fallback evidence was preserved", {
@@ -2772,24 +2882,17 @@ describe("Pi complete fallback AgentRuns", () => {
 
     const result = await run.result
     const events = await collectEvents(run)
-    const resumedMain = provider.calls.find((call) => call.provider === MAIN_PROVIDER && toolResultCount(call) > 0)
-    const hostResult = resumedMain?.messages.find(
-      (message) => message.role === "toolResult" && message.toolName === "host_fallback_delegation",
-    )
-
     expect(result).toMatchObject({
-      termination: "completed",
-      output: "main route synthesized the partial fallback evidence",
+      termination: "provider_failed",
+      terminationCause: "security_policy_block",
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(hostResult && textContent(hostResult.content)).toContain("partial fallback evidence was preserved")
-    expect(hostResult && textContent(hostResult.content)).toContain("Fallback termination: provider_failed")
-    expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "failed"])
-    expect(provider.calls.filter((call) => call.provider === FALLBACK_PROVIDER)).toHaveLength(4)
+    expect(fallbackEvents(events)).toEqual([])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER])
   })
 
-  test("does not resume an idle main parent cancelled while its automatic fallback is running", async () => {
+  test("reports an explicit caller cancellation without starting an in-run fallback", async () => {
     const controller = new AbortController()
     const provider = new InMemoryProvider(async (call) => {
       if (call.provider === MAIN_PROVIDER)
@@ -2816,22 +2919,22 @@ describe("Pi complete fallback AgentRuns", () => {
         abort: controller.signal,
       }),
     )
-    await provider.waitForCalls(2)
-
+    await provider.waitForCalls(1)
     controller.abort()
     const result = await run.result
     const events = await collectEvents(run)
 
     expect(result).toMatchObject({
       termination: "cancelled",
+      terminationCause: "user_cancel",
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER])
-    expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "failed"])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER])
+    expect(fallbackEvents(events)).toEqual([])
   })
 
-  test("does not resume an idle main parent whose budget expires while its automatic fallback is running", async () => {
+  test("reports the root policy cause without starting an in-run branch near budget expiry", async () => {
     let now = 1_000
     const fallbackGate = Promise.withResolvers<void>()
     const provider = new InMemoryProvider(async (call) => {
@@ -2850,7 +2953,7 @@ describe("Pi complete fallback AgentRuns", () => {
         deadlineAt: now + 1_000,
       }),
     )
-    await provider.waitForCalls(2)
+    await provider.waitForCalls(1)
 
     now += 2_000
     fallbackGate.resolve()
@@ -2858,17 +2961,72 @@ describe("Pi complete fallback AgentRuns", () => {
     const events = await collectEvents(run)
 
     expect(result).toMatchObject({
-      termination: "budget_exhausted",
+      termination: "provider_failed",
+      terminationCause: "security_policy_block",
       fallbackAdmissions: 0,
-      fallbackDescendants: 1,
+      fallbackDescendants: 0,
     })
-    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER, FALLBACK_PROVIDER])
-    expect(fallbackEvents(events).map((event) => event.state)).toEqual(["requested", "approved", "completed"])
+    expect(provider.calls.map((call) => call.provider)).toEqual([MAIN_PROVIDER])
+    expect(fallbackEvents(events)).toEqual([])
   })
 })
 
 describe("Pi AgentRun steering and cancellation", () => {
+  test("focus supersedes queued guidance and cancels active delegated work with an explicit cause", async () => {
+    const provider = new InMemoryProvider(async (call) => {
+      if (runRole(call) === "root") {
+        if (toolResultCount(call) === 0)
+          return toolCall(call, "delegate_task", {
+            task: "hold one delegated investigation",
+            expected_result: "return only after release",
+            output_artifact: "raw/delegations/focus.md",
+          })
+        return assistant(call, "root applied focused guidance")
+      }
+      await new Promise<void>((resolve) => {
+        if (call.signal?.aborted) resolve()
+        else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+      })
+      return assistant(call, [], { stopReason: "aborted", errorMessage: "delegation cancelled by focus" })
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "focus-steering-root",
+        objective: "exercise focused live steering",
+      }),
+    )
+    await provider.waitForCalls(2)
+    const queued = await run.steer({ content: "Keep the broad investigation queued." })
+    const focused = await run.steer({ content: "Focus only on the confirmed parser boundary.", mode: "focus" })
+
+    expect(queued).toMatchObject({ accepted: true, mode: "queue", state: "queued" })
+    expect(focused).toMatchObject({ accepted: true, mode: "focus", state: "queued" })
+    expect(await run.result).toMatchObject({ termination: "completed", output: "root applied focused guidance" })
+    const events = await collectEvents(run)
+    expect(
+      events.some(
+        (event) =>
+          event.type === "steering" && event.steeringID === queued.id && event.state === "superseded",
+      ),
+    ).toBeTrue()
+    expect(
+      events.some(
+        (event) => event.type === "steering" && event.steeringID === focused.id && event.state === "applied",
+      ),
+    ).toBeTrue()
+    expect(
+      events.some(
+        (event) =>
+          event.type === "run_finished" &&
+          event.role === "subagent" &&
+          event.terminationCause === "operator_focus",
+      ),
+    ).toBeTrue()
+  })
+
   test("keeps the same root, blocks research tools, and writes handoff during reserved closeout", async () => {
+    const workarea = await temporaryWorkarea()
     let researchExecutions = 0
     let handoffs = 0
     const provider = new InMemoryProvider(async (call) => {
@@ -2880,7 +3038,8 @@ describe("Pi AgentRun steering and cancellation", () => {
         return assistant(call, [], { stopReason: "aborted" })
       }
       if (call.ordinal === 2) return toolCall(call, "research_probe", {})
-      if (call.ordinal === 3) return toolCall(call, "handoff", {})
+      if (call.ordinal === 3) return toolCall(call, "evidence_manifest", { command: "create" })
+      if (call.ordinal === 4) return toolCall(call, "handoff", {})
       return assistant(call, "closeout complete")
     })
     const researchProbe: AgentTool<typeof EMPTY_PARAMETERS> = {
@@ -2910,6 +3069,7 @@ describe("Pi AgentRun steering and cancellation", () => {
         objective: "research until the host closeout boundary",
         deadlineAt: Date.now() + 180,
         closeoutReserveMs: 100,
+        workarea,
         tools: [researchProbe],
         gatewayTools: [handoff],
       }),
@@ -2923,7 +3083,19 @@ describe("Pi AgentRun steering and cancellation", () => {
     expect(closeoutEvents(events)).toHaveLength(1)
     expect(closeoutEvents(events)[0]).toMatchObject({ state: "entered", reserveMs: 100 })
     expect(userTexts(provider.calls[1]!).join("\n")).toContain("HOST-OWNED PHASE CLOSEOUT")
+    expect(
+      activityEvents(events).find(
+        (event) => event.activity.kind === "output" && event.activity.tool === "research_probe",
+      )?.activity,
+    ).toMatchObject({
+      kind: "output",
+      tool: "research_probe",
+      isError: true,
+      preExecution: true,
+      blocked: true,
+    })
     expect(researchExecutions).toBe(0)
+    expect(await readFile(path.join(workarea, "EVIDENCE.sha256"), "utf8")).toBe("")
     expect(handoffs).toBe(1)
   })
 
@@ -3208,8 +3380,13 @@ describe("Pi AgentRun steering and cancellation", () => {
     )
     await provider.waitForCalls(1)
 
-    expect(await run.steer({ content: "Focus on the verified parser edge." })).toBeTrue()
-    expect(await run.steer({ content: "   " })).toBeFalse()
+    expect(await run.steer({ content: "Focus on the verified parser edge." })).toMatchObject({
+      accepted: true,
+      mode: "queue",
+      state: "queued",
+      runID: "steering-root",
+    })
+    expect(await run.steer({ content: "   " })).toMatchObject({ accepted: false, state: "rejected" })
     firstTurn.resolve()
     const result = await run.result
 
@@ -3230,7 +3407,7 @@ describe("Pi AgentRun steering and cancellation", () => {
         .update(provider.calls[1]?.system ?? "")
         .digest("hex"),
     ).toBe(result.promptManifest.systemSha256)
-    expect(await run.steer({ content: "too late" })).toBeFalse()
+    expect(await run.steer({ content: "too late" })).toMatchObject({ accepted: false, state: "rejected" })
   })
 
   test("cancels an in-flight provider stream and emits a terminal audited result", async () => {
@@ -3270,7 +3447,7 @@ describe("Pi AgentRun steering and cancellation", () => {
       termination: "cancelled",
       failure: { kind: "cancelled" },
     })
-    expect(await run.steer({ content: "too late" })).toBeFalse()
+    expect(await run.steer({ content: "too late" })).toMatchObject({ accepted: false, state: "rejected" })
     await run.cancel("idempotent second cancellation")
   })
 })

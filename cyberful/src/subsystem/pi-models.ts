@@ -43,6 +43,8 @@ export interface AgentProviderSettings {
 
 const MAIN_ADAPTERS = new Set(["openai-codex", "zai", "kimi-coding", "moonshotai", "openai-completions"])
 const SUBSCRIPTION_ADAPTERS = new Set(["openai-codex", "zai", "kimi-coding"])
+const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest"
+const DAYBREAK_BLUE_CATALOG_BASE = "gpt-5.6-sol"
 export const DEFAULT_OPERATIONAL_CONTEXT_WINDOW = 256_000
 
 export interface ModelContextCapacity {
@@ -162,10 +164,47 @@ function configuredBuiltinProvider(
   }
 }
 
+// ── Daybreak Blue Retains A Trusted Local Capacity ───────────────
+// Codex subscriptions can expose the reviewed Daybreak Blue alias before Pi's
+// generated catalog publishes it. Cyberful cannot admit arbitrary unknown model
+// ids because context rotation and output reserves require trusted local limits.
+// The one allowlisted alias therefore inherits the bundled Sol transport and
+// capacity metadata. A future native Pi entry wins without duplication, while
+// every other absent model continues to fail closed during provider creation.
+//
+// @docs/user-guide/settings.md
+// ────────────────────────────────────────────────────────────────
+function withCyberfulCodexModels(provider: Provider): Provider {
+  const models = provider.getModels()
+  if (models.some((model) => model.id === DAYBREAK_BLUE_MODEL)) return provider
+
+  const catalogBase = models.find((model) => model.id === DAYBREAK_BLUE_CATALOG_BASE)
+  if (!catalogBase)
+    throw new Error(
+      `Pi provider '${provider.id}' cannot materialize '${DAYBREAK_BLUE_MODEL}' without '${DAYBREAK_BLUE_CATALOG_BASE}'`,
+    )
+
+  return {
+    ...provider,
+    getModels: () => [
+      ...models,
+      {
+        ...catalogBase,
+        id: DAYBREAK_BLUE_MODEL,
+        name: "Daybreak Blue",
+      },
+    ],
+  }
+}
+
 function declaredProvider(id: string, settings: ProviderSettings): Provider {
   if (settings.adapter === "openai-completions") return customOpenAIProvider(id, settings)
-  const provider = builtinProviders().find((candidate) => candidate.id === settings.adapter)
-  if (!provider) throw new Error(`Unknown Pi provider adapter '${settings.adapter}'`)
+  const builtinProvider = builtinProviders().find((candidate) => candidate.id === settings.adapter)
+  if (!builtinProvider) throw new Error(`Unknown Pi provider adapter '${settings.adapter}'`)
+  const provider =
+    settings.adapter === "openai-codex" && settings.model === DAYBREAK_BLUE_MODEL
+      ? withCyberfulCodexModels(builtinProvider)
+      : builtinProvider
   if (!provider.getModels().some((model) => model.id === settings.model))
     throw new Error(`Model '${settings.model}' is not present in Pi provider '${id}'`)
   if (settings.auth.type === "subscription") {

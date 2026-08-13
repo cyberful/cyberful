@@ -134,6 +134,39 @@ describe("model-assisted context checkpoints", () => {
     ).toThrow("is not present in source context")
   })
 
+  test("removes unsupported evidence references without discarding the valid checkpoint", () => {
+    const checkpoint = parseModelCheckpoint({
+      text: JSON.stringify({
+        working_notes: "Continue from the retained artifact.",
+        structured_state: {
+          objective: "Continue supported testing.",
+          phase: "hacker",
+          current_state: "One supported artifact is retained.",
+          scope_and_constraints: [],
+          decisions: [],
+          verified_facts: [],
+          hypotheses: [],
+          findings: [],
+          tests_completed: [],
+          tests_pending: [],
+          activities_completed: [],
+          activities_open: [],
+          blockers: [],
+          errors_and_failed_attempts: [],
+          mistakes_not_to_repeat: [],
+          evidence_refs: ["evidence/valid.json", "evidence/invented.json"],
+          next_actions: ["Read the retained artifact."],
+        },
+        what_i_would_do_next: "Read the retained artifact.",
+      }),
+      sourceMessages: [{ role: "user", content: "Retain evidence/valid.json.", timestamp: 1 }],
+      sanitize: (text) => text,
+    })
+
+    expect(checkpoint.structured_state.evidence_refs).toEqual(["evidence/valid.json"])
+    expect(checkpoint.host_integrity).toEqual({ evidence_refs_accepted: 1, evidence_refs_removed: 1 })
+  })
+
   test("replaces older checkpoints while retaining a complete recent suffix", () => {
     const checkpoint = {
       role: "user",

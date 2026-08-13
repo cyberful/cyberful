@@ -2359,6 +2359,39 @@ export type SessionHypothesisRegistryView = {
     INCONCLUSIVE: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     UNTESTABLE: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   }
+  activeHypotheses: Array<{
+    id: string
+    phase: string
+    owner: string
+    ownerDisplayName?: string
+    description: string
+    rootCause: string
+    surface: string
+    discriminator: string
+    candidateTools: Array<string>
+    omittedTools: Array<{
+      tool: string
+      reason: string
+    }>
+    state: "OPEN" | "QUEUED" | "TESTING" | "SUSPECTED" | "CONFIRMED" | "DISPROVED" | "INCONCLUSIVE" | "UNTESTABLE"
+    evidence: Array<string>
+    evidenceRefs: Array<string>
+    blocker?: string
+    blockerReason?: string
+    nextStep?: string
+    nextPhase?: string
+    findingID?: string
+    graphRefs: Array<string>
+    transitions: Array<{
+      time: string
+      phase: string
+      owner: string
+      from?: "OPEN" | "QUEUED" | "TESTING" | "SUSPECTED" | "CONFIRMED" | "DISPROVED" | "INCONCLUSIVE" | "UNTESTABLE"
+      to: "OPEN" | "QUEUED" | "TESTING" | "SUSPECTED" | "CONFIRMED" | "DISPROVED" | "INCONCLUSIVE" | "UNTESTABLE"
+      evidence: Array<string>
+      reason?: string
+    }>
+  }>
 }
 
 export type SessionProviderUsageView = {
@@ -4404,6 +4437,7 @@ export type SessionPromptAsyncResponse = SessionPromptAsyncResponses[keyof Sessi
 export type SessionSteerData = {
   body?: {
     text: string
+    mode?: "queue" | "focus"
   }
   path: {
     sessionID: string
@@ -4429,9 +4463,19 @@ export type SessionSteerError = SessionSteerErrors[keyof SessionSteerErrors]
 
 export type SessionSteerResponses = {
   /**
-   * Whether the active AgentRun accepted the steering message
+   * Stable steering receipt from the active AgentRun
    */
-  200: boolean
+  200: {
+    id: string
+    accepted: boolean
+    recipients: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    mode: "queue" | "focus"
+    state: "accepted" | "queued" | "applied" | "superseded" | "rejected"
+    runID?: string
+    acceptedAt: string
+    appliedAt?: string
+    reason?: string
+  }
 }
 
 export type SessionSteerResponse = SessionSteerResponses[keyof SessionSteerResponses]

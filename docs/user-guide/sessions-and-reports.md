@@ -44,11 +44,13 @@ cyberful session steer ses_... \
   --message "No CAPTCHA is visible. Recheck the active page and continue without treating SDK traffic as a challenge."
 ```
 
+Routine steering defaults to `queue`: it is appended to the same root and applied at the next provider boundary. Add `--focus` only when the new direction must supersede still-queued guidance and cancel active delegated work before the root continues. Focus does not change authorization or answer a pending human request.
+
 Use the session ID shown by the TUI, or run `cyberful session list` from the same launch directory.
 
 `--attach` is required and must match the port chosen when the TUI started. A TUI that was started without an explicit `--port` is intentionally not reachable from another process; start future runs with a port when command steering will be needed. Add `--dir /remote/launch/directory` when that server hosts more than one launch directory. Basic Auth uses `-u`/`-p`, or `CYBERFUL_SERVER_USERNAME`/`CYBERFUL_SERVER_PASSWORD`.
 
-The command prints `Steering accepted` only after the active root AgentRun acknowledges the text. It exits with an error if the session is idle, finished, a child session, missing, or no longer able to accept steering. It never starts a new turn.
+The command prints the stable steering ID, mode, and lifecycle state only after the active root AgentRun acknowledges the text. The HTTP response is a structured receipt with `accepted`, `recipients`, `mode`, `state`, timestamps, and an exact rejection reason. Accepted steering is durably visible as `queued`, then `applied` or `superseded` in `raw/operations/run-state.json`. The command exits with an error if the session is idle, finished, a child session, missing, or no longer able to accept steering. It never starts a replacement turn.
 
 Steering is context, not authorization. It cannot answer a pending question, approve an action, or resolve a CAPTCHA handoff. For a pending CAPTCHA question, inspect its immutable choices and answer the exact request instead:
 

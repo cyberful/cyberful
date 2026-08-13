@@ -27,6 +27,7 @@ import { RunStateArtifact } from "./run-state-artifact"
 import { PiReasoning } from "./pi-reasoning"
 import { ProviderUsageLedger } from "./provider-usage"
 import { RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
+import { ToolUsageRecorder } from "./gateway/tool-usage"
 
 export type RunTermination = "completed" | "budget_exhausted" | "shutdown" | "spawn_failed" | "subsystem_failed"
 
@@ -79,7 +80,69 @@ export interface RunInput {
 const activeWorkers = new Set<PiAgentSubsystem>()
 export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
+function preExecutionToolRoute(tool: string) {
+  if (tool === "shell") return { component: "cyberful-os" as const, route: "cyberful-os/shell" }
+  if (tool.startsWith("browser_")) return { component: "browser" as const, route: `browser/${tool}` }
+  if (tool.startsWith("zap_")) return { component: "zap" as const, route: `zap/${tool}` }
+  if (tool.startsWith("ghidra_")) return { component: "ghidra" as const, route: `ghidra/${tool}` }
+  return { component: "agent" as const, route: `host/${tool}` }
+}
+
 function recordAgentDiagnostic(event: AgentEvent, diagnostics: RuntimeDiagnosticRecorder): void {
+  if (
+    event.type === "activity" &&
+    event.activity.kind === "output" &&
+    event.activity.isError === true &&
+    event.activity.preExecution === true &&
+    event.activity.tool
+  ) {
+    const route = preExecutionToolRoute(event.activity.tool)
+    diagnostics.record({
+      ...route,
+      runID: event.runID,
+      ...(event.activity.actor?.parentID ? { parentRunID: event.activity.actor.parentID } : {}),
+      ...(event.activity.actor?.role ? { role: event.activity.actor.role } : {}),
+      callID: event.activity.callID,
+      server: event.activity.blocked ? "pi-agent/host-policy" : "pi-agent/schema-validation",
+      profile: event.activity.tool,
+      stage: "tool",
+      severity: "error",
+      errorClass: event.activity.blocked ? "HostToolPolicyBlock" : "ToolArgumentValidationError",
+      code: event.activity.blocked ? "host_policy_block" : "invalid_arguments",
+      outcome: "tool_failure",
+      blocking: event.activity.blocked,
+      message: event.activity.text,
+    })
+    return
+  }
+  if (event.type === "recovery") {
+    diagnostics.record({
+      component: "agent",
+      runID: event.runID,
+      stage: "provider",
+      severity: event.state === "failed" || event.state === "denied" ? "warning" : "info",
+      errorClass: "AgentRunRecovery",
+      code: event.denialCode ?? event.state,
+      outcome: event.state === "completed" ? "recovered_retry" : "lifecycle_info",
+      blocking: event.state === "failed" || event.state === "denied",
+      message: `Recovery ${event.chainID} ${event.state}: ${event.sourceRoute} -> ${event.destinationRoute ?? "none"}; cause=${event.cause}; bonus_ms=${event.bonusMs}.`,
+    })
+    return
+  }
+  if (event.type === "steering") {
+    diagnostics.record({
+      component: "agent",
+      runID: event.runID,
+      stage: "provider",
+      severity: event.state === "rejected" ? "warning" : "info",
+      errorClass: "AgentRunSteering",
+      code: event.state,
+      outcome: "lifecycle_info",
+      blocking: false,
+      message: `Steering ${event.steeringID} ${event.state} in ${event.mode} mode${event.reason ? `: ${event.reason}` : "."}`,
+    })
+    return
+  }
   if (event.type === "context_rotation") {
     if (event.state === "started" || event.state === "completed") return
     const blocking = event.state === "failed" && event.reason === "active_tail_too_large"
@@ -103,17 +166,22 @@ function recordAgentDiagnostic(event: AgentEvent, diagnostics: RuntimeDiagnostic
     })
     return
   }
-  if (event.type === "provider_retry" && event.state === "succeeded") {
+  if (event.type === "provider_retry") {
+    const terminalFailure = event.state === "timed_out" || event.state === "exhausted"
+    const failedGeneration = event.state === "scheduled"
     diagnostics.record({
       component: "agent",
-      profile: "provider",
+      runID: event.runID,
+      profile: event.failure?.kind ?? "provider",
       stage: "provider",
-      severity: "info",
+      severity: terminalFailure ? "error" : failedGeneration ? "warning" : "info",
       errorClass: "ProviderRetry",
-      code: "recovered_retry",
-      outcome: "recovered_retry",
-      blocking: false,
-      message: `Provider retry recovered after ${event.attempt} attempt(s).`,
+      code: event.failure?.providerCode ?? event.state,
+      outcome: event.state === "succeeded" ? "recovered_retry" : event.state === "scheduled" ? "runtime_failure" : "lifecycle_info",
+      blocking: terminalFailure,
+      message: `Provider retry ${event.state} at attempt ${event.attempt}/${event.maxRetries}${
+        event.failure?.providerCode ? ` after provider code ${event.failure.providerCode}` : ""
+      }.`,
     })
     return
   }
@@ -126,6 +194,7 @@ function recordAgentDiagnostic(event: AgentEvent, diagnostics: RuntimeDiagnostic
     ...(event.parentID ? { parentRunID: event.parentID } : {}),
     role: event.role,
     termination: event.termination,
+    terminationCause: event.terminationCause,
     profile,
     stage: "provider",
     severity: "error",
@@ -333,6 +402,11 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
     workarea: input.workarea,
     sessionID: input.sessionID,
   })
+  const preExecutionToolUsage = new ToolUsageRecorder({
+    root: input.workarea,
+    phase: input.compiledPrompt.manifest.phase,
+    agent: "host-pre-execution",
+  })
   const liveState = new RunStateArtifact({
     workarea: input.workarea,
     workflow: input.compiledPrompt.manifest.workflow,
@@ -450,12 +524,30 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
         proactiveEnabled: input.settings.agent.fallback.proactive.enabled,
         proactivePercentage: input.settings.agent.fallback.proactive.percentage,
         automaticSecurityBlockEnabled: input.settings.agent.fallback.automatic_security_block.enabled,
+        recoveryBonusMs: Settings.fallbackRecoveryBonusMs(input.settings),
       },
     }
     const root = await subsystem.start(rootSpec)
     const consumeEvents = (async () => {
       for await (const event of root.events) {
         recordAgentDiagnostic(event, diagnostics)
+        if (
+          event.type === "activity" &&
+          event.activity.kind === "output" &&
+          event.activity.isError === true &&
+          event.activity.preExecution === true &&
+          event.activity.tool
+        )
+          await preExecutionToolUsage.record({
+            agent_run_id: event.runID,
+            ...(event.activity.actor?.role ? { agent_role: event.activity.actor.role } : {}),
+            ...(event.activity.actor?.parentID ? { parent_run_id: event.activity.actor.parentID } : {}),
+            tool_call_id: event.activity.callID,
+            tool: event.activity.tool,
+            outcome: event.activity.blocked ? "blocked" : "error",
+            error_class: "invalid_arguments",
+            error_code: event.activity.blocked ? "host_policy_block" : "schema_validation",
+          })
         await liveState.observe(event)
         await input.transcript?.append(`${transcriptLine(event)}\n`)
         onEvent?.(await projectLiveEvent(event, input.workarea, persistedLiveArtifacts))
@@ -495,6 +587,19 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       failureReason: errorDetail(error),
     }
   } finally {
+    await preExecutionToolUsage.close().catch((error) =>
+      diagnostics.record({
+        component: "gateway",
+        profile: "pre-execution-tool-usage",
+        stage: "shutdown",
+        severity: "error",
+        errorClass: error instanceof Error ? error.name || "Error" : "Error",
+        code: "tool_usage_close_failed",
+        outcome: "degraded_observability",
+        blocking: false,
+        message: errorDetail(error),
+      }),
+    )
     await usageLedger.close().catch((error) =>
       diagnostics.record({
         component: "gateway",

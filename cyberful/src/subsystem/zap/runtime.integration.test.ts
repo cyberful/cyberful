@@ -25,6 +25,7 @@ let target: ReturnType<typeof Bun.serve>
 let httpsTarget: ReturnType<typeof Bun.serve>
 let gitRepository = ""
 let upstreamDiagnostics = ""
+const requiredHeaderObservations: string[] = []
 let restoreStderr = () => {}
 
 function captureDiagnostic(value: string) {
@@ -454,6 +455,8 @@ beforeAll(async () => {
     port: 0,
     fetch: (request) => {
       const url = new URL(request.url)
+      if (url.pathname === "/required-header")
+        requiredHeaderObservations.push(request.headers.get("X-Request-Purpose") ?? "[missing]")
       return new Response(
         `<html><body>integration target ${url.pathname} ${url.searchParams.get("q") ?? ""}</body></html>`,
         {
@@ -497,21 +500,22 @@ afterAll(async () => {
 }, 30_000)
 
 describe("real headless ZAP containers", () => {
-  test("installs the persisted aggregate rate limit through the local ZAP API authority", async () => {
+  test("installs persisted rate and required-header controls through the local ZAP API authority", async () => {
     const policyWorkarea = await realpath(
       await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-policy-integration-")),
     )
     let runtime: EngagementRuntime | undefined
     try {
       const store = new EngagementPolicyStore(policyWorkarea)
-      await store.commit(
-        store.prepare({
-          action: "set",
-          profiles: [],
-          authorized_http_hosts: ["app.example.test", "*.api.example.test"],
-          global_http_rps: 4,
-        }),
-      )
+      const traffic = store.prepareTraffic({
+        action: "configure",
+        authorized_http_hosts: ["host.docker.internal", "*.api.example.test"],
+        global_http_rps: 4,
+        required_http_headers: [
+          { name: "X-Request-Purpose", value: "Research", hosts: ["host.docker.internal"] },
+        ],
+      })
+      await store.commit(store.finalize(traffic, { action: "finalize", profiles: [] }))
       runtime = await startEngagement({ sessionID: "integration-rate-limit", workarea: policyWorkarea })
       expect(runtime.degraded).toBe(false)
       const endpoint = new URL("/JSON/network/view/getRateLimitRules/", runtime.env.CYBER_ZAP_PROXY_URL)
@@ -521,6 +525,28 @@ describe("real headless ZAP containers", () => {
       const body = await response.text()
       expect(body).toContain("Cyberful engagement global HTTP budget")
       expect(body).toContain("4")
+      const replacerEndpoint = new URL("/JSON/replacer/view/rules/", runtime.env.CYBER_ZAP_PROXY_URL)
+      replacerEndpoint.searchParams.set("apikey", runtime.env.CYBER_ZAP_API_KEY)
+      const replacer = await fetch(replacerEndpoint, { headers: { Host: "zap" } })
+      expect(replacer.ok).toBe(true)
+      const replacerBody = await replacer.text()
+      expect(replacerBody).toContain("Cyberful engagement required header: x-request-purpose")
+      expect(replacerBody).toContain("X-Request-Purpose")
+      const client = await connect(runtime)
+      const targetUrl = `http://host.docker.internal:${target.port}/required-header`
+      const sent = await client.callTool({
+        name: "zap_http_request",
+        arguments: {
+          request:
+            `GET ${targetUrl} HTTP/1.1\r\n` +
+            `Host: host.docker.internal:${target.port}\r\nConnection: close\r\n\r\n`,
+        },
+      })
+      expect("isError" in sent && sent.isError).not.toBe(true)
+      expect(requiredHeaderObservations.at(-1)).toBe("Research")
+      await client.close()
+      const clientIndex = clients.indexOf(client)
+      if (clientIndex >= 0) clients.splice(clientIndex, 1)
 
       await terminateManagedService(runtime, "zap")
       await Bun.sleep(1_500)
@@ -529,6 +555,23 @@ describe("real headless ZAP containers", () => {
       const recovered = await fetch(endpoint, { headers: { Host: "zap" } })
       expect(recovered.ok).toBe(true)
       expect(await recovered.text()).toContain("Cyberful engagement global HTTP budget")
+      const recoveredReplacer = await fetch(replacerEndpoint, { headers: { Host: "zap" } })
+      expect(recoveredReplacer.ok).toBe(true)
+      expect(await recoveredReplacer.text()).toContain("X-Request-Purpose")
+      const recoveredClient = await connect(runtime)
+      const recoveredSent = await recoveredClient.callTool({
+        name: "zap_http_request",
+        arguments: {
+          request:
+            `GET ${targetUrl} HTTP/1.1\r\n` +
+            `Host: host.docker.internal:${target.port}\r\nConnection: close\r\n\r\n`,
+        },
+      })
+      expect("isError" in recoveredSent && recoveredSent.isError).not.toBe(true)
+      expect(requiredHeaderObservations.slice(-2)).toEqual(["Research", "Research"])
+      await recoveredClient.close()
+      const recoveredClientIndex = clients.indexOf(recoveredClient)
+      if (recoveredClientIndex >= 0) clients.splice(recoveredClientIndex, 1)
     } finally {
       await runtime?.stop()
       await rm(policyWorkarea, { recursive: true, force: true })

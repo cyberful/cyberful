@@ -82,6 +82,8 @@ class EngineBoundaryTests(unittest.TestCase):
                 engine.resolve_source("link.bin")
             with self.assertRaises(InputError):
                 engine.resolve_source(str(fixture))
+            with self.assertRaises(InputError):
+                engine.resolve_source("missing.bin")
 
     def test_project_status_does_not_retain_the_serialization_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

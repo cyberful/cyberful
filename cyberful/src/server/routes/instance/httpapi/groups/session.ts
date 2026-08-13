@@ -81,6 +81,18 @@ export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, [
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const SteerPayload = Schema.Struct({
   text: Schema.String.check(Schema.isLengthBetween(1, 16_384), Schema.isPattern(/\S/)),
+  mode: Schema.optional(Schema.Literals(["queue", "focus"])),
+})
+export const SteeringReceipt = Schema.Struct({
+  id: Schema.String,
+  accepted: Schema.Boolean,
+  recipients: Schema.Number,
+  mode: Schema.Literals(["queue", "focus"]),
+  state: Schema.Literals(["accepted", "queued", "applied", "superseded", "rejected"]),
+  runID: Schema.optional(Schema.String),
+  acceptedAt: Schema.String,
+  appliedAt: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
 })
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -198,7 +210,7 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.hypotheses",
             summary: "Get active session hypotheses",
             description:
-              "Resolve the session workarea and return revisioned hypothesis counts for the current workflow.",
+              "Resolve the session workarea and return revisioned hypothesis counts plus active item details for the current workflow.",
           }),
         ),
         HttpApiEndpoint.get("providerUsage", SessionPaths.providerUsage, {
@@ -355,14 +367,14 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: DirectoryRoutingQuery,
           payload: SteerPayload,
-          success: described(Schema.Boolean, "Whether the active AgentRun accepted the steering message"),
+          success: described(SteeringReceipt, "Stable steering receipt from the active AgentRun"),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.steer",
             summary: "Steer an active session",
             description:
-              "Deliver routine text to the active root AgentRun. Returns false instead of starting a new turn when the session is not steerable.",
+              "Queue routine text or focus the active root AgentRun. Returns a stable receipt without starting a replacement turn.",
           }),
         ),
         HttpApiEndpoint.post("command", SessionPaths.command, {

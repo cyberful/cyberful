@@ -39,6 +39,7 @@ export type ExpertPhaseEntry = {
   phaseStatus?: ExpertPhaseStatus
   contextCompaction?: ExpertContextCompaction
   providerRetry?: ExpertProviderRetry
+  runtimeBootstrap?: ExpertRuntimeBootstrap
   runtimeDiagnostic?: ExpertRuntimeDiagnostic
   findingMaturation?: ExpertFindingMaturation
   actor?: PhaseActivityActor
@@ -96,6 +97,18 @@ export type ExpertProviderRetry = {
   maxRetries: number
   delayMs?: number
   providerCode?: string
+}
+
+export type ExpertRuntimeBootstrap = {
+  state: "active" | "ready" | "degraded" | "failed"
+  message: string
+  completed: number
+  total: number
+  services: {
+    id: "cyber-os" | "zap" | "ghidra"
+    label: string
+    state: "pending" | "active" | "ready" | "degraded" | "failed"
+  }[]
 }
 
 export type ExpertRuntimeDiagnostic = {
@@ -232,6 +245,62 @@ export function decodeExpertProviderRetry(text: string): ExpertProviderRetry | u
     maxRetries,
     ...(delayMs === undefined ? {} : { delayMs }),
     ...(match[5] ? { providerCode: match[5] } : {}),
+  }
+}
+
+// ── Runtime Bootstrap Is One Updating Operator Card ──────────────
+// Engagement startup can spend minutes proving container, proxy, TLS, and MCP
+// readiness before Pi can emit its first token. The host publishes bounded
+// snapshots through the existing status event, and this decoder rejects partial
+// or contradictory snapshots before they reach the renderer. Folding replaces
+// the prior snapshot so progress occupies one stable card instead of flooding
+// the transcript with every startup transition.
+// ─────────────────────────────────────────────────────────────────
+export function decodeExpertRuntimeBootstrap(text: string): ExpertRuntimeBootstrap | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value) || !isRecord(value.runtimeBootstrap)) return
+    const bootstrap = value.runtimeBootstrap
+    if (
+      !["active", "ready", "degraded", "failed"].includes(String(bootstrap.state)) ||
+      typeof bootstrap.message !== "string" ||
+      !Number.isSafeInteger(bootstrap.completed) ||
+      !Number.isSafeInteger(bootstrap.total) ||
+      (bootstrap.total as number) < 1 ||
+      !Array.isArray(bootstrap.services) ||
+      bootstrap.services.length !== bootstrap.total
+    )
+      return
+    const services = bootstrap.services.flatMap((service) => {
+      if (
+        !isRecord(service) ||
+        !["cyber-os", "zap", "ghidra"].includes(String(service.id)) ||
+        typeof service.label !== "string" ||
+        service.label.trim().length === 0 ||
+        !["pending", "active", "ready", "degraded", "failed"].includes(String(service.state))
+      )
+        return []
+      return [
+        {
+          id: service.id as ExpertRuntimeBootstrap["services"][number]["id"],
+          label: service.label,
+          state: service.state as ExpertRuntimeBootstrap["services"][number]["state"],
+        },
+      ]
+    })
+    if (services.length !== bootstrap.services.length || new Set(services.map((service) => service.id)).size !== services.length)
+      return
+    const completed = services.filter((service) => service.state === "ready" || service.state === "degraded").length
+    if (bootstrap.completed !== completed) return
+    return {
+      state: bootstrap.state as ExpertRuntimeBootstrap["state"],
+      message: bootstrap.message,
+      completed,
+      total: bootstrap.total as number,
+      services,
+    }
+  } catch {
+    return
   }
 }
 
@@ -624,30 +693,39 @@ export function foldExpertActivity(
     const status = decodeExpertPhaseStatus(a.text)
     const contextCompaction = decodeExpertContextCompaction(a.text)
     const providerRetry = decodeExpertProviderRetry(a.text)
+    const runtimeBootstrap = decodeExpertRuntimeBootstrap(a.text)
     const runtimeDiagnostic = decodeExpertRuntimeDiagnostic(a.text)
     const findingMaturation = decodeExpertFindingMaturation(a.text)
-    return [
-      ...entries,
-      {
-        ...base,
-        kind: "status",
-        text: status
-          ? phaseStatusText(status)
-          : contextCompaction
-            ? expertContextCompactionText(contextCompaction)
+    const entry: ExpertPhaseEntry = {
+      ...base,
+      kind: "status",
+      text: status
+        ? phaseStatusText(status)
+        : contextCompaction
+          ? expertContextCompactionText(contextCompaction)
+          : runtimeBootstrap
+            ? runtimeBootstrap.message
             : runtimeDiagnostic
               ? expertRuntimeDiagnosticText(runtimeDiagnostic)
               : findingMaturation
                 ? "Finding maturation checkpoint"
-              : a.text,
-        tool: "",
-        phaseStatus: status,
-        contextCompaction,
-        providerRetry,
-        runtimeDiagnostic,
-        findingMaturation,
-      },
-    ]
+                : a.text,
+      tool: "",
+      phaseStatus: status,
+      contextCompaction,
+      providerRetry,
+      runtimeBootstrap,
+      runtimeDiagnostic,
+      findingMaturation,
+    }
+    if (!runtimeBootstrap) return [...entries, entry]
+    const existing = entries.findIndex(
+      (candidate) => sameActivityScope(candidate, a) && candidate.runtimeBootstrap !== undefined,
+    )
+    if (existing < 0) return [...entries, entry]
+    const next = entries.slice()
+    next[existing] = { ...entry, id: entries[existing]!.id, timestamp: entries[existing]!.timestamp }
+    return next
   }
   if (a.kind === "output") {
     const callID = a.tool // an output activity carries the pairing callID in `tool`

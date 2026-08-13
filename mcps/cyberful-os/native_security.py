@@ -131,6 +131,14 @@ def _manifest(root: Path) -> list[dict[str, Any]]:
     return files
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def firmware_lab(args: dict[str, Any]) -> dict[str, Any]:
     operation = args["operation"]
     lab_id = _identifier(args.get("lab_id", "firmware"), "lab_id")
@@ -708,6 +716,70 @@ def _terminate_owned_process(proc: subprocess.Popen[Any] | None) -> None:
         proc.wait(timeout=2)
 
 
+def _proc_identity(pid: int) -> dict[str, Any] | None:
+    proc = Path("/proc") / str(pid)
+    try:
+        stat = (proc / "stat").read_text("utf-8")
+        closing = stat.rfind(")")
+        fields = stat[closing + 2:].split()
+        executable = str((proc / "exe").resolve(strict=True))
+        return {
+            "pid": pid,
+            "ppid": int(fields[1]),
+            "process_group_id": int(fields[2]),
+            "session_id": int(fields[3]),
+            "executable": executable,
+        }
+    except (IndexError, OSError, ValueError):
+        return None
+
+
+def _firefox_process_identity(session: dict[str, Any]) -> dict[str, Any]:
+    launcher_pid = int(session["firefox"].pid)
+    expected = str(session["executable"])
+    records: list[dict[str, Any]] = []
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for candidate in proc_root.iterdir():
+            if not candidate.name.isdigit():
+                continue
+            record = _proc_identity(int(candidate.name))
+            if record and (record["pid"] == launcher_pid or record["process_group_id"] == launcher_pid):
+                records.append(record)
+    records.sort(key=lambda item: int(item["pid"]))
+    exact_pids = [int(item["pid"]) for item in records if item["executable"] == expected]
+    return {
+        "launcher_pid": launcher_pid,
+        "process_group_id": launcher_pid,
+        "expected_executable": expected,
+        "expected_build_sha256": session["build_sha256"],
+        "exact_executable_pids": exact_pids,
+        "processes": records,
+        "inventory_state": "observed" if records else "unavailable",
+    }
+
+
+def _firefox_websocket_url(capabilities: Any) -> str | None:
+    source = capabilities
+    if isinstance(source, dict) and isinstance(source.get("capabilities"), dict):
+        source = source["capabilities"]
+    value = source.get("webSocketUrl") if isinstance(source, dict) else None
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Firefox returned a non-string webSocketUrl capability")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname or parsed.port is None:
+        raise ValueError("Firefox returned an invalid WebDriver BiDi endpoint")
+    try:
+        loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+    except ValueError:
+        loopback = parsed.hostname == "localhost"
+    if not loopback:
+        raise ValueError("Firefox WebDriver BiDi endpoint must remain on loopback")
+    return value
+
+
 # ── Firefox Sessions Own Every Privileged Browser Resource ────────
 # One managed object owns Xvfb, profile, Firefox, discovered port, Marionette
 # socket, context, windows, and teardown. The active port file is read and then
@@ -727,6 +799,10 @@ def firefox_lab(args: dict[str, Any]) -> dict[str, Any]:
         executable = Path(executable_value).resolve(strict=True)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("Firefox executable must be an executable regular file")
+        build_sha256 = _file_sha256(executable)
+        expected_build_sha256 = args.get("expected_build_sha256")
+        if expected_build_sha256 is not None and expected_build_sha256 != build_sha256:
+            raise ValueError("Firefox executable SHA-256 does not match expected_build_sha256")
         context = str(args.get("context", "content"))
         if context not in {"content", "chrome"}:
             raise ValueError("Firefox context must be content or chrome")
@@ -801,31 +877,52 @@ def firefox_lab(args: dict[str, Any]) -> dict[str, Any]:
             "port": port,
             "log": log_path,
             "system_access": context == "chrome",
+            "executable": executable,
+            "build_sha256": build_sha256,
+            "marionette_active": True,
+            "handles": [],
         }
         FIREFOX_SESSIONS[session_id] = session
         try:
             greeting = _marionette_packet(sock)
-            capabilities = _marionette_command(session, "WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}})
+            bidi = bool(args.get("bidi", True))
+            always_match = {"webSocketUrl": True} if bidi else {}
+            capabilities = _marionette_command(
+                session,
+                "WebDriver:NewSession",
+                {"capabilities": {"alwaysMatch": always_match}},
+            )
+            web_socket_url = _firefox_websocket_url(capabilities)
+            if bidi and web_socket_url is None:
+                raise ValueError("Firefox did not advertise the requested WebDriver BiDi endpoint")
             _firefox_context(session, context)
+            session["handles"] = _marionette_command(session, "WebDriver:GetWindowHandles", {})
+            session["web_socket_url"] = web_socket_url
+            session["capabilities"] = capabilities
         except Exception:
             firefox_lab({"operation": "close", "session_id": session_id})
             raise
         return _record("firefox", operation, {
             "session_id": session_id,
             "pid": firefox.pid,
+            "build_sha256": build_sha256,
             "display": display,
             "profile": str(profile.relative_to(WORKSPACE)),
             "port": port,
             "context": session["context"],
             "greeting": greeting,
             "capabilities": capabilities,
+            "web_socket_url": session["web_socket_url"],
+            "handles": session["handles"],
+            "process_identity": _firefox_process_identity(session),
             "log": str(log_path.relative_to(WORKSPACE)),
         })
     if operation == "close":
         if not session:
             return _record("firefox", operation, {"session_id": session_id, "closed": True, "already_closed": True})
         try:
-            _marionette_command(session, "WebDriver:DeleteSession", {})
+            if session.get("marionette_active", True):
+                _marionette_command(session, "WebDriver:DeleteSession", {})
         except (OSError, ValueError):
             pass
         try:
@@ -842,7 +939,8 @@ def firefox_lab(args: dict[str, Any]) -> dict[str, Any]:
     if not session or session["firefox"].poll() is not None:
         raise ValueError("Firefox lab session is not active")
     if operation == "status":
-        handles = _marionette_command(session, "WebDriver:GetWindowHandles", {})
+        if session.get("marionette_active", True):
+            session["handles"] = _marionette_command(session, "WebDriver:GetWindowHandles", {})
         return _record("firefox", operation, {
             "session_id": session_id,
             "state": "running",
@@ -851,9 +949,35 @@ def firefox_lab(args: dict[str, Any]) -> dict[str, Any]:
             "profile": str(session["profile"].relative_to(WORKSPACE)),
             "port": session["port"],
             "context": session["context"],
-            "handles": handles,
+            "handles": session["handles"],
+            "marionette_active": session.get("marionette_active", True),
+            "web_socket_url": session.get("web_socket_url"),
+            "build_sha256": session["build_sha256"],
+            "process_identity": _firefox_process_identity(session),
             "log": str(session["log"].relative_to(WORKSPACE)),
         })
+    if operation == "handoff_bidi":
+        if not session.get("web_socket_url"):
+            raise ValueError("Firefox lab session has no advertised WebDriver BiDi endpoint")
+        if not session.get("marionette_active", True):
+            return _record("firefox", operation, {
+                "session_id": session_id,
+                "web_socket_url": session["web_socket_url"],
+                "already_handed_off": True,
+                "process_identity": _firefox_process_identity(session),
+            })
+        session["handles"] = _marionette_command(session, "WebDriver:GetWindowHandles", {})
+        session["socket"].close()
+        session["marionette_active"] = False
+        return _record("firefox", operation, {
+            "session_id": session_id,
+            "web_socket_url": session["web_socket_url"],
+            "handles": session["handles"],
+            "marionette_active": False,
+            "process_identity": _firefox_process_identity(session),
+        })
+    if not session.get("marionette_active", True):
+        raise ValueError("Firefox Marionette transport was handed off to WebDriver BiDi")
     if operation == "new_window":
         window_type = str(args.get("type", "tab"))
         if window_type not in {"tab", "window"}:
@@ -861,6 +985,7 @@ def firefox_lab(args: dict[str, Any]) -> dict[str, Any]:
         result = _marionette_command(session, "WebDriver:NewWindow", {"type": window_type})
         handle = result.get("handle") if isinstance(result, dict) else result
         _marionette_command(session, "WebDriver:SwitchToWindow", {"handle": handle})
+        session["handles"] = _marionette_command(session, "WebDriver:GetWindowHandles", {})
         return _record("firefox", operation, {"session_id": session_id, "handle": handle, "type": window_type})
     original_context = str(session["context"])
     default_context = "content" if operation == "navigate" else "chrome" if operation == "set_permission" else original_context
@@ -1281,7 +1406,7 @@ OPERATIONS = {
     "native_static_analysis": ["import_compile_db", "run_checks", "trace_source_sink", "inspect_variadic_calls"],
     "harness_validate": ["shell", "javascript", "native_executable", "native_source"],
     "archive_extract": ["inspect", "extract"],
-    "firefox_lab": ["launch", "status", "new_window", "navigate", "execute", "set_permission", "close"],
+    "firefox_lab": ["launch", "status", "new_window", "navigate", "execute", "set_permission", "handoff_bidi", "close"],
     "x11_clipboard": ["set", "targets", "status", "clear"],
 }
 
@@ -1339,6 +1464,7 @@ SCHEMA_FIELDS: dict[str, dict[str, Any]] = {
     "delta_seconds": {"type": "number"},
     "threshold_seconds": {"type": "number", "minimum": 0},
     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+    "bidi": {"type": "boolean"},
 }
 
 
@@ -1388,10 +1514,11 @@ OPERATION_FIELDS: dict[str, dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] 
         "inspect": (("path", "timeout_seconds"), ("path",)), "extract": (("path", "output", "timeout_seconds"), ("path", "output")),
     },
     "firefox_lab": {
-        "launch": (("session_id", "executable", "context", "timeout_seconds"), ("executable",)), "status": (("session_id",), ()),
+        "launch": (("session_id", "executable", "expected_build_sha256", "context", "bidi", "timeout_seconds"), ("executable",)), "status": (("session_id",), ()),
         "new_window": (("session_id", "type"), ()), "navigate": (("session_id", "url", "context"), ("url",)),
         "execute": (("session_id", "script", "args", "context"), ("script",)),
         "set_permission": (("session_id", "origin", "permission", "action"), ("origin", "permission", "action")),
+        "handoff_bidi": (("session_id",), ()),
         "close": (("session_id",), ()),
     },
     "x11_clipboard": {
@@ -1405,6 +1532,13 @@ SCHEMAS = {
     name: {
         "type": "object",
         "additionalProperties": False,
+        "properties": {
+            "operation": {"type": "string", "enum": list(operations)},
+            **{
+                field: SCHEMA_FIELDS[field]
+                for field in sorted({field for fields, _required in operations.values() for field in fields})
+            },
+        },
         "oneOf": [
             _operation_schema(operation, fields, required)
             for operation, (fields, required) in operations.items()

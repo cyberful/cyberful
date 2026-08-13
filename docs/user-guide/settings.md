@@ -42,6 +42,7 @@ agent:
     use_fallback_provider: true
 
   fallback:
+    recovery_bonus_minutes: 5
     proactive:
       enabled: false
       percentage: 2
@@ -102,7 +103,7 @@ After validation and persistence, Cyberful constructs replacement memory from th
 
 If replacement memory is above 35% but below the hard input limit, Cyberful installs it and emits `target_unreachable`; remaining above the soft trigger is not terminal. `active_tail_too_large` occurs only when checkpoint plus fixed context cannot fit under the hard limit. Cyberful then restarts the phase once on the same route with a reconciliation instruction that lists and preserves all hypotheses.
 
-`summarizer.provider: inherit` uses the AgentRun route. A configured provider name selects an already declared route. Summarizer effort defaults to `medium` and is independent of the run's reasoning profile. There are at most three tool-free attempts: the configured route, the same route with a 50% smaller source only after a context rejection, then the active route once when it is different. The security fallback is never used.
+`summarizer.provider: inherit` uses the AgentRun route. A configured provider name selects an already declared route. Summarizer effort defaults to `medium` and is independent of the run's reasoning profile. There are at most four tool-free attempts: the configured route, the same route with a 50% smaller source only after a context rejection, the active route once when it is different, and one quota-exempt fallback summary after a recoverable failure. The fallback summary receives the immutable system prompt and no tools, never returns to main automatically, and is recorded through the same recovery lifecycle.
 
 A failed summarizer generation no longer restores oversized history. Cyberful immediately persists and installs an owner-only deterministic checkpoint containing only host-observed task, evidence, artifact, registry, completed-call, last-public-output, and bounded recent-queue state; it contains no model inference. Diagnostic events retain every summarizer attempt and the complete bounded cause. Setting legacy `model_summary: false` uses this deterministic path without invoking a summarizer.
 
@@ -120,9 +121,11 @@ Backoff is exponential with full jitter, bounded by `max_delay_ms`, and is inter
 
 ## Phase provider recovery
 
-`agent.phase_recovery` starts one fresh phase owner after same-turn retry is exhausted and the provider failure remains explicitly retryable. A structured main-provider `security_policy_block` is also recoverable when `use_fallback_provider` is true and an authenticated fallback route is configured. The replacement receives only the remaining phase budget and reads the existing workarea, semantic checkpoint, registries, tool-usage evidence, and prior-attempt transcript so it can continue without deliberately repeating completed effects. The replacement root and every descendant retain fallback affinity and never return automatically to main; a policy block on that fallback route is terminal. Authentication, cancellation, invalid handoffs, missing artifacts, and unverified cleanup never use this path.
+`agent.phase_recovery` starts one fresh phase owner after same-turn retry is exhausted and the provider failure remains explicitly retryable. A structured main-provider `security_policy_block` is also recoverable when `use_fallback_provider` is true and an authenticated fallback route is configured. If no fallback is configured, Pentest and Bug Bounty recover once on the main route with a wording-only prompt that preserves the original task, explicitly restates the recorded authorization, and denies any scope or effect expansion. Bug Bounty identifies the authorized program; Pentest uses the saved `client_name` when available and otherwise refers to the client named in the supplied engagement request and `MISSION.md` rather than inventing a name. This same-route recovery follows `agent.phase_recovery` even when automatic fallback is disabled. The replacement receives only the remaining phase budget and reads the existing workarea, semantic checkpoint, registries, tool-usage evidence, and prior-attempt transcript so it can continue without deliberately repeating completed effects. A replacement routed to fallback and every descendant retain fallback affinity and never return automatically to main; a policy block on that fallback route is terminal. Authentication, cancellation, invalid handoffs, missing artifacts, and unverified cleanup never use this path.
 
-After ordinary retry and context-recovery options are exhausted, one failed main-route subagent may be replaced once on the authenticated fallback route with the same task, output artifact, checkpoint, and residual child budget. The replacement and descendants remain fallback-affine. This automatic recovery is separate from proactive admission and does not consume its quota.
+After ordinary retry and context-recovery options are exhausted, one failed main-route subagent may be replaced once with the same task, output artifact, checkpoint, and residual child budget. It uses the authenticated fallback route when configured; otherwise a policy-blocked Pentest or Bug Bounty child stays on main with the same authorization reframe. A fallback replacement and its descendants remain fallback-affine. This automatic recovery is separate from proactive admission and does not consume its quota.
+
+`agent.fallback.recovery_bonus_minutes` defaults to five and accepts zero through thirty. A named recovery chain may receive this bonus once; a phase restart carries the grant into its replacement owner, while a delegated or summary replacement shares the owning phase clock. Exact retries, duplicate events, or process restarts cannot grant it again. Admission still requires a useful residual runtime and output budget after closeout is reserved. `raw/operations/run-state.json` records `recovery_extension_ms`, every recovery chain and route, denial code, terminal cause, and deadline.
 
 ## Authentication
 
@@ -159,6 +162,19 @@ Cyberful admits these reviewed Pi adapters as `main_provider`:
 | `kimi-coding`        | Kimi For Coding, the Moonshot plan API  | `subscription` or `environment`        |
 | `moonshotai`         | Moonshot AI usage-based API             | `environment`                          |
 | `openai-completions` | Reviewed OpenAI-compatible custom route | `environment`                          |
+
+OpenAI Codex subscription routes also accept the allowlisted `gpt-daybreak-blue-latest` model when the authenticated ChatGPT identity has Daybreak Blue access. Pi does not yet publish this alias in its generated catalog, so Cyberful materializes it from the bundled GPT-5.6 Sol transport and capacity metadata instead of permitting arbitrary unknown model ids. Authentication, server-side entitlement, safeguards, and the actual model selected by the `latest` alias remain owned by OpenAI. To use Daybreak Blue without creating another credential identity, keep the existing provider key and change only its model:
+
+```yaml
+agent:
+  providers:
+    openai-codex:
+      adapter: openai-codex
+      model: gpt-daybreak-blue-latest
+      operational_context_window: 256000
+      auth:
+        type: subscription
+```
 
 Provider keys are operator-defined. This makes a Kimi subscription available under the name `kimi`, for example. The snippets below show only the fields to change inside the complete generated `settings.yaml`; keep the required subagent, fallback, and instruction sections:
 
@@ -274,7 +290,7 @@ instructions:
   allow_project_discovery: false
 ```
 
-For a built-in adapter, explicit `context_window` and `max_output_tokens` values may only restrict Pi's bundled catalog metadata. They cannot enlarge it. The generated GPT-5.6 Sol route uses a 256,000-token operational window while the current Pi route catalog remains the hard authority. GLM-5.2, Kimi K3, and Moonshot Kimi K3 also default to 256K operationally; models whose catalog limit is smaller use that smaller value.
+For a built-in adapter, explicit `context_window` and `max_output_tokens` values may only restrict Pi's bundled catalog metadata. They cannot enlarge it. The generated GPT-5.6 Sol route and Cyberful's allowlisted Daybreak Blue alias use a 256,000-token operational window while the current Pi route catalog remains the hard authority. GLM-5.2, Kimi K3, and Moonshot Kimi K3 also default to 256K operationally; models whose catalog limit is smaller use that smaller value.
 
 Custom OpenAI-compatible providers require an absolute HTTP or HTTPS `base_url`, `context_window`, `max_output_tokens`, and environment-based authentication. Cyberful admits an adapter only when it preserves an authentic system-message channel; endpoints that concatenate the Cyberful system contract into user content are refused before a run begins.
 
@@ -286,6 +302,8 @@ There are two admission paths:
 
 - A main root or subagent may request one specific, bounded fallback task when it predicts an imminent provider security-policy block. Proactive admissions share the deterministic session quota configured by `percentage`; at the default this is explicitly “2% + 1”, not a random 2% probability.
 - Cyberful may restart the same root phase or replace one exhausted main-route subagent after a provider-specific, structured `security_policy_block` or eligible terminal failure. Automatic security fallback and recovery admissions do not consume the proactive quota.
+
+With no `fallback_provider`, fallback admission remains disabled. Pentest and Bug Bounty still handle one exact structured main-route `security_policy_block` through the bounded same-provider authorization reframe described under Phase provider recovery; generic refusal prose never activates it.
 
 On the `openai-codex` adapter, the exact structured provider codes `cyberPolicy` and `cyber_policy` both normalize to `security_policy_block` with canonical code `cyberPolicy`. Message text never activates this classification, and `cyber_policy` from every other adapter remains `unknown`. The runtime diagnostic therefore records `profile: "security_policy_block"` and `code: "cyberPolicy"` before the configured fallback is considered.
 

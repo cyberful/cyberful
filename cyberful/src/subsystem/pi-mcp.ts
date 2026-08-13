@@ -133,6 +133,14 @@ function diagnosticComponent(message: string): "gateway" | "zap" | "browser" | "
   return "gateway"
 }
 
+function toolDiagnosticRoute(name: string): Pick<RuntimeDiagnosticInput, "component" | "route"> {
+  if (name === "shell") return { component: "cyberful-os", route: "cyberful-os/shell" }
+  if (name.startsWith("browser_")) return { component: "browser", route: `browser/${name}` }
+  if (name.startsWith("zap_")) return { component: "zap", route: `zap/${name}` }
+  if (name.startsWith("ghidra_")) return { component: "ghidra", route: `ghidra/${name}` }
+  return { component: "gateway", route: `gateway/${name}` }
+}
+
 function classifyGatewayStderr(
   message: string,
 ): Pick<RuntimeDiagnosticInput, "stage" | "severity" | "errorClass" | "code" | "outcome" | "blocking"> {
@@ -142,6 +150,14 @@ function classifyGatewayStderr(
       stage: "startup",
       severity: "info",
       errorClass: "GatewayLifecycle",
+    }
+  if (/\blaunching\s+patchright-core\s+chromium\b/iu.test(line))
+    return {
+      stage: "startup",
+      severity: "info",
+      errorClass: "GatewayLifecycle",
+      code: "browser_launch",
+      blocking: false,
     }
   if (/\bcleanup recovered\b/iu.test(line))
     return {
@@ -445,10 +461,14 @@ function piTool(
             ? await connectOptions.budgetClock.wait("target_cooldown", call)
             : await call()
       } catch (error) {
+        const route = toolDiagnosticRoute(definition.name)
         connectOptions.diagnostics?.record({
-          component: diagnosticComponent(
-            `${definition.name} ${error instanceof Error ? error.message : String(error)}`,
-          ),
+          ...route,
+          ...(runPolicy.actor?.runID ? { runID: runPolicy.actor.runID } : {}),
+          ...(runPolicy.actor?.parentID ? { parentRunID: runPolicy.actor.parentID } : {}),
+          ...(runPolicy.actor?.kind ? { role: runPolicy.actor.kind } : {}),
+          callID: toolCallID,
+          server: serverName,
           profile: definition.name,
           stage: "tool",
           severity: "error",
@@ -460,8 +480,14 @@ function piTool(
       }
       if (!("toolResult" in result) && result.isError) {
         const message = toolErrorText(result.content, result.structuredContent)
+        const route = toolDiagnosticRoute(definition.name)
         connectOptions.diagnostics?.record({
-          component: diagnosticComponent(`${definition.name} ${message}`),
+          ...route,
+          ...(runPolicy.actor?.runID ? { runID: runPolicy.actor.runID } : {}),
+          ...(runPolicy.actor?.parentID ? { parentRunID: runPolicy.actor.parentID } : {}),
+          ...(runPolicy.actor?.kind ? { role: runPolicy.actor.kind } : {}),
+          callID: toolCallID,
+          server: serverName,
           profile: definition.name,
           stage: "tool",
           severity: "error",

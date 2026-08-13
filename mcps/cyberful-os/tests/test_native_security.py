@@ -278,6 +278,54 @@ class NativeSecurityTests(unittest.TestCase):
         self.assertEqual(methods, ["Marionette:SetContext", "WebDriver:ExecuteScript", "Marionette:SetContext"])
         native_security.FIREFOX_SESSIONS.pop("permission")
 
+    def test_firefox_bidi_endpoint_is_consumed_verbatim_and_must_be_loopback(self) -> None:
+        root = "ws://127.0.0.1:9222"
+        session = "ws://127.0.0.1:9222/session/fixture"
+
+        self.assertEqual(native_security._firefox_websocket_url({"webSocketUrl": root}), root)
+        self.assertEqual(
+            native_security._firefox_websocket_url({"capabilities": {"webSocketUrl": session}}),
+            session,
+        )
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            native_security._firefox_websocket_url({"webSocketUrl": "ws://example.com:9222/session"})
+
+    def test_firefox_handoff_to_bidi_preserves_owned_process_and_is_idempotent(self) -> None:
+        firefox = MagicMock()
+        firefox.pid = 4242
+        firefox.poll.return_value = None
+        sock = MagicMock()
+        session = {
+            "firefox": firefox,
+            "socket": sock,
+            "context": "content",
+            "web_socket_url": "ws://127.0.0.1:9222/session/fixture",
+            "handles": ["before"],
+            "executable": Path("/workspace/firefox"),
+            "build_sha256": "a" * 64,
+        }
+        native_security.FIREFOX_SESSIONS["bidi"] = session
+
+        with (
+            patch.object(native_security, "_marionette_command", return_value=["one", "two"]) as command,
+            patch.object(native_security, "_firefox_process_identity", return_value={"inventory_state": "observed"}),
+        ):
+            result = native_security.invoke("firefox_lab", {"operation": "handoff_bidi", "session_id": "bidi"})
+            repeated = native_security.invoke("firefox_lab", {"operation": "handoff_bidi", "session_id": "bidi"})
+            with self.assertRaisesRegex(ValueError, "handed off"):
+                native_security.invoke(
+                    "firefox_lab",
+                    {"operation": "navigate", "session_id": "bidi", "url": "about:blank"},
+                )
+
+        command.assert_called_once_with(session, "WebDriver:GetWindowHandles", {})
+        sock.close.assert_called_once_with()
+        self.assertFalse(result["marionette_active"])
+        self.assertEqual(result["handles"], ["one", "two"])
+        self.assertTrue(repeated["already_handed_off"])
+        self.assertIsNone(firefox.poll())
+        native_security.FIREFOX_SESSIONS.pop("bidi")
+
     def test_navigation_uses_content_context_and_restores_chrome(self) -> None:
         firefox = MagicMock()
         firefox.poll.return_value = None

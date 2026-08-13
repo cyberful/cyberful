@@ -8,6 +8,7 @@
 import path from "node:path"
 import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { isRecord } from "@/util/record"
+import { verifyEvidenceManifest } from "@/workarea"
 
 export const STATES = [
   "planned",
@@ -186,6 +187,24 @@ export class TestObjectLifecycleLedger {
       const state = args.state
       const current = (await this.list()).find((item) => item.id === id)
       if (!current && state !== "planned") throw new Error(`test_object '${id}' must begin in planned state`)
+      if (current && current.state === state) {
+        if (args.kind !== undefined && boundedText(args.kind, "test_object kind", 80) !== current.kind)
+          throw new Error(`test_object '${id}' kind cannot change after planning`)
+        if (args.label !== undefined && boundedText(args.label, "test_object label", 160) !== current.label)
+          throw new Error(`test_object '${id}' label cannot change after planning`)
+        const evidencePath = relativeEvidencePath(args.evidence_path)
+        if (evidencePath !== undefined && evidencePath !== current.evidencePath)
+          throw new Error(`test_object '${id}' evidence_path cannot change without a lifecycle transition`)
+        if (args.note !== undefined && boundedText(args.note, "test_object note", 2_000) !== current.note)
+          throw new Error(`test_object '${id}' note cannot change without a lifecycle transition`)
+        if (
+          state === "residual" &&
+          args.residual_reason !== undefined &&
+          boundedText(args.residual_reason, "test_object residual_reason", 2_000) !== current.residualReason
+        )
+          throw new Error(`test_object '${id}' residual_reason cannot change after reaching residual state`)
+        return current
+      }
       if (current && !TRANSITIONS[current.state].includes(state))
         throw new Error(`test_object '${id}' cannot transition from ${current.state} to ${state}`)
       const kind = current?.kind ?? boundedText(args.kind, "test_object kind", 80)
@@ -289,7 +308,12 @@ export class TestObjectLifecycleLedger {
       })
       if (!info || info.isSymbolicLink()) return false
       if (index < segments.length - 1 && !info.isDirectory()) return false
-      if (index === segments.length - 1) return info.isFile()
+      if (index === segments.length - 1) {
+        if (info.isFile()) return true
+        if (!info.isDirectory()) return false
+        const manifest = await verifyEvidenceManifest(this.#workareaRoot, relativePath).catch(() => undefined)
+        return manifest?.valid === true && manifest.files > 0
+      }
     }
     return false
   }

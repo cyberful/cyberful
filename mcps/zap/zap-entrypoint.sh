@@ -17,6 +17,19 @@ case "${generation}" in
 esac
 [ "${generation}" -ge 1 ] || { echo "CYBER_ZAP_SESSION_GENERATION must be positive" >&2; exit 2; }
 
+history_response_body_bytes="${CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES:-1073741824}"
+case "${history_response_body_bytes}" in
+  ''|*[!0-9]*) echo "CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must be a decimal integer" >&2; exit 2 ;;
+esac
+[ "${history_response_body_bytes}" -ge 16777216 ] || {
+  echo "CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must be at least 16777216" >&2
+  exit 2
+}
+[ "${history_response_body_bytes}" -le 2147483647 ] || {
+  echo "CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must not exceed 2147483647" >&2
+  exit 2
+}
+
 session_directory="${CYBER_ZAP_SESSION_ROOT:-/var/lib/cyberful/zap/session}"
 session_path="${session_directory}/engagement-${generation}"
 mkdir -p "${session_directory}"
@@ -54,4 +67,5 @@ exec /zap/zap-x.sh \
   -config "mcp.recordInHistory=true" \
   -config "mcp.secureOnly=false" \
   -config "checkForUpdatesOnStart=false" \
+  -config "database.response.bodysize=${history_response_body_bytes}" \
   "$@"

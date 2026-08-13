@@ -591,13 +591,15 @@ describe("phase orchestration (runAndAdvance)", () => {
       ["recon", 2, "fallback"],
     ])
     expect(specs[1]?.objective).toContain("Do not repeat an operation")
-    expect(specs[1]?.timeoutMs).toBe(59_900)
-    expect(specs[1]?.budgetCarry).toEqual({
+    expect(specs[1]?.timeoutMs).toBe(359_900)
+    expect(specs[1]?.budgetCarry).toMatchObject({
       approvalWaitMs: 2_000,
       retryWaitMs: 12_000,
       targetCooldownWaitMs: 180_000,
       phaseExtensionMs: 10_000,
+      recoveryExtensionMs: 300_000,
     })
+    expect(specs[1]?.budgetCarry?.recoveryChainIDs).toHaveLength(1)
     expect(out.phaseAttempts.slice(0, 2).map((attempt) => [attempt.phase, attempt.attempt, attempt.recovered])).toEqual([
       ["recon", 1, true],
       ["recon", 2, false],
@@ -651,6 +653,116 @@ describe("phase orchestration (runAndAdvance)", () => {
     ])
     expect(specs[1]?.objective).toContain("security_policy_block")
     expect(out.terminal).toBe(true)
+    expect(out.outcome).toBe("warning")
+  })
+
+  test("a Pentest policy block without fallback retries once on main with the recorded client authorization", async () => {
+    const specs: PhaseSpec[] = []
+    let attempts = 0
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && attempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "security_policy_block",
+                providerCode: "cyberPolicy",
+                retryable: false,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "security_policy_block",
+                code: "cyberPolicy",
+                detail: "main route rejected the request",
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: false,
+                automaticSecurityBlockEnabled: false,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+        resolveClientName: async () => "Acme Security S.p.A.",
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.attempt, spec.providerRoute])).toEqual([
+      [1, "main"],
+      [2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain('client recorded as "Acme Security S.p.A."')
+    expect(specs[1]?.objective).toContain("commissioned and authorized this penetration test")
+    expect(specs[1]?.objective).toContain("It grants no new target, method, effect, credential use, or authority")
+    expect(out.outcome).toBe("warning")
+  })
+
+  test("a Bug Bounty policy block without fallback retries once on main with program authorization", async () => {
+    const specs: PhaseSpec[] = []
+    let attempts = 0
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(
+        { ...baseInput("recon"), workflow: "bug-bounty", timeoutMs: 60_000 },
+        {
+          runPhase: async (spec) => {
+            specs.push(spec)
+            if (spec.phase === "recon" && attempts++ === 0)
+              return {
+                ...completedPhase(spec.phase),
+                ok: false,
+                summary: "",
+                exitCode: 1,
+                termination: "subsystem_failed",
+                handoff: undefined,
+                subsystemFailure: {
+                  kind: "security_policy_block",
+                  providerCode: "cyberPolicy",
+                  retryable: false,
+                },
+                phaseFailure: {
+                  phase: spec.phase,
+                  source: "provider",
+                  class: "security_policy_block",
+                  code: "cyberPolicy",
+                  detail: "main route rejected the request",
+                },
+                recoveryPolicy: {
+                  enabled: true,
+                  maxRestarts: 1,
+                  useFallbackProvider: true,
+                  fallbackConfigured: false,
+                  automaticSecurityBlockEnabled: false,
+                },
+              }
+            return {
+              ...completedPhase(spec.phase),
+              handoff: {
+                phase: spec.phase,
+                successor: SubsystemPhase.nextAfterExpertPhase("bug-bounty", spec.phase),
+                summary: `${spec.phase} done`,
+              },
+            }
+          },
+        },
+      ),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.attempt, spec.providerRoute])).toEqual([
+      [1, "main"],
+      [2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain("authorized Bug Bounty Program")
+    expect(specs[1]?.objective).toContain("supplied program policy and recorded engagement scope")
     expect(out.outcome).toBe("warning")
   })
 

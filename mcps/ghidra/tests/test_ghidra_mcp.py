@@ -18,6 +18,7 @@ from pathlib import Path
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_ROOT))
 
+from ghidra_engine import GhidraEngine  # noqa: E402
 from ghidra_mcp import GhidraApplication, JobManager, Protocol, TOOL_NAMES  # noqa: E402
 
 
@@ -147,6 +148,36 @@ class JobManagerTests(unittest.TestCase):
                 self.assertTrue(recovered["recovered"])
                 self.assertEqual(engine.analysis_calls, [("/fixture", 10)])
                 self.assertGreater(len(journal.read_text(encoding="utf-8").splitlines()), 2)
+            finally:
+                manager.close()
+
+    def test_missing_import_input_fails_only_the_recovered_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for child in ["store", "workarea", "ghidra"]:
+                (root / child).mkdir()
+            journal = root / "store" / "jobs.jsonl"
+            job_id = "5101986c-614d-48a0-92e6-0eb598bbb4e6"
+            journal.write_text(
+                json.dumps(
+                    {
+                        "id": job_id,
+                        "kind": "import",
+                        "status": "running",
+                        "request": {"source_path": "removed/fixture.bin", "analyze": True},
+                        "created_at": 1,
+                        "updated_at": 2,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            engine = GhidraEngine(root / "store", root / "workarea", root / "ghidra")
+            manager = JobManager(engine, journal)
+            try:
+                recovered = wait_for_status(manager, job_id, "failed")
+                self.assertTrue(recovered["recovered"])
+                self.assertIn("source_path must resolve", recovered["error"])
             finally:
                 manager.close()
 

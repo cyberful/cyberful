@@ -229,6 +229,7 @@ test("the built image exposes every required capability through cyberful-os and 
         "hypothesis",
         "target_cooldown",
         "cve_dictionary",
+        "runtime_status",
         ...NATIVE_MCP_TOOL_NAMES,
         ...installedInventoryNames,
       ].toSorted(),

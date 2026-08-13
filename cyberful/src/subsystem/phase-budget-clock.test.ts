@@ -8,6 +8,31 @@ import { describe, expect, test } from "bun:test"
 import { SubsystemPhaseBudgetClock } from "./phase-budget-clock"
 
 describe("PhaseBudgetClock", () => {
+  test("grants one recovery extension per logical chain and publishes the new deadline", () => {
+    let now = 1_000
+    const clock = SubsystemPhaseBudgetClock.create({
+      deadlineAt: 11_000,
+      retryCompensationCapMs: 60_000,
+      now: () => now,
+    })
+    const deadlines: number[] = []
+    const unsubscribe = clock.subscribe((snapshot) => deadlines.push(snapshot.deadlineAt))
+
+    expect(clock.grantRecoveryExtension("recovery-a", 300_000)).toBeTrue()
+    expect(clock.grantRecoveryExtension("recovery-a", 300_000)).toBeFalse()
+    expect(clock.grantRecoveryExtension("recovery-b", 60_000)).toBeTrue()
+    expect(clock.snapshot()).toMatchObject({
+      deadlineAt: 371_000,
+      recoveryExtensionMs: 360_000,
+      pausedMs: 0,
+    })
+    expect(deadlines).toEqual([11_000, 311_000, 371_000])
+
+    now += 1_000
+    unsubscribe()
+    clock.close()
+  })
+
   test("returns the exact retry interval to active execution", () => {
     let now = 1_000
     const clock = SubsystemPhaseBudgetClock.create({

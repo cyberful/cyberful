@@ -24,4 +24,13 @@ describe("ZAP runtime entrypoint", () => {
     expect(entrypoint).toContain('certificate_option="-certfulldump"')
     expect(entrypoint).toContain('"${certificate_option}" "${certificate_path}"')
   })
+
+  test("retains large acquisition responses within an explicit bounded history limit", async () => {
+    const entrypoint = await Bun.file(new URL("./zap-entrypoint.sh", import.meta.url)).text()
+
+    expect(entrypoint).toContain("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES:-1073741824")
+    expect(entrypoint).toContain("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must be at least 16777216")
+    expect(entrypoint).toContain("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must not exceed 2147483647")
+    expect(entrypoint).toContain('-config "database.response.bodysize=${history_response_body_bytes}"')
+  })
 })

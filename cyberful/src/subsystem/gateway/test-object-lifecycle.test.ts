@@ -5,14 +5,15 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { createEvidenceManifest } from "@/workarea"
 import { TestObjectLifecycleLedger } from "./test-object-lifecycle"
 
 describe("test object lifecycle ledger", () => {
   test("requires cleanup or explicit residue before handoff", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-test-object-"))
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-test-object-")))
     try {
       const ledger = new TestObjectLifecycleLedger(root, "exploit")
       await ledger.transition({ action: "transition", id: "dataset-1", kind: "dataset", label: "B4 fixture", state: "planned" })
@@ -48,6 +49,55 @@ describe("test object lifecycle ledger", () => {
       await expect(ledger.transition({ action: "transition", id: "event-1", state: "cleaned" })).rejects.toThrow(
         "cannot transition",
       )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("treats a repeated terminal state as an idempotent no-op", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cyberful-test-object-"))
+    try {
+      const ledger = new TestObjectLifecycleLedger(root, "hacker")
+      await ledger.transition({ action: "transition", id: "event-1", kind: "event", label: "fixture", state: "planned" })
+      await ledger.transition({ action: "transition", id: "event-1", state: "created" })
+      await ledger.transition({
+        action: "transition",
+        id: "event-1",
+        state: "residual",
+        residual_reason: "No cleanup operation exists.",
+      })
+      const before = await readFile(path.join(root, "raw", "operations", "test-object-lifecycle.jsonl"), "utf8")
+
+      expect(await ledger.transition({ action: "transition", id: "event-1", state: "residual" })).toMatchObject({
+        id: "event-1",
+        state: "residual",
+      })
+      const after = await readFile(path.join(root, "raw", "operations", "test-object-lifecycle.jsonl"), "utf8")
+      expect(after).toBe(before)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("accepts an evidence directory when its manifest covers regular descendants", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-test-object-")))
+    try {
+      const ledger = new TestObjectLifecycleLedger(root, "hacker")
+      await mkdir(path.join(root, "evidence", "case-1"), { recursive: true })
+      await writeFile(path.join(root, "evidence", "case-1", "result.json"), "{}\n")
+      await createEvidenceManifest(root, "evidence/case-1")
+      await ledger.transition({ action: "transition", id: "case-1", kind: "fixture", label: "case", state: "planned" })
+      await ledger.transition({ action: "transition", id: "case-1", state: "created" })
+      await ledger.transition({ action: "transition", id: "case-1", state: "cleanup_attempted" })
+      await ledger.transition({
+        action: "transition",
+        id: "case-1",
+        state: "cleaned",
+        evidence_path: "evidence/case-1",
+      })
+
+      expect(await ledger.handoffError()).toBeUndefined()
+      expect(await ledger.list()).toEqual([expect.objectContaining({ evidenceExists: true })])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
