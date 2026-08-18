@@ -39,6 +39,8 @@ For webhooks and callbacks, verify signature construction, canonical bytes, algo
 
 For queues and event streams, test duplicate delivery, out-of-order delivery, poison messages, partial failure, redrive, schema evolution, and event provenance.
 
+For larger event sets, copy [assets/event-ledger.example.json](assets/event-ledger.example.json) into the workarea and preserve [assets/event-ledger.schema.json](assets/event-ledger.schema.json). Run [scripts/analyze_event_ledger.py](scripts/analyze_event_ledger.py) offline to separate policy mismatch, duplicate, missing, reordered, unexpected, and replayed delivery evidence. Interpret every lead against the protocol's declared delivery and retry guarantees.
+
 ## Report the Failing Boundary
 
 Document transport state, message or event, principal and channel mapping, ordering prerequisites, current versus stale authorization, and durable effect. Recommend message-level authorization, explicit schema, replay controls, transactional consumption, and bounded connection resources.

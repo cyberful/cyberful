@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate OWASP ZAP"
+  short_description: "ZAP capture, replay, scanning, and evidence"
+  default_prompt: "Use $operate-zap to inspect or operate the engagement-owned ZAP runtime while preserving session evidence."

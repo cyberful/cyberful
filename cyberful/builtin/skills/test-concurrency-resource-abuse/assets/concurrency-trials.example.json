@@ -1,0 +1,31 @@
+{
+  "$schema": "./concurrency-trials.schema.json",
+  "cases": [
+    {
+      "case_id": "redeem-sequential-control",
+      "control_group": "single-use-entitlement",
+      "invariant": "At most one durable redemption per entitlement",
+      "mode": "sequential",
+      "attempts": 2,
+      "successful_responses": 1,
+      "durable_effects": 1,
+      "expected_max_durable_effects": 1,
+      "settled": true,
+      "final_state": "one redemption recorded",
+      "evidence_refs": ["raw/concurrency/redeem-sequential.json"]
+    },
+    {
+      "case_id": "redeem-concurrent-trial",
+      "control_group": "single-use-entitlement",
+      "invariant": "At most one durable redemption per entitlement",
+      "mode": "concurrent",
+      "attempts": 2,
+      "successful_responses": 2,
+      "durable_effects": 2,
+      "expected_max_durable_effects": 1,
+      "settled": true,
+      "final_state": "two redemptions recorded",
+      "evidence_refs": ["raw/concurrency/redeem-concurrent.json", "raw/concurrency/final-state.json"]
+    }
+  ]
+}

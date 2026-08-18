@@ -1,9 +1,9 @@
 ---
-name: assess-tls-toolchain
+name: operate-tls-toolchain
 description: Operate testssl.sh, sslscan, OpenSSL, Nmap TLS scripts, and direct protocol probes for advanced transport-security assessment. Use when mapping TLS listeners, certificate paths, SNI or ALPN behavior, client authentication, protocol and cipher policy, resumption, proxy termination, scanner disagreement, or transport findings that require endpoint-specific proof.
 ---
 
-# Assess TLS Toolchain
+# Operate the TLS Toolchain
 
 Treat a TLS result as a property of a precise tuple: vantage point, IP, port, hostname/SNI, ALPN, protocol, client capabilities, and time. A scan against an IP without the production SNI is often evidence about the wrong virtual service.
 

@@ -43,6 +43,8 @@ Use the dedicated ffuf tool with an argv array. Set:
 
 Prefer the bundled frequency-ordered cyberful-os lists for capped campaigns. Promote discovered directories, technologies, schema names, and route fragments into a smaller second-stage wordlist.
 
+For multiple ffuf runs, copy [assets/discovery-run-manifest.example.json](assets/discovery-run-manifest.example.json) into the workarea and preserve [assets/discovery-run-manifest.schema.json](assets/discovery-run-manifest.schema.json). Run [scripts/classify_discovery_results.py](scripts/classify_discovery_results.py) offline only after baseline and candidate runs share the same profile and mutation axis. Its response-shape classes reduce review volume; replay remains required before deciding that a resource or boundary exists.
+
 ## Validate each cluster
 
 For every candidate cluster:

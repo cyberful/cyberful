@@ -14,7 +14,6 @@ cyberful/builtin/
     code-audit/    scope, index, trace, hunt, attack, verify, report, budgets
     ask/           interactive follow-up persona and budget
   skills/*/SKILL.md
-  skills/{ZAP,NUCLEI}.md
   example/         development-only attachment fixtures
 ```
 
@@ -65,3 +64,15 @@ Messages from the TUI steer the active root `AgentRun`. Blocking questions use t
 ## Skills
 
 Structured playbooks, including isolated-browser operation, the canonical ZAP and Nuclei packages, and the first-party firmware laboratory, native debugging, binary analysis, native fuzzing, binary-protocol, and SAST workflows, live under `skills/*/SKILL.md`. Every root, subagent, and fallback run receives all names grouped by category plus a route-sized deterministic metadata selection: first-party descriptions first, then category-round-robin extension excerpts within the configurable 2% budget. Host paths never enter the prompt. `skill_search` discovers indexed metadata without loading instructions; `skill_read` must then read the selected `SKILL.md` in full before use. Packages retain their relevant `references/`, `agents/`, scripts, and assets. Repository-provided skills or prompts are never discovered automatically. Additional persona and skill roots must be explicitly trusted in `settings.yaml`.
+
+Every first-party package name is lowercase kebab-case and begins with one closed operational-intent prefix:
+
+- `test-` discovers and demonstrates vulnerabilities or invariant violations.
+- `audit-` examines source, configuration, or architecture.
+- `trace-` reconstructs causal paths or dataflows.
+- `analyze-` transforms supplied artifacts into evidence, normally offline.
+- `operate-` uses a concrete tool or toolchain.
+- `assess-` coordinates multiple analysis modes in a broad evaluation.
+- `plan-` prepares scope, strategy, and coverage.
+
+The registry rejects a nonconforming first-party name but preserves arbitrary extension names for compatibility. The compiler inserts the same vocabulary immediately before the catalog and states that a prefix grants neither authorization nor tool access. Richer packages keep concise entrypoints and progressively disclose focused references, copyable JSON contracts, synthetic examples, and deterministic offline scripts. The reference authorization matrix and the network, content-discovery, SAST, supply-chain, concurrency, and realtime helpers organize already-collected evidence only: they neither create target traffic nor issue vulnerability verdicts.

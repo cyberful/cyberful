@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/authorization-observations.v1.json",
+  "title": "Cyberful authorization observations",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["observations"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "actor",
+          "identity",
+          "tenant",
+          "resource",
+          "relationship",
+          "action",
+          "properties",
+          "workflow_state",
+          "assurance",
+          "environment",
+          "expected",
+          "actual",
+          "evidence_ref"
+        ],
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "actor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "identity": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "tenant": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "resource": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "relationship": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "action": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "properties": {
+            "type": "array",
+            "maxItems": 256,
+            "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "workflow_state": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "assurance": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "environment": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "expected": { "enum": ["allow", "deny"] },
+          "actual": { "enum": ["allow", "deny", "indeterminate"] },
+          "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        }
+      }
+    }
+  }
+}

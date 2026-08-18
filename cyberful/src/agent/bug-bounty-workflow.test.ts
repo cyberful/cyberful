@@ -239,7 +239,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     const personas = PHASES.map(([phase]) =>
       fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
     )
-    const skills = ["nuclei", "zap"].map((name) =>
+    const skills = ["operate-nuclei", "operate-zap"].map((name) =>
       fs.readFileSync(path.join(Builtin.DIR, "skills", name, "SKILL.md"), "utf8"),
     )
     const runners = PHASES.map(([phase]) =>

@@ -1,0 +1,34 @@
+{
+  "$schema": "./event-ledger.schema.json",
+  "streams": [
+    {
+      "stream_id": "tenant-a-order-updates",
+      "principal": "tester-a",
+      "tenant": "tenant-a",
+      "channel": "orders:synthetic-1",
+      "expected_event_ids": ["event-1", "event-2"],
+      "observations": [
+        {
+          "observation_id": "delivery-1",
+          "event_id": "event-1",
+          "sequence": 1,
+          "delivery_order": 1,
+          "expected": "deliver",
+          "actual": "delivered",
+          "replay": false,
+          "evidence_ref": "raw/events/delivery-1.json"
+        },
+        {
+          "observation_id": "replay-1",
+          "event_id": "event-1",
+          "sequence": 1,
+          "delivery_order": 2,
+          "expected": "reject",
+          "actual": "delivered",
+          "replay": true,
+          "evidence_ref": "raw/events/replay-1.json"
+        }
+      ]
+    }
+  ]
+}

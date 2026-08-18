@@ -347,11 +347,32 @@ const embeddedConfig: Record<string, string> = {}
 if (!fs.existsSync(path.join(Builtin.DIR, "cyberful.json"))) {
   throw new Error(`Built-in configuration not found at ${Builtin.DIR}`)
 }
-const CONFIG_TEXT_EXT = new Set([".md", ".json", ".jsonc", ".txt", ".yaml", ".yml"])
+const CONFIG_TEXT_EXT = new Set([
+  ".cjs",
+  ".js",
+  ".json",
+  ".jsonc",
+  ".md",
+  ".mjs",
+  ".py",
+  ".sh",
+  ".ts",
+  ".txt",
+  ".yaml",
+  ".yml",
+])
 const EXCLUDE_TOP = new Set(["work", "logs", "reports", "inputs", "example"])
+const EXCLUDE_SEGMENTS = new Set(["__pycache__", "tests"])
 for (const rel of await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: Builtin.DIR, onlyFiles: true }))) {
   const norm = rel.replaceAll("\\", "/")
-  if (EXCLUDE_TOP.has(norm.split("/")[0]) || norm === "README.md" || norm === ".gitignore") continue
+  const segments = norm.split("/")
+  if (
+    EXCLUDE_TOP.has(segments[0] ?? "") ||
+    segments.some((segment) => EXCLUDE_SEGMENTS.has(segment)) ||
+    norm === "README.md" ||
+    norm === ".gitignore"
+  )
+    continue
   if (!CONFIG_TEXT_EXT.has(path.extname(norm))) continue
   embeddedConfig[norm] = await Bun.file(path.join(Builtin.DIR, rel)).text()
 }
@@ -567,9 +588,7 @@ for (const item of targets) {
       throw new Error(
         `Embedded Pi mismatch for ${name}: expected agent=${embeddedRuntimeVersions.piAgentCore}, ai=${embeddedRuntimeVersions.piAi}; received agent=${reportedRuntime.piAgentCore}, ai=${reportedRuntime.piAi}`,
       )
-    console.log(
-      `Embedded Pi smoke test passed: agent=${reportedRuntime.piAgentCore}, ai=${reportedRuntime.piAi}`,
-    )
+    console.log(`Embedded Pi smoke test passed: agent=${reportedRuntime.piAgentCore}, ai=${reportedRuntime.piAi}`)
   }
 
   await fs.promises.rm(path.join(dir, "dist", name, "bin", "tui"), { recursive: true, force: true })

@@ -1,0 +1,37 @@
+{
+  "$schema": "./authorization-observations.schema.json",
+  "observations": [
+    {
+      "case_id": "synthetic-cross-tenant-read",
+      "actor": "tenant-a-member",
+      "identity": "tenant-a-user",
+      "tenant": "tenant-b",
+      "resource": "tenant-b/project-001",
+      "relationship": "none",
+      "action": "read",
+      "properties": ["summary"],
+      "workflow_state": "active",
+      "assurance": "authenticated-session",
+      "environment": "authorized-test",
+      "expected": "deny",
+      "actual": "allow",
+      "evidence_ref": "raw/http/synthetic-cross-tenant-read.json"
+    },
+    {
+      "case_id": "synthetic-owner-control",
+      "actor": "tenant-b-owner",
+      "identity": "tenant-b-user",
+      "tenant": "tenant-b",
+      "resource": "tenant-b/project-001",
+      "relationship": "owner",
+      "action": "read",
+      "properties": ["summary"],
+      "workflow_state": "active",
+      "assurance": "authenticated-session",
+      "environment": "authorized-test",
+      "expected": "allow",
+      "actual": "allow",
+      "evidence_ref": "raw/http/synthetic-owner-control.json"
+    }
+  ]
+}

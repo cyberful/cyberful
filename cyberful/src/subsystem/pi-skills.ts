@@ -12,6 +12,7 @@ import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core"
 import matter from "gray-matter"
 import { Type } from "typebox"
 import type { PromptSkill } from "./prompt-compiler"
+import { assertFirstPartySkillName } from "./skill-naming"
 
 const DEFAULT_MAX_FILE_BYTES = 512 * 1024
 const MAX_INDEX_TERMS = 512
@@ -214,15 +215,17 @@ function parseMetadata(source: string, location: string): ParsedMetadata {
   const name = required(parsed.data.name, `skill '${location}' name`)
   if (name.length > 128 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error(`skill '${location}' name is invalid`)
   const description = required(parsed.data.description, `skill '${name}' description`)
+  const metadata = isRecord(parsed.data.metadata) ? parsed.data.metadata : {}
+  const indexedValue = (field: string): unknown => parsed.data[field] ?? metadata[field]
   const triggers = [
-    ...triggerList(parsed.data.triggers, `skill '${name}' triggers`),
-    ...triggerList(parsed.data.keywords, `skill '${name}' keywords`),
+    ...triggerList(indexedValue("triggers"), `skill '${name}' triggers`),
+    ...triggerList(indexedValue("keywords"), `skill '${name}' keywords`),
   ]
-  const tags = termList(parsed.data.tags, `skill '${name}' tags`)
-  const frameworks = indexedFrameworkTerms(parsed.data)
+  const tags = termList(indexedValue("tags"), `skill '${name}' tags`)
+  const frameworks = [...indexedFrameworkTerms(parsed.data), ...indexedFrameworkTerms(metadata)]
   const category =
-    optionalCategory(parsed.data.subdomain, `skill '${name}' subdomain`) ??
-    optionalCategory(parsed.data.domain, `skill '${name}' domain`) ??
+    optionalCategory(indexedValue("subdomain"), `skill '${name}' subdomain`) ??
+    optionalCategory(indexedValue("domain"), `skill '${name}' domain`) ??
     "uncategorized"
   if (category.length > 128 || /[\u0000-\u001f\u007f]/.test(category))
     throw new Error(`skill '${name}' category is invalid`)
@@ -303,6 +306,7 @@ async function discoverPackages(
       if (!metadata.isSymbolicLink() && metadata.isFile()) {
         const source = decodeText(await readRegularFile(location, maxFileBytes, signal), location)
         const parsed = parseMetadata(source, location)
+        if (origin === "first_party") assertFirstPartySkillName(parsed.name, location)
         packages.push({
           catalog: {
             name: parsed.name,

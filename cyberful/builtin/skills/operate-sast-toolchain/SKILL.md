@@ -36,6 +36,8 @@ Use the dedicated semgrep tool with:
 
 Keep broad discovery output separate from release-gating output. Baselines suppress historical results for triage; they do not prove historical code safe.
 
+When reconciling Semgrep JSON and SARIF, copy [assets/sast-run-manifest.example.json](assets/sast-run-manifest.example.json) into the workarea and preserve [assets/sast-run-manifest.schema.json](assets/sast-run-manifest.schema.json). Run [scripts/reconcile_sast_findings.py](scripts/reconcile_sast_findings.py) offline to create portable fingerprints, retain scanner errors, and identify duplicate observations. A fingerprint is a triage identity, never reachability or exploitability evidence.
+
 For C/C++, use `native_static_analysis import_compile_db` before compiler-aware checks when a compile database exists. Pass `run_checks` only a C/C++ source file or a directory containing C/C++ sources; ELF and other non-source inputs return a structured `unsupported` result without invoking source analyzers and belong in the binary-analysis workflow. Use `run_checks`, `trace_source_sink`, and `inspect_variadic_calls` as bounded discovery passes, then validate with the actual build flags, Clang-Tidy/scan-build output, and complete source context. Generate a compile database with Bear only inside a mutable lab copy.
 
 ## Validate every custom rule

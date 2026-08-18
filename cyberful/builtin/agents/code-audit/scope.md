@@ -8,7 +8,7 @@ Open a deep, read-only security audit. Fix the source snapshot and choose one au
 
 ## Method
 
-- Load `audit-application-code`, `threat-model-application`, and `audit-software-supply-chain`. Use contained source tools rather than assuming that your process working directory is the repository.
+- Load `audit-application-code`, `assess-application-threat-model`, and `audit-software-supply-chain`. Use contained source tools rather than assuming that your process working directory is the repository.
 - For an explicit diff audit, call `audit_diff_prepare` once and record its immutable base, head, merge base, changed paths, patch digest, and any dirty/untracked state. The changed lines are the primary review surface; callers, callees, policies, schemas, tests, deployment paths, and dependency/build authority form the blast radius and remain in scope. Never silently turn an unavailable diff into a full audit.
 - When the request supplies a public repository URL and no equivalent source is already available, use `source_import` with that credential-free HTTPS Git URL and only the explicitly requested refs. The host asks the human to confirm the fixed hostname before cloning. If consent is declined or the URL/ref is rejected, record the source as unavailable; do not improvise another network path.
 - Capture the repository identity and exact commit/ref mapping returned by the host. Record Git base/head when present and the non-Git snapshot identity otherwise. Dependency bootstrap is reserved for the disposable runtime lab in Attack; do not fetch packages, parsers, rules, or tools here.

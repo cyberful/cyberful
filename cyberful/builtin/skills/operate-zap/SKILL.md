@@ -1,13 +1,16 @@
 ---
-name: ZAP
-description: Use the engagement-owned headless OWASP ZAP runtime for browser capture, history, replay, scanning, WebSocket evidence, OAST, and reports.
-keywords:
-  - owasp zap
-  - zap_
-  - browser proxy
+name: operate-zap
+description: Operate OWASP ZAP for browser capture, history, replay, scanning, WebSocket evidence, OAST, and reports while preserving session context.
+metadata:
+  domain: security-tooling
+  subdomain: dynamic-proxy
+  keywords:
+    - owasp zap
+    - zap_
+    - browser proxy
 ---
 
-# ZAP
+# Operate ZAP
 
 Use engagement ZAP under the mission and active persona; keep identities separate. Cyberful adds no ZAP-specific traffic or category restriction.
 

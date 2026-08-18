@@ -1,7 +1,7 @@
 // ── ZAP Autonomy Contract Tests ─────────────────────────────────
 // Verifies the reusable skill exposes the engagement runtime without adding
 //   phase, category, retry, or traffic restrictions beyond the mission.
-// → cyberful/builtin/skills/zap/SKILL.md — defines the shared workflow under test.
+// → cyberful/builtin/skills/operate-zap/SKILL.md — defines the shared workflow under test.
 // → cyberful/builtin/agents/pentest/verify.md — activates ZAP for independent retesting.
 // → cyberful/builtin/agents/pentest/report.md — invokes the final evidence snapshot.
 // ─────────────────────────────────────────────────────────────────
@@ -12,13 +12,13 @@ import path from "node:path"
 import * as Builtin from "@/builtin"
 
 describe("built-in ZAP MCP skill", () => {
-  const read = () => readFile(path.join(Builtin.DIR, "skills", "zap", "SKILL.md"), "utf8")
+  const read = () => readFile(path.join(Builtin.DIR, "skills", "operate-zap", "SKILL.md"), "utf8")
   const readPentestPersona = (name: "verify" | "report") =>
     readFile(path.join(Builtin.DIR, "agents", "pentest", `${name}.md`), "utf8")
 
   test("exposes the complete engagement-owned capability under mission authority", async () => {
     const skill = await read()
-    expect(skill).toMatch(/^---\nname: ZAP\n/)
+    expect(skill).toMatch(/^---\nname: operate-zap\n/)
     expect(skill).toMatch(/browser capture, history, replay, scanning, WebSocket evidence, OAST, and reports/i)
     expect(skill).toMatch(/no ZAP-specific traffic or category restriction/i)
     expect(skill).toMatch(/alerts as leads/i)
@@ -47,9 +47,11 @@ describe("built-in ZAP MCP skill", () => {
 
   test("is activated by exact catalog name while personas retain phase policy", async () => {
     const [verify, report] = await Promise.all([readPentestPersona("verify"), readPentestPersona("report")])
-    expect(verify).toMatch(/Before using a `zap_\*` tool or `zap:\/\/` resource, load and follow the builtin `ZAP` skill/)
+    expect(verify).toMatch(
+      /Before using a `zap_\*` tool or `zap:\/\/` resource, load and follow the builtin `operate-zap` skill/,
+    )
     expect(verify).not.toMatch(/zap_history_search|zap_history_get|zap_history_replay|zap_http_request/)
-    expect(report).toMatch(/builtin `ZAP` skill, including its \*\*Final engagement snapshot\*\* procedure/)
+    expect(report).toMatch(/builtin `operate-zap` skill, including its \*\*Final engagement snapshot\*\* procedure/)
     expect(report).toMatch(/terminal phase[\s\S]*do not navigate, replay, spider, scan/i)
   })
 

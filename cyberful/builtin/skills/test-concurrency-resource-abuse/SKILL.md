@@ -24,6 +24,8 @@ Read [race-idempotency.md](references/race-idempotency.md) for state races. Read
 
 Success is an invariant violation, not merely two successful HTTP responses. Use single-digit concurrency first; precision exposes more than indiscriminate load.
 
+For repeated trials, copy [assets/concurrency-trials.example.json](assets/concurrency-trials.example.json) into the workarea and preserve [assets/concurrency-trials.schema.json](assets/concurrency-trials.schema.json). After all asynchronous effects settle, run [scripts/analyze_concurrency_trials.py](scripts/analyze_concurrency_trials.py) offline. The helper compares durable effects with the declared bound and keeps response/state mismatch separate; it never generates load or establishes exploitability.
+
 ## Test Replay and Retry Boundaries
 
 Follow an operation across client retries, gateway retries, queue redelivery, worker crashes, webhook duplication, provider callbacks, and reconciliation. Determine whether the idempotency key is bound to principal, operation, canonical payload, and retention window.

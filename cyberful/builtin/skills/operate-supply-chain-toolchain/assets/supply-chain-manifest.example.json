@@ -1,0 +1,23 @@
+{
+  "$schema": "./supply-chain-manifest.schema.json",
+  "sources": [
+    {
+      "id": "syft-runtime-image",
+      "kind": "syft-json",
+      "path": "raw/supply-chain/syft.json",
+      "artifact": "runtime-image@sha256:synthetic"
+    },
+    {
+      "id": "grype-runtime-image",
+      "kind": "grype-json",
+      "path": "raw/supply-chain/grype.json",
+      "artifact": "runtime-image@sha256:synthetic"
+    },
+    {
+      "id": "trivy-runtime-image",
+      "kind": "trivy-json",
+      "path": "raw/supply-chain/trivy.json",
+      "artifact": "runtime-image@sha256:synthetic"
+    }
+  ]
+}

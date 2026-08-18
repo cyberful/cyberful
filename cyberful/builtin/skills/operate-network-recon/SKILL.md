@@ -51,6 +51,8 @@ For every material discrepancy:
 4. validate with the native protocol;
 5. timestamp the conclusion.
 
+When multiple machine-readable runs make manual correlation unreliable, copy [assets/network-scan-manifest.example.json](assets/network-scan-manifest.example.json) into the workarea and preserve [assets/network-scan-manifest.schema.json](assets/network-scan-manifest.schema.json). Run [scripts/reconcile_network_scans.py](scripts/reconcile_network_scans.py) offline against Nmap XML and Masscan JSON sources. Treat its disagreement list as a queue for same-vantage protocol validation, not as scanner arbitration or a vulnerability result.
+
 ## Select scripts narrowly
 
 Choose NSE categories/scripts from a concrete hypothesis. Inspect script arguments and source for authentication, broadcast behavior, brute force, intrusive actions, or dependency assumptions. Prefer explicit script names over broad categories, and preserve script output separately from version detection.

@@ -1,0 +1,19 @@
+{
+  "$schema": "./sast-run-manifest.schema.json",
+  "sources": [
+    {
+      "id": "semgrep-security-pass",
+      "kind": "semgrep-json",
+      "path": "raw/sast/semgrep.json",
+      "scanner": "semgrep-1.170.0",
+      "source_root": "/workspace/source"
+    },
+    {
+      "id": "compiler-sarif",
+      "kind": "sarif",
+      "path": "raw/sast/compiler.sarif",
+      "scanner": "compiler-analysis",
+      "source_root": "/workspace/source"
+    }
+  ]
+}

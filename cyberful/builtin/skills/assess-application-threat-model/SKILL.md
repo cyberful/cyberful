@@ -1,9 +1,9 @@
 ---
-name: threat-model-application
+name: assess-application-threat-model
 description: Build or challenge an application threat model from architecture, dataflows, identities, trust boundaries, business invariants, dependencies, and deployment context. Use for design reviews, code-audit planning, pentest hypothesis generation, feature changes, abuse-case discovery, control requirements, architecture assessment, or residual-risk analysis.
 ---
 
-# Threat Model an Application
+# Assess an Application Threat Model
 
 Produce a model that participants recognize as the real system and that generates testable security requirements. Do not produce a generic STRIDE checklist detached from architecture.
 

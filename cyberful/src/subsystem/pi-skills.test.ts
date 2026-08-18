@@ -38,21 +38,26 @@ describe("PiSkills", () => {
     expect(registry.catalog.find((skill) => skill.name === "operate-browser")?.location).toBe(
       path.join(Builtin.DIR, "skills", "operate-browser", "SKILL.md"),
     )
-    expect(registry.catalog.find((skill) => skill.name === "ZAP")?.location).toBe(
-      path.join(Builtin.DIR, "skills", "zap", "SKILL.md"),
+    expect(registry.catalog.find((skill) => skill.name === "operate-zap")?.location).toBe(
+      path.join(Builtin.DIR, "skills", "operate-zap", "SKILL.md"),
     )
-    expect(registry.catalog.find((skill) => skill.name === "NUCLEI")?.location).toBe(
-      path.join(Builtin.DIR, "skills", "nuclei", "SKILL.md"),
+    expect(registry.catalog.find((skill) => skill.name === "operate-nuclei")?.location).toBe(
+      path.join(Builtin.DIR, "skills", "operate-nuclei", "SKILL.md"),
     )
+    expect(registry.catalog.find((skill) => skill.name === "test-authorization-boundaries")).toMatchObject({
+      category: "authorization",
+      triggers: expect.arrayContaining(["authorization boundary", "tenant isolation"]),
+      searchTerms: expect.arrayContaining(["CWE-639", "T1078", "PR.AA"]),
+    })
   })
 
   test("builds a deterministic compact catalog only from explicit trusted roots", async () => {
     const trusted = await temporaryRoot("catalog")
     await writeSkill(
       trusted,
-      "zeta",
+      "analyze-zeta-parser",
       [
-        "name: zeta-analysis",
+        "name: analyze-zeta-parser",
         "description: Analyze a bounded parser surface.",
         "keywords:",
         "  - parser",
@@ -62,8 +67,8 @@ describe("PiSkills", () => {
     )
     await writeSkill(
       trusted,
-      "alpha",
-      ["name: alpha-recon", "description: Map an authorized surface.", "triggers:", "  - reconnaissance"],
+      "plan-alpha-recon",
+      ["name: plan-alpha-recon", "description: Map an authorized surface.", "triggers:", "  - reconnaissance"],
       "Preserve the inventory.",
     )
     await writeSkill(
@@ -77,32 +82,55 @@ describe("PiSkills", () => {
 
     expect(registry.catalog).toEqual([
       {
-        name: "alpha-recon",
-        description: "Map an authorized surface.",
-        triggers: ["reconnaissance"],
-        origin: "first_party",
-        category: "cyberful",
-        searchTerms: ["reconnaissance"],
-        location: path.join(trusted, "alpha", "SKILL.md"),
-      },
-      {
-        name: "zeta-analysis",
+        name: "analyze-zeta-parser",
         description: "Analyze a bounded parser surface.",
         triggers: ["parser", "grammar"],
         origin: "first_party",
         category: "cyberful",
         searchTerms: ["parser", "grammar"],
-        location: path.join(trusted, "zeta", "SKILL.md"),
+        location: path.join(trusted, "analyze-zeta-parser", "SKILL.md"),
+      },
+      {
+        name: "plan-alpha-recon",
+        description: "Map an authorized surface.",
+        triggers: ["reconnaissance"],
+        origin: "first_party",
+        category: "cyberful",
+        searchTerms: ["reconnaissance"],
+        location: path.join(trusted, "plan-alpha-recon", "SKILL.md"),
       },
     ])
     expect(registry.catalog.some((skill) => skill.name === "ambient-policy")).toBe(false)
+  })
+
+  test("requires the operational intent vocabulary only for first-party skill names", async () => {
+    const firstParty = await temporaryRoot("first-party-name")
+    const extension = await temporaryRoot("extension-name")
+    await writeSkill(
+      firstParty,
+      "legacy-helper",
+      ["name: legacy-helper", "description: Legacy first-party helper."],
+      "Legacy instructions.",
+    )
+    await writeSkill(
+      extension,
+      "community-helper",
+      ["name: community-helper", "description: Compatible extension helper."],
+      "Extension instructions.",
+    )
+
+    await expect(PiSkills.discover({ roots: [{ path: firstParty, origin: "first_party" }] })).rejects.toThrow(
+      /begin with one of: test-, audit-, trace-, analyze-, operate-, assess-, plan-/,
+    )
+    const registry = await PiSkills.discover({ roots: [{ path: extension, origin: "extension" }] })
+    expect(registry.catalog.map((skill) => skill.name)).toEqual(["community-helper"])
   })
 
   test("reads complete instructions and explicit package resources by name or catalog path", async () => {
     const trusted = await temporaryRoot("reads")
     const instructions = [
       "---",
-      "name: inspect-parser",
+      "name: audit-parser",
       "description: Inspect parser boundaries.",
       "---",
       "",
@@ -112,15 +140,15 @@ describe("PiSkills", () => {
     ].join("\n")
     const location = await writeSkill(
       trusted,
-      "inspect-parser",
-      ["name: inspect-parser", "description: Inspect parser boundaries."],
+      "audit-parser",
+      ["name: audit-parser", "description: Inspect parser boundaries."],
       ["# Inspect Parser", "", "Read [the field guide](references/field-guide.md)."].join("\n"),
     )
-    await mkdir(path.join(trusted, "inspect-parser", "references"))
-    await writeFile(path.join(trusted, "inspect-parser", "references", "field-guide.md"), "Complete reference.\n")
+    await mkdir(path.join(trusted, "audit-parser", "references"))
+    await writeFile(path.join(trusted, "audit-parser", "references", "field-guide.md"), "Complete reference.\n")
     const registry = await PiSkills.discover({ roots: [trusted] })
 
-    const primary = await registry.tool.execute("skill-call", { skill: "inspect-parser" })
+    const primary = await registry.tool.execute("skill-call", { skill: "audit-parser" })
     const reference = await registry.read({
       skill: location,
       path: "references/field-guide.md",
@@ -128,13 +156,13 @@ describe("PiSkills", () => {
 
     expect(primary.content).toEqual([{ type: "text", text: instructions }])
     expect(primary.details).toMatchObject({
-      skill: "inspect-parser",
+      skill: "audit-parser",
       requestedPath: "SKILL.md",
       kind: "instructions",
     })
     expect(reference.content).toEqual([{ type: "text", text: "Complete reference.\n" }])
     expect(reference.details).toMatchObject({
-      location: path.join(trusted, "inspect-parser", "references", "field-guide.md"),
+      location: path.join(trusted, "audit-parser", "references", "field-guide.md"),
       requestedPath: "references/field-guide.md",
       kind: "resource",
     })
@@ -145,26 +173,26 @@ describe("PiSkills", () => {
     const outside = await temporaryRoot("outside")
     await writeSkill(
       trusted,
-      "safe",
-      ["name: safe-skill", "description: Stay inside the package."],
+      "audit-safe-package",
+      ["name: audit-safe-package", "description: Stay inside the package."],
       "Read references/local.md.",
     )
-    await mkdir(path.join(trusted, "safe", "references"))
-    await writeFile(path.join(trusted, "safe", "references", "local.md"), "Local.\n")
+    await mkdir(path.join(trusted, "audit-safe-package", "references"))
+    await writeFile(path.join(trusted, "audit-safe-package", "references", "local.md"), "Local.\n")
     await writeFile(path.join(outside, "secret.md"), "Outside secret.\n")
-    await symlink(path.join(outside, "secret.md"), path.join(trusted, "safe", "references", "linked.md"))
+    await symlink(path.join(outside, "secret.md"), path.join(trusted, "audit-safe-package", "references", "linked.md"))
     await writeSkill(outside, "external", ["name: external-skill", "description: Must stay outside."], "Outside.")
     await symlink(path.join(outside, "external"), path.join(trusted, "linked-package"))
     const registry = await PiSkills.discover({ roots: [trusted] })
 
-    expect(registry.catalog.map((skill) => skill.name)).toEqual(["safe-skill"])
-    await expect(registry.read({ skill: "safe-skill", path: "../outside/secret.md" })).rejects.toThrow(
+    expect(registry.catalog.map((skill) => skill.name)).toEqual(["audit-safe-package"])
+    await expect(registry.read({ skill: "audit-safe-package", path: "../outside/secret.md" })).rejects.toThrow(
       "forbidden traversal",
     )
-    await expect(registry.read({ skill: "safe-skill", path: path.join(outside, "secret.md") })).rejects.toThrow(
+    await expect(registry.read({ skill: "audit-safe-package", path: path.join(outside, "secret.md") })).rejects.toThrow(
       "package-relative",
     )
-    await expect(registry.read({ skill: "safe-skill", path: "references/linked.md" })).rejects.toThrow(
+    await expect(registry.read({ skill: "audit-safe-package", path: "references/linked.md" })).rejects.toThrow(
       "must not be a symbolic link",
     )
   })
@@ -173,21 +201,23 @@ describe("PiSkills", () => {
     const trusted = await temporaryRoot("limit")
     await writeSkill(
       trusted,
-      "bounded",
-      ["name: bounded-skill", "description: Read bounded files."],
+      "analyze-bounded-resource",
+      ["name: analyze-bounded-resource", "description: Read bounded files."],
       "Short instructions.",
     )
-    await mkdir(path.join(trusted, "bounded", "assets"))
-    await writeFile(path.join(trusted, "bounded", "assets", "large.txt"), "x".repeat(257))
+    await mkdir(path.join(trusted, "analyze-bounded-resource", "assets"))
+    await writeFile(path.join(trusted, "analyze-bounded-resource", "assets", "large.txt"), "x".repeat(257))
 
     const registry = await PiSkills.discover({ roots: [trusted], maxFileBytes: 256 })
-    await expect(registry.read({ skill: "bounded-skill", path: "assets/large.txt" })).rejects.toThrow(
+    await expect(registry.read({ skill: "analyze-bounded-resource", path: "assets/large.txt" })).rejects.toThrow(
       "exceeds the 256-byte limit",
     )
 
     await writeFile(
-      path.join(trusted, "bounded", "SKILL.md"),
-      ["---", "name: bounded-skill", "description: Read bounded files.", "---", "", "x".repeat(300)].join("\n"),
+      path.join(trusted, "analyze-bounded-resource", "SKILL.md"),
+      ["---", "name: analyze-bounded-resource", "description: Read bounded files.", "---", "", "x".repeat(300)].join(
+        "\n",
+      ),
     )
     await expect(PiSkills.discover({ roots: [trusted], maxFileBytes: 256 })).rejects.toThrow(
       "exceeds the 256-byte limit",
@@ -199,14 +229,14 @@ describe("PiSkills", () => {
     const override = await temporaryRoot("override")
     await writeSkill(
       first,
-      "shared",
-      ["name: shared-skill", "description: First-party version."],
+      "assess-shared-skill",
+      ["name: assess-shared-skill", "description: First-party version."],
       "First-party instructions.",
     )
     const overrideLocation = await writeSkill(
       override,
-      "shared",
-      ["name: shared-skill", "description: Trusted override."],
+      "assess-shared-skill",
+      ["name: assess-shared-skill", "description: Trusted override."],
       "Override instructions.",
     )
 
@@ -219,15 +249,18 @@ describe("PiSkills", () => {
 
     expect(registry.catalog).toEqual([
       {
-        name: "shared-skill",
+        name: "assess-shared-skill",
         description: "Trusted override.",
         origin: "extension",
         category: "uncategorized",
         location: overrideLocation,
       },
     ])
-    expect((await registry.read({ skill: "shared-skill" })).content).toEqual([
-      { type: "text", text: "---\nname: shared-skill\ndescription: Trusted override.\n---\n\nOverride instructions." },
+    expect((await registry.read({ skill: "assess-shared-skill" })).content).toEqual([
+      {
+        type: "text",
+        text: "---\nname: assess-shared-skill\ndescription: Trusted override.\n---\n\nOverride instructions.",
+      },
     ])
   })
 

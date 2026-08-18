@@ -1,0 +1,19 @@
+{
+  "$schema": "./network-scan-manifest.schema.json",
+  "sources": [
+    {
+      "id": "nmap-validation",
+      "kind": "nmap-xml",
+      "path": "raw/network/nmap.xml",
+      "vantage": "authorized-external",
+      "observed_at": "2026-08-18T12:00:00Z"
+    },
+    {
+      "id": "masscan-candidates",
+      "kind": "masscan-json",
+      "path": "raw/network/masscan.json",
+      "vantage": "authorized-external",
+      "observed_at": "2026-08-18T11:55:00Z"
+    }
+  ]
+}

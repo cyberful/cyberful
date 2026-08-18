@@ -23,6 +23,8 @@ Scan source trees, build outputs, container images, and deployed artifacts separ
 
 Read [references/supply-chain-fieldbook.md](references/supply-chain-fieldbook.md) for reconciliation and high-value edge cases.
 
+For structured Syft, Grype, and Trivy output, copy [assets/supply-chain-manifest.example.json](assets/supply-chain-manifest.example.json) into the workarea and preserve [assets/supply-chain-manifest.schema.json](assets/supply-chain-manifest.schema.json). Run [scripts/reconcile_supply_chain_inventory.py](scripts/reconcile_supply_chain_inventory.py) offline to correlate package identities, inventory disagreement, and advisory observations. Validate artifact identity, backports, runtime presence, and reachability before promoting any correlation.
+
 ## Triage vulnerabilities as hypotheses
 
 For each candidate, establish package identity, installed versus upstream version semantics, distro backports, affected component/function, reachable entry point, attacker influence, runtime privilege, mitigating configuration, deployment exposure, and fixed-version feasibility.

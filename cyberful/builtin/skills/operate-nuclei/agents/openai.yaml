@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate Nuclei"
+  short_description: "Nuclei scanning and template-result triage"
+  default_prompt: "Use $operate-nuclei to run an authorized template-driven scan and validate any resulting leads."
