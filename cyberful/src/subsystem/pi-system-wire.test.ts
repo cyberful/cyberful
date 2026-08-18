@@ -30,6 +30,19 @@ function prompt(system = SYSTEM, manifestSystem = system): Pick<CompiledAgentPro
       delegationEnabled: true,
       delegationLimit: 3,
       handoffOwner: true,
+      skillCatalog: {
+        operationalContextWindow: 256_000,
+        contextSource: "catalog_default",
+        descriptionBudgetPercentage: 2,
+        descriptionBudgetTokens: 5_120,
+        descriptionBudgetCharacters: 20_480,
+        nameIndexCharacters: 0,
+        metadataCharacters: 0,
+        totalSkills: 0,
+        describedSkills: 0,
+        compressedSkills: 0,
+        nameOnlySkills: 0,
+      },
     },
   }
 }

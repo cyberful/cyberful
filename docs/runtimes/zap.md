@@ -2,6 +2,8 @@
 
 Cyberful ships headless OWASP ZAP 2.17.0, Firefox ESR/Xvfb, its pinned add-ons, and a bundled stdio bridge inside the unified cyberful-os image. Live-target engagements run that image as a dedicated ZAP container, isolated from the more privileged core cyberful-os/Ghidra container; phase gateways open fresh bridge processes with `docker exec` in the ZAP container.
 
+The builtin `ZAP` skill is the agent-facing operational contract for this runtime. It centralizes selective history reads, credential-preserving replay, exact raw-request handling, evidence interpretation, and the traffic-free final engagement snapshot. The active phase persona still owns when ZAP work is required and what traffic the mission authorizes; the skill does not expand engagement authority.
+
 Bridge-owned tool definitions live in one static catalog and are merged with the official upstream ZAP tools at startup without renaming either surface. The bridge exposes the complete discovered ZAP API catalog and does not enforce an origin allowlist, redirect policy, or a separate operation denylist. This is deliberate: the active workflow mission and agent instructions own engagement scope, while ZAP remains a fully capable analysis runtime.
 
 Call `zap_api_catalog` before a generic `zap_api_call`. The catalog reflects the installed ZAP version and includes known required and optional parameters. The bridge validates operation names and these parameter contracts locally, so missing operations, missing parameters, and missing resources return distinct structured errors with a bounded list of alternatives instead of an opaque HTTP 400. In particular, `script:action:load` requires `scriptName`, `scriptType`, `scriptEngine`, and `fileName`; `script:view:globalCustomVar` requires `varKey`.
@@ -46,6 +48,10 @@ Gateway startup, upstream connection, tool, and shutdown failures are retained l
 `zap_http_request` treats an application response as a completed tool call for every HTTP status. Its local egress envelope records the effective host, method, path family, and response status, so expected denials remain evidence instead of MCP failures. ZAP API or transport failures remain tool errors.
 
 `zap_history_replay` clones one selected history message inside ZAP and applies up to 32 bounded header, query, or JSON Pointer mutations before sending exactly one request. Scheme, authority, path, and method remain immutable; `Content-Length` is rebuilt and redirects default off. Captured cookies and authorization headers never return to the model. The result contains only message IDs, response metadata, sizes, and the non-secret mutation summary; call `zap_history_get` explicitly when complete bodies are required. This path supports freshness, nonce, replay, and KMS-style payload tests without standalone ZAP scripts.
+
+## Final engagement snapshot
+
+The Report persona invokes the `ZAP` skill's final snapshot procedure without creating target traffic. It observes the passive-scan queue for traffic already captured, records an unfinished queue as a limitation, and exports the complete session with `zap_generate_workarea_report` to `raw/zap/final-report.json` using the `traditional-json` template. The returned workarea-relative path becomes the durable evidence reference; absent history or an empty report is treated as missing visibility rather than a negative result.
 
 ## OAST adapter
 

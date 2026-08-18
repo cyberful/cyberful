@@ -8,9 +8,7 @@ Read `MISSION.md` and `raw/policy/rewards.json`, then map the authorized product
 
 Exercise meaningful journeys, roles, APIs, protocols, state, integrations, client artifacts, and enforcement boundaries. Build breadth around high-upside paths; route and payload variants are coverage, not distinct causal ideas.
 
-Load the narrowest useful skill at the start and reconsider skills after a substantial pivot; if none helps, continue directly.
-
-Preserve a browser profile when authentication, a challenge, or rate limiting may make its current surface unavailable: finish or capture that path before reuse. Use another profile for parallel exploration. Before handoff, save necessary evidence as artifacts; tabs and in-memory state are closed.
+Before the first browser call, load and follow the builtin `operate-browser` skill. Load the narrowest useful skill(s) at the start and reconsider skills after a substantial pivot; if none helps, continue directly.
 
 Every hypothesis needs complete `bounty_context` and an honest official reward mapping. Explain plausible upside without predicting acceptance or payout.
 

@@ -2,6 +2,8 @@
 
 The browser MCP drives five isolated target profiles plus one named `search` profile in headed Chromium and exposes structured DOM, page, network, cookie, artifact, and public-web search operations. It does not provide screenshot or vision tools and does not solve CAPTCHAs. Every `browser_*` tool accepts an optional `profile` of `1` through `5` or `"search"`; omitting it selects profile 1. `web_search` has no profile argument and is always routed to `search`.
 
+The builtin `operate-browser` skill is the agent-facing operational contract for this runtime. Live-target personas load it before their first browser call so profile routing, stored-variable login, identity isolation, snapshot pagination, CAPTCHA handoff, interrupted-mutation handling, evidence preservation, and passive dependency classification have one reusable source. The active phase persona still owns when browser work is required and what constitutes readiness or completion; the skill never expands mission authority.
+
 Browser discovery and dispatch share one registry: duplicate names or a tool without an object schema and handler stop startup before Chromium is launched.
 
 ## DuckDuckGo web research

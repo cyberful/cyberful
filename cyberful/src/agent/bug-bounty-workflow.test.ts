@@ -25,6 +25,7 @@ const PHASES = [
 
 describe("built-in Bug Bounty Program workflow", () => {
   const home = path.join(Builtin.DIR, "agents", "bug-bounty")
+  const browserSkill = fs.readFileSync(path.join(Builtin.DIR, "skills", "operate-browser", "SKILL.md"), "utf8")
 
   test("exposes the live-target chain and Markdown submission index", () => {
     const workflow = SubsystemPhase.workflow("bug-bounty")
@@ -133,11 +134,15 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(hacker).toMatch(/after two negatives converge[\s\S]*change impact, boundary, or enforcement owner/i)
     for (const persona of [recon, exploit, hacker]) {
       expect(persona).toMatch(/narrowest useful skill/i)
+      expect(persona).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
       expect(persona).toMatch(/hypothesis/i)
       expect(persona).toMatch(/not a score|never score|without scores/i)
-      expect(persona).toMatch(/Preserve a browser profile[\s\S]*another profile for parallel exploration/i)
-      expect(persona).toMatch(/Before handoff[\s\S]*tabs and in-memory state are closed/i)
     }
+    expect(browserSkill).toMatch(/Preserve a profile whose authenticated state, challenge, or rate limit/i)
+    expect(browserSkill).toMatch(/use another assigned profile for independent work/i)
+    expect(browserSkill).toMatch(
+      /before handoff because tabs and in-memory browser state do not cross phase ownership/i,
+    )
   })
 
   test("brief records program policy without inventing missing rules", () => {
@@ -156,8 +161,12 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("`engagement_policy configure`")
     expect(brief).toContain("`engagement_policy finalize`")
     expect(brief).toMatch(/mandatory non-secret request header/i)
-    expect(brief.indexOf("`engagement_policy configure`")).toBeLessThan(brief.indexOf("`browser_status`"))
-    expect(brief.indexOf("`engagement_policy finalize`")).toBeGreaterThan(brief.indexOf("`browser_status`"))
+    expect(brief.indexOf("`engagement_policy configure`")).toBeLessThan(
+      brief.indexOf("run the `operate-browser` Brief readiness preflight"),
+    )
+    expect(brief.indexOf("`engagement_policy finalize`")).toBeGreaterThan(
+      brief.indexOf("run the `operate-browser` Brief readiness preflight"),
+    )
     expect(brief).toMatch(/Do not infer authorization or a restriction/i)
     expect(brief).toMatch(/one exact action and asset/i)
     expect(brief).toMatch(/resolution\s+attempt/i)
@@ -167,9 +176,11 @@ describe("built-in Bug Bounty Program workflow", () => {
 
   test("brief preflights supplied access and records one bounded prerequisite matrix", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
+    const browserContract = `${brief}\n${browserSkill}`
 
     expect(brief).toContain("provided identities")
     expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
+    expect(brief).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
     for (const preflightInstruction of [
       "Account, proxy, and application preflight",
       "`browser_status`",
@@ -183,19 +194,20 @@ describe("built-in Bug Bounty Program workflow", () => {
       "`OUT_OF_SCOPE`",
       "`UNRESOLVED`",
     ]) {
-      expect(brief).toContain(preflightInstruction)
+      expect(browserContract).toContain(preflightInstruction)
     }
-    expect(brief).toMatch(/complete the normal login autonomously/i)
-    expect(brief).toContain("{{var:<saved-name>}}")
+    expect(browserSkill).toMatch(/complete ordinary login autonomously/i)
+    expect(browserSkill).toContain("{{var:<saved-name>}}")
     expect(brief).toContain("[session-variable:<saved-name>]")
-    expect(brief).not.toContain("{{var:name}}")
-    expect(brief).toMatch(/numbered target profiles `1` through `5`/i)
-    expect(brief).toMatch(/`search` profile is not a supplied account/i)
-    expect(brief).toMatch(/`proxy\.configured=false` with `proxy\.mode=direct`/i)
-    expect(brief).toMatch(/excluded from this account preflight, prerequisite-matrix profile readiness, and engagement-policy profile states/i)
-    expect(brief).toMatch(/Never ask the human to restore ZAP for `search`/i)
-    expect(brief).toMatch(/Ask the human only after autonomous login cannot continue/i)
-    expect(brief).not.toMatch(/Never enter credentials/i)
+    expect(browserContract).not.toContain("{{var:name}}")
+    expect(browserSkill).toMatch(/numbered profiles `1` through `5`/i)
+    expect(browserSkill).toMatch(
+      /`search` is intentionally direct with `proxy\.configured=false` and `proxy\.mode=direct`/i,
+    )
+    expect(browserSkill).toMatch(/not a target identity, readiness prerequisite, engagement-policy profile/i)
+    expect(browserSkill).toMatch(/Never ask the human to restore ZAP for `search`/i)
+    expect(browserSkill).toMatch(/Ask the human only when a human factor/i)
+    expect(browserContract).not.toMatch(/Never enter credentials/i)
     expect(brief).toMatch(/not an exhaustive vulnerability checklist/i)
     expect(brief).not.toContain("`NOT_PROVIDED`")
     expect(brief).not.toContain("`POLICY_UNKNOWN`")
@@ -205,6 +217,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     const verify = fs.readFileSync(path.join(home, "verify.md"), "utf8")
     const report = fs.readFileSync(path.join(home, "report.md"), "utf8")
 
+    expect(verify).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
     for (const verdict of ["SURVIVES", "REVISE", "DEMOTE"]) expect(verify).toContain(verdict)
     for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"]) expect(verify).toContain(status)
     expect(verify).toMatch(/Reproduction proves a mechanism, not necessarily a vulnerability/i)

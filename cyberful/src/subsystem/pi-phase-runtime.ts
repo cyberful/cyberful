@@ -256,6 +256,10 @@ function dynamicAgentTool(tool: DynamicTool): AgentTool & { readonly deferLoadin
   }
 }
 
+export function eagerSkillTools(skills: SkillRegistry): readonly AgentTool[] {
+  return [skills.searchTool, skills.tool]
+}
+
 function failureOf(result: AgentRunResult): SubsystemFailure | undefined {
   if (!result.failure) return
   return {
@@ -476,7 +480,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       task: input.task,
       workarea: input.workarea,
       gateway: input.gateway,
-      tools: [input.skills.tool, ...(input.dynamicTools ?? []).map(dynamicAgentTool)],
+      tools: [...eagerSkillTools(input.skills), ...(input.dynamicTools ?? []).map(dynamicAgentTool)],
       gatewayTools: (run) =>
         bridge!.toolsFor({
           handoffAuthorized: run.handoffOwner,

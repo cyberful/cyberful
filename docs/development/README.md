@@ -10,6 +10,8 @@ Before editing code, read these repository contracts in order:
 
 Install dependencies with `make deps` and keep the change focused. Behavior, configuration, phase contracts, tools, and event semantics require documentation in the same change.
 
+To update the Pi build embedded in Cyberful, run `./scripts/update_pi.py` from the repository root. The script resolves the current npm `latest` release, updates Cyberful's exact `pi-agent-core` and `pi-ai` pins, rebases the versioned adapter patch, regenerates the Bun lockfile, and type-checks the result. `make install` then performs the first private runtime-version probe against the freshly compiled binary; the updater independently repeats that probe against the installed `~/.cyberful/bin/cyberful` and fails unless both embedded Pi packages report the resolved release. Use `./scripts/update_pi.py --dry-run` to resolve the latest release and inspect the intended changes without mutating the repository or system. The updater never installs, updates, invokes, or links the global `pi` command. Published npm Cyberful binaries remain self-contained and continue to use the Pi version embedded by their release build; the source-installed binary under `~/.cyberful/bin` takes precedence when that directory appears first in `PATH`.
+
 ```sh
 make typecheck
 make test-bun

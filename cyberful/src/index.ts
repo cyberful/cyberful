@@ -54,6 +54,7 @@ import { emptyTruncationDirSync } from "@/tool/truncation-dir"
 import { SubsystemCli } from "@/subsystem/cli"
 import { SubsystemContainer } from "@/subsystem/container"
 import { SubsystemEvmRuntime } from "@/subsystem/evm/runtime"
+import { embeddedRuntimeVersions, RUNTIME_VERSION_ARGV } from "@/runtime-version"
 
 const processMetadata = ensureProcessMetadata("main")
 
@@ -98,6 +99,10 @@ if (process.argv.includes(GATEWAY_ARGV)) {
 }
 
 const args = hideBin(process.argv)
+if (args.length === 1 && args[0] === RUNTIME_VERSION_ARGV) {
+  process.stdout.write(`${JSON.stringify(embeddedRuntimeVersions)}\n`)
+  process.exit(0)
+}
 const requestedBrowserCommand = args[0]
 if (requestedBrowserCommand && browserProfileCommandKind(requestedBrowserCommand) === "unsupported") {
   UI.error(invalidBrowserProfileMessage(requestedBrowserCommand))

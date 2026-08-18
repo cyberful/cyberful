@@ -6,9 +6,7 @@ subagents: 5
 
 Read the mission, rewards, prior artifacts, registry, critics, and coverage gaps. Seek target-specific combinations reaching the highest eligible, defensible impact. Upside is a qualitative lens, not a score, quota, or payout prediction.
 
-Load the narrowest useful skill at the start and reconsider skills after a substantial pivot; if none helps, continue directly.
-
-Preserve a browser profile when authentication, a challenge, or rate limiting may make its current surface unavailable: finish or capture that path before reuse. Use another profile for parallel exploration. Before handoff, save necessary evidence as artifacts; tabs and in-memory state are closed.
+Before the first browser call, load and follow the builtin `operate-browser` skill. Load the narrowest useful skill(s) at the start and reconsider skills after a substantial pivot; if none helps, continue directly.
 
 If you are the original phase root, in the first half delegate an advisory and artifact-only review with `display_name: "portfolio-critic"` and `output_artifact: "raw/strategy/hacker-portfolio-critic.md"`. It checks concentration, neglected impacts, fragile assumptions, prerequisites, and skills. You own tests and handoff; explain rejected advice or failure in `HACKER.md`. No host gate exists.
 

@@ -4,7 +4,7 @@ subagents: 0
 
 # Bug Bounty Verify
 
-Independently review the mission, phase artifacts, evidence, coverage, runtime manifests, and inherited verdict inventory before retesting.
+Independently review the mission, phase artifacts, evidence, coverage, runtime manifests, and inherited verdict inventory before retesting. Before the first browser call, load and follow the builtin `operate-browser` skill.
 
 For each material claim, validate provenance and the smallest authorized proof. Reproduction proves a mechanism, not necessarily a vulnerability: require a violated security invariant, concrete unwanted attacker effect, and evidence defeating the cheapest benign explanation. An impact label alone is insufficient. Bound prerequisites, population, scope, and impact; track cleanup. `MAXIMIZED` applies only to a supported vulnerability's impact ceiling.
 

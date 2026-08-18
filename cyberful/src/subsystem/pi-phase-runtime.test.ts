@@ -9,7 +9,9 @@ import path from "node:path"
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import type { AgentEvent } from "./agent-subsystem"
-import { projectLiveEvent, TUI_TOOL_OUTPUT_BYTES } from "./pi-phase-runtime"
+import * as Builtin from "@/builtin"
+import { PiSkills } from "./pi-skills"
+import { eagerSkillTools, projectLiveEvent, TUI_TOOL_OUTPUT_BYTES } from "./pi-phase-runtime"
 
 describe("Pi live tool output projection", () => {
   test("a 3.5 MB result reaches the TUI only as 12 KiB plus a lazy artifact reference", async () => {
@@ -40,5 +42,13 @@ describe("Pi live tool output projection", () => {
     } finally {
       await rm(workarea, { recursive: true, force: true })
     }
+  })
+})
+
+describe("Pi eager skill tools", () => {
+  test("keeps search and read visible on the first request", async () => {
+    const skills = await PiSkills.discover({ roots: [path.join(Builtin.DIR, "skills")] })
+
+    expect(eagerSkillTools(skills).map((tool) => tool.name)).toEqual(["skill_search", "skill_read"])
   })
 })

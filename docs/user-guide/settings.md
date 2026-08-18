@@ -28,6 +28,9 @@ agent:
       provider: inherit
       reasoning_effort: medium
 
+  skill_catalog:
+    description_budget_percentage: 2
+
   retry:
     enabled: true
     max_retries: 3
@@ -137,7 +140,7 @@ cyberful auth status <name>
 cyberful auth logout <name>
 ```
 
-Omitting `<name>` selects `main_provider`. With `auth.type: subscription`, Cyberful automatically selects the provider-owned login: OpenAI Codex opens its OAuth browser or device-code flow, while Z.AI Coding Plan and Kimi For Coding prompt securely for the plan key. OAuth tokens and stored plan keys remain in Cyberful's owner-only credential store.
+Omitting `<name>` selects `main_provider`. With `auth.type: subscription`, Cyberful automatically selects the provider-owned login: OpenAI Codex and Kimi For Coding use their OAuth flows, while Z.AI Coding Plan prompts securely for the plan key. OAuth tokens and stored plan keys remain in Cyberful's owner-only credential store.
 
 `auth status` and the launch preflight resolve the credential into the actual request authentication used by Pi; the mere presence of a stored OAuth record is not considered available. Whenever proactive fallback, automatic security fallback, fallback phase recovery, or failed-subagent replacement can route work to the fallback provider, preflight requires that route to authenticate before the phase starts. A missing credential names the configured provider and the exact recovery command, such as `cyberful auth login kimi`. The same provider registry and OAuth bootstrap run inside the separately compiled TUI Worker that owns phase execution.
 
@@ -327,6 +330,10 @@ The denominator counts main roots and main subagents across the session; fallbac
 
 Cyberful does not discover instructions, plugins, MCP servers, or skills from `~/.pi`, `.codex`, `.agents`, `.claude`, or the target repository. First-party personas and skills are embedded release policy. Additional roots are loaded only when explicitly listed in `instructions.persona_roots` or `instructions.skill_roots`.
 
-Each run receives a compact catalog, then reads a selected `SKILL.md` in full before using it. References, scripts, agents, and assets remain package-bound and are loaded only as required. `allow_project_discovery` must remain `false`; additional trusted content is admitted only through the two explicit root lists.
+Each run receives a deterministic progressive catalog, then reads a selected `SKILL.md` in full before using it. The complete name index is grouped by category, excludes host paths, and remains outside the descriptive budget so every available skill can still be selected. The charged metadata block defaults to 2% of the effective route's immutable `operational_context_window`: `floor(window × percentage / 100)` tokens converted with the same provider-neutral estimate of four characters per token used by context rotation. Root main runs use `main_provider`, main-route children use `agent.subagents.provider`, and fallback roots and descendants use `fallback_provider`; later observed context limits do not rewrite an existing AgentRun's system prompt.
+
+`agent.skill_catalog.description_budget_percentage` accepts a number greater than zero and at most `10`, and defaults to `2` when omitted. First-party metadata is allocated first and receives an equal reduced ceiling only when all complete first-party entries do not fit. Remaining capacity rotates deterministically across sorted extension categories, using at most 240 characters per extension excerpt; other entries remain name-only. Every description-plus-trigger pair still has a 1,536-character ceiling. Truncation prefers sentence, clause, then word boundaries and suppresses compressed fragments shorter than 64 characters. XML escaping, metadata wrappers, categories, descriptions, and triggers all count against the exact serialized character budget.
+
+`skill_search` is eagerly available to every root, child, and fallback run. Use it when the relevant name is ambiguous; exact and prefix names outrank category, trigger, tag, framework identifier, and description matches. Search returns bounded metadata without loading instructions or exposing host paths. Once a name is selected, `skill_read` must load the complete `SKILL.md`; only that read marks the skill as used. References, scripts, agents, and assets remain package-bound and are loaded only as required. `allow_project_discovery` must remain `false`; additional trusted content is admitted only through the two explicit root lists.
 
 `settings.yaml` is strict: unknown keys, unknown providers, duplicate routing, an absent main provider, an enabled fallback without a fallback provider, malformed URLs, and inline secrets are fatal startup errors.

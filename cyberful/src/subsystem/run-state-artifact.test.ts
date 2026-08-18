@@ -59,6 +59,19 @@ describe("run-state artifact", () => {
           delegationEnabled: true,
           delegationLimit: 1,
           handoffOwner: true,
+          skillCatalog: {
+            operationalContextWindow: 256_000,
+            contextSource: "catalog_default",
+            descriptionBudgetPercentage: 2,
+            descriptionBudgetTokens: 5_120,
+            descriptionBudgetCharacters: 20_480,
+            nameIndexCharacters: 0,
+            metadataCharacters: 0,
+            totalSkills: 0,
+            describedSkills: 0,
+            compressedSkills: 0,
+            nameOnlySkills: 0,
+          },
         },
       })
       const releaseRetry = budgetClock.suspend("provider_retry")
@@ -131,9 +144,7 @@ describe("run-state artifact", () => {
           failure: { source: "upstream", class: "required_upstream_unavailable" },
         },
       })
-      const artifact = JSON.parse(
-        await readFile(path.join(workarea, "raw/operations/run-state.json"), "utf8"),
-      )
+      const artifact = JSON.parse(await readFile(path.join(workarea, "raw/operations/run-state.json"), "utf8"))
       expect(artifact).toMatchObject({
         workflow: "pentest",
         phase: "hacker",

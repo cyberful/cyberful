@@ -60,8 +60,8 @@
     "typescript": "catalog:"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.81.1",
-    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
     "@effect/platform-node": "catalog:",
     "@huggingface/transformers": "3.8.1",
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -108,7 +108,7 @@
     "yauzl": "3.2.0"
   },
   "overrides": {
-    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-ai": "0.84.2",
     "drizzle-orm": "catalog:"
   }
 }

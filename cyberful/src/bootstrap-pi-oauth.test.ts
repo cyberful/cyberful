@@ -60,7 +60,7 @@ describe("Pi OAuth standalone bootstrap", () => {
           '  type: "oauth",',
           '  refresh: "probe-refresh",',
           '  access: "probe-access",',
-          "  expires: Date.now() + 60_000,",
+          "  expires: Date.now() + 86_400_000,",
           "}))",
           "const registry = createPiModels({",
           '  main_provider: "openai-codex",',

@@ -48,6 +48,20 @@ const EMPTY_SKILL_PARAMETERS = Type.Object(
 )
 const EMPTY_SKILLS = {
   catalog: [],
+  searchTool: {
+    name: "skill_search",
+    label: "Search trusted skills",
+    description: "No skills are configured in this isolated phase-runner test.",
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1 }),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, default: 8 })),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 20, pattern: "^(0|[1-9][0-9]*)$" })),
+    }),
+    execute: async () => ({
+      content: [{ type: "text" as const, text: "{}" }],
+      details: { query: "*", total: 0, returned: 0 },
+    }),
+  },
   tool: {
     name: "skill_read",
     label: "Read trusted skill",
@@ -381,6 +395,79 @@ describe("runPhase transcript persistence", () => {
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
+  test("budgets root, subagent, and fallback catalogs from each effective provider route", async () => {
+    const settings = Settings.parse(`version: 1
+agent:
+  subsystem: pi
+  main_provider: main
+  fallback_provider: fallback
+  subagents:
+    enabled: true
+    provider: child
+    reasoning_effort: [xhigh, medium]
+    max_per_run: 4
+    max_concurrent: 2
+    max_depth: 2
+  skill_catalog:
+    description_budget_percentage: 3
+  fallback:
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+  providers:
+    main:
+      adapter: openai-completions
+      base_url: https://main.invalid/v1
+      model: main-model
+      context_window: 100000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: MAIN_KEY }
+    child:
+      adapter: openai-completions
+      base_url: https://child.invalid/v1
+      model: child-model
+      context_window: 150000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: CHILD_KEY }
+    fallback:
+      adapter: openai-completions
+      base_url: https://fallback.invalid/v1
+      model: fallback-model
+      context_window: 200000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: FALLBACK_KEY }
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false
+`)
+    const manifests: Record<string, number> = {}
+    await SubsystemPhaseRunner.runPhase(
+      spec(),
+      deps({
+        loadSettings: async () => settings,
+        run: async (input) => {
+          manifests.root = input.compiledPrompt.manifest.skillCatalog.descriptionBudgetCharacters
+          manifests.child = input.compileChildPrompt({
+            role: "subagent",
+            providerRoute: "main",
+            task: { objective: "Inspect one bounded child surface." },
+          }).manifest.skillCatalog.descriptionBudgetCharacters
+          manifests.fallback = input.compileChildPrompt({
+            role: "fallback",
+            providerRoute: "fallback",
+            task: { objective: "Inspect one bounded fallback surface." },
+          }).manifest.skillCatalog.descriptionBudgetCharacters
+          return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+
+    expect(manifests).toEqual({ root: 12_000, child: 18_000, fallback: 24_000 })
+  })
+
   test("phase prompts keep reward-aware maturation specific to Bug Bounty", () => {
     const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
     const verify = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "verify" }), 45)
@@ -412,7 +499,9 @@ describe("runPhase transcript persistence", () => {
     expect(report).toMatch(/end-to-end attack path.*unsupported link/i)
     expect(pentest).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
     expect(pentestRecon).not.toMatch(/What can an attacker actually achieve with this vulnerability\?/)
-    expect(codeAudit).not.toMatch(/What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i)
+    expect(codeAudit).not.toMatch(
+      /What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i,
+    )
   })
 
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
@@ -442,8 +531,9 @@ describe("runPhase transcript persistence", () => {
     expect(system).toMatch(/requires a reward-aware `bounty_context`/i)
     expect(system).toContain("`opportunity_closeout`")
     expect(system).toMatch(/first positive finding is not phase completion/i)
-    expect(JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"))
-      .toEqual(result.noveltyContract)
+    expect(
+      JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"),
+    ).toEqual(result.noveltyContract)
   })
 
   test("human approval wait extends the deadline without consuming phase duration", async () => {
@@ -493,9 +583,7 @@ describe("runPhase transcript persistence", () => {
       }),
       deps({
         readFile: async (filePath) =>
-          filePath.endsWith("budgets.json")
-            ? JSON.stringify({ recon: 60 })
-            : phaseInstructionFile(filePath) ?? "{}",
+          filePath.endsWith("budgets.json") ? JSON.stringify({ recon: 60 }) : (phaseInstructionFile(filePath) ?? "{}"),
         run: async (input) => {
           runtimeTimeoutMs = input.timeoutMs
           expect(input.budgetClock?.snapshot()).toMatchObject({
@@ -588,7 +676,9 @@ describe("runPhase transcript persistence", () => {
     )
     expect(directories).toEqual(["/tmp/wa/.cyberful-tmp"])
     expect(removed).toEqual(["/tmp/wa/.cyberful-tmp"])
-    expect(privateEnv?.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH).toContain("expert-circuit-breaker-ses_test/engagement.json")
+    expect(privateEnv?.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH).toContain(
+      "expert-circuit-breaker-ses_test/engagement.json",
+    )
     expect(system).not.toContain(
       requireValue(privateEnv, "gateway private environment missing").CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH,
     )
@@ -661,6 +751,19 @@ describe("runPhase transcript persistence", () => {
                 delegationEnabled: true,
                 delegationLimit: 1,
                 handoffOwner: true,
+                skillCatalog: {
+                  operationalContextWindow: 256_000,
+                  contextSource: "catalog_default",
+                  descriptionBudgetPercentage: 2,
+                  descriptionBudgetTokens: 5_120,
+                  descriptionBudgetCharacters: 20_480,
+                  nameIndexCharacters: 0,
+                  metadataCharacters: 0,
+                  totalSkills: 0,
+                  describedSkills: 0,
+                  compressedSkills: 0,
+                  nameOnlySkills: 0,
+                },
               },
             },
             {
@@ -1031,10 +1134,7 @@ describe("runPhase transcript persistence", () => {
       spec({ transcriptPath: TRANSCRIPT }),
       deps({
         run: async () => ((ranBuffered = true), { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }),
-        runStreaming: async () => (
-          (ranStreaming = true),
-          { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
-        ),
+        runStreaming: async () => ((ranStreaming = true), { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }),
         createTranscript: async () => {
           wrote = true
           return { append: async () => {}, close: async () => {} }

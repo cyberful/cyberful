@@ -11,7 +11,12 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
-import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
+import {
+  NOOP_TELEMETRY_CONTEXT,
+  type AgentTool,
+  type StreamFn,
+  type TelemetryContext,
+} from "@earendil-works/pi-agent-core"
 import {
   createAssistantMessageEventStream,
   createModels,
@@ -84,6 +89,7 @@ interface CapturedCall {
   readonly reasoning?: string
   readonly payload?: unknown
   readonly signal?: AbortSignal
+  readonly telemetryContext?: TelemetryContext
 }
 
 type ResponseFactory = (call: CapturedCall) => AssistantMessage | Promise<AssistantMessage>
@@ -396,10 +402,12 @@ class InMemoryProvider {
         ...(streamOptions?.reasoning ? { reasoning: streamOptions.reasoning } : {}),
         payload,
         ...(streamOptions?.signal ? { signal: streamOptions.signal } : {}),
+        ...(streamOptions?.telemetryContext ? { telemetryContext: streamOptions.telemetryContext } : {}),
       }
       this.calls.push(call)
       for (const waiter of this.#waiters.filter((candidate) => this.calls.length >= candidate.count)) waiter.resolve()
       const message = await response(call)
+      if (message.stopReason === "pending") throw new Error("In-memory providers must return a terminal stop reason")
       const stream = createAssistantMessageEventStream()
       stream.push({ type: "start", partial: { ...message, content: [] } })
       if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -455,6 +463,7 @@ function prompt(
   route: ProviderRoute,
   objective: string,
   handoffOwner: boolean,
+  capacity: ReturnType<PiModels["contextCapacity"]>,
 ): CompiledAgentPrompt {
   const system = [
     SYSTEM_INVARIANT,
@@ -482,6 +491,19 @@ function prompt(
       delegationEnabled: true,
       delegationLimit: 64,
       handoffOwner,
+      skillCatalog: {
+        operationalContextWindow: capacity.operationalContextWindow,
+        contextSource: capacity.source,
+        descriptionBudgetPercentage: 2,
+        descriptionBudgetTokens: Math.floor(capacity.operationalContextWindow * 0.02),
+        descriptionBudgetCharacters: Math.floor(capacity.operationalContextWindow * 0.02) * 4,
+        nameIndexCharacters: 0,
+        metadataCharacters: 0,
+        totalSkills: 0,
+        describedSkills: 0,
+        compressedSkills: 0,
+        nameOnlySkills: 0,
+      },
     },
   }
 }
@@ -508,6 +530,7 @@ interface RootSpecOptions {
 
 function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
   const resolvedModel = models.model(MAIN_PROVIDER)
+  const context = models.contextCapacity(MAIN_PROVIDER)
   return {
     id: options.id,
     sessionID: options.sessionID ?? `session-${options.id}`,
@@ -515,11 +538,20 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     depth: 0,
     provider: MAIN_PROVIDER,
     model: resolvedModel,
-    context: models.contextCapacity(MAIN_PROVIDER),
+    context,
     providerAffinity: "main",
     reasoning: PiReasoning.resolve("ultra", resolvedModel),
-    prompt: prompt("root", "main", options.objective, true),
-    compileChildPrompt: (input) => prompt(input.role, input.providerRoute, formatTaskCapsule(input.task), false),
+    prompt: prompt("root", "main", options.objective, true, context),
+    compileChildPrompt: (input) => {
+      const childProvider = input.providerRoute === "fallback" ? FALLBACK_PROVIDER : MAIN_PROVIDER
+      return prompt(
+        input.role,
+        input.providerRoute,
+        formatTaskCapsule(input.task),
+        false,
+        models.contextCapacity(childProvider),
+      )
+    },
     task: { objective: options.objective, expectedResult: "Return verified evidence." },
     workarea: options.workarea ?? "/tmp/cyberful-pi-agent-test",
     tools: options.tools ?? [],
@@ -610,6 +642,22 @@ function closeoutEvents(events: readonly AgentEvent[]): readonly PhaseCloseoutEv
 }
 
 describe("Pi complete root and main-route subagent runs", () => {
+  test("forces provider telemetry through Pi's local no-op context", async () => {
+    const provider = new InMemoryProvider((call) => assistant(call, "local-only telemetry completed"))
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "noop-provider-telemetry",
+        objective: "verify the provider telemetry boundary",
+      }),
+    )
+
+    await run.result
+
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]?.telemetryContext).toBe(NOOP_TELEMETRY_CONTEXT)
+  })
+
   test("emits one strategic nudge for a hypothesis convergence signal without blocking the run", async () => {
     const hypothesis: AgentTool<
       typeof EMPTY_PARAMETERS,
@@ -2452,8 +2500,22 @@ describe("Pi complete root and main-route subagent runs", () => {
   })
 
   test("enforces per-run progressive skill disclosure and records explicit audit totals", async () => {
+    let metadataSearches = 0
     let instructionReads = 0
     let resourceReads = 0
+    const skillSearch: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "skill_search",
+      label: "Search trusted skills",
+      description: "Search skill metadata without loading instructions.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        metadataSearches++
+        return {
+          content: [{ type: "text", text: '{"results":[{"name":"inspect-evidence"}]}' }],
+          details: {},
+        }
+      },
+    }
     const skillRead: AgentTool<
       typeof SKILL_READ_PARAMETERS,
       { readonly skill: string; readonly kind: "instructions" | "resource" }
@@ -2476,13 +2538,14 @@ describe("Pi complete root and main-route subagent runs", () => {
     }
     const provider = new InMemoryProvider((call) => {
       const results = toolResultCount(call)
-      if (results === 0)
+      if (results === 0) return toolCall(call, "skill_search", {})
+      if (results === 1)
         return toolCall(call, "skill_read", {
           skill: "inspect-evidence",
           path: "references/check.md",
         })
-      if (results === 1) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
-      if (results === 2)
+      if (results === 2) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
+      if (results === 3)
         return toolCall(call, "skill_read", {
           skill: "/trusted/skills/inspect-evidence/SKILL.md",
           path: "references/check.md",
@@ -2494,7 +2557,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       rootSpec(runtime.models, {
         id: "skill-disclosure-root",
         objective: "read a skill and one directly required reference",
-        tools: [skillRead],
+        tools: [skillSearch, skillRead],
       }),
     )
 
@@ -2508,17 +2571,18 @@ describe("Pi complete root and main-route subagent runs", () => {
       termination: "completed",
       output: "progressive skill disclosure complete",
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 3,
+      toolCalls: 4,
     })
+    expect(metadataSearches).toBe(1)
     expect(instructionReads).toBe(1)
     expect(resourceReads).toBe(1)
     expect(finished).toMatchObject({
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 3,
+      toolCalls: 4,
       childRunIDs: [],
       fallbackAdmissions: 0,
       fallbackDescendants: 0,
-      usage: { input: 20, output: 12, reasoning: 4, cacheRead: 8, cacheWrite: 4 },
+      usage: { input: 25, output: 15, reasoning: 5, cacheRead: 10, cacheWrite: 5 },
     })
   })
 })
@@ -2798,6 +2862,13 @@ describe("Pi complete fallback AgentRuns", () => {
   test("retains skills, tools, nested delegation, and fallback affinity for the entire subtree", async () => {
     let skillReads = 0
     const probes: string[] = []
+    const skillSearch: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "skill_search",
+      label: "Search trusted skills",
+      description: "Search skill metadata before reading instructions.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({ content: [{ type: "text", text: '{"results":[]}' }], details: {} }),
+    }
     const skillRead: AgentTool<typeof EMPTY_PARAMETERS, { readonly skill: string }> = {
       name: "skill_read",
       label: "Read trusted skill",
@@ -2858,7 +2929,7 @@ describe("Pi complete fallback AgentRuns", () => {
       rootSpec(runtime.models, {
         id: "full-fallback-root",
         objective: "exercise a complete proactive fallback",
-        tools: [skillRead, probe],
+        tools: [skillSearch, skillRead, probe],
       }),
     )
 
@@ -2883,6 +2954,7 @@ describe("Pi complete fallback AgentRuns", () => {
     expect(fallbackCalls.length).toBeGreaterThan(0)
     expect(fallbackCalls.every((call) => call.provider === FALLBACK_PROVIDER)).toBeTrue()
     expect(fallbackCalls.every((call) => call.system.includes("Skill catalog: inspect-evidence"))).toBeTrue()
+    expect(fallbackCalls.every((call) => call.toolNames.includes("skill_search"))).toBeTrue()
     expect(fallbackCalls.every((call) => call.toolNames.includes("skill_read"))).toBeTrue()
     expect(fallbackCalls.every((call) => call.toolNames.includes("evidence_probe"))).toBeTrue()
     expect(fallbackCalls.every((call) => !call.toolNames.includes("request_fallback_delegation"))).toBeTrue()
@@ -2895,9 +2967,9 @@ describe("Pi complete fallback AgentRuns", () => {
     })
     const runtime = subsystem(provider)
     const base = rootSpec(runtime.models, {
-        id: "terminal-fallback-root",
-        objective: "automatic fallback must remain terminal on a second provider block",
-      })
+      id: "terminal-fallback-root",
+      objective: "automatic fallback must remain terminal on a second provider block",
+    })
     const fallbackModel = runtime.models.model(FALLBACK_PROVIDER)
     const run = await runtime.subsystem.start({
       ...base,
@@ -2906,7 +2978,7 @@ describe("Pi complete fallback AgentRuns", () => {
       context: runtime.models.contextCapacity(FALLBACK_PROVIDER),
       providerAffinity: "fallback",
       reasoning: PiReasoning.resolve("ultra", fallbackModel),
-      prompt: prompt("root", "fallback", base.task.objective, true),
+      prompt: prompt("root", "fallback", base.task.objective, true, runtime.models.contextCapacity(FALLBACK_PROVIDER)),
     })
 
     const result = await run.result
@@ -3079,21 +3151,16 @@ describe("Pi AgentRun steering and cancellation", () => {
     const events = await collectEvents(run)
     expect(
       events.some(
-        (event) =>
-          event.type === "steering" && event.steeringID === queued.id && event.state === "superseded",
+        (event) => event.type === "steering" && event.steeringID === queued.id && event.state === "superseded",
       ),
     ).toBeTrue()
     expect(
-      events.some(
-        (event) => event.type === "steering" && event.steeringID === focused.id && event.state === "applied",
-      ),
+      events.some((event) => event.type === "steering" && event.steeringID === focused.id && event.state === "applied"),
     ).toBeTrue()
     expect(
       events.some(
         (event) =>
-          event.type === "run_finished" &&
-          event.role === "subagent" &&
-          event.terminationCause === "operator_focus",
+          event.type === "run_finished" && event.role === "subagent" && event.terminationCause === "operator_focus",
       ),
     ).toBeTrue()
   })

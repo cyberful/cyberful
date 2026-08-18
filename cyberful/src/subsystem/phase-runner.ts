@@ -29,7 +29,8 @@ import type { DynamicTool, SubsystemFailure } from "./subsystem"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import { AgentPromptCompiler, type PromptManifest } from "./prompt-compiler"
-import { PiSkills, type SkillRegistry } from "./pi-skills"
+import { PiSkills, type SkillRegistry, type SkillRoot } from "./pi-skills"
+import { resolveModelContextCapacity } from "./pi-models"
 import { SubsystemPiAgent } from "./pi-agent"
 import type { AgentRunResult } from "./agent-subsystem"
 import { RunStateArtifact } from "./run-state-artifact"
@@ -197,7 +198,7 @@ export interface PhaseDeps {
   runStreaming: typeof SubsystemCli.runStreaming
   subsystem: Subsystem.Subsystem
   loadSettings: (directory: string) => Promise<Settings.Info>
-  discoverSkills: (roots: readonly string[]) => Promise<SkillRegistry>
+  discoverSkills: (roots: readonly (string | SkillRoot)[]) => Promise<SkillRegistry>
   // Reads budgets.json. Injected so budget resolution remains testable.
   readFile: (filePath: string) => Promise<string>
   // Reads the private gateway's first required-upstream failure marker. Kept
@@ -1217,10 +1218,16 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     const settingsDirectory = spec.settingsDirectory ?? process.cwd()
     const settings = await deps.loadSettings(settingsDirectory)
     const sources = await loadPhasePromptSources(spec, settings, deps.readFile)
-    const configuredSkillRoots = settings.instructions.skill_roots.map((root) =>
-      path.resolve(settingsDirectory, root),
+    const configuredSkillRoots = settings.instructions.skill_roots.map(
+      (root): SkillRoot => ({
+        path: path.resolve(settingsDirectory, root),
+        origin: "extension",
+      }),
     )
-    const skills = await deps.discoverSkills([SubsystemPhase.skillRoot(spec.home), ...configuredSkillRoots])
+    const skills = await deps.discoverSkills([
+      { path: SubsystemPhase.skillRoot(spec.home), origin: "first_party" },
+      ...configuredSkillRoots,
+    ])
     return { settings, sources, skills }
   })().then(
     (value) => ({ ok: true as const, value }),
@@ -1494,8 +1501,17 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     providerRoute: "main" | "fallback",
     userTask: string,
     handoffOwner: boolean,
-  ) =>
-    AgentPromptCompiler.compile({
+  ) => {
+    const settings = promptSetup.value.settings
+    const provider =
+      providerRoute === "fallback"
+        ? settings.agent.fallback_provider
+        : role === "subagent"
+          ? Settings.subagentPolicy(settings).provider
+          : settings.agent.main_provider
+    if (!provider) throw new Error("fallback prompt compilation requires a configured fallback provider")
+    const capacity = resolveModelContextCapacity(settings.agent, provider)
+    return AgentPromptCompiler.compile({
       templateSource: promptSetup.value.sources.templateSource,
       personaSource: promptSetup.value.sources.personaSource,
       workareaSource: workareaInstructions(phaseEnvironment.CYBERFUL_OS_RUNTIME_PLATFORM),
@@ -1516,7 +1532,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       },
       userTask,
       skills: promptSetup.value.skills.catalog,
+      skillCatalogBudget: {
+        operationalContextWindow: capacity.operationalContextWindow,
+        contextSource: capacity.source,
+        descriptionBudgetPercentage:
+          Settings.skillCatalogPolicy(settings).description_budget_percentage,
+      },
     })
+  }
   const rootRoute = spec.providerRoute ?? "main"
   const rootPrompt = compilePrompt("root", rootRoute, spec.objective, Boolean(spec.handoff))
   const runInput: SubsystemCli.RunInput = {

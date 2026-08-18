@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto"
 import {
   Agent,
   estimateTokens,
+  NOOP_TELEMETRY_CONTEXT,
   type AgentEvent as PiAgentEvent,
   type AgentMessage,
   type AgentTool,
@@ -884,6 +885,7 @@ function closeoutToolAllowed(name: string): boolean {
       "engagement_policy",
       "reward_policy",
       "variable",
+      "skill_search",
       "skill_read",
       "tool_search",
     ].includes(name)
@@ -903,6 +905,11 @@ function validateSpec(spec: AgentRunSpec): void {
   if (spec.prompt.manifest.role !== spec.role) throw new Error("AgentRun prompt role does not match its run role")
   if (spec.prompt.manifest.providerRoute !== spec.providerAffinity)
     throw new Error("AgentRun prompt provider route does not match provider affinity")
+  if (
+    spec.prompt.manifest.skillCatalog.operationalContextWindow !== spec.context.operationalContextWindow ||
+    spec.prompt.manifest.skillCatalog.contextSource !== spec.context.source
+  )
+    throw new Error("AgentRun skill catalog capacity does not match its effective provider route")
   if (spec.prompt.manifest.handoffOwner !== spec.handoffOwner)
     throw new Error("AgentRun prompt handoff ownership does not match host policy")
   if (spec.handoffOwner && spec.role !== "root") throw new Error("Only the original root AgentRun may own handoff")
@@ -3756,12 +3763,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
                 throw new Error("context_rotation_failed: emergency recovery permits one provider generation")
               state.contextRecoveryProviderCallsRemaining--
             }
+            const localOnlyOptions = { ...options, telemetryContext: NOOP_TELEMETRY_CONTEXT }
             const limit = state.spec.budget.maxOutputTokens
-            if (limit === undefined) return this.#streamFn(model, context, options)
+            if (limit === undefined) return this.#streamFn(model, context, localOnlyOptions)
             const remaining = Math.max(1, limit - state.cumulativeUsage.output)
             const requested = options?.maxTokens ?? model.maxTokens
             return this.#streamFn(model, context, {
-              ...options,
+              ...localOnlyOptions,
               maxTokens: Math.min(model.maxTokens, requested, remaining),
             })
           },

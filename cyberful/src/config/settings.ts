@@ -41,6 +41,10 @@ const CompactionTargetPercentage = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(84),
 )
+const SkillCatalogDescriptionPercentage = Schema.Number.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(10),
+)
 const RetryCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(10))
 const RetryDelayMs = Schema.Int.check(Schema.isGreaterThanOrEqualTo(100), Schema.isLessThanOrEqualTo(60_000))
 const RetryAttemptTimeoutMs = Schema.Int.check(
@@ -72,6 +76,14 @@ export const DEFAULT_COMPACTION = {
     reasoning_effort: "medium",
   },
 } as const
+
+export const DEFAULT_SKILL_CATALOG = {
+  description_budget_percentage: 2,
+} as const
+
+export interface SkillCatalogPolicy {
+  readonly description_budget_percentage: number
+}
 
 export interface CompactionPolicy {
   readonly enabled: boolean
@@ -174,6 +186,11 @@ export const Info = Schema.Struct({
         ),
       }),
     ),
+    skill_catalog: Schema.optional(
+      Schema.Struct({
+        description_budget_percentage: SkillCatalogDescriptionPercentage,
+      }),
+    ),
     retry: Schema.optional(
       Schema.Struct({
         enabled: Schema.Boolean,
@@ -235,6 +252,9 @@ agent:
     summarizer:
       provider: inherit
       reasoning_effort: medium
+
+  skill_catalog:
+    description_budget_percentage: 2
 
   retry:
     enabled: true
@@ -528,6 +548,10 @@ export function compactionPolicy(settings: Info): CompactionPolicy {
         DEFAULT_COMPACTION.summarizer.reasoning_effort,
     },
   }
+}
+
+export function skillCatalogPolicy(settings: Info): SkillCatalogPolicy {
+  return settings.agent.skill_catalog ?? DEFAULT_SKILL_CATALOG
 }
 
 export function reasoningEffort(settings: Info): ReasoningEffort {

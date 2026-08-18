@@ -66,6 +66,8 @@ describe("Settings", () => {
     expect(settings.agent.fallback_provider).toBeUndefined()
     expect(settings.agent.compaction).toEqual(Settings.DEFAULT_COMPACTION)
     expect(Settings.compactionPolicy(settings)).toEqual(Settings.DEFAULT_COMPACTION)
+    expect(settings.agent.skill_catalog).toEqual(Settings.DEFAULT_SKILL_CATALOG)
+    expect(Settings.skillCatalogPolicy(settings)).toEqual(Settings.DEFAULT_SKILL_CATALOG)
     expect(settings.agent.retry).toEqual(Settings.DEFAULT_RETRY)
     expect(Settings.retryPolicy(settings)).toEqual(Settings.DEFAULT_RETRY)
     expect(Settings.subagentPolicy(settings)).toEqual({
@@ -107,6 +109,8 @@ describe("Settings", () => {
     expect(Settings.reasoningEffort(first)).toBe("ultra")
     expect(first.agent.compaction).toBeUndefined()
     expect(Settings.compactionPolicy(first)).toEqual(Settings.DEFAULT_COMPACTION)
+    expect(first.agent.skill_catalog).toBeUndefined()
+    expect(Settings.skillCatalogPolicy(first)).toEqual(Settings.DEFAULT_SKILL_CATALOG)
     expect(first.agent.retry).toBeUndefined()
     expect(Settings.retryPolicy(first)).toEqual(Settings.DEFAULT_RETRY)
     expect(await readFile(filePath, "utf8")).toBe(
@@ -119,19 +123,16 @@ describe("Settings", () => {
   test("preserves a configured reasoning effort and rejects unknown levels", async () => {
     const directory = await temporaryDirectory()
     const filePath = path.join(directory, "settings.yaml")
-    const configured = validSettings().replace(
-      "  subsystem: pi\n",
-      "  subsystem: pi\n  reasoning_effort: xhigh\n",
-    )
+    const configured = validSettings().replace("  subsystem: pi\n", "  subsystem: pi\n  reasoning_effort: xhigh\n")
     await writeFile(filePath, configured)
 
     expect(Settings.reasoningEffort(await Settings.load(directory))).toBe("xhigh")
     expect(await readFile(filePath, "utf8")).toBe(
       configured.replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [xhigh, medium]\n"),
     )
-    expect(() =>
-      Settings.parse(configured.replace("reasoning_effort: xhigh", "reasoning_effort: extreme")),
-    ).toThrow(/agent\.reasoning_effort/)
+    expect(() => Settings.parse(configured.replace("reasoning_effort: xhigh", "reasoning_effort: extreme"))).toThrow(
+      /agent\.reasoning_effort/,
+    )
   })
 
   test("accepts a bounded global retry policy and rejects invalid delays", () => {
@@ -198,6 +199,22 @@ describe("Settings", () => {
     ).toThrow(/agent\.retry\.attempt_timeout_ms/)
   })
 
+  test("accepts a configurable skill catalog percentage only above zero and at most ten", () => {
+    const configured = Settings.parse(
+      validSettings().replace("  fallback:", "  skill_catalog:\n    description_budget_percentage: 3.5\n  fallback:"),
+    )
+    expect(Settings.skillCatalogPolicy(configured)).toEqual({ description_budget_percentage: 3.5 })
+    for (const percentage of [0, -1, 10.1])
+      expect(() =>
+        Settings.parse(
+          validSettings().replace(
+            "  fallback:",
+            `  skill_catalog:\n    description_budget_percentage: ${percentage}\n  fallback:`,
+          ),
+        ),
+      ).toThrow(/agent\.skill_catalog\.description_budget_percentage/)
+  })
+
   test("resolves a dedicated subagent route and falls back explicitly for legacy settings", () => {
     const dedicated = Settings.parse(
       validSettings().replace(
@@ -222,12 +239,7 @@ describe("Settings", () => {
     })
 
     expect(() =>
-      Settings.parse(
-        validSettings().replace(
-          "    enabled: true\n",
-          "    enabled: true\n    provider: missing\n",
-        ),
-      ),
+      Settings.parse(validSettings().replace("    enabled: true\n", "    enabled: true\n    provider: missing\n")),
     ).toThrow(/subagents\.provider references unconfigured provider/)
   })
 
@@ -245,34 +257,23 @@ describe("Settings", () => {
       reasoning_efforts: ["xhigh"],
       default_reasoning_effort: "xhigh",
     })
-    expect(await readFile(filePath, "utf8")).toContain(
-      "    reasoning_effort: [xhigh] # legacy",
-    )
+    expect(await readFile(filePath, "utf8")).toContain("    reasoning_effort: [xhigh] # legacy")
 
     expect(
       Settings.subagentPolicy(
         Settings.parse(
-          validSettings().replace(
-            "    enabled: true\n",
-            "    enabled: true\n    reasoning_effort: [xhigh]\n",
-          ),
+          validSettings().replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [xhigh]\n"),
         ),
       ),
     ).toMatchObject({ reasoning_efforts: ["xhigh"], default_reasoning_effort: "xhigh" })
     expect(() =>
       Settings.parse(
-        validSettings().replace(
-          "    enabled: true\n",
-          "    enabled: true\n    reasoning_effort: [medium]\n",
-        ),
+        validSettings().replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [medium]\n"),
       ),
     ).toThrow("must include xhigh")
     expect(() =>
       Settings.parse(
-        validSettings().replace(
-          "    enabled: true\n",
-          "    enabled: true\n    reasoning_effort: [xhigh, xhigh]\n",
-        ),
+        validSettings().replace("    enabled: true\n", "    enabled: true\n    reasoning_effort: [xhigh, xhigh]\n"),
       ),
     ).toThrow("must not contain duplicates")
   })
@@ -434,9 +435,9 @@ instructions:
       ),
     ).toThrow("agent.providers must contain at least one provider")
 
-    expect(() =>
-      Settings.parse(validSettings().replace("main_provider: main", "main_provider: missing")),
-    ).toThrow('agent.main_provider references unconfigured provider "missing"')
+    expect(() => Settings.parse(validSettings().replace("main_provider: main", "main_provider: missing"))).toThrow(
+      'agent.main_provider references unconfigured provider "missing"',
+    )
   })
 
   test("requires a distinct configured provider before enabling fallback", () => {

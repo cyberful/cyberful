@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/readme-logo-concepts/cyberful-readme-logo-clean-v1.png" alt="Cyberful" width="720" />
+</p>
+
 # Cyberful: The Open-Source AI Red Team.
 
 [![CI](https://github.com/cyberful/cyberful/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberful/cyberful/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful) [![Documentation](https://img.shields.io/badge/docs-cyberful.io-1463ff.svg)](https://cyberful.io/)
@@ -62,6 +66,7 @@ See [What you need](https://cyberful.io/getting-started/requirements/) for the s
 From the repository root:
 ```sh
 make deps       # install workspace and MCP dependencies
+./scripts/update_pi.py  # update and attest the latest Pi build embedded in Cyberful
 make typecheck  # run policy and TypeScript checks
 make test       # run the complete test suite
 make build      # build standalone release binaries
@@ -73,7 +78,7 @@ Source development requires Bun 1.3.14, Node.js 24 with npm, Python 3.10+, and D
 
 ## Configuration and local state
 
-Cyberful creates a secret-free `settings.yaml` in the launch directory. It defines providers, models, fallback routing, delegation, and trusted instructions; provider credentials stay in Cyberful's protected credential store or named environment variables. See [Agent providers and fallback](https://cyberful.io/user-guide/settings/) and [`.env-example`](.env-example).
+Cyberful creates a secret-free `settings.yaml` in the launch directory. It defines providers, models, fallback routing, delegation, trusted instructions, and the progressive skill-catalog budget; provider credentials stay in Cyberful's protected credential store or named environment variables. See [Agent providers and fallback](https://cyberful.io/user-guide/settings/) and [`.env-example`](.env-example).
 
 Workareas live under `work/<name>/` and session logs under `logs/session-logs/`. They can contain sensitive evidence. Never commit workareas, transcripts, browser profiles, ZAP or Ghidra state, generated reports, credentials, or tokens.
 

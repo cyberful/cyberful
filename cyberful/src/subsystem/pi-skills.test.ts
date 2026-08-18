@@ -32,9 +32,12 @@ afterEach(async () => {
 })
 
 describe("PiSkills", () => {
-  test("catalogs the canonical built-in ZAP and Nuclei packages", async () => {
+  test("catalogs the canonical built-in browser, ZAP, and Nuclei packages", async () => {
     const registry = await PiSkills.discover({ roots: [path.join(Builtin.DIR, "skills")] })
 
+    expect(registry.catalog.find((skill) => skill.name === "operate-browser")?.location).toBe(
+      path.join(Builtin.DIR, "skills", "operate-browser", "SKILL.md"),
+    )
     expect(registry.catalog.find((skill) => skill.name === "ZAP")?.location).toBe(
       path.join(Builtin.DIR, "skills", "zap", "SKILL.md"),
     )
@@ -77,12 +80,18 @@ describe("PiSkills", () => {
         name: "alpha-recon",
         description: "Map an authorized surface.",
         triggers: ["reconnaissance"],
+        origin: "first_party",
+        category: "cyberful",
+        searchTerms: ["reconnaissance"],
         location: path.join(trusted, "alpha", "SKILL.md"),
       },
       {
         name: "zeta-analysis",
         description: "Analyze a bounded parser surface.",
         triggers: ["parser", "grammar"],
+        origin: "first_party",
+        category: "cyberful",
+        searchTerms: ["parser", "grammar"],
         location: path.join(trusted, "zeta", "SKILL.md"),
       },
     ])
@@ -201,17 +210,94 @@ describe("PiSkills", () => {
       "Override instructions.",
     )
 
-    const registry = await PiSkills.discover({ roots: [first, override] })
+    const registry = await PiSkills.discover({
+      roots: [
+        { path: first, origin: "first_party" },
+        { path: override, origin: "extension" },
+      ],
+    })
 
     expect(registry.catalog).toEqual([
       {
         name: "shared-skill",
         description: "Trusted override.",
+        origin: "extension",
+        category: "uncategorized",
         location: overrideLocation,
       },
     ])
     expect((await registry.read({ skill: "shared-skill" })).content).toEqual([
       { type: "text", text: "---\nname: shared-skill\ndescription: Trusted override.\n---\n\nOverride instructions." },
     ])
+  })
+
+  test("searches indexed metadata deterministically without exposing paths or reading instructions", async () => {
+    const trusted = await temporaryRoot("search")
+    await writeSkill(
+      trusted,
+      "sql",
+      [
+        "name: sql-injection",
+        "description: Test query parameters for database injection while preserving reproducible evidence.",
+        "domain: application-security",
+        "subdomain: web-injection",
+        "triggers:",
+        "  - injection",
+        "tags:",
+        "  - database",
+        "mitre_attack:",
+        "  - T1190",
+      ],
+      "Complete SQL injection instructions.",
+    )
+    await writeSkill(
+      trusted,
+      "cloud",
+      [
+        "name: cloud-audit",
+        "description: Review cloud identity boundaries and configuration evidence.",
+        "domain: cloud-security",
+        "tags:",
+        "  - aws",
+        "nist_csf:",
+        "  - PR.AA",
+      ],
+      "Complete cloud audit instructions.",
+    )
+    const registry = await PiSkills.discover({
+      roots: [{ path: trusted, origin: "extension" }],
+    })
+    const search = async (query: string, limit?: number, cursor?: string) => {
+      const result = await registry.searchTool.execute("search", {
+        query,
+        ...(limit ? { limit } : {}),
+        ...(cursor ? { cursor } : {}),
+      })
+      const content = result.content[0]
+      if (!content || content.type !== "text") throw new Error("skill_search did not return text")
+      return JSON.parse(content.text) as {
+        total: number
+        results: readonly { name: string; category: string; description: string; matched_terms: readonly string[] }[]
+        next_cursor?: string
+      }
+    }
+
+    expect((await search("sql-injection")).results[0]?.name).toBe("sql-injection")
+    expect((await search("sql")).results[0]?.name).toBe("sql-injection")
+    expect((await search("web-injection")).results[0]?.category).toBe("web-injection")
+    expect((await search("database")).results[0]?.matched_terms).toContain("database")
+    expect((await search("T1190")).results[0]?.matched_terms).toContain("T1190")
+    expect((await search("query parameter")).results[0]?.name).toBe("sql-injection")
+    expect((await search("PR.AA")).results[0]?.name).toBe("cloud-audit")
+
+    const first = await search("*", 1)
+    const second = await search("*", 1, first.next_cursor)
+    expect(first.results.map((item) => item.name)).toEqual(["cloud-audit"])
+    expect(second.results.map((item) => item.name)).toEqual(["sql-injection"])
+    expect(JSON.stringify(first)).not.toContain(trusted)
+    await expect(registry.searchTool.execute("search", { query: "*", cursor: "999" })).rejects.toThrow(
+      "cursor is invalid",
+    )
+    await expect(registry.read({ skill: "missing" })).rejects.toThrow("use skill_search")
   })
 })

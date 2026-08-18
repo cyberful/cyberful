@@ -109,7 +109,7 @@
     "pdfkit": "0.19.1"
   },
   "patchedDependencies": {
-    "@earendil-works/pi-ai@0.81.1": "patches/@earendil-works%2Fpi-ai@0.81.1.patch",
-    "@sigstore/core@3.2.0": "patches/@sigstore%2Fcore@3.2.0.patch"
+    "@sigstore/core@3.2.0": "patches/@sigstore%2Fcore@3.2.0.patch",
+    "@earendil-works/pi-ai@0.84.2": "patches/@earendil-works%2Fpi-ai@0.84.2.patch"
   }
 }

@@ -3,6 +3,7 @@
 // Compiles each supported Cyberful target, embeds its host-side first-party
 // assets and runtime-image digest, then applies compatibility launch smoke tests.
 // → cyberful/src/bootstrap-config.ts — materializes the embedded host launchers.
+// → cyberful/src/runtime-version.ts — supplies the embedded Pi attestation contract.
 // → scripts/release.ts — supplies the immutable version and channel identity.
 // ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,7 @@ import { Script } from "../../scripts/release"
 import pkg from "../package.json"
 import * as Builtin from "../src/builtin"
 import { removeBunBuildArtifacts } from "./bun-build-artifacts"
+import { embeddedRuntimeVersions, RUNTIME_VERSION_ARGV } from "../src/runtime-version"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -42,6 +44,29 @@ async function runBuildCommand(argv: string[]) {
   })
   const exitCode = await child.exited
   if (exitCode !== 0) throw new Error(`${argv.join(" ")} exited with status ${exitCode}`)
+}
+
+function decodeRuntimeVersions(raw: string) {
+  const parsed: unknown = JSON.parse(raw)
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("piAgentCore" in parsed) ||
+    typeof parsed.piAgentCore !== "string" ||
+    !("piAi" in parsed) ||
+    typeof parsed.piAi !== "string"
+  )
+    throw new Error("Cyberful runtime-version probe returned an invalid payload")
+  return { piAgentCore: parsed.piAgentCore, piAi: parsed.piAi }
+}
+
+function installedPackageVersion(packageName: string) {
+  const manifestPath = path.join(dir, "node_modules", packageName, "package.json")
+  const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+  if (typeof parsed !== "object" || parsed === null || !("version" in parsed) || typeof parsed.version !== "string") {
+    throw new Error(`Invalid installed package manifest: ${manifestPath}`)
+  }
+  return parsed.version
 }
 
 // ── Interrupted Builds Cannot Own The Next Invocation ────────────
@@ -292,6 +317,16 @@ if (!skipInstall) {
   ])
 }
 
+for (const [packageName, expectedVersion] of [
+  ["@earendil-works/pi-agent-core", embeddedRuntimeVersions.piAgentCore],
+  ["@earendil-works/pi-ai", embeddedRuntimeVersions.piAi],
+] as const) {
+  const installedVersion = installedPackageVersion(packageName)
+  if (installedVersion !== expectedVersion) {
+    throw new Error(`${packageName} resolved to ${installedVersion}; Cyberful pins ${expectedVersion}`)
+  }
+}
+
 // ── Standalone Binaries Never Capture The Build Environment ─────────
 // The launch directory's `.env` is a runtime-only input and may contain provider
 // API keys or engagement configuration. Keep the compiled default empty so a
@@ -506,6 +541,35 @@ for (const item of targets) {
       throw new Error(`Smoke test failed for ${name} with status ${exitCode}: ${errorOutput.trim()}`)
     }
     console.log(`Smoke test passed: ${versionOutput.trim()}`)
+
+    const runtimeSmoke = Bun.spawn([binaryPath, RUNTIME_VERSION_ARGV], {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 60_000,
+      maxBuffer: 1_048_576,
+    })
+    const [runtimeOutput, runtimeError, runtimeExitCode] = await Promise.all([
+      new Response(runtimeSmoke.stdout).text(),
+      new Response(runtimeSmoke.stderr).text(),
+      runtimeSmoke.exited,
+    ])
+    if (runtimeExitCode !== 0) {
+      throw new Error(
+        `Embedded Pi smoke test failed for ${name} with status ${runtimeExitCode}: ${runtimeError.trim()}`,
+      )
+    }
+    const reportedRuntime = decodeRuntimeVersions(runtimeOutput)
+    if (
+      reportedRuntime.piAgentCore !== embeddedRuntimeVersions.piAgentCore ||
+      reportedRuntime.piAi !== embeddedRuntimeVersions.piAi
+    )
+      throw new Error(
+        `Embedded Pi mismatch for ${name}: expected agent=${embeddedRuntimeVersions.piAgentCore}, ai=${embeddedRuntimeVersions.piAi}; received agent=${reportedRuntime.piAgentCore}, ai=${reportedRuntime.piAi}`,
+      )
+    console.log(
+      `Embedded Pi smoke test passed: agent=${reportedRuntime.piAgentCore}, ai=${reportedRuntime.piAi}`,
+    )
   }
 
   await fs.promises.rm(path.join(dir, "dist", name, "bin", "tui"), { recursive: true, force: true })

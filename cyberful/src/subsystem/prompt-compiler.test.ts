@@ -52,16 +52,25 @@ function input(overrides: Partial<CompileInput> = {}): CompileInput {
     },
     userTask: "Map https://target.example within MISSION.md.",
     explicitContext: "Use the authenticated test accounts already recorded in the workarea.",
+    skillCatalogBudget: {
+      operationalContextWindow: 256_000,
+      contextSource: "catalog_default",
+      descriptionBudgetPercentage: 2,
+    },
     skills: [
       {
         name: "test-browser-security",
         description: "Test browser trust boundaries.",
         triggers: ["DOM", "CORS"],
+        origin: "first_party",
+        category: "browser-security",
         location: "/builtin/skills/test-browser-security/SKILL.md",
       },
       {
         name: "operate-content-discovery",
         description: "Map reachable content.",
+        origin: "first_party",
+        category: "reconnaissance",
         location: "/builtin/skills/operate-content-discovery/SKILL.md",
       },
     ],
@@ -84,6 +93,9 @@ describe("AgentPromptCompiler", () => {
     expect(compiled.system).toContain("Write RECON.md, preserve evidence, and hand off to Exploit.")
     expect(compiled.system).toContain("<name>operate-content-discovery</name>")
     expect(compiled.system).toContain("<triggers>DOM, CORS</triggers>")
+    expect(compiled.system).toContain("call skill_search")
+    expect(compiled.system).toContain("read SKILL.md completely")
+    expect(compiled.system).not.toContain("/builtin/skills")
     expect(compiled.system).toContain("Role: root")
     expect(compiled.system).toContain("scarce session capacity")
     expect(compiled.system).toContain("exact structured security-policy block")
@@ -263,9 +275,132 @@ describe("AgentPromptCompiler", () => {
     expect(first.manifest).toEqual(reversed.manifest)
     expect(first.manifest.systemSha256).toBe(createHash("sha256").update(first.system).digest("hex"))
     expect(Object.values(first.manifest.componentHashes)).toHaveLength(10)
+    expect(first.manifest.skillCatalog).toMatchObject({
+      operationalContextWindow: 256_000,
+      descriptionBudgetPercentage: 2,
+      descriptionBudgetTokens: 5_120,
+      descriptionBudgetCharacters: 20_480,
+      totalSkills: 2,
+      describedSkills: 2,
+      nameOnlySkills: 0,
+    })
     expect(first.system.indexOf("<name>operate-content-discovery</name>")).toBeLessThan(
       first.system.indexOf("<name>test-browser-security</name>"),
     )
+  })
+
+  test("caps combined metadata at 1,536 characters and never emits host paths", () => {
+    const location = `/trusted/${"segment/".repeat(250)}SKILL.md`
+    const catalog = AgentPromptCompiler.skillCatalog([
+      {
+        name: "combined-limit",
+        description: "A bounded sentence. ".repeat(100),
+        triggers: ["trigger-keyword", "database-boundary"],
+        location,
+      },
+      {
+        name: "description-limit",
+        description: "Preserve a coherent evidence clause; ".repeat(100),
+        triggers: ["must-not-appear"],
+        location: "/trusted/description-limit/SKILL.md",
+      },
+      {
+        name: "trigger-limit",
+        description: "Keep this complete description.",
+        triggers: ["bounded trigger clause; ".repeat(100)],
+        location: "/trusted/trigger-limit/SKILL.md",
+      },
+    ])
+
+    const blocks = [...catalog.text.matchAll(/<skill>\n([\s\S]*?)\n  <\/skill>/g)].map((match) => match[1] ?? "")
+    expect(blocks).toHaveLength(3)
+    for (const block of blocks) {
+      const description = block.match(/<description>(.*?)<\/description>/)?.[1] ?? ""
+      const triggers = block.match(/<triggers>(.*?)<\/triggers>/)?.[1] ?? ""
+      expect(Array.from(`${description}${triggers}`).length).toBeLessThanOrEqual(1_536)
+    }
+    expect(blocks.find((block) => block.includes("description-limit"))).toContain("…</description>")
+    expect(blocks.find((block) => block.includes("trigger-limit"))).toContain("…</triggers>")
+    expect(catalog.text).not.toContain(location)
+    expect(catalog.text).not.toContain("<location>")
+  })
+
+  test("keeps 817 names across 29 categories while allocating deterministic two-percent metadata", () => {
+    const skills = Array.from({ length: 817 }, (_, index) => ({
+      name: `skill-${String(index).padStart(3, "0")}`,
+      description: `Inspect category ${index % 29} with reproducible A & B evidence. Validate the bounded security condition before reporting.`,
+      triggers: [`trigger-${index % 17}`],
+      origin: index < 3 ? ("first_party" as const) : ("extension" as const),
+      category: `category-${String(index % 29).padStart(2, "0")}`,
+      location: `/never/expose/category-${index % 29}/skill-${index}/SKILL.md`,
+    }))
+    const budget = {
+      operationalContextWindow: 25_000,
+      contextSource: "catalog_restricted" as const,
+      descriptionBudgetPercentage: 2,
+    }
+    const first = AgentPromptCompiler.skillCatalog(skills, budget)
+    const reordered = AgentPromptCompiler.skillCatalog(skills.toReversed(), budget)
+
+    expect(first).toEqual(reordered)
+    expect(first.manifest).toMatchObject({
+      descriptionBudgetTokens: 500,
+      descriptionBudgetCharacters: 2_000,
+      totalSkills: 817,
+    })
+    expect(first.manifest.metadataCharacters).toBeLessThanOrEqual(2_000)
+    const serializedMetadata = first.text.match(/<skill_metadata>[\s\S]*<\/skill_metadata>/)?.[0] ?? ""
+    const serializedIndex = first.text.match(/<skill_name_index>[\s\S]*<\/skill_name_index>/)?.[0] ?? ""
+    expect(serializedMetadata.length).toBe(first.manifest.metadataCharacters)
+    expect(serializedIndex.length).toBe(first.manifest.nameIndexCharacters)
+    expect(serializedMetadata).toContain("&amp;")
+    expect(first.manifest.describedSkills + first.manifest.nameOnlySkills).toBe(817)
+    for (const skill of skills) expect(first.text).toContain(skill.name)
+    expect(first.text).not.toContain("/never/expose")
+    for (const name of ["skill-000", "skill-001", "skill-002"]) expect(first.text).toContain(`<name>${name}</name>`)
+    const detailedBlocks = [...first.text.matchAll(/<skill>\n([\s\S]*?)\n  <\/skill>/g)].map((match) => match[1] ?? "")
+    const detailedCategories = new Set(detailedBlocks.map((block) => block.match(/<category>(.*?)<\/category>/)?.[1]))
+    expect(detailedCategories.size).toBeGreaterThan(1)
+    const extensionCategories = detailedBlocks
+      .slice(3, 7)
+      .map((block) => block.match(/<category>(.*?)<\/category>/)?.[1])
+    expect(extensionCategories).toEqual(["category-00", "category-01", "category-02", "category-03"])
+
+    const nameOnly = AgentPromptCompiler.skillCatalog(skills, {
+      ...budget,
+      operationalContextWindow: 100,
+    })
+    expect(nameOnly.manifest.metadataCharacters).toBe(0)
+    expect(nameOnly.manifest.nameOnlySkills).toBe(817)
+    expect(nameOnly.text).toContain("skill-816")
+  })
+
+  test("reduces every first-party description with one fair ceiling when complete metadata does not fit", () => {
+    const catalog = AgentPromptCompiler.skillCatalog(
+      Array.from({ length: 4 }, (_, index) => ({
+        name: `first-party-${index}`,
+        description: "Uniform bounded sentence. ".repeat(100),
+        triggers: ["uniform-trigger"],
+        origin: "first_party" as const,
+        category: "cyberful",
+        location: `/builtin/${index}/SKILL.md`,
+      })),
+      {
+        operationalContextWindow: 12_500,
+        contextSource: "catalog_restricted",
+        descriptionBudgetPercentage: 2,
+      },
+    )
+    const excerpts = [...catalog.text.matchAll(/<description>(.*?)<\/description>/g)].map((match) => match[1] ?? "")
+
+    expect(catalog.manifest).toMatchObject({
+      descriptionBudgetCharacters: 1_000,
+      describedSkills: 4,
+      compressedSkills: 4,
+      nameOnlySkills: 0,
+    })
+    expect(new Set(excerpts.map((excerpt) => Array.from(excerpt).length)).size).toBe(1)
+    expect(excerpts.every((excerpt) => Array.from(excerpt).length >= 64 && excerpt.endsWith("…"))).toBe(true)
   })
 
   test("keeps Bug Bounty research personas distinct and permits only their advisory critics", async () => {

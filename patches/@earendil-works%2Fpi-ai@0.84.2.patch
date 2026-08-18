@@ -1,8 +1,8 @@
 diff --git a/dist/api/openai-codex-responses.js b/dist/api/openai-codex-responses.js
-index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e2fb67a89 100644
+index c9fe5d14f51a43142f8d182cf9ac9d7ce69f2175..1a642b884b9349cef825f71021fa8b546a83994b 100644
 --- a/dist/api/openai-codex-responses.js
 +++ b/dist/api/openai-codex-responses.js
-@@ -277,7 +277,12 @@ export const stream = (model, context, options) => {
+@@ -297,7 +297,12 @@ export const stream = (model, context, options) => {
                          statusText: response.statusText,
                      });
                      const info = await parseErrorResponse(fakeResponse);
@@ -16,9 +16,9 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
                  }
                  catch (error) {
                      if (error instanceof Error) {
-@@ -314,6 +319,9 @@ export const stream = (model, context, options) => {
-                 // partialJson is only a streaming scratch buffer; never persist it.
+@@ -341,6 +346,9 @@ export const stream = (model, context, options) => {
                  delete block.partialJson;
+                 delete block.customInput;
              }
 +            appendAssistantMessageDiagnostic(output, createAssistantMessageDiagnostic("provider_request_failure", error, error?.codexErrorInfo
 +                ? { codexErrorInfo: error.codexErrorInfo }
@@ -26,7 +26,7 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
              output.stopReason = options?.signal?.aborted ? "aborted" : "error";
              output.errorMessage = formatProviderError(normalizeProviderError(error));
              stream.push({ type: "error", reason: output.stopReason, error: output });
-@@ -434,11 +442,13 @@ async function processStream(response, output, stream, model, options) {
+@@ -480,11 +488,13 @@ async function processStream(response, output, stream, model, grammarToolInputPr
  class CodexApiError extends Error {
      code;
      payload;
@@ -40,9 +40,9 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
          this.cause = options?.cause;
      }
  }
-@@ -457,6 +467,10 @@ function isCodexNonTransportError(error) {
- function isWebSocketConnectionLimitReachedError(error) {
-     return error instanceof CodexApiError && error.code === WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE;
+@@ -506,6 +516,10 @@ function isWebSocketConnectionLimitReachedError(error) {
+ function isPreviousResponseNotFoundError(error) {
+     return error instanceof CodexApiError && error.code === PREVIOUS_RESPONSE_NOT_FOUND_CODE;
  }
 +function hasCodexCyberPolicy(value) {
 +    const info = value && typeof value === "object" ? value.codexErrorInfo : undefined;
@@ -51,15 +51,15 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
  function extractCodexEventError(event) {
      const nested = event.error && typeof event.error === "object" ? event.error : undefined;
      return {
-@@ -466,6 +480,7 @@ function extractCodexEventError(event) {
+@@ -515,6 +529,7 @@ function extractCodexEventError(event) {
              : typeof nested?.message === "string"
                  ? nested.message
                  : undefined,
 +        cyberPolicy: hasCodexCyberPolicy(nested),
      };
  }
- async function* mapCodexEvents(events) {
-@@ -474,17 +489,23 @@ async function* mapCodexEvents(events) {
+ async function* mapCodexEvents(events, output) {
+@@ -523,17 +538,23 @@ async function* mapCodexEvents(events, output) {
          if (!type)
              continue;
          if (type === "error") {
@@ -87,7 +87,7 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
          }
          if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
              const response = event.response;
-@@ -1143,11 +1164,16 @@ async function parseErrorResponse(response) {
+@@ -1216,11 +1237,16 @@ async function parseErrorResponse(response) {
      const raw = await response.text();
      let message = raw || response.statusText || "Request failed";
      let friendlyMessage;
@@ -105,7 +105,7 @@ index f34cf240bbd0034c2189bf299058569ec9082753..db71d0d60f7cbeb63e7aa7849626003e
              if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
                  const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
                  const mins = err.resets_at
-@@ -1160,7 +1186,7 @@ async function parseErrorResponse(response) {
+@@ -1233,7 +1259,7 @@ async function parseErrorResponse(response) {
          }
      }
      catch { }
