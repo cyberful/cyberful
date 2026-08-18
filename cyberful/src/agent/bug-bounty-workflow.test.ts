@@ -112,7 +112,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     ).toEqual({ brief: 0, recon: 3, exploit: 5, hacker: 5, verify: 0, report: 0 })
   })
 
-  test("research personas optimize reward, use a root critic, and nudge relevant skills", () => {
+  test("research personas optimize reward, protect scarce browser access, use a root critic, and nudge skills", () => {
     const recon = fs.readFileSync(SubsystemPhase.personaPath(home, "recon", "bug-bounty"), "utf8")
     const exploit = fs.readFileSync(SubsystemPhase.personaPath(home, "exploit", "bug-bounty"), "utf8")
     const hacker = fs.readFileSync(SubsystemPhase.personaPath(home, "hacker", "bug-bounty"), "utf8")
@@ -125,12 +125,18 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(exploit).toMatch(/original phase root[\s\S]*first half/i)
     expect(exploit).toMatch(/advisory and artifact-only/i)
     expect(exploit).toContain("`UNTESTABLE`")
+    expect(exploit).toContain('`display_name: "finding-breaker"`')
+    expect(exploit).toContain("raw/strategy/exploit-finding-breaker.md")
     expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-portfolio-critic.md"`')
+    expect(hacker).toContain('`display_name: "finding-breaker"`')
+    expect(hacker).toContain("raw/strategy/hacker-finding-breaker.md")
     expect(hacker).toMatch(/after two negatives converge[\s\S]*change impact, boundary, or enforcement owner/i)
     for (const persona of [recon, exploit, hacker]) {
       expect(persona).toMatch(/narrowest useful skill/i)
       expect(persona).toMatch(/hypothesis/i)
       expect(persona).toMatch(/not a score|never score|without scores/i)
+      expect(persona).toMatch(/Preserve a browser profile[\s\S]*another profile for parallel exploration/i)
+      expect(persona).toMatch(/Before handoff[\s\S]*tabs and in-memory state are closed/i)
     }
   })
 
@@ -201,6 +207,9 @@ describe("built-in Bug Bounty Program workflow", () => {
 
     for (const verdict of ["SURVIVES", "REVISE", "DEMOTE"]) expect(verify).toContain(verdict)
     for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"]) expect(verify).toContain(status)
+    expect(verify).toMatch(/Reproduction proves a mechanism, not necessarily a vulnerability/i)
+    expect(verify).toMatch(/violated security invariant/i)
+    expect(verify).toMatch(/cheapest benign explanation/i)
     expect(verify).toMatch(/Write `BUG_BOUNTY_VERIFY\.md`/i)
 
     expect(report).toContain("reports/bug-bounty/BBP-###.md")

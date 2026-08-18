@@ -165,6 +165,8 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
         summary: `${phase} pivoted to a target-specific causal boundary.`,
         evidence: [`${pivot.id} tests ${pivot.root_cause} at ${pivot.surface}.`],
         remaining_unknowns: [],
+        opportunity_closeout:
+          "Every remaining authorized discriminator shares the tested enforcement boundary and cannot improve impact.",
         pivots: [
           {
             hypothesis_id: pivot.id,

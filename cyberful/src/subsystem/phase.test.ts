@@ -892,6 +892,53 @@ describe("phase orchestration (runAndAdvance)", () => {
     expect(specs[1]?.objective).toContain("list the current hypothesis registry")
   })
 
+  test("a tool-call history mismatch restarts once on main without requiring fallback", async () => {
+    const specs: PhaseSpec[] = []
+    let reconAttempts = 0
+    await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance({ ...baseInput("recon"), timeoutMs: 60_000 }, {
+        runPhase: async (spec) => {
+          specs.push(spec)
+          if (spec.phase === "recon" && reconAttempts++ === 0)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              summary: "",
+              exitCode: 1,
+              termination: "subsystem_failed",
+              handoff: undefined,
+              subsystemFailure: {
+                kind: "malformed_output",
+                providerCode: "tool_call_history_mismatch",
+                retryable: true,
+              },
+              phaseFailure: {
+                phase: spec.phase,
+                source: "provider",
+                class: "malformed_output",
+                code: "tool_call_history_mismatch",
+                detail: "provider conversation lost a completed tool-call pair",
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: false,
+              },
+            }
+          return completedPhase(spec.phase)
+        },
+      }),
+    )
+
+    expect(specs.slice(0, 2).map((spec) => [spec.phase, spec.attempt, spec.providerRoute])).toEqual([
+      ["recon", 1, "main"],
+      ["recon", 2, "main"],
+    ])
+    expect(specs[1]?.objective).toContain("tool_call_history_mismatch")
+    expect(specs[1]?.objective).toContain("Do not repeat an operation")
+  })
+
   test("terminal contract failures are failed while a plain interruption is blocked", async () => {
     const contractFailure = await Effect.runPromise(
       SubsystemOrchestrator.runAndAdvance(baseInput("recon"), {

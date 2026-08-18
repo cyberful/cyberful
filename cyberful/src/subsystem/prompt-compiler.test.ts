@@ -268,7 +268,7 @@ describe("AgentPromptCompiler", () => {
     )
   })
 
-  test("keeps Bug Bounty research personas distinct and permits only their advisory portfolio critic", async () => {
+  test("keeps Bug Bounty research personas distinct and permits only their advisory critics", async () => {
     const [baseInstructions, pentestReconPersona, bountyReconPersona, bountyExploitPersona] = await Promise.all([
       builtin("baseInstructions.md"),
       builtin("agents/pentest/recon.md"),
@@ -310,8 +310,11 @@ describe("AgentPromptCompiler", () => {
     )
 
     expect(bugBountyExploit.system).toContain("artifact-only portfolio critic")
+    expect(bugBountyExploit.system).toContain("post-finding breaker")
     expect(bugBountyExploit.system).toContain("Operational children execute their discriminators directly")
     expect(bugBountyExploit.system).toContain('display_name: "portfolio-critic"')
     expect(bugBountyExploit.system).toContain("raw/strategy/exploit-portfolio-critic.md")
+    expect(bugBountyExploit.system).toContain('display_name: "finding-breaker"')
+    expect(bugBountyExploit.system).toContain("raw/strategy/exploit-finding-breaker.md")
   })
 })

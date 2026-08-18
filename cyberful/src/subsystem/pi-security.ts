@@ -101,6 +101,8 @@ const UNAVAILABLE_CODES = new Set([
   "temporarily_unavailable",
 ])
 const NORMAL_FINISH_REASONS = new Set(["end", "function_call", "length", "stop", "tool_calls", "toolUse"])
+const CODEX_TOOL_CALL_HISTORY_MISMATCH =
+  /^Codex error: No tool call found for function call output with call_id call_[A-Za-z0-9_-]+\.?$/
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -189,6 +191,12 @@ function evidence(observation: FailureObservation): StructuredEvidence {
   const upstream = record(observation.upstream)
   let failed = inspectRecord(message, codes, finishReasons, httpStatuses)
   failed = inspectRecord(upstream, codes, finishReasons, httpStatuses) || failed
+
+  if (
+    observation.adapter === "openai-codex" &&
+    CODEX_TOOL_CALL_HISTORY_MISMATCH.test(stringField(message, "errorMessage") ?? "")
+  )
+    codes.push("tool_call_history_mismatch")
 
   for (const source of [message, upstream]) {
     const stopReason = stringField(source, "stopReason")
@@ -299,6 +307,8 @@ function ordinaryFailure(structured: StructuredEvidence, adapter: string): Ordin
   if (providerCode && UNAVAILABLE_CODES.has(providerCode)) return { kind: "unavailable", ...common, retryable: true }
   if (httpStatus === 500 || httpStatus === 502 || httpStatus === 503)
     return { kind: "unavailable", ...common, retryable: true }
+  if (providerCode === "tool_call_history_mismatch")
+    return { kind: "malformed_output", ...common, retryable: true }
   if (providerCode && MALFORMED_OUTPUT_CODES.has(providerCode))
     return { kind: "malformed_output", ...common, retryable: false }
   return { kind: "unknown", ...common, retryable: false }

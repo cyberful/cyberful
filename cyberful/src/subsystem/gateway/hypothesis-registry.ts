@@ -159,6 +159,7 @@ interface Synthesis {
   readonly summary: string
   readonly evidence: readonly string[]
   readonly remaining_unknowns: readonly string[]
+  readonly opportunity_closeout?: string
   readonly evidence_refs?: readonly string[]
   readonly pivots?: readonly SynthesisPivot[]
   readonly exhausted_hypothesis_ids?: readonly string[]
@@ -975,6 +976,8 @@ export class HypothesisRegistry {
             !synthesis.no_candidate_evidence_refs?.length))
       )
         return "Bug Bounty handoff requires a structured portfolio synthesis with real hypothesis references"
+      if (synthesis && !synthesis.opportunity_closeout)
+        return "Bug Bounty handoff requires a qualitative closeout of remaining reward opportunities"
       const unresolved = synthesis
         ? convergences(registry, this.#workflow, this.#phase).filter(
             (convergence) =>
@@ -1393,6 +1396,9 @@ export class HypothesisRegistry {
             `Bug Bounty synthesis requires bounty_context on ${missingContext.map((item) => item.id).join(", ")}`,
           )
       }
+      const opportunityCloseout = this.#bountyPortfolio
+        ? boundedText(args.opportunity_closeout, "hypothesis synthesis opportunity_closeout", 3_000)
+        : optionalText(args.opportunity_closeout, "hypothesis synthesis opportunity_closeout", 3_000)
       const pivots =
         this.#bountyPortfolio && args.outcome === "diversified"
           ? parseSynthesisPivots(args.pivots, registry, this.#workflow, this.#phase)
@@ -1455,6 +1461,7 @@ export class HypothesisRegistry {
         summary: boundedText(args.summary ?? args.contrarian_summary, "hypothesis synthesis summary", 4_000),
         evidence,
         remaining_unknowns: textArray(args.remaining_unknowns, "hypothesis remaining_unknowns", 30),
+        ...(opportunityCloseout ? { opportunity_closeout: opportunityCloseout } : {}),
         ...(evidenceRefs.length > 0 ? { evidence_refs: evidenceRefs } : {}),
         ...(pivots ? { pivots } : {}),
         ...(exhaustedHypothesisIDs && exhaustedHypothesisIDs.length > 0
@@ -1808,6 +1815,11 @@ export const HYPOTHESIS_TOOL_DEF = {
           evidence: { type: "array", minItems: 1, maxItems: 30, items: { type: "string" } },
           evidence_refs: { type: "array", maxItems: 30, items: { type: "string" } },
           remaining_unknowns: { type: "array", maxItems: 30, items: { type: "string" } },
+          opportunity_closeout: {
+            type: "string",
+            description:
+              "Required in Bug Bounty portfolio mode: explain why untested authorized discriminators cannot improve the finding or reward portfolio, or name the exact authority/prerequisite that blocks them.",
+          },
           pivots: { type: "array", maxItems: 20, items: synthesisPivotSchema },
           exhausted_hypothesis_ids: { type: "array", maxItems: 50, items: { type: "string" } },
           exhaustion_rationale: { type: "string" },

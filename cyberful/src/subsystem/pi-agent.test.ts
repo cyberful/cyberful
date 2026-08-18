@@ -935,6 +935,34 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(retryEvents(events).map((event) => event.state)).toEqual(["scheduled", "attempting", "succeeded"])
   })
 
+  test("leaves a Codex tool-call history mismatch for a fresh phase owner", async () => {
+    const provider = new InMemoryProvider((call) =>
+      assistant(call, [], {
+        stopReason: "error",
+        errorMessage:
+          "Codex error: No tool call found for function call output with call_id call_BmFnAysktU3JZy0b7kkbd8vU.",
+      }),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "tool-call-history-mismatch",
+        objective: "preserve durable phase state after a corrupted provider conversation",
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "provider_failed",
+      failure: {
+        kind: "malformed_output",
+        providerCode: "tool_call_history_mismatch",
+        retryable: true,
+      },
+    })
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(await collectEvents(run))).toEqual([])
+  })
+
   test("does not retry when the global provider retry policy is disabled", async () => {
     const configured = settings()
     const provider = new InMemoryProvider((call) => unavailableError(call))

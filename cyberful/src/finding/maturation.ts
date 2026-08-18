@@ -30,6 +30,11 @@ function nextSeverity(value: RatedSeverity): RatedSeverity | undefined {
   return ratedSeverities[index + 1]
 }
 
+function higherSeverity(current: RatedSeverity, candidate: RatedSeverity | undefined) {
+  if (!candidate) return
+  return ratedSeverities.indexOf(candidate) > ratedSeverities.indexOf(current) ? candidate : undefined
+}
+
 function latestAssessed(finding: FindingRegistry.Finding | undefined) {
   return finding?.observations.findLast((observation) => observation.review === "ASSESSED")
 }
@@ -145,7 +150,7 @@ function questions(input: {
       : input.phase === "hacker"
         ? "Can this finding be chained with another supported observation to increase impact?"
       : input.phase === "verify"
-          ? "What would a skeptical triager challenge, and does the evidence survive that challenge?"
+          ? "What security invariant is violated, what concrete unwanted attacker effect is proven, and why does the evidence defeat the cheapest benign explanation?"
           : "Which control or benign twin could disprove the claimed escalation?"
   return [
     "What is the strongest impact currently supported by the evidence?",
@@ -183,7 +188,7 @@ export function buildAdvisory(input: {
   const currentSeverity = severity(input.toolInput.severity) ?? severity(previous?.severity)
   if (!currentSeverity) return
   const assessment = assessmentInput(input.toolInput)
-  const requestedTarget = severity(assessment?.target_severity)
+  const requestedTarget = higherSeverity(currentSeverity, severity(assessment?.target_severity))
   const targetSeverity = requestedTarget ?? (assessment?.status === "MAXIMIZED" ? undefined : nextSeverity(currentSeverity))
   const groupID = rewardGroupID(input.toolInput, input.finding)
   const reward =

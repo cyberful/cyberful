@@ -244,7 +244,8 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
                     policy.automaticSecurityBlockEnabled !== false),
                 fallbackConfigured: policy.fallbackConfigured,
                 useFallbackProvider:
-                  providerFailure.providerCode === "active_tail_too_large"
+                  providerFailure.providerCode === "active_tail_too_large" ||
+                  providerFailure.providerCode === "tool_call_history_mismatch"
                     ? false
                     : providerFailure.kind === "security_policy_block" || policy.useFallbackProvider,
                 alreadyRecovered: attempt > 1,

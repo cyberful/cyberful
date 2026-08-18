@@ -1305,6 +1305,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     return (
       policy.enabled &&
       failure?.retryable === true &&
+      failure.providerCode !== "tool_call_history_mismatch" &&
       !(
         failure.kind === "capacity" &&
         (failure.providerCode === "context_length_exceeded" || failure.providerCode === "context_rotation_failed")

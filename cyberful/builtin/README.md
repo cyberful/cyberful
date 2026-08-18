@@ -38,7 +38,7 @@ The Bug Bounty Program chain is:
 brief → recon → exploit → hacker → verify → report → complete
 ```
 
-Its dedicated Brief writes the Pentest-compatible `MISSION.md`. Dedicated Recon, Exploit, and Hacker personas apply a qualitative reward lens, host-validated bounty context, and structurally checked portfolio convergence while retaining the standard `RECON.md`, `EXPLOIT.md`, and `HACKER.md` artifacts. Exploit and Hacker roots request one independent artifact-only `portfolio-critic` review in the first half of their phases; the review remains advisory and is not a host gate. Dedicated Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
+Its dedicated Brief writes the Pentest-compatible `MISSION.md`. Dedicated Recon, Exploit, and Hacker personas apply a qualitative reward lens, host-validated bounty context, structurally checked portfolio convergence, and one explicit closeout of remaining authorized reward opportunities while retaining the standard `RECON.md`, `EXPLOIT.md`, and `HACKER.md` artifacts. Exploit and Hacker roots request one independent artifact-only `portfolio-critic` in the first half and one advisory `finding-breaker` after their first positive finding; neither review is a host gate. Dedicated Verify separates mechanism reproduction from evidence of a violated security invariant and concrete unwanted attacker effect. Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
 
 The Code Audit chain is:
 

@@ -661,6 +661,7 @@ export function buildPhasePrompt(
             ? [
                 "Every Bug Bounty research hypothesis requires a reward-aware `bounty_context`. A diversified synthesis references claimed pivot IDs, their comparison IDs, changed impact/boundary dimensions, and distance rationale; exhausted synthesis references terminal hypotheses and target evidence.",
                 "Two tested DISPROVED hypotheses in one declared cluster create convergence. The next strategic move should change impact or enforcement boundary, while the host waits until handoff to require that pivot or evidenced exhaustion.",
+                "Every synthesis must include `opportunity_closeout`: name any untested authorized discriminator that could improve a finding or reward portfolio, then execute it or explain the exact evidence, prerequisite, authority, or dominance reason that makes stopping rational. A first positive finding is not phase completion.",
               ]
             : []),
           "Before handoff, synthesize either the semantic pivots you exercised or target-specific evidence that useful diversification is exhausted. There are no numeric quotas or automatic rankings.",
@@ -720,9 +721,11 @@ export function buildPhasePrompt(
       ? [
           "- Answer each finding maturation checkpoint through authorized evidence; maximize supportable impact and prioritize host-derived published monetary upside, then proof proximity and test cost.",
           '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
+          "- `MAXIMIZED` means the evidence-backed ceiling of a supported vulnerability. Reproducing a mechanism, matching an eligible impact label, or lacking authority for a stronger test does not by itself establish that a vulnerability exists.",
           ...(spec.phase === "verify"
             ? [
                 "- Reconcile every remaining PURSUE assessment to MAXIMIZED or DEFERRED with an evidence-backed ceiling or exact resume condition.",
+                "- `SUBMISSION_READY` requires a violated security invariant, a concrete unwanted attacker effect, and evidence that defeats the cheapest benign explanation. Otherwise use NEEDS_MORE_EVIDENCE or NOT_REPORTABLE even when the mechanism reproduces.",
               ]
             : []),
         ]

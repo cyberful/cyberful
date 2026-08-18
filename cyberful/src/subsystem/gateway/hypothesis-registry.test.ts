@@ -679,8 +679,18 @@ describe("hypothesis registry", () => {
         registry.handle({
           action: "synthesize",
           outcome: "diversified",
+          summary: "The portfolio changed boundary but omitted its stopping rationale.",
+          evidence: ["A distinct identity-service discriminator was already exercised."],
+        }),
+      ).rejects.toThrow("opportunity_closeout")
+
+      await expect(
+        registry.handle({
+          action: "synthesize",
+          outcome: "diversified",
           summary: "A same-cluster candidate was incorrectly proposed as a pivot.",
           evidence: ["Three object-authorization variants retained the control."],
+          opportunity_closeout: "No untested route variant changes the impact or enforcing service.",
           pivots: [
             {
               hypothesis_id: "BB-SAME-3",
@@ -697,6 +707,7 @@ describe("hypothesis registry", () => {
           outcome: "diversified",
           summary: "An invented ID was proposed as a pivot.",
           evidence: ["The proposed pivot is not in the registry."],
+          opportunity_closeout: "The remaining named opportunity must resolve to a real hypothesis.",
           pivots: [
             {
               hypothesis_id: "BB-NOT-THERE",
@@ -713,6 +724,7 @@ describe("hypothesis registry", () => {
         outcome: "diversified",
         summary: "The structurally different identity path was tested too early to resolve later convergence.",
         evidence: ["The identity-service discriminator preceded the second object-authorization negative."],
+        opportunity_closeout: "A later post-convergence pivot remains available and must still be exercised.",
         pivots: [
           {
             hypothesis_id: "BB-EARLY-PIVOT",
@@ -742,6 +754,7 @@ describe("hypothesis registry", () => {
         outcome: "diversified",
         summary: "Pivoted from resource authorization to identity binding while retaining the declared causal cluster.",
         evidence: ["The identity-service discriminator exercised a different enforcement boundary."],
+        opportunity_closeout: "Remaining route variants share the tested enforcement owners and cannot change impact.",
         pivots: [
           {
             hypothesis_id: "BB-PIVOT",
@@ -778,6 +791,7 @@ describe("hypothesis registry", () => {
           outcome: "exhausted",
           summary: "The cluster is exhausted.",
           evidence: ["Both target controls held."],
+          opportunity_closeout: "No distinct authorized token-binding discriminator remains.",
           exhausted_hypothesis_ids: ["BB-EXH-1", "BB-EXH-2"],
           exhaustion_rationale: "No distinct target oracle remains.",
         }),
@@ -788,6 +802,7 @@ describe("hypothesis registry", () => {
           outcome: "exhausted",
           summary: "The cluster is exhausted, but the cited evidence is unrelated.",
           evidence: ["Both target controls held."],
+          opportunity_closeout: "No distinct authorized token-binding discriminator remains.",
           evidence_refs: ["raw/evidence/not-linked.json"],
           exhausted_hypothesis_ids: ["BB-EXH-1", "BB-EXH-2"],
           exhaustion_rationale: "No distinct target oracle remains.",
@@ -798,6 +813,7 @@ describe("hypothesis registry", () => {
         outcome: "exhausted",
         summary: "The token-binding cluster is exhausted.",
         evidence: ["Both target-specific token-binding controls held under independent discriminators."],
+        opportunity_closeout: "All authorized token-binding oracles are terminal; stronger tests require new authority.",
         evidence_refs: ["raw/evidence/BB-EXH-1.json", "raw/evidence/BB-EXH-2.json"],
         exhausted_hypothesis_ids: ["BB-EXH-1", "BB-EXH-2"],
         exhaustion_rationale: "The two available enforcement paths share no remaining distinct authorized oracle.",
@@ -824,6 +840,7 @@ describe("hypothesis registry", () => {
           outcome: "exhausted",
           summary: "No candidate could be formulated.",
           evidence: ["The authorized target was unreachable throughout the bounded phase."],
+          opportunity_closeout: "Target unreachability blocks every authorized discriminator.",
           evidence_refs: ["raw/evidence/target-unreachable.json"],
           exhaustion_rationale: "No target behavior was available from which to derive a discriminator.",
         }),
@@ -835,6 +852,7 @@ describe("hypothesis registry", () => {
           outcome: "exhausted",
           summary: "No candidate could be formulated because the target never became observable.",
           evidence: ["Independent health checks recorded no authorized target response."],
+          opportunity_closeout: "No reward path can be tested until the authorized target becomes observable.",
           evidence_refs: ["raw/evidence/target-unreachable.json"],
           no_candidate_evidence_refs: ["raw/evidence/target-unreachable.json"],
           exhaustion_rationale: "The documented target block prevented formulation of a safe vulnerable/secure oracle.",
@@ -882,6 +900,7 @@ describe("hypothesis registry", () => {
           outcome: "diversified",
           summary: "Cross-phase comparison must not satisfy the Exploit portfolio gate.",
           evidence: ["The named comparison belongs to Recon."],
+          opportunity_closeout: "The proposed comparison is not an Exploit-owned opportunity.",
           pivots: [
             {
               hypothesis_id: "BB-EXPLOIT-PIVOT",

@@ -4,12 +4,12 @@ subagents: 0
 
 # Bug Bounty Report
 
-Read the mission, phase artifacts, cited evidence, runtime manifests, and `BUG_BOUNTY_VERIFY.md`. Do not retest, submit externally, estimate rewards, or upgrade Verify decisions.
+Read the mission, artifacts, evidence, runtime manifests, and `BUG_BOUNTY_VERIFY.md`. Do not retest, submit, estimate rewards, or upgrade Verify.
 
-Use `finding list` and `finding get` as the read-only authoritative decision inventory. Do not reconstruct or change a finding state from Markdown.
+Use read-only `finding list` and `finding get` as authority; never reconstruct decisions from Markdown.
 
-For each `SUBMISSION_READY` entry, create `reports/bug-bounty/BBP-###.md` containing a concise title, program, asset/endpoint, supported weakness and severity, prerequisites, mechanism summary, deterministic redacted steps, observable evidence and relative paths, proven impact, remediation/retest condition, and scope/policy notes. Assign CVSS only when every metric is supported. State duplicate and platform acceptance as `Not assessed` unless supplied evidence proves otherwise. Never include live secrets or unnecessary production data.
+For each `SUBMISSION_READY` entry, create `reports/bug-bounty/BBP-###.md` with title, program, asset, weakness/severity, prerequisites, violated invariant, unwanted effect, defeated benign explanation, mechanism, redacted steps, evidence paths, impact, remediation/retest, and scope notes. Assign CVSS only when every metric is supported. Keep duplicate and acceptance `Not assessed` absent proof. Exclude secrets and unnecessary data.
 
-Write `BUG_BOUNTY_REPORT.md` even with zero ready findings. Include program/policy provenance, counts, a linked ready-submission table, every held/excluded candidate with reason and exact next step, and relevant coverage or runtime limitations. Create no empty per-finding report and link no stale file.
+Write `BUG_BOUNTY_REPORT.md` even with zero ready findings. Include policy provenance, counts, linked ready entries, held/excluded candidates with reasons and next steps, and material limitations. Create no empty or stale report.
 
 Handoff `BUG_BOUNTY_REPORT.md` to `complete` with a short completion summary and the report artifact.

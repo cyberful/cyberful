@@ -383,6 +383,7 @@ describe("runPhase transcript persistence", () => {
 
   test("phase prompts keep reward-aware maturation specific to Bug Bounty", () => {
     const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const verify = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "verify" }), 45)
     const brief = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "brief" }), 30)
     const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
     const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "exploit" }), 120)
@@ -390,6 +391,8 @@ describe("runPhase transcript persistence", () => {
 
     expect(bugBounty).toMatch(/finding maturation checkpoint/i)
     expect(bugBounty).toMatch(/host-derived published monetary upside/i)
+    expect(bugBounty).toMatch(/MAXIMIZED.*supported vulnerability/i)
+    expect(verify).toMatch(/SUBMISSION_READY.*violated security invariant.*unwanted attacker effect/i)
     expect(brief).toMatch(/reward_policy set.*NOT_PUBLISHED.*UNAVAILABLE/i)
     expect(report).toMatch(/reward_policy get.*BUG_BOUNTY_REPORT\.md.*portable BBP-###/i)
     expect(pentest).toMatch(/technical finding maturation checkpoint/i)
@@ -437,6 +440,8 @@ describe("runPhase transcript persistence", () => {
     expect(system).toContain("## Contrarian pass")
     expect(system).toMatch(/no numeric quotas/i)
     expect(system).toMatch(/requires a reward-aware `bounty_context`/i)
+    expect(system).toContain("`opportunity_closeout`")
+    expect(system).toMatch(/first positive finding is not phase completion/i)
     expect(JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"))
       .toEqual(result.noveltyContract)
   })

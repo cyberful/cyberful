@@ -113,3 +113,41 @@ test("calculates point deltas but keeps Pentest free of reward context", () => {
   expect(pentest?.checkpoint.questions).toHaveLength(3)
   expect(pentest?.checkpoint.reward).toBeUndefined()
 })
+
+test("does not present the current severity as a next reward tier", () => {
+  const advisory = FindingMaturation.buildAdvisory({
+    workflow: "bug-bounty",
+    phase: "verify",
+    toolInput: {
+      action: "update",
+      id: "BBP-004",
+      severity: "MEDIUM",
+      maturation: {
+        status: "MAXIMIZED",
+        current_impact: "A bounded client-side effect.",
+        target_severity: "MEDIUM",
+      },
+    },
+    policy: {
+      version: 1,
+      revision: "reward-r4",
+      updated_at: source.observed_at,
+      kind: "MONETARY",
+      source,
+      groups: [
+        {
+          id: "web",
+          label: "Web",
+          assets: ["app.example.test"],
+          tiers: [{ severity: "MEDIUM", minimum: 1_000, maximum: 5_000, currency: "USD" }],
+        },
+      ],
+    },
+  })
+
+  expect(advisory?.targetSeverity).toBeUndefined()
+  expect(advisory?.checkpoint.reward?.target).toBeUndefined()
+  expect(advisory?.checkpoint.reward?.upside).toBeUndefined()
+  expect(advisory?.checkpoint.questions.join(" ")).not.toContain("next reward tier")
+  expect(advisory?.checkpoint.questions.join(" ")).toMatch(/security invariant.*unwanted attacker effect/i)
+})

@@ -142,13 +142,13 @@ export function delegationInstructions(
     : ownership.role === "root"
       ? "Delegate only bounded, non-overlapping work that benefits from parallel execution, then synthesize the results and own this root run's final response. This run has no phase handoff."
       : "Delegate only bounded, non-overlapping work that benefits from parallel execution, then synthesize the results and return them to the parent AgentRun. Do not call the phase handoff."
-  const bountyPortfolioCritic =
+  const bountyAdvisoryCritics =
     ownership.workflow === "bug-bounty" && (ownership.phase === "exploit" || ownership.phase === "hacker")
   return [
     `Direct subagents are available for genuinely parallelizable work, with no more than ${subagents} subagents active at the same time.`,
     completion,
-    bountyPortfolioCritic
-      ? "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. Operational children execute their discriminators directly. The original phase root may assign one artifact-only portfolio critic whose direct task is independent strategic review; that critic advises through its declared artifact and does not test the target or own handoff."
+    bountyAdvisoryCritics
+      ? "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. Operational children execute their discriminators directly. The original phase root may assign the persona's artifact-only portfolio critic and post-finding breaker; each advises through its declared artifact and does not test the target or own handoff."
       : "Each subagent inherits the task's authority, tools, evidence duties, and mission boundaries. It executes its task directly and returns a verdict; no passive, offline, discovery-only, or deferred-to-parent mode exists.",
   ].join("\n")
 }
