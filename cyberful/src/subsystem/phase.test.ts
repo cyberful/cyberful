@@ -844,7 +844,7 @@ describe("phase orchestration (runAndAdvance)", () => {
     let attempts = 0
     await Effect.runPromise(
       SubsystemOrchestrator.runAndAdvance(
-        { ...baseInput("recon"), timeoutMs: 60_000 },
+        { ...baseInput("recon"), timeoutMs: 120_000 },
         {
           runPhase: async (spec) => {
             specs.push(spec)
@@ -854,6 +854,8 @@ describe("phase orchestration (runAndAdvance)", () => {
                 ok: false,
                 exitCode: 127,
                 termination: "spawn_failed",
+                limitMs: 120_000,
+                effectiveLimitMs: 120_000,
                 handoff: undefined,
                 phaseFailure: {
                   phase: spec.phase,
@@ -879,6 +881,45 @@ describe("phase orchestration (runAndAdvance)", () => {
       [2, "main"],
     ])
     expect(specs[1]?.objective).toContain("required-upstream")
+  })
+
+  test("a required-upstream failure at the budget boundary does not start an unusable recovery", async () => {
+    const specs: PhaseSpec[] = []
+    const out = await Effect.runPromise(
+      SubsystemOrchestrator.runAndAdvance(
+        { ...baseInput("recon"), timeoutMs: 60_000 },
+        {
+          runPhase: async (spec) => {
+            specs.push(spec)
+            return {
+              ...completedPhase(spec.phase),
+              ok: false,
+              exitCode: 124,
+              termination: "budget_exhausted",
+              durationMs: 59_500,
+              handoff: undefined,
+              phaseFailure: {
+                phase: spec.phase,
+                source: "upstream",
+                class: "required_upstream_unavailable",
+                detail: "CyberOS transport failed while the phase entered closeout",
+                retryable: true,
+              },
+              recoveryPolicy: {
+                enabled: true,
+                maxRestarts: 1,
+                useFallbackProvider: true,
+                fallbackConfigured: false,
+              },
+            }
+          },
+        },
+      ),
+    )
+
+    expect(specs.map((spec) => spec.attempt)).toEqual([1])
+    expect(out.phaseAttempts).toHaveLength(1)
+    expect(out.haltedAt).toBe("recon")
   })
 
   test("a hard context tail restarts once on the same route and reconciles hypotheses", async () => {

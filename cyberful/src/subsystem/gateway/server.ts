@@ -2718,7 +2718,18 @@ export async function createGatewayServer(opts?: {
           : upstream.capability === "isolated-exec"
             ? ("cyberful-os" as const)
             : undefined
-      if (requiredUpstream && upstreamFailureIsBlocking(requiredUpstream))
+      // ── Caller Cancellation Is Not An Upstream Outage ──────────
+      // Closeout and parent cancellation abort in-flight tool requests through
+      // the MCP request signal. The upstream call rejects in that case, but its
+      // transport has not failed and remains healthy until normal gateway
+      // shutdown. Recording that rejection as a required-service outage would
+      // mask the real budget termination and trigger a false phase recovery.
+      // A rejection without caller cancellation remains a blocking transport
+      // failure for CyberOS and for ZAP when policy marks it required.
+      //
+      // @docs/concepts/execution-model.md
+      // ────────────────────────────────────────────────────────────
+      if (requiredUpstream && !context.signal.aborted && upstreamFailureIsBlocking(requiredUpstream))
         await recordRequiredUpstreamFailure({
           code: `${requiredUpstream}_transport_failed`,
           detail: `Required ${requiredUpstream} MCP upstream failed during a phase tool call.`,

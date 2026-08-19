@@ -819,6 +819,14 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
   })
 
   test("forwards client cancellation to an active upstream tool", async () => {
+    const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "gateway-cancelled-upstream-test-")))
+    const upstreamFailureSignal = path.join(directory, "upstream-failure.json")
+    const previous = {
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      upstreamFailure: process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH,
+    }
+    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+    process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH = upstreamFailureSignal
     let observedSignal: AbortSignal | undefined
     let markStarted: (() => void) | undefined
     const started = new Promise<void>((resolve) => {
@@ -830,6 +838,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         description: "wait until cancelled",
         inputSchema: { type: "object", properties: {} },
       },
+      capability: "isolated-exec",
       call: async (_args, signal) => {
         observedSignal = signal
         markStarted?.()
@@ -857,9 +866,16 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
 
       await expect(call).rejects.toThrow("test timeout")
       expect(observedSignal?.aborted).toBe(true)
+      await Bun.sleep(25)
+      await expect(readFile(upstreamFailureSignal, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
     } finally {
       await client.close()
       await server.closeGateway()
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.upstreamFailure === undefined) delete process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH
+      else process.env.CYBERFUL_SUBSYSTEM_UPSTREAM_FAILURE_PATH = previous.upstreamFailure
+      await rm(directory, { recursive: true, force: true })
     }
   })
 
@@ -1252,9 +1268,7 @@ describe("expert-gateway handoff tool", () => {
         action: "configure",
         authorized_http_hosts: ["app.example.test"],
         global_http_rps: null,
-        required_http_headers: [
-          { name: "X-Request-Purpose", value: "Research", hosts: ["app.example.test"] },
-        ],
+        required_http_headers: [{ name: "X-Request-Purpose", value: "Research", hosts: ["app.example.test"] }],
       }
 
       const prematureFinalize = await c.callTool({
@@ -1290,32 +1304,30 @@ describe("expert-gateway handoff tool", () => {
       expect(errorContent(blocked).message).toContain("engagement_policy")
 
       let headers: Record<string, unknown>[] = []
-      fetch.mockImplementation(
-        (async (input) => {
-          const url = new URL(String(input))
-          if (url.pathname.endsWith("getRateLimitRules/"))
-            return new Response(JSON.stringify({ getRateLimitRules: [] }), { status: 200 })
-          if (url.pathname.endsWith("replacer/view/rules/"))
-            return new Response(JSON.stringify({ rules: headers }), { status: 200 })
-          if (url.pathname.endsWith("replacer/action/removeRule/")) {
-            headers = headers.filter((rule) => rule.description !== url.searchParams.get("description"))
-            return new Response('{"Result":"OK"}', { status: 200 })
-          }
-          if (url.pathname.endsWith("replacer/action/addRule/")) {
-            headers.push({
-              description: url.searchParams.get("description"),
-              enabled: url.searchParams.get("enabled"),
-              matchType: url.searchParams.get("matchType"),
-              matchRegex: url.searchParams.get("matchRegex"),
-              matchString: url.searchParams.get("matchString"),
-              replacement: url.searchParams.get("replacement"),
-              url: url.searchParams.get("url"),
-            })
-            return new Response('{"Result":"OK"}', { status: 200 })
-          }
+      fetch.mockImplementation((async (input) => {
+        const url = new URL(String(input))
+        if (url.pathname.endsWith("getRateLimitRules/"))
+          return new Response(JSON.stringify({ getRateLimitRules: [] }), { status: 200 })
+        if (url.pathname.endsWith("replacer/view/rules/"))
+          return new Response(JSON.stringify({ rules: headers }), { status: 200 })
+        if (url.pathname.endsWith("replacer/action/removeRule/")) {
+          headers = headers.filter((rule) => rule.description !== url.searchParams.get("description"))
           return new Response('{"Result":"OK"}', { status: 200 })
-        }) as typeof globalThis.fetch,
-      )
+        }
+        if (url.pathname.endsWith("replacer/action/addRule/")) {
+          headers.push({
+            description: url.searchParams.get("description"),
+            enabled: url.searchParams.get("enabled"),
+            matchType: url.searchParams.get("matchType"),
+            matchRegex: url.searchParams.get("matchRegex"),
+            matchString: url.searchParams.get("matchString"),
+            replacement: url.searchParams.get("replacement"),
+            url: url.searchParams.get("url"),
+          })
+          return new Response('{"Result":"OK"}', { status: 200 })
+        }
+        return new Response('{"Result":"OK"}', { status: 200 })
+      }) as typeof globalThis.fetch)
       const installed = await c.callTool({ name: "engagement_policy", arguments: configure })
       expect(installed.isError).not.toBe(true)
       expect(jsonContent(installed)).toMatchObject({
