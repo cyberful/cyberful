@@ -183,6 +183,11 @@ export interface AgentRunSpec {
     readonly reason: "phase_recovery" | "child_finished"
   }) => Promise<readonly RecoveredHypothesis[]>
   readonly recoverTestObjects?: (input: { readonly fromRunID: AgentRunID }) => Promise<readonly RecoveredTestObject[]>
+  readonly releaseBrowserOwner?: (input: {
+    readonly runID: AgentRunID
+    readonly role: AgentRunRole
+    readonly parentID?: AgentRunID
+  }) => Promise<void>
   readonly skills: readonly PromptSkill[]
   readonly budget: AgentRunBudget
   readonly abort?: AbortSignal

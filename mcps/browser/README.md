@@ -2,7 +2,7 @@
 
 Standalone stdio MCP server for browser-use style automation with an isolated Playwright Chromium on macOS.
 
-Cyberful starts one instance per numbered target identity plus one named `search` identity and adds the gateway-only `profile` selector to ordinary browser tools. A standalone MCP process still owns exactly one `CYBER_BROWSER_USER_DATA_DIR`. The `search` instance alone publishes `web_search`, which never accepts a profile argument.
+Cyberful starts one lazy Chromium hub per numbered target identity plus one named `search` identity and adds the gateway-only `profile` selector to ordinary browser tools. Each AgentRun receives a separate CDP controller for a selected hub; a standalone MCP process still owns exactly one `CYBER_BROWSER_USER_DATA_DIR`. The `search` controller alone publishes `web_search`, which never accepts a profile argument.
 
 ## Install
 
@@ -30,6 +30,7 @@ mcps/browser/bin/cyber-browser
 ## Tools
 
 - `browser_status`
+- `browser_tabs`
 - `web_search` (only when `CYBER_BROWSER_PROFILE_ID=search`)
 - `browser_navigate`
 - `browser_snapshot`
@@ -66,7 +67,13 @@ Use `browser_wait state="networkidle"` only when you explicitly need network qui
 
 If a navigation commits but the requested load state times out, the tool returns the current page URL/title with a warning so the agent can continue with `browser_snapshot`, `browser_wait`, or `browser_captcha_status`.
 
-Ordinary requests for one profile remain serialized. MCP cancellation bypasses that queue: a gateway timeout or caller abort immediately invalidates the active browser context, waits at most two seconds for Playwright cleanup, suppresses the stale response, and frees later requests from the blocked operation. A cleanup that still cannot settle terminates only that profile's MCP process; it cannot leave the profile queue waiting for the original operation indefinitely. The owning gateway then probes the quarantined generation and recreates that one profile in single-flight if its transport died. The cancelled target action is never replayed automatically.
+Ordinary requests are serialized per `(AgentRun, profile)` controller, while different AgentRuns may operate concurrently on the same profile hub. MCP cancellation bypasses one controller queue: a gateway timeout or caller abort invalidates that controller's active browser epoch, closes only its owned tabs, suppresses the stale response, and frees later requests from the blocked operation. The hub and sibling controllers remain alive. A dead controller is recreated in single-flight and the cancelled target action is never replayed automatically.
+
+## AgentRun tabs
+
+`browser_tabs` accepts `action: "list" | "open" | "select" | "close"`; `tab_id` is required for `select` and `close`. Results contain only tabs owned by the calling controller. `open` creates a blank active tab, popup pages inherit ownership, and a page-scoped action after the last owned tab closes creates a fresh one lazily. `browser_status` reports only those tabs with `active_tab_id`, URL, and title, plus the shared profile launch state. Foreign and stale tab IDs are indistinguishable and return a nonexistent-tab error.
+
+DOM state, snapshot refs, active page, network logs, and response-body IDs are controller-local. Cookies, local storage, service workers, authentication, downloads, and the artifact directory remain shared inside one profile. Closing an AgentRun closes all of its tabs without closing Chromium or sibling tabs.
 
 ## DuckDuckGo search
 
@@ -76,7 +83,7 @@ Ordinary requests for one profile remain serialized. MCP cancellation bypasses t
 
 `browser_captcha_status` detects common CAPTCHA and anti-bot challenge signals such as reCAPTCHA, hCaptcha, Cloudflare Turnstile, Cloudflare challenge pages, Arkose/FunCaptcha, Geetest, and generic CAPTCHA markers. Provider SDK requests, response fields, and a lone generic CAPTCHA mention remain visible in its diagnostics, but do not count as an active challenge without stronger visible page evidence.
 
-The agent first performs the ordinary page action that makes the challenge visible. `browser_captcha_handoff` then refuses unless detection attests that active challenge and brings the same Chromium window to the front. It returns immediately so the agent can call the gateway `question` tool with `kind: "captcha"`; that TUI question, not a short browser timeout, owns the human pause. After the answer, `browser_captcha_status` must attest that the challenge cleared. The scoped gateway circuit breaker denies further actions only for that browser profile and origin until that observation. Other profiles, origins, tabs, and non-browser tools continue. It never solves, bypasses, injects tokens, or automates CAPTCHA challenges. If the foregrounded browser has no visible challenge, the human can choose `No challenge visible` to clear that false-positive pause explicitly.
+The agent first performs the ordinary page action that makes the challenge visible. `browser_captcha_handoff` then refuses unless detection attests that active challenge and brings the same Chromium window to the front. It returns immediately so the agent can call the gateway `question` tool with `kind: "captcha"`; that TUI question, not a short browser timeout, owns the human pause. After the answer, `browser_captcha_status` must attest that the challenge cleared. The version 2 gateway circuit-breaker file retains multiple entries scoped by AgentRun, profile, tab, and origin and reads the former single-entry state as a legacy wildcard owner. Other AgentRuns, profiles, origins, tabs, and non-browser tools continue. It never solves, bypasses, injects tokens, or automates CAPTCHA challenges. If the foregrounded browser has no visible challenge, the human can choose `No challenge visible` to clear that false-positive pause explicitly.
 
 ## Isolation
 
@@ -95,6 +102,6 @@ Useful environment overrides:
 - `CYBER_BROWSER_EXECUTABLE`
 - `CYBER_BROWSER_PROXY`
 
-`browser_status` reports the configured and resolved browser channel, actual browser version/driver, connection mode, and proxy state. In Recon, the host-owned EAGER browser attests these values after launch and each CDP-attached scout receives the same record before its first navigation.
+`browser_status` reports the configured and resolved browser channel, actual browser version/driver, connection mode, proxy state, `active_tab_id`, and only the calling controller's pages. The host-owned EAGER hub attests shared launch values and each CDP-attached AgentRun controller receives the same record.
 
-For a sequential phase with a configured proxy, the first `browser_status` launches only the blank dedicated context and probes ZAP so it can return `zap` or `direct-fallback` before target traffic. An unattested CDP attachment stays `pending` because that process does not own the browser launch.
+For an eligible phase, the first page use launches the dedicated hub and probes ZAP so shared status can return `zap` or `direct-fallback` before target traffic. The gateway exposes `browser_close` only to the original phase root; it closes every controller and the selected hub, and later use may recreate them lazily. Subagents and fallbacks close only their own tabs through `browser_tabs`.

@@ -41,6 +41,11 @@ describe("Pi MCP worker bridge", () => {
       const rootTools = bridge.toolsFor({
         handoffAuthorized: true,
         isToolAllowed: () => true,
+        actor: {
+          runID: "root-run-1",
+          displayName: "root",
+          kind: "root",
+        },
       })
       const childTools = bridge.toolsFor({
         handoffAuthorized: false,
@@ -58,6 +63,7 @@ describe("Pi MCP worker bridge", () => {
         "target_cooldown",
         "test_object",
         "question",
+        "browser_close",
         "handoff",
       ])
       expect(childTools.map((tool) => tool.name)).toEqual([
@@ -148,6 +154,14 @@ describe("Pi MCP worker bridge", () => {
           evidenceExists: false,
         },
       ])
+      await expect(
+        bridge.releaseBrowserOwner({
+          runID: "child-7",
+          parentID: "root-1",
+          displayName: "child",
+          kind: "subagent",
+        }),
+      ).resolves.toBeUndefined()
     } finally {
       await bridge.close()
     }

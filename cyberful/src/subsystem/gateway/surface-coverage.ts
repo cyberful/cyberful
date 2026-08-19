@@ -102,7 +102,10 @@ export class SurfaceCoverage {
   readonly #summary: string
   readonly #briefSummary: string
   readonly #records: CoverageAction[] = []
-  readonly #browserScopes = new Map<BrowserProfileId, Pick<BrowserAction, "profile" | "pageID" | "origin">>()
+  readonly #browserScopes = new Map<
+    string,
+    Pick<BrowserAction, "profile" | "pageID" | "origin"> & { readonly ownerRunID: string }
+  >()
   #queue: Promise<void> = Promise.resolve()
 
   constructor(workareaRoot: string, phase: string) {
@@ -120,10 +123,12 @@ export class SurfaceCoverage {
       ToolUsageEvent,
       "egress_host" | "egress_method" | "egress_http_status" | "egress_path_family" | "egress_route"
     >,
+    ownerRunID?: string,
   ): Promise<void> {
     const browser = browserAction(result)
-    if (browser) {
-      this.#browserScopes.set(browser.profile, {
+    if (browser && ownerRunID) {
+      this.#browserScopes.set(this.#scopeKey(ownerRunID, browser.profile), {
+        ownerRunID,
         profile: browser.profile,
         pageID: browser.pageID,
         origin: browser.origin,
@@ -164,8 +169,15 @@ export class SurfaceCoverage {
     return pending
   }
 
-  currentScope(profile: BrowserProfileId): Pick<BrowserAction, "profile" | "pageID" | "origin"> | undefined {
-    return this.#browserScopes.get(profile)
+  currentScope(
+    ownerRunID: string,
+    profile: BrowserProfileId,
+  ): (Pick<BrowserAction, "profile" | "pageID" | "origin"> & { readonly ownerRunID: string }) | undefined {
+    return this.#browserScopes.get(this.#scopeKey(ownerRunID, profile))
+  }
+
+  #scopeKey(ownerRunID: string, profile: BrowserProfileId) {
+    return `${ownerRunID}\u0000${profile}`
   }
 
   close(): Promise<void> {

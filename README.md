@@ -43,6 +43,8 @@ Open any persistent browser identity before a test with `cyberful browser-1` thr
 
 Public web research uses a sixth persistent identity named `search`, kept separate from target accounts and routed directly to DuckDuckGo through `web_search`. It has no separate CLI command and is never included in target surface coverage.
 
+Within a phase, each browser profile is held by one lazy Chromium hub. Root, delegated, and fallback AgentRuns use separate private-tab controllers on that hub: they share the selected profile's authenticated storage but cannot see one another's tabs, DOM refs, active page, or network evidence. Child completion closes only that child's tabs; only the original phase root can close the complete browser profile.
+
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.io/getting-started/)**.
 
 Choose a workarea in the TUI, select a workflow, and describe the objective. The composer's fixed status shoulder reports the active phase, its elapsed time, and whether Cyberful is generating or executing a job without claiming a completion percentage. Every live-target request must include the exact authorized targets, exclusions, test window, account roles, and traffic constraints. Bug bounty requests should also supply the official program policy or its exact public URL; Brief reads published reward tiers autonomously, and finding maturation checkpoints make the technical frontier and potential published upside visible in the live feed. Code Audit can review the complete repository or an explicitly requested branch, commit range, or set of current changes.

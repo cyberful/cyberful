@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test"
 import { releaseBrowserContext } from "./browser_context_ownership.mjs"
 
-function browserHandles() {
+function browserHandles(pageCount = 1) {
   const calls = { context: 0, page: 0 }
   return {
     calls,
@@ -17,12 +17,12 @@ function browserHandles() {
         calls.context += 1
       },
     },
-    pinnedPage: {
+    ownedPages: Array.from({ length: pageCount }, () => ({
       close: async () => {
         calls.page += 1
       },
       isClosed: () => false,
-    },
+    })),
   }
 }
 
@@ -35,10 +35,10 @@ describe("browser context ownership", () => {
     }
   })
 
-  test("preserves a shared context and closes only its owned tab", async () => {
-    const handles = browserHandles()
+  test("preserves a shared context and closes all of its owned tabs", async () => {
+    const handles = browserHandles(3)
     await releaseBrowserContext({ ...handles, ownership: "cdp-shared", ownTab: true })
-    expect(handles.calls).toEqual({ context: 0, page: 1 })
+    expect(handles.calls).toEqual({ context: 0, page: 3 })
   })
 
   test("does not mutate a shared context without an owned tab", async () => {

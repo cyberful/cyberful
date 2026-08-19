@@ -13,9 +13,12 @@ import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { releaseBrowserContext } from "./browser_context_ownership.mjs"
 import { saveBrowserDownload } from "./browser_download.mjs"
+import { OwnedBrowserTabs } from "./browser_tabs.mjs"
 import { BrowserToolRegistry } from "./browser_tool_registry.mjs"
 import { duckDuckGoSearchUrl, extractDuckDuckGoResultsDocument } from "./duckduckgo_search.mjs"
 import {
@@ -96,22 +99,21 @@ const pageIds = new WeakMap()
 let pageSequence = 0
 
 // ── Shared Browser Modes Preserve Tab Ownership ──────────────────────
-// OWN_TAB scouts share one Chromium context but pin a private page instead of
-// following sibling page events. Its CDP target id is stable across processes,
-// unlike Playwright's connection-local page guid. EAGER owns no page at all: it
-// launches the shared profile, publishes readiness, and parks until shutdown.
-// These modes prevent one scout or hub from observing another scout's tab state.
+// OWN_TAB controllers share one Chromium context but admit only pages they create
+// and popups descended from those pages. CDP target ids remain stable across
+// connections. EAGER owns only Chromium's unexposed bootstrap page: it launches
+// the shared profile, publishes readiness, and parks until shutdown. These modes prevent one
+// AgentRun or hub from observing another AgentRun's tab state.
 // ─────────────────────────────────────────────────────────────────────
 
 const OWN_TAB = envBool("CYBER_BROWSER_OWN_TAB", false)
 const EAGER = envBool("CYBER_BROWSER_EAGER", false)
 const CDP_ENDPOINT = (process.env.CYBER_BROWSER_CDP_ENDPOINT || "").trim()
-let pinnedPage = null
-let pinnedTargetId = null
 const requestIds = new WeakMap()
 const requestEntries = new WeakMap()
 const responseById = new Map()
 const refSelectors = new Map()
+const refSelectorsByPage = new WeakMap()
 const networkLog = []
 let networkSequence = 0
 let downloadQueue = Promise.resolve()
@@ -140,6 +142,12 @@ let startupCookieCleanup = {
   removed_files: 0,
   context_cleared: false,
 }
+
+const ownedTabs = new OwnedBrowserTabs({
+  identify: pageTargetId,
+  onOwn: attachPage,
+  onError: (operation, error) => reportBestEffortFailure(operation, error, { allowClosed: true }),
+})
 
 function eprint(message) {
   process.stderr.write(`[${SERVER_NAME}] ${message}\n`)
@@ -179,6 +187,8 @@ function toolResult(text, isError = false, metadata = undefined) {
 // ─────────────────────────────────────────────────────────────────
 function pageId(page) {
   if (!page) return "none"
+  const ownedID = ownedTabs.id(page)
+  if (ownedID) return ownedID
   const existing = pageIds.get(page)
   if (existing) return existing
   const id = `page-${++pageSequence}`
@@ -590,7 +600,7 @@ function launchViewport() {
 // more legitimate but renders those banners, so it is opt-in via "auto"/"chrome".
 // ─────────────────────────────────────────────────────────────────────
 
-function systemChromeExists() {
+function systemChromePath() {
   const candidates =
     process.platform === "darwin"
       ? [
@@ -598,7 +608,11 @@ function systemChromeExists() {
           "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
         ]
       : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/opt/google/chrome/chrome", "/usr/bin/chrome"]
-  return candidates.some((candidate) => fs.existsSync(candidate))
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null
+}
+
+function systemChromeExists() {
+  return systemChromePath() !== null
 }
 
 function resolveBrowserChannel() {
@@ -614,7 +628,7 @@ function resolveBrowserChannel() {
 // All tools share one context so snapshots, refs, network logs, cookies, and
 // downloads describe the same session. A locally launched or newly created CDP
 // context belongs to this process and is closed during teardown. An existing CDP
-// context remains host-owned: this process may close only its own pinned tab and
+// context remains host-owned: this process may close only its own tabs and
 // must never terminate sibling tabs or the shared browser.
 // → cyberful/src/subsystem/gateway/server.ts — supplies the private CDP endpoint.
 // ─────────────────────────────────────────────────────────────────────
@@ -674,9 +688,12 @@ async function launchBrowser(expectedEpoch) {
       // gateway to discover. The listener remains loopback-only, while Playwright
       // continues to own the primary pipe. CDP exists only for shared-session
       // attachment and is never advertised on an external network interface.
+      // Chromium otherwise rejects secondary DevTools WebSockets by Origin; the
+      // wildcard applies only to this private loopback listener and not web CORS.
       // → cyberful/src/subsystem/gateway/server.ts — reads and forwards the endpoint.
       // ─────────────────────────────────────────────────────────────────────
       `--remote-debugging-port=${(process.env.CYBER_BROWSER_CDP_PORT || "").trim() || "0"}`,
+      "--remote-allow-origins=*",
     ],
   }
   // ── Stealth Runs With Chromium's Sandbox By Default ────────────────
@@ -743,6 +760,8 @@ async function launchBrowser(expectedEpoch) {
     }
   }
 
+  if (EAGER) return retainCurrentBrowserEpoch(await launchEagerChromium(options), expectedEpoch)
+
   try {
     context = await chromium.launchPersistentContext(USER_DATA_DIR, options)
   } catch (error) {
@@ -764,34 +783,120 @@ async function launchBrowser(expectedEpoch) {
   context.setDefaultNavigationTimeout(DEFAULT_TIMEOUT_MS)
   const launchedContext = context
 
-  // ── The Eager Hub Owns A Context But No Page ───────────────────────
-  // The parked hub keeps the shared profile alive while scouts attach over CDP.
-  // It never attaches page listeners, which would duplicate evidence and observe
-  // scout-owned tabs. If its browser closes, the hub exits so the host observes
-  // loss of the shared owner instead of leaving every scout on a dead endpoint.
+  // ── The Eager Hub Never Observes Controller Pages ──────────────────
+  // The parked hub keeps the shared profile alive while controllers attach over
+  // CDP. It never attaches page listeners, which would duplicate evidence and
+  // observe AgentRun-owned tabs. If its browser closes, the hub exits so the host
+  // observes loss of the shared owner instead of leaving controllers on a dead endpoint.
   // Non-eager contexts continue to track pages and may recover after closure.
   // ─────────────────────────────────────────────────────────────────────
 
   launchedContext.on("page", (page) => {
     if (EAGER || context !== launchedContext) return
-    activePage = page
-    attachPage(page)
+    void ownPage(page).catch((error) => reportBestEffortFailure("page ownership", error, { allowClosed: true }))
   })
   launchedContext.on("close", () => {
     if (context === launchedContext) {
       context = null
       contextOwnership = "none"
       activePage = null
+      ownedTabs.detach()
     }
     if (EAGER) process.exit(0)
   })
 
   if (!EAGER) {
-    for (const page of context.pages()) attachPage(page)
-    activePage = context.pages()[0] || (await context.newPage())
-    attachPage(activePage)
+    const existingPages = context.pages().filter((page) => !page.isClosed())
+    for (const page of existingPages) await ownPage(page, { activate: false })
+    if (existingPages[0]) {
+      ownedTabs.select(ownedTabs.id(existingPages[0]))
+      activePage = existingPages[0]
+    } else {
+      activePage = await ownedTabs.open(context)
+    }
   }
   return retainCurrentBrowserEpoch(context, expectedEpoch)
+}
+
+// ── The Hub Uses One Real CDP Transport ──────────────────────────────
+// Playwright normally starts Chromium with its private debugging pipe. Chrome
+// cannot reliably serve a second DevTools WebSocket at the same time, so the
+// parked hub launches Chromium directly with the already-built hardened flags
+// and one loopback CDP port. Controllers then attach through that sole transport.
+// The hub still owns the child process and exposes only a close-compatible
+// context handle to the ordinary teardown path.
+// ─────────────────────────────────────────────────────────────────────
+
+async function launchEagerChromium(options) {
+  const executablePath = options.executablePath || systemChromePath()
+  if (!executablePath) throw new Error("browser hub could not resolve a Chromium executable")
+  const viewport = options.viewport || { width: 1440, height: 900 }
+  const args = [
+    ...options.args,
+    `--user-data-dir=${USER_DATA_DIR}`,
+    "--remote-debugging-address=127.0.0.1",
+    `--window-size=${viewport.width},${viewport.height}`,
+    ...(options.headless ? ["--headless=new"] : []),
+    ...(options.chromiumSandbox ? [] : ["--no-sandbox"]),
+    ...(options.proxy?.server ? [`--proxy-server=${options.proxy.server}`] : []),
+    "about:blank",
+  ]
+  fs.rmSync(path.join(USER_DATA_DIR, "DevToolsActivePort"), { force: true })
+  const child = spawn(executablePath, args, { stdio: "ignore" })
+  let closing = false
+  let exited = false
+  child.once("exit", () => {
+    exited = true
+    if (!closing && EAGER) process.exit(0)
+  })
+  const port = await waitForEagerCdpPort(child)
+  const version = await eagerBrowserVersion(port)
+  browserRuntime = { ...browserRuntime, version, connection: "persistent" }
+  const hubContext = {
+    close: async () => {
+      if (closing || exited) return
+      closing = true
+      child.kill("SIGTERM")
+      await Promise.race([
+        new Promise((resolve) => child.once("exit", resolve)),
+        new Promise((resolve) => setTimeout(resolve, CANCELLATION_GRACE_MS)),
+      ])
+      if (!exited) {
+        child.kill("SIGKILL")
+        await new Promise((resolve) => child.once("exit", resolve))
+      }
+    },
+  }
+  context = hubContext
+  contextOwnership = "persistent"
+  return hubContext
+}
+
+async function waitForEagerCdpPort(child) {
+  const deadline = Date.now() + DEFAULT_TIMEOUT_MS
+  const portFile = path.join(USER_DATA_DIR, "DevToolsActivePort")
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`browser hub exited before CDP readiness (${child.exitCode})`)
+    try {
+      const value = Number.parseInt(fs.readFileSync(portFile, "utf8").split("\n", 1)[0]?.trim() ?? "", 10)
+      if (Number.isInteger(value) && value > 0 && (await proxyReachable(`http://127.0.0.1:${value}`, 250))) return value
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error("browser hub timed out waiting for its loopback CDP port")
+}
+
+async function eagerBrowserVersion(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1_000) })
+    const value = await response.json()
+    return typeof value?.Browser === "string" ? value.Browser : null
+  } catch (error) {
+    reportBestEffortFailure("browser hub version probe", error, { allowTimeout: true })
+    return null
+  }
 }
 
 async function retainCurrentBrowserEpoch(browserContext, expectedEpoch) {
@@ -806,8 +911,8 @@ async function retainCurrentBrowserEpoch(browserContext, expectedEpoch) {
 // An attached default context belongs to the shared browser owner and must not
 // be closed, cookie-cleared, or profile-locked by this process. A context created
 // only because none existed is locally owned. Disconnect drops every cached page
-// handle so a later tool call reattaches cleanly. OWN_TAB creates and retains one
-// private page rather than deriving ownership from the shared pages collection.
+// handle so a later tool call reattaches cleanly. OWN_TAB starts without a page;
+// its first page-scoped action creates a private tab lazily.
 // ─────────────────────────────────────────────────────────────────────
 
 async function attachOverCdp(chromium, endpoint) {
@@ -825,73 +930,55 @@ async function attachOverCdp(chromium, endpoint) {
   attached.setDefaultNavigationTimeout(DEFAULT_TIMEOUT_MS)
   attached.on("page", (page) => {
     if (OWN_TAB || context !== attached) return
-    activePage = page
-    attachPage(page)
+    void ownPage(page).catch((error) => reportBestEffortFailure("page ownership", error, { allowClosed: true }))
   })
   browser.on("disconnected", () => {
     if (context === attached) {
       context = null
       contextOwnership = "none"
       activePage = null
-      pinnedPage = null
-      pinnedTargetId = null
+      ownedTabs.detach()
     }
   })
   context = attached
   contextOwnership = existingContext ? "cdp-shared" : "cdp-created"
-  if (OWN_TAB) {
-    pinnedPage = await attached.newPage()
-    pinnedTargetId = await pageTargetId(pinnedPage)
-    attachPage(pinnedPage)
-    activePage = pinnedPage
-  } else {
-    for (const page of attached.pages()) attachPage(page)
-    activePage = attached.pages().find((page) => !page.isClosed()) || (await attached.newPage())
-    attachPage(activePage)
+  if (!OWN_TAB) {
+    const existingPages = attached.pages().filter((page) => !page.isClosed())
+    for (const page of existingPages) await ownPage(page, { activate: false })
+    if (existingPages[0]) {
+      ownedTabs.select(ownedTabs.id(existingPages[0]))
+      activePage = existingPages[0]
+    } else {
+      activePage = await ownedTabs.open(attached)
+    }
   }
   return context
 }
 
-// ── Target Identity Is Stable Across CDP Connections ─────────────────
-// Playwright page guids are local to one connection and cannot identify a tab
-// across scout processes. The CDP target id can, so status reports it when a
-// temporary session opens successfully. Failure returns null and affects only
-// observability: routing still owns the pinned Playwright page handle directly.
-// The temporary CDP session is always detached before this operation returns.
+// ── Tab Identity Is Stable Without Inspecting Shared Targets ─────────
+// Each controller assigns an opaque id once when it admits a page. The id stays
+// stable for that tab's lifetime and never requires enumerating CDP targets or
+// exposing another controller's pages. Controller restart closes its tabs, so
+// no public id needs to survive across controller process generations.
 // ─────────────────────────────────────────────────────────────────────
 
 async function pageTargetId(page) {
-  let session = null
-  try {
-    session = await context.newCDPSession(page)
-    const info = await session.send("Target.getTargetInfo")
-    return info?.targetInfo?.targetId ?? null
-  } catch (error) {
-    reportBestEffortFailure("CDP target identification", error, { allowClosed: true })
-    return null
-  } finally {
-    if (session) {
-      await bestEffortBrowserOperation("CDP target session detach", () => session.detach(), undefined, {
-        allowClosed: true,
-      })
-    }
-  }
+  if (!page || page.isClosed()) throw new Error("cannot identify a closed browser tab")
+  return `tab-${randomUUID()}`
 }
 
 async function currentPage() {
   const browserContext = await ensureBrowser()
-  if (OWN_TAB) {
-    if (pinnedPage && !pinnedPage.isClosed()) return pinnedPage
-    pinnedPage = await browserContext.newPage()
-    pinnedTargetId = await pageTargetId(pinnedPage)
-    attachPage(pinnedPage)
-    activePage = pinnedPage
-    return pinnedPage
-  }
-  if (activePage && !activePage.isClosed()) return activePage
-  activePage = browserContext.pages().find((page) => !page.isClosed()) || (await browserContext.newPage())
-  attachPage(activePage)
+  activePage = ownedTabs.active()
+  if (activePage) return activePage
+  activePage = await ownedTabs.open(browserContext)
   return activePage
+}
+
+async function ownPage(page, options = undefined) {
+  await ownedTabs.own(page, options)
+  activePage = ownedTabs.active()
+  return page
 }
 
 // ── Network Evidence Is Bounded And Secrets Are Redacted ─────────────
@@ -1113,7 +1200,7 @@ function locatorSchema() {
 function targetLocator(page, args) {
   if (args.ref) {
     const ref = String(args.ref)
-    const selector = refSelectors.get(ref) || `[data-cyber-browser-ref="${ref}"]`
+    const selector = pageRefSelectors(page).get(ref) || `[data-cyber-browser-ref="${ref}"]`
     return page.locator(selector).first()
   }
   if (args.selector) return page.locator(String(args.selector)).first()
@@ -1193,10 +1280,19 @@ function isTextMime(mimeType) {
   )
 }
 
-export function formatSnapshot(snapshot) {
-  refSelectors.clear()
+function pageRefSelectors(page) {
+  let selectors = refSelectorsByPage.get(page)
+  if (!selectors) {
+    selectors = new Map()
+    refSelectorsByPage.set(page, selectors)
+  }
+  return selectors
+}
+
+export function formatSnapshot(snapshot, selectorStore = refSelectors) {
+  selectorStore.clear()
   for (const element of snapshot.elements) {
-    refSelectors.set(element.ref, element.selector)
+    selectorStore.set(element.ref, element.selector)
   }
 
   const lines = [
@@ -1853,7 +1949,7 @@ export function validateToolArguments(schema, args) {
 
 registerTool(
   "browser_status",
-  "Attest the configured proxy for a dedicated blank browser, then report installation, runtime, and active page state.",
+  "Attest the configured proxy, then report shared profile state and only this AgentRun's tabs.",
   {
     type: "object",
     additionalProperties: false,
@@ -1884,15 +1980,12 @@ registerTool(
     }
 
     const pages = []
-    const visiblePages = context
-      ? OWN_TAB
-        ? context.pages().filter((page) => page === pinnedPage)
-        : context.pages()
-      : []
-    for (const [index, page] of visiblePages.entries()) {
+    for (const [index, entry] of ownedTabs.entries().entries()) {
+      const { id, page, active } = entry
       pages.push({
+        tab_id: id,
         index,
-        active: page === activePage,
+        active,
         url: page.url(),
         title: await bestEffortBrowserOperation("status page title read", () => page.title(), "", {
           allowClosed: true,
@@ -1918,13 +2011,73 @@ registerTool(
         startup_cookie_cleanup: startupCookieCleanup,
         proxy: proxyStatus,
         runtime: browserRuntime,
-        launched: Boolean(context),
+        launched: Boolean(context) || Boolean(sharedBrowserAttestation),
         own_tab: OWN_TAB,
-        pinned_target_id: pinnedTargetId,
+        active_tab_id: ownedTabs.activeID(),
         pages,
         install_command: "npm run browser:install",
       })}\n`,
       !dependencyInstalled,
+    )
+  },
+)
+
+registerTool(
+  "browser_tabs",
+  "List, open, select, or close tabs owned by this AgentRun. Foreign and stale tab ids are reported as nonexistent.",
+  {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      action: { type: "string", enum: ["list", "open", "select", "close"], default: "list" },
+      tab_id: {
+        type: "string",
+        minLength: 1,
+        maxLength: 256,
+        description: "Owned tab id; required for select and close.",
+      },
+    },
+  },
+  async (args) => {
+    const browserContext = await ensureBrowser()
+    const action = args.action || "list"
+    let affectedTabID = null
+    if (action === "open") {
+      const page = await ownedTabs.open(browserContext)
+      activePage = page
+      affectedTabID = ownedTabs.id(page)
+    } else if (action === "select") {
+      if (!args.tab_id) throw new Error("tab_id is required for action=select")
+      activePage = ownedTabs.select(String(args.tab_id))
+      affectedTabID = String(args.tab_id)
+      await bestEffortBrowserOperation("selected tab foreground", () => activePage.bringToFront(), undefined, {
+        allowClosed: true,
+      })
+    } else if (action === "close") {
+      if (!args.tab_id) throw new Error("tab_id is required for action=close")
+      affectedTabID = String(args.tab_id)
+      await ownedTabs.close(affectedTabID)
+      activePage = ownedTabs.active()
+    }
+
+    const tabs = []
+    for (const entry of ownedTabs.entries()) {
+      tabs.push({
+        tab_id: entry.id,
+        active: entry.active,
+        url: entry.page.url(),
+        title: await bestEffortBrowserOperation("tab title read", () => entry.page.title(), "", {
+          allowClosed: true,
+        }),
+      })
+    }
+    return toolResult(
+      `${asJson({
+        action,
+        ...(affectedTabID ? { tab_id: affectedTabID } : {}),
+        active_tab_id: ownedTabs.activeID(),
+        tabs,
+      })}\n`,
     )
   },
 )
@@ -2068,7 +2221,7 @@ registerTool(
     const textOffset = intArg(args.text_offset, 0, 0, Number.MAX_SAFE_INTEGER)
     const selector = args.selector === undefined ? null : String(args.selector)
     const snapshot = await captureSnapshot(page, { maxTextChars, maxElements, selector, textOffset })
-    return toolResult(formatSnapshot(snapshot))
+    return toolResult(formatSnapshot(snapshot, pageRefSelectors(page)))
   },
 )
 
@@ -2097,7 +2250,7 @@ registerTool(
 
 registerTool(
   "browser_captcha_handoff",
-  "Attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with the gateway question tool using kind=captcha; only this browser profile and origin pause until browser_captcha_status clears the original page.",
+  "Attest an already-visible CAPTCHA/challenge and bring the browser to the front. Then ask the human with gateway question kind=captcha; only this AgentRun, profile, tab, and origin pause until browser_captcha_status clears it.",
   {
     type: "object",
     additionalProperties: false,
@@ -2562,7 +2715,7 @@ registerTool(
 
 registerTool(
   "browser_network_log",
-  "Return recent captured network requests and responses from the active browser context.",
+  "Return recent captured network requests and responses from this AgentRun's owned tabs.",
   {
     type: "object",
     additionalProperties: false,
@@ -2585,7 +2738,7 @@ registerTool(
 
 registerTool(
   "browser_network_response_body",
-  "Read a response body by network request id from browser_network_log.",
+  "Read a controller-local response body by network request id from browser_network_log.",
   {
     type: "object",
     additionalProperties: false,
@@ -2773,7 +2926,7 @@ registerTool(
 
 registerTool(
   "browser_close",
-  "Release this process's browser session without closing a host-owned shared browser.",
+  "Close the selected shared browser profile. The gateway exposes this only to the original phase root; other AgentRuns close owned tabs with browser_tabs.",
   {
     type: "object",
     additionalProperties: false,
@@ -2795,7 +2948,7 @@ ${tools}
 
 CAPTCHA/challenge handling:
 - This browser runs a stealth driver so it presents as a normal user browser; authorized targets do not block it up front. It does not auto-solve CAPTCHAs.
-- First take the normal page action that makes the challenge visible. \`browser_captcha_handoff\` then attests it and surfaces the browser; ask the human with gateway \`question\` kind \`captcha\`, then verify the clear state with \`browser_captcha_status\`. The host breaker blocks other active tools in between.
+- First take the normal page action that makes the challenge visible. \`browser_captcha_handoff\` then attests it and surfaces the browser; ask the human with gateway \`question\` kind \`captcha\`, then verify the clear state with \`browser_captcha_status\`. The host breaker blocks only that AgentRun, profile, tab, and origin in between.
 
 Navigation guidance:
 - Prefer \`wait_until="domcontentloaded"\` for ordinary page opens.
@@ -2809,6 +2962,7 @@ Isolation defaults:
 - artifacts/downloads: \`${ARTIFACTS_DIR}\`
 - launch mode: ${envBool("CYBER_BROWSER_HEADLESS", false) ? "headless" : "headed"}
 - existing target cookies persist in the dedicated Cyberful profile; set \`CYBER_BROWSER_CLEAR_COOKIES_ON_START=true\` for an intentionally clean engagement
+- AgentRun controllers own disjoint tabs and page/network state while sharing the selected profile's cookies, storage, authentication, downloads, and artifacts
 
 Install Chromium:
 \`\`\`sh
@@ -3015,8 +3169,8 @@ export function createSerialRequestDispatcher({ handle = handleRequest, onCancel
 // EOF and process signals can race while Chromium still owns its persistent
 // profile lock. One retained promise serializes teardown. Locally owned contexts
 // are closed; an attached shared context is only forgotten, except that OWN_TAB
-// mode closes the single tab it created. Signal handlers observe the retained
-// promise and report failures only on stderr, preserving the stdio protocol.
+// mode closes every tab admitted by that controller. Signal handlers observe the
+// retained promise and report failures only on stderr, preserving the protocol.
 // ─────────────────────────────────────────────────────────────────────
 
 let browserShutdown
@@ -3024,19 +3178,17 @@ let browserSignalShutdown
 function detachCurrentBrowser() {
   const closingContext = context
   const closingOwnership = contextOwnership
-  const closingPinnedPage = pinnedPage
+  const closingOwnedPages = ownedTabs.detach()
 
   context = null
   contextOwnership = "none"
   activePage = null
-  pinnedPage = null
-  pinnedTargetId = null
 
   return {
     context: closingContext,
     ownership: closingOwnership,
     ownTab: OWN_TAB,
-    pinnedPage: closingPinnedPage,
+    ownedPages: closingOwnedPages,
   }
 }
 
@@ -3189,8 +3341,8 @@ async function main() {
   process.once("SIGTERM", () => closeBrowserForSignal("SIGTERM"))
   if (EAGER) {
     // ── Eager Hub Mode Holds The Shared Browser ───────────────────────
-    // The host launches this mode to keep one pinned profile alive while Recon
-    // scouts attach through its ephemeral CDP endpoint. It cannot enter the normal
+    // The host launches this mode to keep one profile hub alive while AgentRun
+    // controllers attach through its ephemeral CDP endpoint. It cannot enter the normal
     // stdin loop because ignored stdin would produce immediate EOF and close the
     // shared browser. SIGINT or SIGTERM closes the context and releases its lock.
     // ─────────────────────────────────────────────────────────────────────

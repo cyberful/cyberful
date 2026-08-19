@@ -15,9 +15,15 @@ import {
   clearCircuitBreaker,
   dismissCircuitBreaker,
   readCircuitBreaker,
+  readCircuitBreakers,
 } from "./circuit-breaker"
 
-const challenged = { profile: 2 as const, origin: "https://example.test", pageID: "page-7" }
+const challenged = {
+  ownerRunID: "run-challenged",
+  profile: 2 as const,
+  origin: "https://example.test",
+  pageID: "page-7",
+}
 
 describe("CAPTCHA circuit breaker", () => {
   test("pauses only the challenged profile and origin until original-page verification", async () => {
@@ -58,17 +64,18 @@ describe("CAPTCHA circuit breaker", () => {
     const file = path.join(root, "state.json")
     const search = { profile: "search" as const, origin: "https://html.duckduckgo.com", pageID: "search-page" }
     try {
-      await activateCircuitBreaker(file, "recon", search, false)
-      expect(await circuitBreakerError(file, "web_search", search)).toContain("profile search")
-      expect(await circuitBreakerError(file, "browser_click", { ...search, profile: 1 })).toBeUndefined()
-      expect(await circuitBreakerError(file, "browser_captcha_status", search)).toBeUndefined()
-      expect(await clearCircuitBreaker(file, search)).toBe(true)
+      await activateCircuitBreaker(file, "recon", { ...search, ownerRunID: "run-search" }, false)
+      const searchScope = { ...search, ownerRunID: "run-search" }
+      expect(await circuitBreakerError(file, "web_search", searchScope)).toContain("profile search")
+      expect(await circuitBreakerError(file, "browser_click", { ...searchScope, profile: 1 })).toBeUndefined()
+      expect(await circuitBreakerError(file, "browser_captcha_status", searchScope)).toBeUndefined()
+      expect(await clearCircuitBreaker(file, searchScope)).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test("does not apply a late human answer to a replacement challenge", async () => {
+  test("applies a human answer only to its original challenge", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-stale-answer-"))
     const file = path.join(root, "state.json")
     try {
@@ -76,12 +83,60 @@ describe("CAPTCHA circuit breaker", () => {
       const replacement = await activateCircuitBreaker(
         file,
         "recon",
-        { profile: 3 as const, origin: "https://other.test", pageID: "page-8" },
+        { ownerRunID: "run-other", profile: 3 as const, origin: "https://other.test", pageID: "page-8" },
         true,
       )
-      expect(await dismissCircuitBreaker(file, original)).toBe(false)
+      expect(await dismissCircuitBreaker(file, original)).toBe(true)
       expect(await acknowledgeCircuitBreaker(file, original)).toBe(false)
-      expect(await readCircuitBreaker(file)).toEqual(replacement)
+      expect(await readCircuitBreakers(file)).toContainEqual(replacement)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("retains concurrent challenges while isolating other AgentRuns and tabs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-concurrent-"))
+    const file = path.join(root, "state.json")
+    const sibling = { ...challenged, ownerRunID: "run-sibling", pageID: "page-sibling" }
+    try {
+      await Promise.all([
+        activateCircuitBreaker(file, "recon", challenged, true),
+        activateCircuitBreaker(file, "recon", sibling, true),
+      ])
+      expect(await readCircuitBreakers(file)).toHaveLength(2)
+      expect(await circuitBreakerError(file, "browser_click", challenged)).toContain("this AgentRun tab")
+      expect(
+        await circuitBreakerError(file, "browser_click", { ...challenged, ownerRunID: "run-sibling" }),
+      ).toBeUndefined()
+      expect(
+        await circuitBreakerError(file, "browser_click", { ...challenged, pageID: "page-unrelated" }),
+      ).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("reads the former single-entry state as a legacy wildcard owner", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "captcha-circuit-legacy-"))
+    const file = path.join(root, "state.json")
+    try {
+      const now = Date.now()
+      await writeFile(
+        file,
+        JSON.stringify({
+          kind: "captcha",
+          status: "awaiting_human",
+          phase: "recon",
+          profile: challenged.profile,
+          origin: challenged.origin,
+          pageID: challenged.pageID,
+          activatedAt: now,
+          updatedAt: now,
+        }),
+      )
+      expect(await circuitBreakerError(file, "browser_click", challenged)).toContain("profile 2")
+      await activateCircuitBreaker(file, "recon", { ...challenged, ownerRunID: "new-run" }, true)
+      expect(JSON.parse(await Bun.file(file).text())).toMatchObject({ version: 2 })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

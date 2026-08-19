@@ -4080,6 +4080,22 @@ export class PiAgentSubsystem implements AgentSubsystem {
           })
         }
       }
+      if (state.spec.releaseBrowserOwner) {
+        await state.spec
+          .releaseBrowserOwner({
+            runID: state.id,
+            role: state.spec.role,
+            ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
+          })
+          .catch((error) => {
+            this.#emitActivity(state, {
+              kind: "status",
+              text: `Browser tab cleanup failed: ${boundedFailureDetail(
+                error instanceof Error ? error.message : String(error),
+              )}`,
+            })
+          })
+      }
       const result: AgentRunResult = {
         id: state.id,
         ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),

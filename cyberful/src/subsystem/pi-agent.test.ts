@@ -526,6 +526,7 @@ interface RootSpecOptions {
   readonly abort?: AbortSignal
   readonly recoverHypothesisOwnership?: AgentRunSpec["recoverHypothesisOwnership"]
   readonly recoverTestObjects?: AgentRunSpec["recoverTestObjects"]
+  readonly releaseBrowserOwner?: AgentRunSpec["releaseBrowserOwner"]
 }
 
 function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
@@ -558,6 +559,7 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     ...(options.gatewayTools ? { gatewayTools: () => options.gatewayTools! } : {}),
     ...(options.recoverHypothesisOwnership ? { recoverHypothesisOwnership: options.recoverHypothesisOwnership } : {}),
     ...(options.recoverTestObjects ? { recoverTestObjects: options.recoverTestObjects } : {}),
+    ...(options.releaseBrowserOwner ? { releaseBrowserOwner: options.releaseBrowserOwner } : {}),
     skills: SKILLS,
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
@@ -3146,6 +3148,47 @@ describe("Pi complete fallback AgentRuns", () => {
 })
 
 describe("Pi AgentRun steering and cancellation", () => {
+  test("releases AgentRun browser ownership after completion and cancellation", async () => {
+    const releases: Array<{ runID: string; role: AgentRunRole }> = []
+    const completedRuntime = subsystem(new InMemoryProvider((call) => assistant(call, "completed")))
+    const completed = await completedRuntime.subsystem.start(
+      rootSpec(completedRuntime.models, {
+        id: "browser-cleanup-completed",
+        objective: "complete normally",
+        releaseBrowserOwner: async ({ runID, role }) => {
+          releases.push({ runID, role })
+        },
+      }),
+    )
+    await completed.result
+
+    const cancelledProvider = new InMemoryProvider(async (call) => {
+      await new Promise<void>((resolve) => {
+        if (call.signal?.aborted) resolve()
+        else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+      })
+      return assistant(call, [], { stopReason: "aborted", errorMessage: "Request was aborted" })
+    })
+    const cancelledRuntime = subsystem(cancelledProvider)
+    const cancelled = await cancelledRuntime.subsystem.start(
+      rootSpec(cancelledRuntime.models, {
+        id: "browser-cleanup-cancelled",
+        objective: "wait for cancellation",
+        releaseBrowserOwner: async ({ runID, role }) => {
+          releases.push({ runID, role })
+        },
+      }),
+    )
+    await cancelledProvider.waitForCalls(1)
+    await cancelled.cancel("verify browser cleanup")
+    await cancelled.result
+
+    expect(releases).toEqual([
+      { runID: "browser-cleanup-completed", role: "root" },
+      { runID: "browser-cleanup-cancelled", role: "root" },
+    ])
+  })
+
   test("focus supersedes queued guidance and cancels active delegated work with an explicit cause", async () => {
     const provider = new InMemoryProvider(async (call) => {
       if (runRole(call) === "root") {

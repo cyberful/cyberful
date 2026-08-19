@@ -87,6 +87,11 @@ server.setRequestHandler(ListToolsRequestSchema, (request) => {
         description: "Request one host-owned Cyberful decision.",
         inputSchema: objectSchema,
       },
+      {
+        name: "browser_close",
+        description: "Close a browser profile.",
+        inputSchema: { type: "object" as const, additionalProperties: false, properties: {} },
+      },
     ],
     nextCursor: "second-page",
   }
@@ -103,6 +108,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
     return {
       content: [{ type: "text" as const, text: `handoff: ${value}` }],
     }
+  if (request.params.name === "browser_close")
+    return { content: [{ type: "text" as const, text: "browser closed" }] }
+  if (request.params.name === "_cyberful_browser_owner_release")
+    return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }] }
   if (request.params.name === "target_cooldown")
     return {
       content: [{ type: "text" as const, text: `cooldown: ${value}` }],

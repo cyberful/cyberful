@@ -80,7 +80,7 @@ import {
   circuitBreakerError,
   clearCircuitBreaker,
   dismissCircuitBreaker,
-  readCircuitBreaker,
+  readActorCircuitBreaker,
   type CircuitBreakerState,
 } from "./circuit-breaker"
 import {
@@ -98,6 +98,8 @@ import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } f
 import { CVE_DICTIONARY_TOOL_DEF, CveDictionaryTool } from "./cve-dictionary-tool"
 import { TARGET_COOLDOWN_TOOL_DEF, TARGET_COOLDOWN_TOOL_NAME, TargetCooldownController } from "./target-cooldown"
 import { ManagedMcpUpstream, type ManagedMcpUpstreamStatus } from "./restartable-browser-upstream"
+import { browserToolCatalog, createBrowserProfileProcess } from "./browser-profile-process"
+import type { BrowserProfileHub } from "./browser-profile-hub"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
@@ -107,6 +109,8 @@ const HUMAN_WAIT_HEARTBEAT_MS = 30_000
 const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HUMAN_WAIT_TOOL_NAMES = new Set(["question", SOURCE_IMPORT_TOOL_DEF.name])
 const TOOL_ACTOR_META_KEY = "io.cyberful/tool-actor"
+const BROWSER_OWNER_RELEASE_TOOL_NAME = "_cyberful_browser_owner_release"
+const BROWSER_OWNER_RELEASE_META_KEY = "io.cyberful/browser-owner-release"
 
 const RUNTIME_STATUS_TOOL_DEF = {
   name: "runtime_status",
@@ -412,6 +416,13 @@ function jsonRecord(value: string): Record<string, unknown> | undefined {
 
 type ToolActorUsage = Pick<ToolUsageEvent, "agent_run_id" | "agent_role" | "parent_run_id" | "tool_call_id">
 
+interface GatewayToolActor {
+  readonly runID: string
+  readonly role: "root" | "subagent" | "fallback"
+  readonly parentRunID?: string
+  readonly toolCallID?: string
+}
+
 function boundedLedgerValue(value: unknown, maximum = 256): string | undefined {
   if (typeof value !== "string") return
   const result = value.trim()
@@ -432,6 +443,18 @@ function toolActorUsage(meta: unknown): ToolActorUsage {
     ...(parentRunID ? { parent_run_id: parentRunID } : {}),
     ...(toolCallID ? { tool_call_id: toolCallID } : {}),
   }
+}
+
+function gatewayToolActor(meta: unknown): GatewayToolActor | undefined {
+  if (!isRecord(meta) || !isRecord(meta[TOOL_ACTOR_META_KEY])) return
+  const value = meta[TOOL_ACTOR_META_KEY]
+  const runID = boundedLedgerValue(value.runID)
+  const parentRunID = boundedLedgerValue(value.parentRunID)
+  const toolCallID = boundedLedgerValue(value.toolCallID)
+  const role = value.role
+  if (!runID || (role !== "root" && role !== "subagent" && role !== "fallback")) return
+  if ((role === "root" && parentRunID) || (role !== "root" && !parentRunID)) return
+  return { runID, role, ...(parentRunID ? { parentRunID } : {}), ...(toolCallID ? { toolCallID } : {}) }
 }
 
 function digestableArguments(value: unknown): unknown {
@@ -606,13 +629,14 @@ async function handleQuestion(
   circuit: CircuitBreakerConfig | undefined,
   args: Record<string, unknown>,
   signal?: AbortSignal,
+  actor?: GatewayToolActor,
 ) {
   const questions = parseHumanQuestions(args.questions)
   if (!questions) return text({ error: "question requires one to three valid questions" })
   const captcha = args.kind === "captcha"
   let captchaState: CircuitBreakerState | undefined
   if (captcha) {
-    captchaState = circuit ? await readCircuitBreaker(circuit.filePath) : undefined
+    captchaState = circuit && actor ? await readActorCircuitBreaker(circuit.filePath, actor.runID) : undefined
     if (!captchaState || captchaState.status === "cleared" || !captchaState.surfacedAt)
       return text(
         {
@@ -1114,7 +1138,7 @@ export interface UpstreamTool {
   capability?: SubsystemPhase.WorkflowCapability
   browserProfile?: BrowserProfileId
   managedRuntime?: ManagedRuntimeLabel
-  call(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>
+  call(args: Record<string, unknown>, signal?: AbortSignal, actor?: GatewayToolActor): Promise<CallToolResult>
 }
 
 // ── One Browser Surface Selects Target Or Research Identity ────────
@@ -1335,11 +1359,17 @@ function transportFailureMetadata(error: unknown): Pick<ToolUsageEvent, "error_c
   }
 }
 
-async function observeCaptchaCircuit(config: CircuitBreakerConfig, tool: string, result: CallToolResult) {
+async function observeCaptchaCircuit(
+  config: CircuitBreakerConfig,
+  tool: string,
+  result: CallToolResult,
+  actor: GatewayToolActor | undefined,
+) {
   if (tool !== "browser_captcha_status" && tool !== "browser_captcha_handoff") return
+  if (!actor) return
   const action = browserAction(result)
   if (!action) return
-  const scope = { profile: action.profile, origin: action.origin, pageID: action.pageID }
+  const scope = { ownerRunID: actor.runID, profile: action.profile, origin: action.origin, pageID: action.pageID }
   const value = result.content
     ?.flatMap((content) => {
       if (content.type !== "text") return []
@@ -1364,23 +1394,26 @@ function browserScope(
   tool: string,
   args: Record<string, unknown>,
   profile: BrowserProfileId | undefined,
-  coverage: SurfaceCoverage | undefined,
+  scopes: ReadonlyMap<string, { readonly profile: BrowserProfileId; readonly origin: string; readonly pageID: string }>,
+  actor: GatewayToolActor | undefined,
 ) {
-  if (profile === undefined || (!tool.startsWith("browser_") && tool !== "web_search")) return
-  const current = coverage?.currentScope(profile)
+  if (!actor || profile === undefined || (!tool.startsWith("browser_") && tool !== "web_search")) return
+  const current = scopes.get(`${actor.runID}\u0000${profile}`)
+  const currentScope = current ? { ownerRunID: actor.runID, ...current } : undefined
   if (tool === "web_search") {
     return {
+      ownerRunID: actor.runID,
       profile,
       origin: "https://html.duckduckgo.com",
-      pageID: current?.pageID ?? "pending",
+      pageID: currentScope?.pageID ?? "pending",
     }
   }
-  if (tool !== "browser_navigate" || typeof args.url !== "string") return current
+  if (tool !== "browser_navigate" || typeof args.url !== "string") return currentScope
   try {
     const url = new URL(args.url.includes("://") ? args.url : `http://${args.url}`)
-    return { profile, origin: url.origin, pageID: current?.pageID ?? "pending" }
+    return { ownerRunID: actor.runID, profile, origin: url.origin, pageID: currentScope?.pageID ?? "pending" }
   } catch {
-    return current
+    return currentScope
   }
 }
 
@@ -1542,6 +1575,7 @@ export function cyberfulOsProxyTrustEnv(
 const BRIEF_BROWSER_TOOLS = new Set([
   "web_search",
   "browser_status",
+  "browser_tabs",
   "browser_navigate",
   "browser_snapshot",
   "browser_captcha_status",
@@ -1653,6 +1687,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     readonly runtime?: string
     readonly signal?: AbortSignal
   }) => Promise<readonly ManagedMcpUpstreamStatus[]>
+  releaseBrowserOwner: (runID: string) => Promise<void>
   close: () => Promise<void>
 }> {
   const builtins = SubsystemUpstream.builtin()
@@ -1660,6 +1695,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const clients: Client[] = []
   const ordinaryClients = new Set<Client>()
   const managedUpstreams = new Map<string, ManagedMcpUpstream<Client>>()
+  const browserHubs = new Map<BrowserProfileId, BrowserProfileHub<Client>>()
   const ownedProcessRoots = new Set<number>()
   const upstreamCapabilities: readonly {
     readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
@@ -1711,6 +1747,59 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
         for (const [k, v] of Object.entries(set)) env[k] = v
         for (const k of unset) delete env[k]
         env.CYBER_BROWSER_PROFILE_ID = String(browserProfile)
+
+        // ── One Hub Per Profile, One Controller Per AgentRun ─────────
+        // Catalog discovery does not launch Chromium. The first actor action
+        // starts one profile-owning hub and one CDP controller keyed by runID.
+        // Controller teardown closes only that actor's tabs; browser_close is
+        // intercepted below and can terminate the hub only for the phase root.
+        // ──────────────────────────────────────────────────────────────
+        const profileDir = env.CYBER_BROWSER_USER_DATA_DIR
+        if (!profileDir) throw new Error(`browser profile ${browserProfile} has no user-data directory`)
+        const command = [cmd, ...args] as [string, ...string[]]
+        const processOptions = {
+          label: `browser-${browserProfile}`,
+          command,
+          environment: env,
+          profileDir,
+          ...(upstreamDiagnosticSink ? { diagnosticSink: upstreamDiagnosticSink } : {}),
+          ownProcess: (pid: number) => ownedProcessRoots.add(pid),
+        }
+        const runtime = createBrowserProfileProcess(processOptions)
+        const tools = await browserToolCatalog(processOptions)
+        browserHubs.set(browserProfile, runtime)
+        for (const tool of tools) {
+          if (!phaseUpstreamToolAllowed(policy, capability, tool.name)) continue
+          out.push({
+            def: tool,
+            capability,
+            browserProfile,
+            managedRuntime: `browser-${browserProfile}`,
+            call: async (toolArgs, signal, actor) => {
+              if (!actor) throw new Error("browser calls require a valid host-owned AgentRun identity")
+              if (tool.name === "browser_close") {
+                if (actor.role !== "root") throw new Error("only the phase root may close a browser profile")
+                await runtime.closeProfile()
+                return text("browser closed\n")
+              }
+              return runtime.call(
+                actor.runID,
+                async (client) => {
+                  const result = await client.callTool(
+                    { name: tool.name, arguments: toolArgs },
+                    CallToolResultSchema,
+                    { signal, timeout: 600_000, maxTotalTimeout: 600_000 },
+                  )
+                  return CallToolResultSchema.parse(result)
+                },
+                signal,
+              )
+            },
+          })
+        }
+        pendingClient = undefined
+        pendingTransport = undefined
+        continue
       }
       if (key === "cyberful-os") {
         // ── Gateways May Only Attach To Host-Owned Runtime State ───────
@@ -1937,9 +2026,19 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     tools: out,
     clients,
     runtimeStatus: async (input = {}) => {
-      const candidates = [...managedUpstreams.entries()].filter(([label]) => !input.runtime || label === input.runtime)
+      const candidates = [
+        ...managedUpstreams.entries(),
+        ...Array.from(browserHubs, ([profile, hub]) => [`browser-${profile}`, hub] as const),
+      ].filter(([label]) => !input.runtime || label === input.runtime)
       if (!input.check) return candidates.map(([, upstream]) => upstream.status())
       return Promise.all(candidates.map(([, upstream]) => upstream.health(input.signal)))
+    },
+    releaseBrowserOwner: async (runID) => {
+      const outcomes = await Promise.allSettled([...browserHubs.values()].map((hub) => hub.releaseOwner(runID)))
+      const failures = outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" ? [outcome.reason as unknown] : [],
+      )
+      if (failures.length > 0) throw new AggregateError(failures, `browser owner ${runID} cleanup failed`)
     },
     close: async () => {
       const captured = await processSnapshot()
@@ -1951,6 +2050,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       const operations = [
         ...Array.from(ordinaryClients, (client) => () => client.close()),
         ...Array.from(managedUpstreams.values(), (upstream) => () => upstream.close()),
+        ...Array.from(browserHubs.values(), (hub) => () => hub.close()),
       ]
       const outcomes = await Promise.allSettled(operations.map((operation) => Promise.resolve().then(operation)))
       const operationFailures = outcomes.flatMap((outcome) =>
@@ -1996,6 +2096,7 @@ export async function createGatewayServer(opts?: {
     readonly runtime?: string
     readonly signal?: AbortSignal
   }) => Promise<readonly ManagedMcpUpstreamStatus[]>
+  releaseBrowserOwner?: (runID: string) => Promise<void>
   closeUpstreams?: () => Promise<void>
   upstreamDiagnosticSink?: (text: string) => void
 }): Promise<GatewayServer> {
@@ -2004,11 +2105,18 @@ export async function createGatewayServer(opts?: {
         tools: opts.upstreams,
         clients: opts.upstreamClients ?? [],
         runtimeStatus: opts.runtimeStatus ?? (async () => []),
+        releaseBrowserOwner: opts.releaseBrowserOwner ?? (() => Promise.resolve()),
         close: opts.closeUpstreams ?? (() => Promise.resolve()),
       }
     : proxyEnabled()
       ? await connectDefaultUpstreams(opts?.upstreamDiagnosticSink)
-      : { tools: [], clients: [], runtimeStatus: async () => [], close: () => Promise.resolve() }
+      : {
+          tools: [],
+          clients: [],
+          runtimeStatus: async () => [],
+          releaseBrowserOwner: () => Promise.resolve(),
+          close: () => Promise.resolve(),
+        }
   const policy = gatewayPhasePolicy()
   const upstreams = connected.tools.filter(
     (upstream) =>
@@ -2055,6 +2163,10 @@ export async function createGatewayServer(opts?: {
   const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
   const coverage = workareaRoot && phase ? new SurfaceCoverage(workareaRoot, phase) : undefined
+  const browserScopes = new Map<
+    string,
+    { readonly profile: BrowserProfileId; readonly origin: string; readonly pageID: string }
+  >()
   let enforcedEngagementPolicy = workareaRoot ? await readEngagementPolicy(workareaRoot) : undefined
   const hypotheses =
     workareaRoot && phase && policy.workflow && (policy.hypothesisResearch || policy.hypothesisReadOnly)
@@ -2131,7 +2243,9 @@ export async function createGatewayServer(opts?: {
   const tools = new GatewayToolRegistry()
   tools.register(VARIABLE_TOOL_DEF, (args, { sessionID }) => handleVariable(sessionID, args))
   if (question)
-    tools.register(QUESTION_TOOL_DEF, (args, context) => handleQuestion(server, circuit, args, context.signal))
+    tools.register(QUESTION_TOOL_DEF, (args, context) =>
+      handleQuestion(server, circuit, args, context.signal, context.actor),
+    )
   if (handoff)
     tools.register(handoffToolDef(handoff), async (args) => {
       const breakerError = circuit ? await circuitBreakerError(circuit.filePath, "handoff") : undefined
@@ -2582,9 +2696,18 @@ export async function createGatewayServer(opts?: {
     const sessionID = boundSession()
     const name = req.params.name
     const args = req.params.arguments ?? {}
+    const actor = gatewayToolActor(req.params._meta)
+    if (name === BROWSER_OWNER_RELEASE_TOOL_NAME) {
+      const hostRelease = isRecord(req.params._meta) && req.params._meta[BROWSER_OWNER_RELEASE_META_KEY] === 1
+      const runID = typeof args.run_id === "string" ? args.run_id.trim() : ""
+      if (!hostRelease || !actor || !runID || runID !== actor.runID)
+        return text({ error: "browser owner cleanup requires matching host-owned AgentRun identity" }, true)
+      await connected.releaseBrowserOwner(runID)
+      return text({ ok: true, run_id: runID })
+    }
     if (name !== TARGET_COOLDOWN_TOOL_NAME) await targetCooldown?.wait(context.signal)
     const startedAt = performance.now()
-    const local = tools.call(name, args, { sessionID, signal: context.signal })
+    const local = tools.call(name, args, { sessionID, signal: context.signal, ...(actor ? { actor } : {}) })
     if (local) {
       const progressToken = req.params._meta?.progressToken
       const heartbeat =
@@ -2654,18 +2777,30 @@ export async function createGatewayServer(opts?: {
       ? await circuitBreakerError(
           circuit.filePath,
           name,
-          browserScope(name, selected.args, selected.upstream.browserProfile, coverage),
+          browserScope(name, selected.args, selected.upstream.browserProfile, browserScopes, actor),
         )
       : undefined
     if (breakerError) return text({ error: breakerError }, true)
     const upstream = selected.upstream
+    if (upstream.browserProfile !== undefined && !actor)
+      return text({ error: "browser calls require a valid host-owned AgentRun identity" }, true)
+    if (name === "browser_close" && actor?.role !== "root")
+      return text({ error: "only the phase root may close a browser profile" }, true)
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
     try {
       const result = annotateBrowserProfile(
-        annotateAdjustments(await upstream.call(adjusted.args, context.signal), adjusted.adjustments),
+        annotateAdjustments(await upstream.call(adjusted.args, context.signal, actor), adjusted.adjustments),
         upstream.browserProfile,
       )
-      if (circuit) await observeCaptchaCircuit(circuit, name, result)
+      const observedBrowserAction = browserAction(result)
+      if (actor && observedBrowserAction) {
+        browserScopes.set(`${actor.runID}\u0000${observedBrowserAction.profile}`, {
+          profile: observedBrowserAction.profile,
+          origin: observedBrowserAction.origin,
+          pageID: observedBrowserAction.pageID,
+        })
+      }
+      if (circuit) await observeCaptchaCircuit(circuit, name, result, actor)
       let redacted = redactResult(sessionID, result)
       if (upstream.capability === "ghidra" && ghidraEvidence) {
         try {
@@ -2694,7 +2829,7 @@ export async function createGatewayServer(opts?: {
         observedEgress && observedEgress.egress_http_status === undefined && browserStatus !== undefined
           ? { ...observedEgress, egress_http_status: browserStatus }
           : observedEgress
-      await coverage?.observe(result, egress)
+      await coverage?.observe(result, egress, actor?.runID)
       await usage
         .record({
           ...callUsageMetadata({ name, args, meta: req.params._meta, result: redacted }),

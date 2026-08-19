@@ -51,7 +51,7 @@ const {
   writeGatewayPidSignal,
 } = await import("./server")
 const { humanDecisionMetadata } = await import("../human-question")
-const { activateCircuitBreaker, readCircuitBreaker } = await import("./circuit-breaker")
+const { activateCircuitBreaker, readCircuitBreakers } = await import("./circuit-breaker")
 const { Database } = await import("../../storage/db")
 const { SessionTable } = await import("../../session/session.sql")
 const { ProjectTable } = await import("../../project/project.sql")
@@ -81,6 +81,16 @@ function cleanupTestRows() {
 
 type McpClient = InstanceType<typeof Client>
 type CallToolResult = Awaited<ReturnType<McpClient["callTool"]>>
+
+function rootActorMeta(runID = "phase-root") {
+  return {
+    "io.cyberful/tool-actor": {
+      runID,
+      role: "root",
+      toolCallID: `test-${runID}`,
+    },
+  }
+}
 
 function textContent(result: CallToolResult) {
   if (!Array.isArray(result.content)) throw new Error("tool returned invalid content")
@@ -916,10 +926,12 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       const explicit = await browserClient.callTool({
         name: "browser_navigate",
         arguments: { profile: 2, url: "https://example.test/account" },
+        _meta: rootActorMeta(),
       })
       const defaulted = await browserClient.callTool({
         name: "browser_navigate",
         arguments: { url: "https://example.test/default" },
+        _meta: rootActorMeta(),
       })
       expect(calls).toEqual([
         { profile: 2, args: { url: "https://example.test/account" } },
@@ -929,6 +941,74 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       expect(defaulted._meta).toMatchObject({ cyberful: { browserProfile: 1 } })
     } finally {
       await browserClient.close()
+      await server.closeGateway()
+    }
+  })
+
+  test("rejects browser_close without phase-root identity at the gateway boundary", async () => {
+    let closes = 0
+    const closeTool: UpstreamTool = {
+      def: {
+        name: "browser_close",
+        description: "Close the selected browser profile.",
+        inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      },
+      capability: "browser",
+      browserProfile: 1,
+      call: async () => {
+        closes += 1
+        return { content: [{ type: "text", text: "browser closed" }] }
+      },
+    }
+    const server = await createGatewayServer({ upstreams: [closeTool] })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "browser-close-authority-test", version: "0" })
+    await client.connect(clientTransport)
+    try {
+      expect(jsonContent(await client.callTool({ name: "browser_close", arguments: {} })).error).toContain(
+        "host-owned AgentRun identity",
+      )
+      expect(
+        jsonContent(
+          await client.callTool({
+            name: "browser_close",
+            arguments: {},
+            _meta: {
+              "io.cyberful/tool-actor": {
+                runID: "child-1",
+                role: "subagent",
+                parentRunID: "root-1",
+                toolCallID: "close-1",
+              },
+            },
+          }),
+        ).error,
+      ).toContain("phase root")
+      expect(
+        jsonContent(
+          await client.callTool({
+            name: "browser_close",
+            arguments: {},
+            _meta: {
+              "io.cyberful/tool-actor": {
+                runID: "malformed-root",
+                role: "root",
+                parentRunID: "unexpected-parent",
+                toolCallID: "close-2",
+              },
+            },
+          }),
+        ).error,
+      ).toContain("host-owned AgentRun identity")
+      expect(
+        textContent(
+          await client.callTool({ name: "browser_close", arguments: {}, _meta: rootActorMeta("root-1") }),
+        ),
+      ).toBe("browser closed")
+      expect(closes).toBe(1)
+    } finally {
+      await client.close()
       await server.closeGateway()
     }
   })
@@ -985,7 +1065,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       await client.connect(clientTransport)
       const tools = (await client.listTools()).tools
       expect(tools.find((tool) => tool.name === "web_search")?.inputSchema.properties).not.toHaveProperty("profile")
-      const response = await client.callTool({ name: "web_search", arguments: { query } })
+      const response = await client.callTool({ name: "web_search", arguments: { query }, _meta: rootActorMeta() })
       expect(response._meta).toMatchObject({ cyberful: { browserProfile: "search" } })
     } finally {
       await client?.close()
@@ -2047,7 +2127,12 @@ describe("expert-gateway question tool", () => {
           await activateCircuitBreaker(
             circuit,
             "recon",
-            { profile: 2, origin: "https://replacement.test", pageID: "page-replacement" },
+            {
+              ownerRunID: "captcha-root",
+              profile: 2,
+              origin: "https://replacement.test",
+              pageID: "page-replacement",
+            },
             true,
           )
         }
@@ -2057,6 +2142,8 @@ describe("expert-gateway question tool", () => {
         }
       })
       await c.connect(ct)
+      const browserCall = (name: string, arguments_: Record<string, unknown>) =>
+        c!.callTool({ name, arguments: arguments_, _meta: rootActorMeta("captcha-root") })
       const question = {
         kind: "captcha",
         questions: [
@@ -2067,81 +2154,75 @@ describe("expert-gateway question tool", () => {
           },
         ],
       }
-      expect(jsonContent(await c.callTool({ name: "question", arguments: question })).error).toContain(
-        "already visible",
-      )
-      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
       expect(
         jsonContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 1, url: "https://example.test/account" },
-          }),
+          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
+        ).error,
+      ).toContain(
+        "already visible",
+      )
+      await browserCall("browser_captcha_handoff", { profile: 1 })
+      expect(
+        jsonContent(
+          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
         ).error,
       ).toContain("human resolution")
       expect(navigations).toBe(0)
       expect(
         textContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 2, url: "https://example.test/account" },
-          }),
+          await browserCall("browser_navigate", { profile: 2, url: "https://example.test/account" }),
         ),
       ).toBe("navigated")
       expect(
         textContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 1, url: "https://other.test/account" },
-          }),
+          await browserCall("browser_navigate", { profile: 1, url: "https://other.test/account" }),
         ),
       ).toBe("navigated")
       expect(navigations).toBe(2)
-      expect(jsonContent(await c.callTool({ name: "question", arguments: question })).output).toContain(
+      expect(
+        jsonContent(
+          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
+        ).output,
+      ).toContain(
         "false-positive pause is cleared",
       )
       expect(
         textContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 1, url: "https://example.test/account" },
-          }),
+          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
         ),
       ).toBe("navigated")
       expect(navigations).toBe(3)
-      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
+      await browserCall("browser_captcha_handoff", { profile: 1 })
       captchaAnswer = "Resolved"
-      await c.callTool({ name: "question", arguments: question })
+      await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") })
       expect(
         jsonContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 1, url: "https://example.test/account" },
-          }),
+          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
         ).error,
       ).toContain("human resolution")
-      await c.callTool({ name: "browser_captcha_status", arguments: { profile: 1 } })
+      await browserCall("browser_captcha_status", { profile: 1 })
       expect(
         textContent(
-          await c.callTool({
-            name: "browser_navigate",
-            arguments: { profile: 1, url: "https://example.test/account" },
-          }),
+          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
         ),
       ).toBe("navigated")
       expect(navigations).toBe(4)
-      await c.callTool({ name: "browser_captcha_handoff", arguments: { profile: 1 } })
+      await browserCall("browser_captcha_handoff", { profile: 1 })
       captchaAnswer = "No challenge visible"
       replaceCaptchaBeforeAnswer = true
-      expect(jsonContent(await c.callTool({ name: "question", arguments: question })).output).toContain(
-        "state changed before this answer arrived",
+      expect(
+        jsonContent(
+          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
+        ).output,
+      ).toContain("false-positive pause is cleared")
+      expect(await readCircuitBreakers(circuit)).toContainEqual(
+        expect.objectContaining({
+          profile: 2,
+          origin: "https://replacement.test",
+          pageID: "page-replacement",
+          status: "awaiting_human",
+        }),
       )
-      expect(await readCircuitBreaker(circuit)).toMatchObject({
-        profile: 2,
-        origin: "https://replacement.test",
-        pageID: "page-replacement",
-        status: "awaiting_human",
-      })
     } finally {
       await c?.close()
       await server?.closeGateway()

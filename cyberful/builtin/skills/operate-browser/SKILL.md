@@ -34,9 +34,13 @@ Use the isolated browser as a stateful evidence surface. This skill governs brow
 
 Call `browser_status` for the explicit profile before relying on its session or page. For numbered target profiles that the phase requires to be ZAP-routed, require `proxy.configured=true` and `proxy.mode=zap`; briefly recheck a pending proxy, but treat direct fallback or an unavailable profile as degraded readiness rather than silently continuing.
 
+Each AgentRun owns only the tabs it creates inside the selected shared profile. A first page-scoped action creates a private tab automatically. Use `browser_tabs action=list` to inspect only your tabs, `open` to create and activate a blank tab, `select` with its `tab_id` to change the active tab, and `close` to close one of your tabs. Popups and `window.open` pages inherit your ownership. Treat a nonexistent tab ID as foreign or stale; never try to discover another AgentRun's tabs.
+
+DOM state, snapshot refs, active page, network entries, and response IDs are local to your AgentRun controller. Cookie, local-storage, service-worker, authentication, download, and artifact state remain shared by every AgentRun using the same profile, so tab isolation is not account isolation. Use different numbered profiles for different identities. A child or fallback may close only its own tabs with `browser_tabs`; only the original phase root can use `browser_close` to close the complete selected profile.
+
 Before a target mutation, take a fresh `browser_snapshot` and use its current actionable refs. Start with the 12k text default. Narrow long pages with a precise CSS `selector`, then continue with `next_text_offset` as `text_offset`; increase limits only when selection and pagination cannot capture the required evidence.
 
-Use the normal visible product journey and the least surprising browser action that expresses the intended user behavior. Do not retry a cancelled or transport-interrupted mutation because its target-side effect may be unknown. Save required screenshots, downloads, network facts, and other durable evidence before handoff because tabs and in-memory browser state do not cross phase ownership.
+Use the normal visible product journey and the least surprising browser action that expresses the intended user behavior. Do not retry a cancelled or transport-interrupted mutation because its target-side effect may be unknown. Save required screenshots, downloads, network facts, and other durable evidence before handoff because every AgentRun's tabs close when that run ends.
 
 ## Handle secrets and authentication
 
@@ -44,7 +48,7 @@ Store every supplied secret with `variable` before browser input. Pass the exact
 
 Complete an explicitly supplied account's ordinary multi-step sign-in flow autonomously when stored access is sufficient. Do not copy a working session into another profile or test an identity provider as a separate target merely because the application redirects through it. Confirm authentication from the target's visible UI and record only the non-secret identity, role, tenant, and state required by the phase.
 
-For a visible CAPTCHA or anti-bot challenge, preserve and foreground the challenged page, use the browser CAPTCHA status and handoff tools, and continue only after the host confirms resolution. Never solve, bypass, inject a token for, or infer resolution of a human challenge. For a missing human factor, rejected or locked access, unavailable profile, or degraded proxy, use the phase-designated human question only after autonomous progress cannot continue.
+For a visible CAPTCHA or anti-bot challenge, preserve and foreground the challenged tab, use the browser CAPTCHA status and handoff tools from the same AgentRun and tab, and continue only after the host confirms resolution. The pause is scoped to that AgentRun, profile, tab, and origin; sibling AgentRuns and unrelated owned tabs remain usable. Never solve, bypass, inject a token for, or infer resolution of a human challenge. For a missing human factor, rejected or locked access, unavailable profile, or degraded proxy, use the phase-designated human question only after autonomous progress cannot continue.
 
 ## Run the Brief readiness preflight
 

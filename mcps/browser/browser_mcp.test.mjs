@@ -44,6 +44,7 @@ describe("browser MCP input boundary", () => {
 
     expect(new Set(names).size).toBe(names.length)
     expect(names).toContain("browser_status")
+    expect(names).toContain("browser_tabs")
     expect(names).toContain("browser_navigate")
     expect(names).toContain("browser_click")
     expect(names).toContain("browser_evaluate")

@@ -204,14 +204,15 @@ describe("surface coverage", () => {
         egress_http_status: 200,
         egress_path_family: "/html",
         egress_route: "browser/direct-search",
-      })
+      }, "search-run")
       await coverage.observe({ content: [{ type: "text", text: "malformed upstream metadata" }] }, {
         egress_host: "html.duckduckgo.com",
         egress_method: "GET",
         egress_path_family: "/html",
         egress_route: "browser/direct-search",
       })
-      expect(coverage.currentScope("search")).toEqual({
+      expect(coverage.currentScope("search-run", "search")).toEqual({
+        ownerRunID: "search-run",
         profile: "search",
         pageID: "search-page",
         origin: "https://html.duckduckgo.com",

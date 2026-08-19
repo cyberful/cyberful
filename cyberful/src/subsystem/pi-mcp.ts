@@ -32,6 +32,8 @@ const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HANDOFF_TOOL_NAME = "handoff"
 const TARGET_COOLDOWN_TOOL_NAME = "target_cooldown"
 const TEST_OBJECT_TOOL_NAME = "test_object"
+const BROWSER_CLOSE_TOOL_NAME = "browser_close"
+const BROWSER_OWNER_RELEASE_TOOL_NAME = "_cyberful_browser_owner_release"
 const HUMAN_WAIT_TOOL_NAMES = new Set(["question", "source_import"])
 
 type ToolArguments = Record<string, unknown>
@@ -78,6 +80,7 @@ export interface PiMcpBridge {
     readonly reason: "phase_recovery" | "child_finished"
   }): Promise<ReadonlyArray<{ readonly id: string; readonly nextStep?: string }>>
   recoverTestObjects(input: { readonly fromRunID: string }): Promise<readonly RecoveredTestObject[]>
+  releaseBrowserOwner(actor: NonNullable<PiMcpRunToolPolicy["actor"]>): Promise<void>
   close(): Promise<void>
 }
 
@@ -307,6 +310,7 @@ function isGloballyAuthorized(name: string, options: PiMcpConnectOptions): boole
 
 function isRunAuthorized(name: string, policy: PiMcpRunToolPolicy): boolean {
   if (name === HANDOFF_TOOL_NAME && !policy.handoffAuthorized) return false
+  if (name === BROWSER_CLOSE_TOOL_NAME && policy.actor?.kind !== "root") return false
   return policy.isToolAllowed(name)
 }
 
@@ -658,6 +662,29 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
         },
       ]
     })
+  }
+
+  async releaseBrowserOwner(actor: NonNullable<PiMcpRunToolPolicy["actor"]>): Promise<void> {
+    if (this.closing) return
+    const result = await this.client.callTool(
+      {
+        name: BROWSER_OWNER_RELEASE_TOOL_NAME,
+        arguments: { run_id: actor.runID },
+        _meta: {
+          "io.cyberful/browser-owner-release": 1,
+          "io.cyberful/tool-actor": {
+            runID: actor.runID,
+            role: actor.kind,
+            ...(actor.parentID ? { parentRunID: actor.parentID } : {}),
+            toolCallID: "browser-owner-release",
+          },
+        },
+      },
+      undefined,
+      { timeout: TOOL_TIMEOUT_MS, maxTotalTimeout: TOOL_TIMEOUT_MS },
+    )
+    if (!("toolResult" in result) && result.isError)
+      throw new Error(toolErrorText(result.content, result.structuredContent))
   }
 
   // Normal completion, cancellation, and worker shutdown may converge here.

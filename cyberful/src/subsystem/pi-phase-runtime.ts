@@ -499,6 +499,13 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
           reason: request.reason,
         }),
       recoverTestObjects: (request) => bridge!.recoverTestObjects(request),
+      releaseBrowserOwner: (request) =>
+        bridge!.releaseBrowserOwner({
+          runID: request.runID,
+          displayName: request.role,
+          kind: request.role,
+          ...(request.parentID ? { parentID: request.parentID } : {}),
+        }),
       skills: input.skills.catalog,
       budget: {
         deadlineAt: input.deadlineAt,
