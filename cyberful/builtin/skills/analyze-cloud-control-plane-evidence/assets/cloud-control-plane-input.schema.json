@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "snapshots"],
+  "properties": {
+    "$schema": {"const": "assets/cloud-control-plane-input.schema.json"},
+    "snapshots": {
+      "type": "array", "minItems": 2, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "path", "provider", "account", "captured_at"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "path": {"type": "string", "minLength": 1, "maxLength": 512},
+          "provider": {"enum": ["aws", "azure", "gcp", "kubernetes", "other"]},
+          "account": {"type": "string", "minLength": 1, "maxLength": 256},
+          "captured_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  }
+}

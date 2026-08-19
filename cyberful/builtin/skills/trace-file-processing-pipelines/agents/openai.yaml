@@ -1,0 +1,5 @@
+interface:
+  display_name: "File Pipeline Tracer"
+  short_description: "Follow artifacts across parser boundaries"
+  default_prompt: "Use $trace-file-processing-pipelines to trace one controlled artifact through storage transformation isolation and cleanup boundaries."
+

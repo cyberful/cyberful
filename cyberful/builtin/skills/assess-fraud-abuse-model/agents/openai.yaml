@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assess Fraud Abuse Model"
+  short_description: "Model fraud actors, paths, assets, and controls"
+  default_prompt: "Use $assess-fraud-abuse-model to build a scoped fraud abuse model and coverage plan."

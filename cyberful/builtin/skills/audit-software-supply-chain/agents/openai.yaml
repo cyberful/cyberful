@@ -1,4 +1,4 @@
 interface:
   display_name: "Software Supply Chain Auditor"
-  short_description: "Dependency build provenance and release integrity"
-  default_prompt: "Use $audit-software-supply-chain to audit dependency resolution CI trust provenance and shipped artifacts."
+  short_description: "Coordinate producer-to-runtime assurance"
+  default_prompt: "Use $audit-software-supply-chain to coordinate producer-to-runtime trust evidence across this release chain."

@@ -1,0 +1,20 @@
+{
+  "$schema": "./entitlement-test-matrix.schema.json",
+  "matrix_id": "synthetic-entitlement-controls",
+  "authorization_reference": "engagement-scope-entitlements",
+  "benefit_ceiling": "one synthetic test credit",
+  "cases": [
+    {
+      "case_id": "synthetic-single-redemption-control",
+      "benefit": "test-credit",
+      "invariant": "benefit may be redeemed once per controlled account",
+      "actor": "controlled-account-a",
+      "pre_state": "eligible and unredeemed",
+      "sequence": ["redeem once", "verify balance", "attempt bounded second redemption"],
+      "expected_state": "one redemption and one consumed entitlement",
+      "evidence_refs": ["eligibility-decision", "redemption-ledger", "benefit-balance"],
+      "cleanup": "remove synthetic credit and verify balance",
+      "stop_condition": "stop before fulfillment or any real customer effect"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Container Runtime Isolation Auditor"
+  short_description: "Audit effective container-to-host boundaries"
+  default_prompt: "Use $audit-container-runtime-isolation to map and audit this container runtime boundary."

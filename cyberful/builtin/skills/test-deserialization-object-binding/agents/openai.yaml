@@ -1,0 +1,5 @@
+interface:
+  display_name: "Deserialization Boundary Tester"
+  short_description: "Prove bounded object reconstruction"
+  default_prompt: "Use $test-deserialization-object-binding to trace untrusted data into object reconstruction and prove only harmless loopback effects."
+

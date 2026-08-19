@@ -1,51 +1,56 @@
 ---
 name: test-federated-identity
-description: Test and audit OAuth 2.0, OpenID Connect, JWT, SAML, delegated authorization, token exchange, service federation, and account linking. Use for issuer or audience confusion, redirect and response-mode flaws, PKCE, nonce and state handling, assertion validation, signature and key lifecycle, scope escalation, client mix-up, token substitution, federation metadata, and cross-tenant identity mapping.
+description: Route an identity assessment across federation architecture, policy enforcement, identity and tenant propagation, workload identity, recovery assurance, linking, and provisioning. Use when OAuth, OpenID Connect, SAML, JWT, token exchange, service federation, or account association spans more than one specialist boundary.
+metadata:
+  domain: identity-security
+  subdomain: federated-identity
+  triggers:
+    - oauth security review
+    - openid connect testing
+    - saml federation testing
+    - jwt validation
+    - token exchange
+    - account linking
+  tags:
+    - oauth
+    - oidc
+    - saml
+    - jwt
+    - federation
+    - token-exchange
+  frameworks:
+    mitre_attack:
+      - T1078
+      - T1528
+      - T1550.001
+    nist_csf:
+      - PR.AA-03
+      - PR.AA-04
+      - PR.AA-05
 ---
 
 # Test Federated Identity
 
-Model every participant and artifact before testing. A syntactically valid token or signed assertion is not valid for every issuer, client, audience, tenant, subject, action, or time.
+Use this router when the identity path crosses issuers, clients, brokers, applications, tenants, or service identities. Read each selected specialist's `SKILL.md` completely before applying its procedure.
 
-## Build the federation graph
+## Route by boundary
 
-Record authorization server or identity provider, resource server or service provider, clients, redirect endpoints, browsers, back channels, issuers, audiences, keys, metadata, scopes, claims, subject mapping, tenant mapping, token types, logout paths, and trust administrators.
+- Trust topology, issuer/client roles, protocol choice, assurance, or federation design: `assess-identity-architecture`.
+- Policy ownership, permission evaluation, entitlement rules, deny behavior, or enforcement placement: `audit-access-policy-enforcement`.
+- Claims, credentials, delegated identity, or assurance lost or transformed across services: `trace-identity-propagation`.
+- Tenant selection, organization context, routing, caches, jobs, or downstream tenant binding: `trace-tenant-context-propagation`.
+- OAuth clients, service accounts, workload federation, token exchange, audience binding, or machine identity: `test-service-workload-identity`.
+- Password reset, factor reset, support recovery, fallback identity proofing, or post-recovery invalidation: `test-account-recovery-assurance`.
+- Account linking, invitation, merge, SCIM/JIT provisioning, deprovisioning, or identity reassignment: `test-identity-linking-provisioning`.
 
-Read [references/oauth-oidc-jwt.md](references/oauth-oidc-jwt.md) for OAuth/OIDC/JWT and [references/saml-federation.md](references/saml-federation.md) for SAML. Use [references/field-heuristics.md](references/field-heuristics.md) for mix-up, key-resolution, account-linking, and multi-tenant differentials that commonly escape checklist testing.
+## Establish the shared identity record
 
-## Test artifact binding
+Record the controlled principal, issuer, subject, client, tenant or organization, audience, scopes, authentication context, token or assertion type, relying party, and intended account. Preserve raw artifacts securely and compare semantic claims, key selection, and current account state without exposing credentials.
 
-For every code, token, assertion, challenge, response, or logout message verify:
+Use two controlled principals or tenants when the route requires cross-boundary comparison. Do not create identities, link accounts, consent applications, or alter federation configuration unless those mutations are expressly authorized.
 
-- issuer and trusted metadata source;
-- exact audience, recipient, client, redirect, resource, and token type;
-- subject and tenant mapping;
-- state, nonce, PKCE, request, session, and transaction binding;
-- signature algorithm, key selection, key origin, and key status;
-- validity window, replay handling, one-time use, and revocation expectations;
-- assurance, authentication method, scope, claims, and delegation chain.
+If expressly authorized dynamic client registration creates one uniquely marked test client, the absence of a documented client-deletion endpoint is a cleanup limitation, not an approval gate; record it and do not improvise an administrative mutation.
 
-## Test account linking and provisioning
+## Integrate findings
 
-Check immutable versus mutable identifiers, email verification semantics, issuer-qualified subject keys, tenant selection, invitation binding, just-in-time role assignment, group mapping, deprovisioning, identifier recycling, and collisions between local and federated accounts.
-
-## Test client and service boundaries
-
-Separate public, confidential, native, browser, machine, and administrative clients. Check redirect registration, response modes, browser history and referrer exposure, front-channel versus back-channel delivery, client authentication, token storage, resource indicators, sender constraint, scope minimization, and unsafe token forwarding.
-
-For dynamic client registration, do not treat the absence of a documented client-deletion endpoint as an automatic blocker when the mission permits state changes. Create at most one uniquely named synthetic client, retain registration artifacts and tokens only in session variables, run the minimum token and protected-resource oracle once, attempt any advertised or directly observed management operation, erase local artifacts, and record residual state. Stop before a second client, a third-party redirect, a transaction, non-tester data, or any persistent code or retained reusable access.
-
-## Audit libraries and configuration
-
-Identify the exact library, validation API, metadata cache, key resolver, algorithm policy, clock handling, and claims-to-local-identity transformation. Verify dangerous options are not enabled by compatibility fallbacks and that every consumer validates context independently.
-
-## Confirmation standard
-
-Confirm when an attacker can obtain, substitute, replay, redirect, mint, or use a federation artifact to assume unintended identity, tenant, client, resource, scope, or assurance. Do not report missing optional hardening without a path that changes security authority.
-
-## Authoritative anchors
-
-- OAuth 2.0 Security BCP, RFC 9700: https://www.rfc-editor.org/rfc/rfc9700
-- OpenID Connect Core: https://openid.net/specs/openid-connect-core-1_0.html
-- JWT BCP, RFC 8725: https://www.rfc-editor.org/rfc/rfc8725
-- SAML 2.0 Security Considerations: https://docs.oasis-open.org/security/saml/v2.0/saml-sec-consider-2.0-os.pdf
+State which component owned the failed decision, which identity or tenant attribute was trusted, how it propagated, and what authority resulted. A malformed token rejection, verbose error, or permissive client behavior is not a vulnerability without a server-side acceptance or security effect.

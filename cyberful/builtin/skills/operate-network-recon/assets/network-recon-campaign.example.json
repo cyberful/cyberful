@@ -1,0 +1,1 @@
+{"authority":{"scope_id":"engagement-001","allowed_hosts":["127.0.0.1"],"allowed_ports":[8080],"max_requests":1},"targets":[{"host":"127.0.0.1","ports":[8080]}]}

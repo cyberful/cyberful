@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trace Cardholder Data Environment"
+  short_description: "Reconstruct PCI DSS scope and CDE boundaries"
+  default_prompt: "Use $trace-cardholder-data-environment to reconstruct the CDE and its security-impacting dependencies from evidence."

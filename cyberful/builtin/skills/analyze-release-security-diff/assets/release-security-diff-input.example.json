@@ -1,0 +1,5 @@
+{
+  "$schema": "assets/release-security-diff-input.schema.json",
+  "baseline": "releases/1.4.0.json",
+  "candidate": "releases/1.5.0.json"
+}

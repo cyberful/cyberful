@@ -1,0 +1,2 @@
+operation_id,entry_point,actor,subject,tenant,resource,relationship,action,state,assurance,environment,policy_source,policy_version,decision_point,enforcement_point,cache,durable_effect,audit_event,evidence_reference,status
+operation-001,,,,,,,,,,,,,,,,,,,unreviewed

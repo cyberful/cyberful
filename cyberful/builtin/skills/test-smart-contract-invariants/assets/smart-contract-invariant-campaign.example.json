@@ -1,0 +1,12 @@
+{
+  "$schema": "assets/smart-contract-invariant-campaign.schema.json",
+  "campaign_id": "escrow-conservation-001",
+  "scope_reference": "mission://authorized-local-source",
+  "source_directory": "contract-worktree",
+  "test_pattern": "invariant_totalAssetsCoverClaims",
+  "fuzz_seed": "0x0000000000000000000000000000000000000000000000000000000000000042",
+  "max_files": 2000,
+  "max_total_bytes": 67108864,
+  "timeout_seconds": 90,
+  "stdout_limit_bytes": 1048576
+}

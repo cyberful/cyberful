@@ -1,0 +1,32 @@
+{
+  "$schema": "assets/compliance-profile.schema.json",
+  "profile_id": "gdpr-eu-2016-679-accountability",
+  "framework": "GDPR",
+  "version": "Regulation (EU) 2016/679",
+  "source": {
+    "url": "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32016R0679",
+    "sha256": "bd84e63f5b622b739a83389afc3b30d240f792bb88d8eb03a816c9a82b0c2499"
+  },
+  "deliverable": {
+    "title": "GDPR Accountability and Compliance Evidence Report",
+    "output_name": "gdpr-accountability-report-draft",
+    "draft_label": "DRAFT ACCOUNTABILITY REPORT — NOT LEGAL ADVICE, REGULATORY APPROVAL, OR ARTICLE 42 CERTIFICATION",
+    "official_template_required": false,
+    "attestation_authority": "The controller or processor remains accountable; DPO, counsel, certification body, and supervisory-authority roles are not replaced by this report."
+  },
+  "needs": [
+    {"id": "gdpr.accountability-governance", "title": "Principles, accountability, policies, ownership, and review", "source_refs": ["Article 5(2)", "Article 24"], "evidence_expectations": ["Approved policies and responsibility model", "Evidence of periodic review and updates", "Decision and exception records"], "required": true},
+    {"id": "gdpr.lawfulness-and-conditions", "title": "Lawfulness, consent conditions, children, special categories, and criminal-offence data", "source_refs": ["Articles 6–10"], "evidence_expectations": ["Purpose and legal-basis register", "Consent or alternative-condition evidence", "Special-category and child-data controls where applicable"], "required": true},
+    {"id": "gdpr.transparency-and-rights", "title": "Transparency information and data-subject rights", "source_refs": ["Articles 12–22"], "evidence_expectations": ["Current notices and communication channels", "Rights-request procedure and case evidence", "Automated-decision and profiling safeguards where applicable"], "required": true},
+    {"id": "gdpr.privacy-by-design", "title": "Data protection by design and by default", "source_refs": ["Article 25"], "evidence_expectations": ["Design decisions and defaults", "Data-minimization and retention controls", "Release or architecture review evidence"], "required": true},
+    {"id": "gdpr.roles-processors", "title": "Controller, joint-controller, processor, representative, and instruction boundaries", "source_refs": ["Articles 26–29"], "evidence_expectations": ["Role analysis and arrangements", "Processor agreements and due diligence", "Subprocessor and instruction records"], "required": true},
+    {"id": "gdpr.processing-records", "title": "Records of processing activities and supervisory cooperation", "source_refs": ["Articles 30–31"], "evidence_expectations": ["Current controller or processor records", "Purposes, categories, recipients, transfers, retention, and security descriptions", "Availability and ownership evidence"], "required": true},
+    {"id": "gdpr.security-testing", "title": "Risk-appropriate technical and organizational security measures", "source_refs": ["Article 32"], "evidence_expectations": ["Risk assessment and TOM inventory", "Confidentiality, integrity, availability, resilience, and recovery evidence", "Regular testing and effectiveness-review evidence"], "required": true},
+    {"id": "gdpr.breach-management", "title": "Personal-data breach detection, records, notification, and communication", "source_refs": ["Articles 33–34"], "evidence_expectations": ["Breach procedure and decision criteria", "Incident register and notification evidence", "Risk rationale and communication records"], "required": true},
+    {"id": "gdpr.dpia-consultation", "title": "DPIA screening, impact assessment, residual risk, review, and prior consultation", "source_refs": ["Articles 35–36"], "evidence_expectations": ["DPIA screening decisions", "Completed DPIAs and mitigation tracking", "Prior-consultation evidence where applicable"], "required": true},
+    {"id": "gdpr.dpo-governance", "title": "DPO designation, independence, resources, and tasks", "source_refs": ["Articles 37–39"], "evidence_expectations": ["Applicability and designation record", "Reporting line, resources, and conflict review", "Advice, monitoring, and consultation evidence"], "required": false},
+    {"id": "gdpr.codes-certification", "title": "Codes of conduct and certification claims", "source_refs": ["Articles 40–43"], "evidence_expectations": ["Approved code or certification scope", "Validity and monitoring evidence", "Accredited body and limitation records"], "required": false},
+    {"id": "gdpr.international-transfers", "title": "International-transfer mechanisms, safeguards, and derogations", "source_refs": ["Articles 44–49"], "evidence_expectations": ["Transfer inventory and destination context", "Mechanism, supplementary-measure, and assessment evidence", "Derogation rationale where applicable"], "required": false},
+    {"id": "gdpr.jurisdictional-overlay", "title": "Member-State law, competent supervisory guidance, sector rules, and cross-border context", "source_refs": ["Applicable Member-State and supervisory-authority sources"], "evidence_expectations": ["Jurisdiction and lead-authority analysis", "Applicable national or sector obligations", "Documented legal-review limitations"], "required": true}
+  ]
+}

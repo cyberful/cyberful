@@ -1,0 +1,2 @@
+case_id,account,tenant,ceremony,entry_state,claimed_identity,required_evidence,provided_evidence,channel,challenge_freshness,attempt,expected_result,actual_result,new_authority,invalidated_sessions,invalidated_authenticators,notification,audit_event,restoration,status
+recovery-001,,,,,,,,,,,,,,,,,,,planned

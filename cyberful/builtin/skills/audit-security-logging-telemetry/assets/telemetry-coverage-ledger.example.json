@@ -1,0 +1,21 @@
+{
+  "$schema": "https://cyberful.dev/schemas/telemetry-coverage-ledger.v1.json",
+  "schema_version": 1,
+  "scope_reference": "code-audit:telemetry-7",
+  "entries": [
+    {
+      "effect": "privileged role assignment",
+      "question": "Which subject granted which role to which principal and did the durable authorization state change?",
+      "producer": "authorization service",
+      "event_type": "role.assignment.completed",
+      "identity_fields": ["actor_id", "subject_id", "tenant_id"],
+      "correlation_fields": ["request_id", "transaction_id"],
+      "transport": "transactional outbox to telemetry collector",
+      "destination": "security event store",
+      "retention": "400 days immutable tier",
+      "consumer": "privilege-change detection and incident query",
+      "failure_controls": ["outbox retry", "collector backpressure alert", "schema rejection metric"],
+      "evidence_refs": ["trace:role-assignment-17", "query:privilege-change-negative-control"]
+    }
+  ]
+}

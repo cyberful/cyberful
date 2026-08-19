@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze Release Security Diff"
+  short_description: "Compare release artifacts and trust evidence"
+  default_prompt: "Use $analyze-release-security-diff to compare these release manifests and isolate security-relevant deltas."

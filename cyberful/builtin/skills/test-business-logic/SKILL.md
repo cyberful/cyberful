@@ -1,52 +1,54 @@
 ---
 name: test-business-logic
-description: Test and audit product invariants, state machines, payments, entitlements, approvals, quotas, inventory, pricing, refunds, onboarding, abuse resistance, and cross-service workflow integrity. Use when valid individual operations may compose into fraud, unauthorized state change, duplicate value, policy circumvention, or inconsistent records that scanners cannot detect.
+description: Coordinate testing of product invariants and multi-step workflows across money, entitlements, approvals, quotas, inventory, onboarding, and distributed state. Use for broad business-logic coverage; use a narrower fraud, transaction, payment, promotion, automation, or concurrency specialist for the concrete mechanism.
+metadata:
+  domain: application-security
+  subdomain: business-logic-routing
+  triggers:
+    - business logic testing
+    - workflow invariant abuse
+    - state machine security
+    - entitlement abuse
+    - payment workflow testing
+    - transaction integrity
+  tags:
+    - business-logic
+    - fraud
+    - state-machine
+    - payments
+    - entitlements
+    - CWE-840
+    - MITRE-F3
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Test Business Logic
 
-Start from what must never happen. Do not begin with payloads.
+Own the invariant and coverage ledger; route concrete mechanisms to specialists.
 
-## Extract invariants
+## Define the shared model
 
-Interview artifacts, requirements, UI states, APIs, code, schemas, events, tests, support procedures, and accounting records to identify invariants for money, identity, entitlement, approval, inventory, quotas, lifecycle, and compliance.
+Extract falsifiable invariants from requirements, UI states, APIs, code, schemas, events, tests, support procedures, and accounting records. For each workflow record authoritative state, actors, guards, transitions, side effects, compensations, retries, expiry, and audit events. Read [references/invariants-and-state.md](references/invariants-and-state.md) for the ledger contract.
 
-Express each invariant as a falsifiable statement with authoritative state and owner. Read [references/invariants-and-state.md](references/invariants-and-state.md).
+## Route the mechanisms
 
-## Model the state machine
+- Fraud threat structure and abuse actors: `assess-fraud-abuse-model`.
+- Fraud-control artifacts and decision evidence: `analyze-fraud-control-evidence`.
+- Cross-service causal state: `trace-transaction-state`.
+- Payment authorization and value movement: `test-payment-fraud-controls`.
+- Promotions, quotas, inventory, and entitlements: `test-promotion-entitlement-abuse`.
+- Automated signup, credential, and resource abuse: `test-automated-account-abuse`.
+- Races, retries, idempotency, and resource amplification: `test-concurrency-resource-abuse`.
+- Authorization ownership across workflow states: `test-authorization-boundaries`.
 
-For each workflow record states, actors, evidence, guards, transitions, side effects, compensations, terminal states, retry behavior, expiry, and audit events. Include administrative, support, migration, bulk, asynchronous, and failure paths.
+Use [references/financial-and-entitlement-workflows.md](references/financial-and-entitlement-workflows.md) only to route money or access workflows. Use [references/field-heuristics.md](references/field-heuristics.md) for cross-channel seams after baseline coverage. Do not repeat specialist test procedures here.
 
-Test:
+## Integrate results
 
-- skip, repeat, reverse, reorder, race, replay, or resume transitions;
-- mutate server-owned values or relationships;
-- apply stale, canceled, refunded, revoked, expired, or cross-tenant artifacts;
-- split one logical action across channels or identities;
-- exploit partial failure between services;
-- reuse idempotency keys or equivalent artifacts across actor, tenant, operation, or payload;
-- create valid but economically abusive sequences.
+Maintain one row per invariant and discriminating sequence:
 
-## Validate distributed authority
+`invariant | actor | pre-state | sequence | expected state | observed state | authoritative evidence | effect | cleanup | limitation`
 
-Identify which system owns price, payment, inventory, entitlement, approval, quota, and final state. Verify consumers validate current authoritative state rather than trusting a webhook, client, queue message, cache, or upstream status indefinitely.
-
-## Test numbers and units
-
-Check sign, zero, maximum, precision, rounding, currency, unit conversion, tax, discount, quantity, duplicate, overflow, underflow, and allocation semantics. Use synthetic low-value transactions and never create material financial impact.
-
-Read [references/financial-and-entitlement-workflows.md](references/financial-and-entitlement-workflows.md) when money, inventory, or access is involved. Use [references/field-heuristics.md](references/field-heuristics.md) to expose hidden invariants, temporal seams, and cross-channel compositions that conventional endpoint testing misses.
-
-## Audit implementation
-
-Trace guards and state changes through transactions, unique constraints, ledgers, outbox/inbox patterns, queues, retries, locks, caches, webhooks, scheduled reconciliation, and compensating actions. Prefer constraints that make invalid states unrepresentable.
-
-## Confirmation standard
-
-Confirm with a permitted sequence of operations that violates a named invariant. Record pre-state, actor, exact sequence, expected transition, observed final state, authoritative records, financial or authority effect, repeatability, and cleanup.
-
-## Authoritative anchors
-
-- OWASP WSTG Business Logic Testing: https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/10-Business_Logic_Testing/
-- OWASP Business Logic Security Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Business_Logic_Security_Cheat_Sheet.html
-- CWE-840 Business Logic Errors: https://cwe.mitre.org/data/definitions/840.html
+Confirm only a permitted, repeatable sequence that violates a named invariant. Reconcile partial failures, alternate channels, delayed consumers, support/admin paths, and authoritative records before assigning impact. Deduplicate by invariant and state owner, preserve disproved hypotheses, and separate control evidence from absence of observed abuse.

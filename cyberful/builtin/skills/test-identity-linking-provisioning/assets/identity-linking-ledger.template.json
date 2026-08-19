@@ -1,0 +1,12 @@
+{
+  "ceremony": "link",
+  "authorization_reference": "mission://identity-linking",
+  "initiator": {"issuer": "https://idp.example.test", "subject": "tester-a", "tenant": "tenant-a"},
+  "target": {"issuer": "https://partner.example.test", "subject": "tester-b", "tenant": "tenant-a"},
+  "proofs": [],
+  "before": {"memberships": [], "sessions": []},
+  "expected_after": {"memberships": [], "sessions": []},
+  "observed_after": {"memberships": [], "sessions": []},
+  "cleanup": {"required": true, "completed": false},
+  "evidence": []
+}

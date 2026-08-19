@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assess PCI DSS Readiness"
+  short_description: "Coordinate PCI DSS 11.4 readiness evidence"
+  default_prompt: "Use $assess-pci-dss-readiness to coordinate a bounded PCI DSS 11.4 and CDE-scoping readiness review."

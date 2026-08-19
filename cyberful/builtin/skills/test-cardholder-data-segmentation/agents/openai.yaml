@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Cardholder Data Segmentation"
+  short_description: "Validate PCI DSS CDE isolation controls"
+  default_prompt: "Use $test-cardholder-data-segmentation to design and execute bounded tests of the documented CDE isolation claims."

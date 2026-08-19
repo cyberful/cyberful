@@ -1,0 +1,10 @@
+{
+  "$schema": "./packet-capture-analysis.schema.json",
+  "analysis_id": "pcap-evidence-11",
+  "scope_reference": "engagement:network-capture",
+  "capture_files": ["evidence/session.pcap"],
+  "max_packets": 250000,
+  "max_total_bytes": 134217728,
+  "timeout_seconds": 30,
+  "output_limit_bytes": 1048576
+}

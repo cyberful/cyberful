@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Event and Queue Boundaries"
+  short_description: "Test asynchronous authority and delivery integrity"
+  default_prompt: "Use $test-event-queue-boundaries to map and test this authorized asynchronous message flow."

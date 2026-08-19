@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/scan-finding-evidence.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "analysis_id", "scope_reference", "input_sha256", "sources", "occurrences", "groups", "summary", "limits", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.scan-finding-evidence.v1"},
+    "analysis_id": {"type": "string"}, "scope_reference": {"type": "string"}, "input_sha256": {"$ref": "#/$defs/digest"},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+    "occurrences": {"type": "array", "items": {"$ref": "#/$defs/occurrence"}},
+    "groups": {"type": "array", "items": {"$ref": "#/$defs/group"}},
+    "summary": {"type": "object", "additionalProperties": false, "required": ["files", "occurrences", "groups", "levels", "suppressed", "cross_source_groups", "correlation_bases"], "properties": {"files": {"type": "integer"}, "occurrences": {"type": "integer"}, "groups": {"type": "integer"}, "levels": {"type": "object", "additionalProperties": {"type": "integer"}}, "suppressed": {"type": "integer"}, "cross_source_groups": {"type": "integer"}, "correlation_bases": {"type": "object", "additionalProperties": {"type": "integer"}}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["findings", "input_bytes", "output_bytes", "timeout_seconds"], "properties": {"findings": {"type": "integer"}, "input_bytes": {"type": "integer"}, "output_bytes": {"type": "integer"}, "timeout_seconds": {"type": "integer"}}},
+    "interpretation": {"type": "string"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["path", "format", "bytes", "sha256", "findings"], "properties": {"path": {"type": "string"}, "format": {"type": "string"}, "bytes": {"type": "integer"}, "sha256": {"$ref": "#/$defs/digest"}, "findings": {"type": "integer"}}},
+    "location": {"type": "object", "additionalProperties": false, "required": ["uri", "line"], "properties": {"uri": {"type": "string"}, "line": {"type": ["integer", "null"]}}},
+    "occurrence": {"type": "object", "additionalProperties": false, "required": ["source", "evidence_ref", "rule_id", "level", "message_sha256", "locations", "fingerprint_sha256", "correlation_key", "correlation_basis", "suppressed"], "properties": {"source": {"type": "string"}, "evidence_ref": {"type": "string"}, "rule_id": {"type": "string"}, "level": {"type": "string"}, "message_sha256": {"$ref": "#/$defs/digest"}, "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}}, "fingerprint_sha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}, "correlation_key": {"$ref": "#/$defs/digest"}, "correlation_basis": {"enum": ["supplied-fingerprint", "structural-fallback"]}, "suppressed": {"type": "boolean"}}},
+    "group": {"type": "object", "additionalProperties": false, "required": ["group_id", "correlation_basis", "occurrences", "sources", "rule_ids", "levels", "locations", "evidence_refs", "suppressed_occurrences"], "properties": {"group_id": {"$ref": "#/$defs/digest"}, "correlation_basis": {"type": "string"}, "occurrences": {"type": "integer"}, "sources": {"type": "array", "items": {"type": "string"}}, "rule_ids": {"type": "array", "items": {"type": "string"}}, "levels": {"type": "array", "items": {"type": "string"}}, "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "suppressed_occurrences": {"type": "integer"}}}
+  }
+}

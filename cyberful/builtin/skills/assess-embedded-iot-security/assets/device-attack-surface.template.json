@@ -1,0 +1,23 @@
+{
+  "product": "",
+  "scope_reference": "",
+  "lifecycle_states": [],
+  "trust_zones": [],
+  "principals": [],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "zone_from": "",
+      "zone_to": "",
+      "protocol_or_medium": "",
+      "identity": "",
+      "authorization": "",
+      "data_or_effects": [],
+      "lifecycle_states": [],
+      "attacker_positions": [],
+      "evidence": [],
+      "validation_skill": ""
+    }
+  ],
+  "fleet_risks": []
+}

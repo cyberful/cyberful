@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "input_sha256", "snapshots", "transitions", "counts"],
+  "properties": {
+    "format": {"const": "cyberful.cloud-control-plane-evidence.raw.v1"},
+    "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "snapshots": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "path", "provider", "account", "captured_at", "sha256", "resources"],
+        "properties": {
+          "id": {"type": "string"}, "path": {"type": "string"}, "provider": {"type": "string"},
+          "account": {"type": "string"}, "captured_at": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "resources": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "transitions": {
+      "type": "array", "maxItems": 150000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["from_snapshot", "to_snapshot", "resource_id", "change", "fields"],
+        "properties": {
+          "from_snapshot": {"type": "string"}, "to_snapshot": {"type": "string"}, "resource_id": {"type": "string"},
+          "change": {"enum": ["added", "removed", "changed"]},
+          "fields": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"enum": ["kind", "region", "public", "principals", "policy_sha256", "encrypted", "logging", "lifecycle"]}}
+        }
+      }
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false, "required": ["snapshots", "transitions"],
+      "properties": {"snapshots": {"type": "integer", "minimum": 0}, "transitions": {"type": "integer", "minimum": 0}}
+    }
+  }
+}

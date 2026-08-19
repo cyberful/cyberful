@@ -2503,6 +2503,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     let metadataSearches = 0
     let instructionReads = 0
     let resourceReads = 0
+    let resourceStages = 0
     const skillSearch: AgentTool<typeof EMPTY_PARAMETERS> = {
       name: "skill_search",
       label: "Search trusted skills",
@@ -2536,16 +2537,43 @@ describe("Pi complete root and main-route subagent runs", () => {
         }
       },
     }
+    const skillStageParameters = Type.Object({
+      skill: Type.String({ minLength: 1 }),
+      path: Type.String({ minLength: 1 }),
+    })
+    const skillStage: AgentTool<typeof skillStageParameters, { readonly skill: string; readonly path: string }> = {
+      name: "skill_stage",
+      label: "Stage trusted skill resource",
+      description: "Stage one reviewed script or asset in the workarea.",
+      parameters: skillStageParameters,
+      execute: async (_callID, input) => {
+        resourceStages++
+        return {
+          content: [{ type: "text", text: '{"path":"raw/skill-resources/inspect-evidence/digest/scripts/check.py"}' }],
+          details: { skill: input.skill, path: input.path },
+        }
+      },
+    }
     const provider = new InMemoryProvider((call) => {
       const results = toolResultCount(call)
       if (results === 0) return toolCall(call, "skill_search", {})
       if (results === 1)
+        return toolCall(call, "skill_stage", {
+          skill: "inspect-evidence",
+          path: "scripts/check.py",
+        })
+      if (results === 2)
         return toolCall(call, "skill_read", {
           skill: "inspect-evidence",
           path: "references/check.md",
         })
-      if (results === 2) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
-      if (results === 3)
+      if (results === 3) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
+      if (results === 4)
+        return toolCall(call, "skill_stage", {
+          skill: "inspect-evidence",
+          path: "scripts/check.py",
+        })
+      if (results === 5)
         return toolCall(call, "skill_read", {
           skill: "/trusted/skills/inspect-evidence/SKILL.md",
           path: "references/check.md",
@@ -2557,7 +2585,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       rootSpec(runtime.models, {
         id: "skill-disclosure-root",
         objective: "read a skill and one directly required reference",
-        tools: [skillSearch, skillRead],
+        tools: [skillSearch, skillRead, skillStage],
       }),
     )
 
@@ -2571,18 +2599,19 @@ describe("Pi complete root and main-route subagent runs", () => {
       termination: "completed",
       output: "progressive skill disclosure complete",
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 4,
+      toolCalls: 6,
     })
     expect(metadataSearches).toBe(1)
     expect(instructionReads).toBe(1)
     expect(resourceReads).toBe(1)
+    expect(resourceStages).toBe(1)
     expect(finished).toMatchObject({
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 4,
+      toolCalls: 6,
       childRunIDs: [],
       fallbackAdmissions: 0,
       fallbackDescendants: 0,
-      usage: { input: 25, output: 15, reasoning: 5, cacheRead: 10, cacheWrite: 5 },
+      usage: { input: 35, output: 21, reasoning: 7, cacheRead: 14, cacheWrite: 7 },
     })
   })
 })

@@ -1,0 +1,21 @@
+{
+  "$schema": "./cache-probe.schema.json",
+  "campaign_id": "isolated-language-variant",
+  "authority": {
+    "confirmed": true,
+    "authorization_reference": "authorized-cache-test",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "isolation_token": "cyberful_case_7f31",
+    "max_requests": 2,
+    "requests_per_second": 1,
+    "request_timeout_seconds": 5
+  },
+  "pairs": [
+    {
+      "pair_id": "accept-language",
+      "dimension": "Accept-Language variation",
+      "prime": {"method": "GET", "url": "http://127.0.0.1:8080/cache/cyberful_case_7f31", "headers": {"Accept-Language": "en"}, "secret_headers": {}, "body_base64": ""},
+      "observe": {"method": "GET", "url": "http://127.0.0.1:8080/cache/cyberful_case_7f31", "headers": {"Accept-Language": "fr"}, "secret_headers": {}, "body_base64": ""}
+    }
+  ]
+}

@@ -1,6 +1,25 @@
 ---
 name: operate-native-debugging
 description: Operate managed GDB sessions, tracing, symbolization, crash triage, and deterministic exploitability evidence for native artifacts.
+metadata:
+  domain: security-tooling
+  subdomain: native-debugging
+  triggers:
+    - debug native crash
+    - GDB MI session
+    - symbolize crash
+    - triage memory corruption
+    - inspect process state
+    - reproduce native failure
+  tags:
+    - GDB
+    - crash-triage
+    - native-code
+    - symbolization
+    - memory-corruption
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate Native Debugging

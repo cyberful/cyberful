@@ -887,6 +887,7 @@ function closeoutToolAllowed(name: string): boolean {
       "variable",
       "skill_search",
       "skill_read",
+      "skill_stage",
       "tool_search",
     ].includes(name)
   )
@@ -3810,6 +3811,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
               const skill = locator ? this.#skillName(state, locator) : undefined
               if (requestedPath && (!skill || !state.skillsRead.has(skill)))
                 return block("Read this skill's complete SKILL.md in this AgentRun before requesting package resources.")
+            }
+            if (toolCall.name === "skill_stage") {
+              const request = record(args)
+              const locator = typeof request?.skill === "string" ? request.skill.trim() : ""
+              const skill = locator ? this.#skillName(state, locator) : undefined
+              if (!skill || !state.skillsRead.has(skill))
+                return block("Read this skill's complete SKILL.md in this AgentRun before staging package resources.")
             }
           },
         })

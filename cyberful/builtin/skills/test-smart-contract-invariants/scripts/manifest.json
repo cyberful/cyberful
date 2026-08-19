@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_smart_contract_invariant_harness.py",
+  "class": "harness",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["exploit", "hacker", "attack", "verify"],
+  "tools": ["forge"],
+  "dependencies": {"commands": ["forge"], "python": [], "bootstrap": null},
+  "effects": ["copies a bounded local source tree through descriptor-relative no-follow traversal into an immutable temporary snapshot", "reads only validated runtime-owned compiler caches named by SVM_HOME, FOUNDRY_DIR, or XDG_CACHE_HOME", "runs fixed offline Foundry tests with FFI disabled inside an OS-enforced network-none sandbox", "publishes bounded raw process evidence without replacing an existing output"],
+  "timeout_seconds": 180,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "application/json", "schema": "assets/smart-contract-invariant-campaign.schema.json"},
+  "output": {"format": "application/json", "schema": "assets/smart-contract-invariant-evidence.schema.json", "raw": true}
+}

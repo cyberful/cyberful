@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trace Distributed Request Causality"
+  short_description: "Reconstruct cross-service security causality"
+  default_prompt: "Use $trace-distributed-request-causality to reconstruct this request's evidence-backed path and security context."

@@ -1,0 +1,23 @@
+{
+  "$schema": "./fraud-control-observations.schema.json",
+  "engagement_id": "synthetic-fraud-controls",
+  "authorization_reference": "engagement-scope-fraud-evidence",
+  "expected_controls": ["account-velocity", "transaction-risk"],
+  "observations": [
+    {
+      "observation_id": "synthetic-risk-control",
+      "scenario_id": "controlled-transfer-baseline",
+      "control_id": "transaction-risk",
+      "sequence": 1,
+      "stage": "authorization",
+      "channel": "sandbox-api",
+      "actor": "controlled-customer",
+      "expected_decision": "allow",
+      "observed_decision": "allow",
+      "reason_codes": ["synthetic-low-risk"],
+      "signal_refs": ["signals/synthetic-risk.json"],
+      "durable_effect": "single synthetic authorization reservation",
+      "evidence_ref": "evidence/synthetic-risk-decision.json"
+    }
+  ]
+}

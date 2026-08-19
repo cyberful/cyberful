@@ -1,0 +1,15 @@
+{
+  "format": "cyberful.segmentation-test-matrix.v1",
+  "engagement_id": "pci-segmentation-synthetic",
+  "standard_version": "PCI DSS 4.0.1",
+  "authorization_reference": "approved-segmentation-test-scope",
+  "entity_type": "merchant",
+  "segmentation_used": true,
+  "methods": [
+    {"method_id": "network-policy", "technology": "Synthetic network policy", "population": ["out-of-scope application segments"], "enforcement_points": ["documented boundary policy"], "configuration_evidence": ["raw/pci/network-policy.json"]}
+  ],
+  "cases": [
+    {"case_id": "outside-to-cde-admin", "method_id": "network-policy", "source_vantage": "tester-owned host in representative out-of-scope segment", "protected_destination": "synthetic CDE administration capability", "identity": "unauthenticated synthetic actor", "protocol_family": "HTTPS", "expected_invariant": "The source cannot reach or cause an administrative effect in the CDE.", "sampling_rationale": "The source shares the documented enforcement path with the represented segment population.", "status": "planned", "evidence_refs": [], "cleanup_evidence": []}
+  ],
+  "coverage_gaps": []
+}

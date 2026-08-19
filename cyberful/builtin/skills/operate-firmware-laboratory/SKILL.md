@@ -1,6 +1,26 @@
 ---
 name: operate-firmware-laboratory
 description: Safely extract, inventory, compare, fingerprint, and inspect Linux appliance firmware with managed firmware and user-mode native labs.
+metadata:
+  domain: platform-security
+  subdomain: firmware-tooling
+  triggers:
+    - firmware laboratory
+    - extract firmware image
+    - emulate firmware service
+    - inspect root filesystem
+    - QEMU user emulation
+    - firmware runtime tracing
+  tags:
+    - firmware
+    - embedded
+    - QEMU
+    - binfmt
+    - filesystem-analysis
+  frameworks:
+    nist_csf:
+      - ID.AM
+      - ID.RA
 ---
 
 # Operate Firmware Laboratory

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "analyze_http_traffic_evidence.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "trace", "verify"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-confined-har-snapshots", "writes-bounded-raw-http-evidence"],
+  "timeout_seconds": 60,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/http-traffic-analysis.schema.json"},
+  "output": {"format": "json", "schema": "assets/http-traffic-evidence.schema.json", "raw": true}
+}

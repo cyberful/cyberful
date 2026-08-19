@@ -1,0 +1,4 @@
+interface:
+  display_name: "Report of Compliance"
+  short_description: "Build traceable PCI DSS or GDPR report drafts"
+  default_prompt: "Use $report-of-compliance to assemble reviewed evidence into a traceable draft compliance report."

@@ -4,9 +4,9 @@ Run checks from the repository root. The root `package.json` intentionally rejec
 
 | Command | Coverage |
 | --- | --- |
-| `make typecheck` | Code-principle checks and TypeScript type checking |
+| `make typecheck` | Code-principle checks, exact built-in skill validation, and TypeScript type checking |
 | `make test-bun` | Application, Pi runtime, provider, and browser tests |
-| `make test-python` | cyberful-os Python and native-laboratory unit tests |
+| `make test-python` | Every built-in skill script test plus cyberful-os and native-laboratory Python unit tests |
 | `make runtime-build` | Native unified cyberful-os image for the host architecture |
 | `make test-runtime` | Full image, ZAP, Ghidra, bridge, lifecycle, and capability contract |
 | `make test-cyberful-os` | Real image, catalog, MCP, and gateway contract |
@@ -17,7 +17,7 @@ Run checks from the repository root. The root `package.json` intentionally rejec
 
 Before publishing a change, scan the checkout for secrets. This is a safety net, not permission to place a real credential in Git history even briefly.
 
-`make test` runs the default Bun, Python, and live cyberful-os tiers. `make runtime-build` followed by `make test-runtime` is the complete tooling image gate; focused ZAP and Ghidra targets reuse that image. `make test-all` adds the remaining network contracts. Pi provider-wire, system-message, security-block, delegation, and fallback behavior is covered by the isolated Bun tier without requiring a live model turn.
+`make test` runs the default Bun, Python, and live cyberful-os tiers. The Python tier discovers every `builtin/skills/*/tests/test_*.py` file and runs each skill package in an isolated subprocess before the cyberful-os suite. `make runtime-build` followed by `make test-runtime` is the complete tooling image gate; focused ZAP and Ghidra targets reuse that image. `make test-all` adds the remaining network contracts. Pi provider-wire, system-message, security-block, delegation, and fallback behavior is covered by the isolated Bun tier without requiring a live model turn.
 
 `make test-browser` validates DuckDuckGo URL construction and static HTML parsing without network access. `CYBERFUL_TEST_LIVE_DUCKDUCKGO=1 make test-browser` additionally runs the opt-in live Chromium probe; it is intentionally absent from ordinary CI because external availability and markup are not release-controlled.
 

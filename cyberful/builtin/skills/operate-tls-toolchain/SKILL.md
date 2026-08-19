@@ -1,6 +1,28 @@
 ---
 name: operate-tls-toolchain
 description: Operate testssl.sh, sslscan, OpenSSL, Nmap TLS scripts, and direct protocol probes for advanced transport-security assessment. Use when mapping TLS listeners, certificate paths, SNI or ALPN behavior, client authentication, protocol and cipher policy, resumption, proxy termination, scanner disagreement, or transport findings that require endpoint-specific proof.
+metadata:
+  domain: transport-security
+  subdomain: tls-tooling
+  triggers:
+    - TLS configuration test
+    - certificate chain analysis
+    - cipher suite scan
+    - SNI ALPN probe
+    - mutual TLS assessment
+    - testssl scan
+  tags:
+    - TLS
+    - testssl
+    - sslscan
+    - OpenSSL
+    - mTLS
+    - certificate-validation
+  frameworks:
+    mitre_attack:
+      - T1557
+    nist_csf:
+      - PR.DS
 ---
 
 # Operate the TLS Toolchain

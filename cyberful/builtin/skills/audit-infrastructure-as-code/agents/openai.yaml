@@ -1,0 +1,4 @@
+interface:
+  display_name: "Infrastructure as Code Auditor"
+  short_description: "Audit IaC controls and deployment impact"
+  default_prompt: "Use $audit-infrastructure-as-code to audit these scoped IaC artifacts and preserve evidence."

@@ -1,0 +1,23 @@
+{
+  "$schema": "./fraud-abuse-model.schema.json",
+  "model_id": "synthetic-fraud-model",
+  "authorization_reference": "engagement-scope-fraud-model",
+  "protected_values": [
+    {"value_id": "wallet-balance", "owner": "ledger-service", "authoritative_evidence": "synthetic-ledger-export"}
+  ],
+  "actors": [
+    {"actor_id": "controlled-customer", "starting_state": "verified-test-account", "capabilities": ["initiate-sandbox-transfer"]}
+  ],
+  "paths": [
+    {
+      "path_id": "synthetic-transfer-threshold",
+      "preconditions": ["controlled-customer", "synthetic-funded-wallet"],
+      "actions": ["initiate-transfer", "control-decision", "ledger-posting"],
+      "invariant": "value movement requires an enforced authorization decision",
+      "controls": ["transaction-risk-policy"],
+      "expected_evidence": ["decision-log", "ledger-entry"],
+      "benefit_or_harm": "synthetic value movement",
+      "stop_condition": "stop before any non-synthetic beneficiary or irreversible settlement"
+    }
+  ]
+}

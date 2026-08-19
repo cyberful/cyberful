@@ -1,0 +1,14 @@
+{
+  "$schema": "assets/rag-isolation-probe.schema.json",
+  "attribution": {
+    "authorization_reference": "mission://rag-isolation",
+    "expires_at": "2099-01-01T00:00:00Z",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "actor_id": "tester-a",
+    "tenant_id": "tenant-a"
+  },
+  "limits": {"max_requests": 2, "requests_per_second": 1},
+  "cases": [
+    {"id": "corpus-control", "endpoint": "http://127.0.0.1:8080/query", "query": "Return sources for canary A", "corpus_id": "tester-corpus-a", "actor_id": "tester-a", "tenant_id": "tenant-a", "marker_ids": ["canary-a"]}
+  ]
+}

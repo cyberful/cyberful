@@ -80,6 +80,24 @@ class NoTelemetryEnvironmentTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "configured together"):
                 cyberful_os_mcp.inherited_container_env(None)
 
+    def test_caller_cannot_invent_transport_without_a_host_owned_route(self) -> None:
+        with mock.patch.dict(cyberful_os_mcp.os.environ, {}, clear=True):
+            inherited = cyberful_os_mcp.inherited_container_env(
+                {
+                    "HTTPS_PROXY": "http://caller.invalid/",
+                    "http_proxy": "http://caller.invalid/",
+                    "NO_PROXY": "*",
+                    "SSL_CERT_FILE": "/tmp/caller.pem",
+                    "CURL_CA_BUNDLE": "/tmp/caller.pem",
+                    "GIT_SSL_NO_VERIFY": "true",
+                    "UNRELATED_SCAN_MODE": "bounded",
+                }
+            )
+
+        for name in cyberful_os_mcp.HOST_OWNED_TRANSPORT_ENV_KEYS:
+            self.assertNotIn(name, inherited)
+        self.assertEqual(inherited["UNRELATED_SCAN_MODE"], "bounded")
+
     def test_rejects_a_missing_host_owned_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as trust_directory:
             missing = pathlib.Path(trust_directory) / "missing.pem"

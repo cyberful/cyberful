@@ -12,21 +12,17 @@ metadata:
     - object-level authorization
     - function-level authorization
   tags:
-    - IDOR
-    - BOLA
-    - BFLA
-    - OWASP API1:2023
-    - OWASP API3:2023
-    - OWASP API5:2023
-    - CWE-284
-    - CWE-639
-    - CWE-862
-    - CWE-863
+    - idor
+    - bola
+    - bfla
+    - tenant-isolation
+    - mass-assignment
+    - confused-deputy
   frameworks:
     mitre_attack:
       - T1078
     nist_csf:
-      - PR.AA
+      - PR.AA-05
 ---
 
 # Test Authorization Boundaries
@@ -65,11 +61,11 @@ Read [references/enforcement-review.md](references/enforcement-review.md). Trace
 
 Use [references/field-heuristics.md](references/field-heuristics.md) after the base matrix to locate aliasing, stale authority, indirect disclosure, and multi-step privilege chains.
 
-## Normalize larger evidence sets
+## Run a bounded campaign
 
-For a reusable observation ledger, copy [assets/authorization-observations.example.json](assets/authorization-observations.example.json) into the workarea and preserve the field contract in [assets/authorization-observations.schema.json](assets/authorization-observations.schema.json). Replace every synthetic value; never present the example as target evidence.
+Use [scripts/run_authorization_campaign.py](scripts/run_authorization_campaign.py) only after the effective matrix, controlled actors, target origins, request ceiling, rate, and authorization reference are explicit. Copy [assets/authorization-campaign.example.json](assets/authorization-campaign.example.json), preserve [assets/authorization-campaign.schema.json](assets/authorization-campaign.schema.json), and keep secrets only in the environment variables declared by [scripts/manifest.json](scripts/manifest.json). Never place authorization, cookie, proxy-authorization, transport configuration, or any declared secret header value in the JSON header map.
 
-When manual comparison would be error-prone, read and run [scripts/compare_authorization_matrix.py](scripts/compare_authorization_matrix.py) against that ledger in an offline workarea. The helper validates and groups observations as controls, bypass candidates, regressions, or inconclusive cases. Its classification organizes evidence; it does not establish exploitability, impact, or a final finding.
+The runner validates every case before resolving secret environment values or issuing the first request. Exact origins and limits are defense in depth and never grant authority. Literal loopback targets run direct with proxies disabled; every other target requires the host-owned HTTP(S) proxy and CA route described by [scripts/manifest.json](scripts/manifest.json). Missing transport refuses before connection, TLS verification is never disabled, and bounded, secret-redacted raw transport evidence conforms to [assets/authorization-campaign-evidence.schema.json](assets/authorization-campaign-evidence.schema.json). The runner terminates the full process group as soon as a stream, response, or global deadline boundary is crossed. It does not compare policy with outcomes or issue a vulnerability verdict; perform that reasoning from the raw controls and durable effects.
 
 ## Confirm impact precisely
 

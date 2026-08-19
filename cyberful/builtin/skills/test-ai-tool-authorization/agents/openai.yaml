@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Tool Authorization Tester"
+  short_description: "Test host-enforced agent capability boundaries"
+  default_prompt: "Use $test-ai-tool-authorization to verify canonical tool actions, approvals, identities, and effects."

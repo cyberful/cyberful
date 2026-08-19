@@ -1,6 +1,30 @@
 ---
 name: test-server-side-fetching
 description: Assess server-side URL retrieval and network egress during authorized penetration tests or code audits. Use for SSRF, blind SSRF, URL parser confusion, DNS rebinding, redirect validation, webhook callbacks, importers, previews, PDF or image fetchers, cloud metadata access, alternate protocols, internal service reachability, and egress-policy review.
+metadata:
+  domain: application-security
+  subdomain: server-side-fetching
+  triggers:
+    - ssrf testing
+    - blind ssrf
+    - server-side url fetch
+    - dns rebinding
+    - cloud metadata access
+    - egress policy review
+  tags:
+    - ssrf
+    - url-parser
+    - dns
+    - redirects
+    - cloud-metadata
+    - egress
+  frameworks:
+    mitre_attack:
+      - T1190
+      - T1552.005
+    nist_csf:
+      - ID.RA-01
+      - PR.IR-01
 ---
 
 # Test Server-Side Fetching

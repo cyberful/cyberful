@@ -1,0 +1,20 @@
+{
+  "scope_reference": "",
+  "source_revision": "",
+  "build_identity": {},
+  "deployment_assumptions": [],
+  "invariants": [
+    {
+      "id": "INV-001",
+      "statement": "",
+      "assets_or_state": [],
+      "entry_points": [],
+      "required_roles": [],
+      "external_dependencies": [],
+      "source_locations": [],
+      "counterexample": null,
+      "evidence": [],
+      "status": "unvalidated"
+    }
+  ]
+}

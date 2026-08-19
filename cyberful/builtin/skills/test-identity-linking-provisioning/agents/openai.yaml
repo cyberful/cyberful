@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Identity Linking and Provisioning"
+  short_description: "Test account association and lifecycle authority"
+  default_prompt: "Use $test-identity-linking-provisioning to map and test this authorized identity-association ceremony."

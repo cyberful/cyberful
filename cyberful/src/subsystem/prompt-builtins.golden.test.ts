@@ -149,26 +149,26 @@ const GOLDEN_CASES = [
 type GoldenID = (typeof GOLDEN_CASES)[number]["id"]
 
 const EXPECTED_SYSTEM_SHA256 = {
-  "pentest/brief": "bd14e1bd84e2d5b1437db3ad88f17ce8d2fc6116646890f9bed24741c93765ea",
-  "pentest/recon": "f4391cd58992a6fbf9e855726490d2167109fd324121fbb076542b708426315a",
-  "pentest/exploit": "ddc5aa5f1dab1d4225557c749a4836700a4c24d34b4814f3cac2a4a90374d735",
-  "pentest/hacker": "99d5c5c458aabbb6a090e0af7b44602bd2c9044c5a16d76c4ef66a39e4ad3f04",
-  "pentest/verify": "90e55b3a650821bd5757ef415e5f80a972dfe0da9baeefcc3de3ab65e12fcb99",
-  "pentest/report": "3b429eb021f2c8bcde0f39922c93557fea2702d0b798117c3a957c66509cda98",
-  "bug-bounty/brief": "27bd212fd42f0a30fa29c9b5cd7eb5cfc1dce6362306e5f8278d90eea4fe4190",
-  "bug-bounty/recon": "6aae3cce62551285ae58a2f8756eda541ea9098e49ffd8bdb5aa322ec7845c5f",
-  "bug-bounty/exploit": "1b67c51003f42fd4c7be01196cd17ba66f3c1f0e3a0f4e3a21f5ea1f7d8133f4",
-  "bug-bounty/hacker": "5e6bd836eb91e1df0bbd20a876a70bedd8e66d4ccbf1bbd6ceb9b1977ff19f8e",
-  "bug-bounty/verify": "b278b269b2f1eb9059ae2accbd63f797a4d512ce37953ee03c0b55bb7bf2ec22",
-  "bug-bounty/report": "ed4baef369a7b902f08fe51f0a28907ac229976ee11f227ecd5e52c3bfc06426",
-  "code-audit/scope": "4046ab5f1e843de16bf434ac7974a196bca19d231a1051d8fb093e3463151312",
-  "code-audit/index": "803392ea73f0861687b0ce9e43a157bb84245ff440689a4ec74c5e86c8d4de67",
-  "code-audit/trace": "8db5682a5ab4c980d56d8250a131d35294535adb8dfeaa6256a35a750091c16c",
-  "code-audit/hunt": "2a4bd54f51fb373fa4de79ba73e9a29ac46820c55aa950518fedf2c7f5bfbe69",
-  "code-audit/attack": "ed9e3f11b0a4e87aa90068aa10ae30fe1ecaab6fe932a91b1b1663e8b8d18a2e",
-  "code-audit/verify": "1760ff1cc623b5723ac66195b3deebdfe4a26283f2e6cd9690f378f441a9ecd0",
-  "code-audit/report": "9c7e6c9ae4f6c498af454482cdc9df363b8c22691c07503cbda7ae53ebec4703",
-  "ask/ask": "e79a37892a6823cfb6993616d9540817d3ee061698ec4ef0fc15027dc03a7d86",
+  "pentest/brief": "ca49efd48251c6bfd2db3bde08644f8ecc47f674cb0907fc999335f93a890641",
+  "pentest/recon": "da9928eb4b512d0984eace9c692e667b2d98419df0a793d282af06949a89c47b",
+  "pentest/exploit": "276d082f7ff5a7a280477708815bddaf4078d5ea8a51c0f34cf9cde8d318cc9e",
+  "pentest/hacker": "9beedc087a69834bdc707052e26f5aff53e1b67a88a402794f7811758611b8a1",
+  "pentest/verify": "0b3fe16dafb7317ce36b7c2e290ed2c622d500fabf5860980ca87f36152f8d93",
+  "pentest/report": "75e416eb5c6b74b92faa26fd94f5b2160baf55dbf0b283e4251f3652e5807cbf",
+  "bug-bounty/brief": "a477effe6362d9a3ece65ae7ab9eb0082f7cc89c5438b9d24c0934a4f2090486",
+  "bug-bounty/recon": "4693ba470910afea247956458bb740d597972de6a9d97fa6b37035fd4fe52fc4",
+  "bug-bounty/exploit": "f277627ef25e113156b53b3d6f1a55ce56169c67361e915e7a589b08fb4bfddb",
+  "bug-bounty/hacker": "72a19797bf004c6b59c7bd7c856e6cea242d51e7f9bd361bfadb918077a26cb3",
+  "bug-bounty/verify": "9a16adfedc038d8a985a61d001ab488afe099b06d107e220486ff1822404aae8",
+  "bug-bounty/report": "b682211925699aa23da4eec7b58b51a91fa845744bc9bcaf6029b424ef5663a4",
+  "code-audit/scope": "bbd4bac9347364383f3afa1a09227bfd15f3c02a7631b41e5a7cff952a4235da",
+  "code-audit/index": "19e787109eb81b948b698e47fd3f8b39d71b88b745e589260378f5beeedf61ed",
+  "code-audit/trace": "7ddff53fdab3156291bd86b81fd45f35ff46582b704a33d9625cce268aeeba58",
+  "code-audit/hunt": "4284064607f769831698b4b0f2eb168fd98582030e063388e8730f89d0a495f8",
+  "code-audit/attack": "c690e333df7cd4e6c580395451146de96fc488d730bb11892042bd58f1da0e97",
+  "code-audit/verify": "04d0e20d4cc5787e27f7066382d2fda91dca910a0137d725d54bf81f6864be5a",
+  "code-audit/report": "9b9b79825080fca984b357843466e657795580f53a91d29d2e674b71cd80581c",
+  "ask/ask": "ad659be6814ba592f37ff33d3fa4677e9085fd98d17f5793d2e7c35aa4216197",
 } satisfies Record<GoldenID, string>
 
 const AUTHORIZATION_PREFIX = {
@@ -234,6 +234,15 @@ const GOLDEN_SKILLS = {
     parameters: SKILL_READ_PARAMETERS,
     execute: async () => {
       throw new Error("the golden prompt test does not execute skills")
+    },
+  },
+  stageTool: {
+    name: "skill_stage",
+    label: "Stage trusted skill resource",
+    description: "Stage one golden-test skill resource.",
+    parameters: Type.Object({ skill: Type.String({ minLength: 1 }), path: Type.String({ minLength: 1 }) }),
+    execute: async () => {
+      throw new Error("the golden prompt test does not stage skills")
     },
   },
   read: async () => {

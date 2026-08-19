@@ -1,6 +1,22 @@
 ---
 name: operate-browser
 description: Operate Cyberful's isolated browser for public research, ordinary authenticated journeys, multi-profile comparisons, form interaction, evidence capture, downloads, and passive dependency observation. Use before calling browser tools in Pentest or Bug Bounty phases, especially for numbered target profiles, stored-variable login, CAPTCHA handoff, ZAP-routed readiness checks, or the direct search profile.
+metadata:
+  domain: security-tooling
+  subdomain: browser-operations
+  triggers:
+    - isolated browser operation
+    - authenticated browser journey
+    - browser profile comparison
+    - browser evidence capture
+    - CAPTCHA handoff
+  tags:
+    - browser
+    - authenticated-session
+    - multi-profile
+    - evidence-capture
+    - ZAP-proxy
+  frameworks: {}
 ---
 
 # Operate Browser

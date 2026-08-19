@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_transaction_trace.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "report", "index", "trace", "hunt"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-bounded-local-transaction-evidence", "writes-bounded-raw-trace"],
+  "timeout_seconds": 10,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/transaction-events.schema.json"},
+  "output": {"format": "json", "schema": "assets/transaction-trace.schema.json", "raw": true}
+}

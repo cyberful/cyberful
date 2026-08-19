@@ -125,6 +125,7 @@ nav:
       - Agent providers and fallback: user-guide/settings.md
   - Security tools:
       - Overview: runtimes/README.md
+      - Built-in skill catalog: runtimes/skill-catalog.md
       - Complete tool and MCP catalog: runtimes/tool-catalog.md
       - cyberful-os: runtimes/cyberful-os.md
       - Browser: runtimes/browser.md

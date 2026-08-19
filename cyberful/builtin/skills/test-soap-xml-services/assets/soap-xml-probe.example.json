@@ -1,0 +1,23 @@
+{
+  "constraints": {
+    "authorization_reference": "mission://engagement-001/soap-scope",
+    "expires_at": "2099-01-01T00:00:00Z",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "max_requests": 1,
+    "requests_per_second": 1,
+    "allowed_effects": ["read-only"],
+    "actor_id": "tester-a",
+    "tenant_id": "tenant-a"
+  },
+  "cases": [{
+    "id": "lookup-control",
+    "endpoint": "http://127.0.0.1:8080/ProfileService",
+    "soap_version": "1.1",
+    "action": "urn:profiles:GetProfile",
+    "envelope": "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Body><GetProfile xmlns=\"urn:profiles\"><ProfileId>tester-owned</ProfileId></GetProfile></soap:Body></soap:Envelope>",
+    "headers": {"X-Test-Case": "control"},
+    "effect": "read-only",
+    "actor_id": "tester-a",
+    "tenant_id": "tenant-a"
+  }]
+}

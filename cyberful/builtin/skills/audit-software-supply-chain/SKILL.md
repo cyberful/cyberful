@@ -1,45 +1,56 @@
 ---
 name: audit-software-supply-chain
-description: Audit dependency resolution, package provenance, build systems, CI/CD workflows, artifacts, registries, signing, release promotion, and deployment trust during authorized code audits and security assessments. Use for dependency confusion, typosquatting, malicious install scripts, lockfile drift, CI injection, poisoned caches, artifact substitution, secret exposure, untrusted contributions, SBOM, provenance, and release-integrity review.
+description: Coordinate an authorized software-supply-chain audit from dependency resolution through build, artifact, release, deployment, and runtime trust. Use when several producer-to-runtime controls need one evidence model; use a narrower specialist for one pipeline, artifact, secret, infrastructure, or release mechanism.
+metadata:
+  domain: software-supply-chain
+  subdomain: producer-to-runtime-assurance
+  triggers:
+    - software supply chain audit
+    - dependency provenance review
+    - build pipeline trust
+    - artifact integrity audit
+    - release provenance
+    - dependency confusion review
+  tags:
+    - SBOM
+    - SLSA
+    - provenance
+    - CI-CD
+    - dependency-confusion
+    - artifact-signing
+  frameworks:
+    mitre_attack:
+      - T1195
+    nist_csf:
+      - GV.SC
+      - ID.RA
+      - PR.PS
 ---
 
 # Audit the Software Supply Chain
 
-## Model the Producer-to-Runtime Chain
+Own the end-to-end trust model and route concrete analysis to specialists.
 
-Trace source commit, dependency resolution, code generation, build runner, cache, artifact, registry, signature or attestation, release promotion, deployment controller, and runtime image. At each edge, identify who can write, what identity is trusted, how bytes are selected, and what evidence binds input to output.
+## Build the shared chain
 
-The central question is not whether a scanner reports vulnerable packages. Determine whether untrusted or insufficiently authenticated input can become a trusted build, release, or runtime artifact.
+Map `source commit -> dependency resolution -> generated inputs -> build identity -> cache -> artifact -> registry -> attestation -> promotion -> deployment -> runtime`. For every edge, record who can write, which identity authorizes it, how bytes are selected, and which evidence binds input to output.
 
-Read [dependency-resolution.md](references/dependency-resolution.md) for ecosystem and package risk. Read [ci-build-provenance.md](references/ci-build-provenance.md) for automation, artifact, and release trust.
+Read [references/dependency-resolution.md](references/dependency-resolution.md) to inventory ecosystem authority and [references/ci-build-provenance.md](references/ci-build-provenance.md) to define the shared producer-to-runtime ledger.
 
-## Inventory Dependency Authority
+## Route the mechanisms
 
-For every ecosystem and toolchain, record:
+- Native SBOM, vulnerability, image, and secret evidence: `operate-supply-chain-toolchain`.
+- Infrastructure definitions and plans: `audit-infrastructure-as-code`.
+- CI, build, promotion, and release controls: `audit-build-release-pipelines`.
+- Model, dataset, adapter, and ML artifact provenance: `audit-ai-model-supply-chain`.
+- Secret custody and broker policy: `audit-secrets-management`.
+- Commit-to-release security deltas: `analyze-release-security-diff`.
+- Container and orchestration enforcement: `audit-container-runtime-isolation` and `audit-kubernetes-policy-enforcement`.
 
-- manifest and lockfile;
-- public, private, mirror, proxy, and local registries;
-- source, binary, VCS, path, plugin, action, image, and tool dependencies;
-- namespace ownership and precedence;
-- integrity hashes, signatures, and provenance;
-- lifecycle scripts and code generation;
-- update bots and review policy;
-- vendored, generated, patched, or dynamically downloaded components.
+Do not repeat scanner, pipeline, IaC, or secret-review procedures here.
 
-Resolve what the production build actually selects under its network, credentials, and configuration. A manifest-only inventory misses implicit plugins and bootstrap downloads.
+## Reconcile evidence
 
-## Analyze CI Trust Transitions
+Keep declaration, resolution, build inclusion, shipped presence, runtime loading, advisory applicability, and exploit reachability as separate evidence grades. Require artifact digests, tool/database versions, identity context, policy source, negative controls, and unavailable stages from every specialist.
 
-Classify triggers by contributor trust and secret availability. Follow untrusted branch names, commit messages, issue text, PR metadata, filenames, artifact names, matrices, workflow outputs, and generated scripts into shell, expression, path, cache, and deployment sinks.
-
-Review reusable workflows and composite actions as code with caller/callee permission boundaries. Pin third-party automation to immutable identities where practical and inspect transitive behavior.
-
-## Verify Artifact Continuity
-
-Determine whether the artifact tested is the artifact promoted. Record digests at build, scan, sign, registry, deployment, and runtime. Validate provenance subject, builder identity, source revision, parameters, and dependency material.
-
-Rebuilding after approval, using mutable tags, or copying through an untrusted registry breaks continuity even if every individual stage is authenticated.
-
-## Report the Trust Break
-
-Document attacker-controlled input, resolving or executing component, credentials and network available there, resulting artifact or release capability, and the missing binding. Recommend hermetic or constrained builds, immutable resolution, least-privilege automation, isolated untrusted jobs, digest promotion, and verifiable provenance.
+Confirm a finding only when an untrusted or insufficiently authenticated input can alter a trusted dependency, build, release, deployment, or runtime result. Deduplicate by compromised trust edge and authority owner. Deliver the chain map, coverage ledger, confirmed breaks, unsupported assumptions, systemic leverage, remediation owner, regression proof, and residual blind spots.

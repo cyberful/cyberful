@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/kubernetes-policy-evidence.v1.json",
+  "title": "Raw Kubernetes policy enforcement evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "scope_reference", "input_sha256", "manifests", "policies", "network_sandbox", "tool", "command", "result", "limits", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.kubernetes-policy-evidence.v1"},
+    "campaign_id": {"type": "string"},
+    "scope_reference": {"type": "string"},
+    "input_sha256": {"$ref": "#/$defs/digest"},
+    "manifests": {"$ref": "#/$defs/inventory"},
+    "policies": {"$ref": "#/$defs/inventory"},
+    "network_sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "mechanism"],
+      "properties": {"network": {"const": "none"}, "mechanism": {"enum": ["sandbox-init-deny-network", "seccomp-bpf-deny-network"]}}
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version_probe"],
+      "properties": {"name": {"const": "conftest"}, "version_probe": {"$ref": "#/$defs/probe"}}
+    },
+    "command": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+    "result": {"$ref": "#/$defs/result"},
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_seconds", "stdout_bytes", "stderr_bytes"],
+      "properties": {
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+        "stdout_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+        "stderr_bytes": {"const": 65536}
+      }
+    },
+    "interpretation": {"type": "string"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "files", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string"},
+        "files": {"type": "integer", "minimum": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base64", "bytes", "sha256"],
+      "properties": {
+        "base64": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exit_code", "timed_out", "limit_exceeded", "stdout", "stderr"],
+      "properties": {
+        "exit_code": {"type": ["integer", "null"]},
+        "timed_out": {"type": "boolean"},
+        "limit_exceeded": {"type": ["string", "null"]},
+        "stdout": {"$ref": "#/$defs/stream"},
+        "stderr": {"$ref": "#/$defs/stream"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "exit_code", "timed_out", "limit_exceeded", "stdout", "stderr"],
+      "properties": {
+        "argv": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+        "exit_code": {"type": ["integer", "null"]},
+        "timed_out": {"type": "boolean"},
+        "limit_exceeded": {"type": ["string", "null"]},
+        "stdout": {"$ref": "#/$defs/stream"},
+        "stderr": {"$ref": "#/$defs/stream"}
+      }
+    }
+  }
+}

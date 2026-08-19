@@ -3,6 +3,7 @@
 Cyberful presents five capability families, but only three container environments. You normally start none of them yourself: the host gives each phase only its allowed MCP surface.
 
 - [cyberful-os](cyberful-os.md) is the shared tooling image used by the core security/Ghidra role and the dedicated ZAP role.
+- [Built-in skill catalog](skill-catalog.md) documents the 106 first-party procedures, progressive loading, active-resource contract, and framework pins.
 - [Complete tool and MCP catalog](tool-catalog.md) lists every first-party tool surface, version policy, description, and use case.
 - [Browser](browser.md) provides DOM, network, cookie, artifact, and controlled interaction tools through a dedicated Chromium or Chrome profile.
 - [OWASP ZAP](zap.md) provides headless proxy and scanning capabilities for traffic-authorized phases.

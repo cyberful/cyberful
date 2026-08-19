@@ -1,12 +1,14 @@
 // ── Pi System Message Wire Capture Tests ────────────────────────
-// Exercises reviewed provider payload shapes and rejects any duplicate,
-// concatenated, role-swapped, or user-channel copy of Cyberful's system text.
+// Exercises reviewed provider payload shapes, including Pi's deferred-tool
+// protocol item, and rejects duplicate or role-swapped instruction messages.
 // → cyberful/src/subsystem/pi-system-wire.ts — owns pre-dispatch attestation.
 // ─────────────────────────────────────────────────────────────────
 
 import { createHash } from "node:crypto"
+import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared"
 import { describe, expect, test } from "bun:test"
-import type { Api, Model } from "@earendil-works/pi-ai"
+import type { Api, Context, Model, Tool } from "@earendil-works/pi-ai"
+import { Type } from "typebox"
 import type { CompiledAgentPrompt } from "./prompt-compiler"
 import { PiSystemWire, SystemWireValidationError } from "./pi-system-wire"
 
@@ -98,6 +100,72 @@ describe("Pi system wire capture", () => {
     expect(PiSystemWire.createOnPayload({ prompt: prompt() })(captured, model("openai-codex-responses"))).toBe(captured)
   })
 
+  test("accepts deferred tools emitted by Pi after tool search", () => {
+    const codex = model("openai-codex-responses")
+    const browserStatus: Tool = {
+      name: "browser_status",
+      description: "Return the isolated browser status.",
+      parameters: Type.Object({}),
+    }
+    const context: Context = {
+      systemPrompt: SYSTEM,
+      tools: [browserStatus],
+      messages: [
+        { role: "user", content: "Load the browser status tool.", timestamp: 1 },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_1|item_1", name: "tool_search", arguments: {} }],
+          api: "openai-codex-responses",
+          provider: "capture-provider",
+          model: "capture-model",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "toolUse",
+          timestamp: 2,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call_1|item_1",
+          toolName: "tool_search",
+          content: [{ type: "text", text: "Loaded browser_status." }],
+          addedToolNames: ["browser_status"],
+          isError: false,
+          timestamp: 3,
+        },
+      ],
+    }
+    const input = convertResponsesMessages(codex, context, new Set(["capture-provider"]), {
+      includeSystemPrompt: false,
+      deferredTools: new Map([[browserStatus.name, browserStatus]]),
+      deferredToolsMode: "additional-tools",
+      toolOptions: { strict: null },
+    })
+    const captured = { instructions: SYSTEM, input }
+
+    expect(input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "additional_tools",
+          role: "developer",
+          tools: [
+            expect.objectContaining({
+              type: "function",
+              name: "browser_status",
+              description: "Return the isolated browser status.",
+            }),
+          ],
+        }),
+      ]),
+    )
+    expect(PiSystemWire.createOnPayload({ prompt: prompt() })(captured, codex)).toBe(captured)
+  })
+
   test("accepts GLM Chat Completions only with the authentic system role", () => {
     const glm = model("openai-completions", {
       provider: "glm-5-2",
@@ -177,6 +245,14 @@ describe("Pi system wire rejection", () => {
     )
     expectFailure(
       () => guard({ instructions: SYSTEM, input: [{ role: "developer", content: "Other policy." }] }, codex),
+      "invalid_responses_instruction",
+    )
+    expectFailure(
+      () =>
+        guard(
+          { instructions: SYSTEM, input: [{ type: "message", role: "system", content: "Other policy." }] },
+          codex,
+        ),
       "invalid_responses_instruction",
     )
   })

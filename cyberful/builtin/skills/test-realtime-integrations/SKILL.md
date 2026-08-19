@@ -1,6 +1,29 @@
 ---
 name: test-realtime-integrations
 description: Assess WebSocket, Server-Sent Events, webhook, event-stream, callback, and asynchronous integration security during authorized penetration tests or code audits. Use for handshake and message authorization, cross-site WebSocket hijacking, channel isolation, replay, ordering, signature verification, canonicalization, event forgery, subscription leaks, retry behavior, and integration confused deputies.
+metadata:
+  domain: application-security
+  subdomain: realtime-integrations
+  triggers:
+    - websocket authorization
+    - server-sent events
+    - webhook signature verification
+    - event replay
+    - channel isolation
+    - asynchronous callback security
+  tags:
+    - websocket
+    - sse
+    - webhook
+    - event-stream
+    - replay
+    - message-authorization
+  frameworks:
+    mitre_attack:
+      - T1190
+    nist_csf:
+      - ID.RA-01
+      - PR.AA-05
 ---
 
 # Test Realtime and Event Integrations
@@ -39,7 +62,9 @@ For webhooks and callbacks, verify signature construction, canonical bytes, algo
 
 For queues and event streams, test duplicate delivery, out-of-order delivery, poison messages, partial failure, redrive, schema evolution, and event provenance.
 
-For larger event sets, copy [assets/event-ledger.example.json](assets/event-ledger.example.json) into the workarea and preserve [assets/event-ledger.schema.json](assets/event-ledger.schema.json). Run [scripts/analyze_event_ledger.py](scripts/analyze_event_ledger.py) offline to separate policy mismatch, duplicate, missing, reordered, unexpected, and replayed delivery evidence. Interpret every lead against the protocol's declared delivery and retry guarantees.
+For a small discriminating active set, use [scripts/run_realtime_probe.py](scripts/run_realtime_probe.py) only after origins, request ceiling, rate, timeout, and authorization reference are explicit. Copy [assets/realtime-probe.example.json](assets/realtime-probe.example.json), preserve [assets/realtime-probe.schema.json](assets/realtime-probe.schema.json), and keep credentials or signatures only in the environment variables declared by [scripts/manifest.json](scripts/manifest.json). Never place authorization, cookie, proxy-authorization, transport configuration, or any declared secret header value in the JSON header map.
+
+The runner validates the complete probe set before resolving secret environment values or issuing the first request. Exact origins and limits are defense in depth and never grant authority. Literal loopback targets run direct with proxies disabled; every other target requires the host-owned HTTP(S) proxy and CA route described by [scripts/manifest.json](scripts/manifest.json). Missing transport refuses before connection, TLS verification is never disabled, and bounded, secret-redacted raw evidence conforms to [assets/realtime-probe-evidence.schema.json](assets/realtime-probe-evidence.schema.json). The runner terminates the full process group as soon as a stream, response, or global deadline boundary is crossed. It performs webhook and callback requests plus bounded SSE or WebSocket handshakes; use ZAP or the approved protocol runtime for stateful message exchange.
 
 ## Report the Failing Boundary
 

@@ -46,9 +46,9 @@ describe("Pi live tool output projection", () => {
 })
 
 describe("Pi eager skill tools", () => {
-  test("keeps search and read visible on the first request", async () => {
+  test("keeps search, read, and stage visible on the first request", async () => {
     const skills = await PiSkills.discover({ roots: [path.join(Builtin.DIR, "skills")] })
 
-    expect(eagerSkillTools(skills).map((tool) => tool.name)).toEqual(["skill_search", "skill_read"])
+    expect(eagerSkillTools(skills).map((tool) => tool.name)).toEqual(["skill_search", "skill_read", "skill_stage"])
   })
 })

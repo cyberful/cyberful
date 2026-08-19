@@ -1,5 +1,7 @@
 # Semgrep Fieldbook
 
+The executable contract is `assets/sast-campaign.schema.json`; raw scanner output replaces the former offline reconciliation report. Deduplicate and correlate observations in the phase evidence ledger without hiding parser errors or scan coverage.
+
 ## Pattern design
 
 Prefer semantic anchors over large copied blocks:

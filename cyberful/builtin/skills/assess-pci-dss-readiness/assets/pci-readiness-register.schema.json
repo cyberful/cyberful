@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/pci-readiness-register.v1.json",
+  "title": "Cyberful PCI DSS penetration-testing readiness register",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "engagement_id", "standard_version", "supported_scope", "entity_type", "validation_process", "items", "outside_scope_dependencies", "conclusion_boundary"],
+  "properties": {
+    "format": {"const": "cyberful.pci-readiness-register.v1"},
+    "engagement_id": {"$ref": "#/$defs/id"},
+    "standard_version": {"const": "PCI DSS 4.0.1"},
+    "supported_scope": {"const": "CDE scoping and penetration-testing readiness for Requirements 11.4 and 12.5.2"},
+    "entity_type": {"enum": ["merchant", "service-provider", "multi-tenant-service-provider"]},
+    "validation_process": {"$ref": "#/$defs/text"},
+    "items": {"type": "array", "minItems": 1, "maxItems": 512, "items": {"$ref": "#/$defs/item"}},
+    "outside_scope_dependencies": {"type": "array", "maxItems": 512, "items": {"$ref": "#/$defs/dependency"}},
+    "conclusion_boundary": {"const": "Readiness evidence only; no PCI DSS compliance or attestation decision."}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "text_list": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "item": {"type": "object", "additionalProperties": false, "required": ["requirement", "topic", "status", "evidence_refs", "rationale", "owner", "next_action"], "properties": {"requirement": {"pattern": "^(?:11\\.4\\.[1-7]|12\\.5\\.2(?:\\.1)?)$", "type": "string"}, "topic": {"$ref": "#/$defs/text"}, "status": {"enum": ["supported", "gap", "blocked", "not-applicable"]}, "evidence_refs": {"$ref": "#/$defs/text_list"}, "rationale": {"$ref": "#/$defs/text"}, "owner": {"$ref": "#/$defs/text"}, "next_action": {"$ref": "#/$defs/text"}}},
+    "dependency": {"type": "object", "additionalProperties": false, "required": ["topic", "owner", "reason"], "properties": {"topic": {"$ref": "#/$defs/text"}, "owner": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}}
+  }
+}

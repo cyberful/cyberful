@@ -1,0 +1,5 @@
+interface:
+  display_name: "Email Channel Security Tester"
+  short_description: "Trace email identity and parser boundaries"
+  default_prompt: "Use $test-email-channel-security to map application email construction delivery links replies and inbound processing with controlled mailboxes."
+

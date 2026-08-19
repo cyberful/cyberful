@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/cde-boundary-ledger.v1.json",
+  "title": "Cyberful cardholder data environment boundary ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "engagement_id", "standard_version", "as_of", "payment_stages", "nodes", "flows", "segmentation_claims", "scope_gaps"],
+  "properties": {
+    "format": {"const": "cyberful.cde-boundary-ledger.v1"},
+    "engagement_id": {"$ref": "#/$defs/id"},
+    "standard_version": {"const": "PCI DSS 4.0.1"},
+    "as_of": {"type": "string", "format": "date-time"},
+    "payment_stages": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "nodes": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/node"}},
+    "flows": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/flow"}},
+    "segmentation_claims": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/segmentation"}},
+    "scope_gaps": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/gap"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "text_list": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "node": {"type": "object", "additionalProperties": false, "required": ["node_id", "component", "scope_class", "account_data_classes", "capabilities", "owner", "third_party", "evidence_refs", "rationale"], "properties": {"node_id": {"$ref": "#/$defs/id"}, "component": {"$ref": "#/$defs/text"}, "scope_class": {"enum": ["cde", "connected", "security-impacting", "out-of-scope-claim", "unresolved"]}, "account_data_classes": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"enum": ["pan", "cardholder-data", "sensitive-authentication-data", "token", "none-observed", "unknown"]}}, "capabilities": {"$ref": "#/$defs/text_list"}, "owner": {"$ref": "#/$defs/text"}, "third_party": {"type": "boolean"}, "evidence_refs": {"$ref": "#/$defs/text_list"}, "rationale": {"$ref": "#/$defs/text"}}},
+    "flow": {"type": "object", "additionalProperties": false, "required": ["flow_id", "from", "to", "payment_stage", "data_class", "protocol", "principal", "transformation", "evidence_refs"], "properties": {"flow_id": {"$ref": "#/$defs/id"}, "from": {"$ref": "#/$defs/id"}, "to": {"$ref": "#/$defs/id"}, "payment_stage": {"$ref": "#/$defs/text"}, "data_class": {"$ref": "#/$defs/text"}, "protocol": {"$ref": "#/$defs/text"}, "principal": {"$ref": "#/$defs/text"}, "transformation": {"$ref": "#/$defs/text"}, "evidence_refs": {"$ref": "#/$defs/text_list"}}},
+    "segmentation": {"type": "object", "additionalProperties": false, "required": ["claim_id", "protected_cde_nodes", "claimed_out_of_scope_nodes", "methods", "evidence_refs", "status"], "properties": {"claim_id": {"$ref": "#/$defs/id"}, "protected_cde_nodes": {"$ref": "#/$defs/text_list"}, "claimed_out_of_scope_nodes": {"$ref": "#/$defs/text_list"}, "methods": {"$ref": "#/$defs/text_list"}, "evidence_refs": {"$ref": "#/$defs/text_list"}, "status": {"enum": ["supported", "requires-test", "contradicted"]}}},
+    "gap": {"type": "object", "additionalProperties": false, "required": ["gap_id", "claim", "missing_evidence", "owner", "next_discriminator"], "properties": {"gap_id": {"$ref": "#/$defs/id"}, "claim": {"$ref": "#/$defs/text"}, "missing_evidence": {"$ref": "#/$defs/text"}, "owner": {"$ref": "#/$defs/text"}, "next_discriminator": {"$ref": "#/$defs/text"}}}
+  }
+}

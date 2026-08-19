@@ -1,0 +1,1 @@
+{"scope_id":"engagement-001","events":[{"id":"retrieval-1","type":"retrieval","actor":"user-a","tenant":"tenant-a","parents":[],"edge":"retrieved_from","payload_ref":"raw/retrieval-1.json"},{"id":"model-1","type":"model-call","actor":"user-a","tenant":"tenant-a","parents":["retrieval-1"],"edge":"contains","payload_ref":"raw/model-1.json"}]}

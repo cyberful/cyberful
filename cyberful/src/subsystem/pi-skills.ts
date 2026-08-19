@@ -6,15 +6,25 @@
 // ─────────────────────────────────────────────────────────────────
 
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { constants } from "node:fs"
-import { lstat, open, readdir, realpath } from "node:fs/promises"
+import { lstat, open, opendir, readdir, realpath } from "node:fs/promises"
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core"
 import matter from "gray-matter"
 import { Type } from "typebox"
+import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import type { PromptSkill } from "./prompt-compiler"
 import { assertFirstPartySkillName } from "./skill-naming"
 
 const DEFAULT_MAX_FILE_BYTES = 512 * 1024
+const MAX_STAGEABLE_FILES = 256
+const MAX_STAGEABLE_ENTRIES = 512
+const MAX_STAGEABLE_DIRECTORIES = 64
+const MAX_STAGEABLE_PACKAGE_BYTES = 64 * 1024 * 1024
+const STAGEABLE_PACKAGE_FILE_MULTIPLIER = 16
+const STAGEABLE_DIRECTORIES = new Set(["assets", "scripts"])
+const STAGED_SCRIPT_EXTENSIONS = new Set([".cjs", ".js", ".mjs", ".py", ".sh", ".ts"])
+const STAGED_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const MAX_INDEX_TERMS = 512
 const MAX_INDEX_TERM_CHARACTERS = 256
 const FORBIDDEN_AMBIENT_DIRECTORIES = new Set([".agents", ".claude", ".codex", ".pi"])
@@ -63,6 +73,20 @@ const SkillSearchParameters = Type.Object(
   { additionalProperties: false },
 )
 
+const SkillStageParameters = Type.Object(
+  {
+    skill: Type.String({
+      minLength: 1,
+      description: "Exact skill name whose complete SKILL.md was already read in this AgentRun.",
+    }),
+    path: Type.String({
+      minLength: 1,
+      description: "Package-relative regular file below scripts/ or assets/ to materialize in the workarea.",
+    }),
+  },
+  { additionalProperties: false },
+)
+
 export interface SkillRoot {
   readonly path: string
   readonly origin: "first_party" | "extension"
@@ -71,6 +95,7 @@ export interface SkillRoot {
 export interface DiscoverSkillOptions {
   readonly roots: readonly (string | SkillRoot)[]
   readonly maxFileBytes?: number
+  readonly stagingRoot?: string
 }
 
 export interface SkillReadRequest {
@@ -94,10 +119,17 @@ export interface SkillSearchDetails {
   readonly nextCursor?: string
 }
 
+export interface SkillStageDetails {
+  readonly path: string
+  readonly bytes: number
+  readonly sha256: string
+}
+
 export interface SkillRegistry {
   readonly catalog: readonly PromptSkill[]
   readonly tool: AgentTool<typeof SkillReadParameters, SkillReadDetails>
   readonly searchTool: AgentTool<typeof SkillSearchParameters, SkillSearchDetails>
+  readonly stageTool: AgentTool<typeof SkillStageParameters, SkillStageDetails>
   readonly read: (request: SkillReadRequest, signal?: AbortSignal) => Promise<AgentToolResult<SkillReadDetails>>
 }
 
@@ -190,14 +222,31 @@ function frameworkValueTerms(value: unknown, label: string): readonly string[] {
   throw new Error(`${label} must contain strings, arrays, or string-valued mappings`)
 }
 
+function frameworkNameTerms(name: string): readonly string[] {
+  const normalized = name.toLowerCase().replaceAll(/[^a-z0-9]+/g, "_")
+  if (normalized.includes("gdpr")) return ["GDPR"]
+  if (normalized.includes("pci") || normalized.includes("dss")) return ["PCI DSS"]
+  if (normalized.includes("atlas")) return ["MITRE ATLAS"]
+  if (normalized.includes("d3fend")) return ["MITRE D3FEND"]
+  if (normalized.includes("ai_rmf")) return ["NIST AI RMF"]
+  if (normalized.includes("f3") || normalized.includes("fraud")) return ["MITRE F3"]
+  if (normalized.includes("attack")) return ["MITRE ATT&CK"]
+  if (normalized.includes("csf")) return ["NIST CSF"]
+  return []
+}
+
 function indexedFrameworkTerms(data: Readonly<Record<string, unknown>>): readonly string[] {
-  const frameworkName = /(mitre|nist|atlas|d3fend)/i
+  const frameworkName = /(mitre|nist|atlas|d3fend|attack|csf|rmf|f3|fraud|pci|dss|gdpr)/i
   const direct = Object.entries(data).flatMap(([name, value]) =>
-    frameworkName.test(name) ? frameworkValueTerms(value, `skill framework '${name}'`) : [],
+    frameworkName.test(name)
+      ? [...frameworkNameTerms(name), ...frameworkValueTerms(value, `skill framework '${name}'`)]
+      : [],
   )
   const nested = isRecord(data.frameworks)
     ? Object.entries(data.frameworks).flatMap(([name, value]) =>
-        frameworkName.test(name) ? frameworkValueTerms(value, `skill framework '${name}'`) : [],
+        frameworkName.test(name)
+          ? [...frameworkNameTerms(name), ...frameworkValueTerms(value, `skill framework '${name}'`)]
+          : [],
       )
     : []
   return [...direct, ...nested]
@@ -239,18 +288,33 @@ function parseMetadata(source: string, location: string): ParsedMetadata {
   }
 }
 
-async function readRegularFile(filename: string, maxFileBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+async function readRegularFile(
+  filename: string,
+  maxFileBytes: number,
+  signal?: AbortSignal,
+  confinementRoot?: string,
+): Promise<Uint8Array> {
   abortIfRequested(signal)
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW
   const file = await open(filename, constants.O_RDONLY | noFollow)
   try {
-    const metadata = await file.stat()
-    if (!metadata.isFile()) throw new Error(`Pi skill path '${filename}' is not a regular file`)
-    if (metadata.size > maxFileBytes)
+    const before = await file.stat()
+    if (!before.isFile()) throw new Error(`Pi skill path '${filename}' is not a regular file`)
+    if (before.size > maxFileBytes)
       throw new Error(`Pi skill file '${filename}' exceeds the ${maxFileBytes}-byte limit`)
+    if (confinementRoot) {
+      const canonical = await realpath(filename)
+      if (!inside(confinementRoot, canonical)) throw new Error("Pi skill resource path escapes its package")
+      const current = await lstat(canonical)
+      if (current.isSymbolicLink() || !current.isFile() || current.dev !== before.dev || current.ino !== before.ino)
+        throw new Error(`Pi skill path '${filename}' changed during its confined read`)
+    }
     const bytes = await file.readFile()
     if (bytes.byteLength > maxFileBytes)
       throw new Error(`Pi skill file '${filename}' exceeds the ${maxFileBytes}-byte limit`)
+    const after = await file.stat()
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+      throw new Error(`Pi skill path '${filename}' changed while it was being read`)
     abortIfRequested(signal)
     return bytes
   } finally {
@@ -355,6 +419,14 @@ function explicitResourcePath(packageRoot: string, requestedPath: string): strin
   return resolved
 }
 
+function explicitStageablePath(packageRoot: string, requestedPath: string): string {
+  const filename = explicitResourcePath(packageRoot, requestedPath)
+  const [directory] = requestedPath.split(/[\\/]/)
+  if (!directory || !STAGEABLE_DIRECTORIES.has(directory) || requestedPath === directory)
+    throw new Error("Pi skill staged path must name a file below scripts/ or assets/")
+  return filename
+}
+
 async function rejectSymlinkComponents(packageRoot: string, filename: string): Promise<void> {
   const relative = path.relative(packageRoot, filename)
   let current = packageRoot
@@ -411,6 +483,205 @@ function createReader(packages: readonly SkillPackage[], maxFileBytes: number): 
   }
 }
 
+// ── Reviewed Resource Staging ────────────────────────────────────
+// Package digests cover every stageable regular file so independently staged
+// resources from the same immutable package converge beneath one content-
+// addressed directory. Workarea creation rejects pre-existing symlink and
+// special-file components; the shared workarea boundary atomically replaces
+// only a regular leaf after all parent segments are validated.
+// ─────────────────────────────────────────────────────────────────
+async function stageableFiles(packageRoot: string, maxFileBytes: number, signal?: AbortSignal): Promise<string[]> {
+  const files: string[] = []
+  let directories = 0
+  let entriesSeen = 0
+  const visit = async (directory: string): Promise<void> => {
+    abortIfRequested(signal)
+    directories++
+    if (directories > MAX_STAGEABLE_DIRECTORIES)
+      throw new Error(`Pi skill package exceeds the ${MAX_STAGEABLE_DIRECTORIES}-directory staging limit`)
+    const entries = []
+    try {
+      const stream = await opendir(directory)
+      for await (const entry of stream) {
+        entriesSeen++
+        if (entriesSeen > MAX_STAGEABLE_ENTRIES)
+          throw new Error(`Pi skill package exceeds the ${MAX_STAGEABLE_ENTRIES}-entry staging limit`)
+        entries.push(entry)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    for (const entry of entries.toSorted((left, right) => compareText(left.name, right.name))) {
+      const filename = path.join(directory, entry.name)
+      const metadata = await lstat(filename)
+      if (metadata.isSymbolicLink()) throw new Error(`Pi skill path '${filename}' must not be a symbolic link`)
+      if (metadata.isDirectory()) {
+        await visit(filename)
+        continue
+      }
+      if (!metadata.isFile()) throw new Error(`Pi skill path '${filename}' is not a regular file`)
+      if (metadata.size > maxFileBytes)
+        throw new Error(`Pi skill file '${filename}' exceeds the ${maxFileBytes}-byte limit`)
+      files.push(filename)
+      if (files.length > MAX_STAGEABLE_FILES)
+        throw new Error(`Pi skill package exceeds the ${MAX_STAGEABLE_FILES}-file staging limit`)
+    }
+  }
+  for (const directory of [...STAGEABLE_DIRECTORIES].toSorted()) await visit(path.join(packageRoot, directory))
+  return files
+}
+
+interface PackageSnapshot {
+  readonly digest: string
+  readonly files: ReadonlyMap<string, Uint8Array>
+}
+
+async function packageSnapshot(
+  packageRoot: string,
+  maxFileBytes: number,
+  signal?: AbortSignal,
+): Promise<PackageSnapshot> {
+  const digest = createHash("sha256")
+  const files = new Map<string, Uint8Array>()
+  const maxPackageBytes = Math.min(MAX_STAGEABLE_PACKAGE_BYTES, maxFileBytes * STAGEABLE_PACKAGE_FILE_MULTIPLIER)
+  let packageBytes = 0
+  for (const filename of await stageableFiles(packageRoot, maxFileBytes, signal)) {
+    const relative = path.relative(packageRoot, filename).split(path.sep).join("/")
+    const remainingPackageBytes = maxPackageBytes - packageBytes
+    if (remainingPackageBytes <= 0)
+      throw new Error(`Pi skill package exceeds the ${maxPackageBytes}-byte staging limit`)
+    const current = await lstat(filename)
+    if (current.size > remainingPackageBytes)
+      throw new Error(`Pi skill package exceeds the ${maxPackageBytes}-byte staging limit`)
+    const bytes = await readRegularFile(
+      filename,
+      Math.min(maxFileBytes, remainingPackageBytes),
+      signal,
+      packageRoot,
+    )
+    packageBytes += bytes.byteLength
+    if (packageBytes > maxPackageBytes)
+      throw new Error(`Pi skill package exceeds the ${maxPackageBytes}-byte staging limit`)
+    files.set(relative, bytes)
+    digest.update(relative)
+    digest.update("\0")
+    digest.update(bytes)
+    digest.update("\0")
+  }
+  return { digest: digest.digest("hex"), files }
+}
+
+async function ensurePrivateDirectory(root: string, components: readonly string[]): Promise<string> {
+  let current = root
+  for (let index = 0; index < components.length; index++) {
+    current = await ensureWorkareaDirectory(root, components.slice(0, index + 1).join("/"))
+    const metadata = await lstat(current)
+    if (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o700)
+      throw new Error(`Pi skill staging directory '${current}' must have mode 0700`)
+  }
+  return current
+}
+
+async function publishStagedFile(
+  workareaRoot: string,
+  relativePath: string,
+  bytes: Uint8Array,
+  mode: number,
+): Promise<string> {
+  const destination = path.join(workareaRoot, ...relativePath.split("/"))
+  try {
+    const metadata = await lstat(destination)
+    if (metadata.isSymbolicLink() || !metadata.isFile())
+      throw new Error(`Pi skill staging destination '${destination}' must be a regular file`)
+    const existing = await readRegularFile(destination, bytes.byteLength)
+    if (!Buffer.from(existing).equals(Buffer.from(bytes)))
+      throw new Error(`Pi skill staging destination '${destination}' does not match the package resource`)
+    if (process.platform !== "win32" && (metadata.mode & 0o777) !== mode)
+      throw new Error(`Pi skill staging destination '${destination}' has an unsafe mode`)
+    return destination
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  await replaceWorkareaFile(workareaRoot, relativePath, bytes, { mode })
+  const published = await lstat(destination)
+  if (published.isSymbolicLink() || !published.isFile())
+    throw new Error(`Pi skill staging destination '${destination}' must be a regular file`)
+  if (process.platform !== "win32" && (published.mode & 0o777) !== mode)
+    throw new Error(`Pi skill staging destination '${destination}' has an unsafe mode`)
+  return destination
+}
+
+function createStageTool(
+  packages: readonly SkillPackage[],
+  stagingRoot: string | undefined,
+  maxFileBytes: number,
+): SkillRegistry["stageTool"] {
+  const byName = new Map(packages.map((skill) => [skill.catalog.name, skill]))
+  return {
+    name: "skill_stage",
+    label: "Stage Cyberful Skill Resource",
+    description:
+      "After reading a skill's complete SKILL.md in this AgentRun, materialize one scripts/ or assets/ file byte-for-byte in the workarea before using it with a tool, lab, or shell.",
+    parameters: SkillStageParameters,
+    executionMode: "sequential",
+    execute: async (_toolCallID, request, signal) => {
+      abortIfRequested(signal)
+      if (!stagingRoot) throw new Error("Pi skill staging is unavailable because this run has no workarea")
+      const name = required(request.skill, "Pi skill name")
+      const skill = byName.get(name)
+      if (!skill) throw new Error(`Pi skill '${name}' is not available; use skill_search to find an available skill`)
+      if (!STAGED_SKILL_NAME.test(name)) throw new Error("Pi skill name cannot be represented in a staged path")
+      let canonicalWorkarea: string | undefined
+      try {
+        const requestedPath = required(request.path, "Pi skill staged path")
+        const filename = explicitStageablePath(skill.root, requestedPath)
+        await rejectSymlinkComponents(skill.root, filename)
+        const workareaMetadata = await lstat(stagingRoot)
+        if (workareaMetadata.isSymbolicLink() || !workareaMetadata.isDirectory())
+          throw new Error("Pi skill staging root must be a non-symlink directory")
+        canonicalWorkarea = await realpath(stagingRoot)
+        const snapshot = await packageSnapshot(skill.root, maxFileBytes, signal)
+        abortIfRequested(signal)
+        const normalizedRequestedPath = requestedPath.split(/[\\/]/).join("/")
+        const bytes = snapshot.files.get(normalizedRequestedPath)
+        if (!bytes) throw new Error("Pi skill staged resource is not part of the package snapshot")
+        const digest = snapshot.digest
+        const relativeComponents = requestedPath.split(/[\\/]/)
+        await ensurePrivateDirectory(canonicalWorkarea, [
+          "raw",
+          "skill-resources",
+          name,
+          digest,
+          ...relativeComponents.slice(0, -1),
+        ])
+        const relativeDestination = ["raw", "skill-resources", name, digest, ...relativeComponents].join("/")
+        const mode =
+          relativeComponents[0] === "scripts" &&
+          STAGED_SCRIPT_EXTENSIONS.has(path.extname(relativeComponents.at(-1)!).toLowerCase())
+            ? 0o700
+            : 0o600
+        abortIfRequested(signal)
+        const destination = await publishStagedFile(canonicalWorkarea, relativeDestination, bytes, mode)
+        const stagedPath = path.relative(canonicalWorkarea, destination).split(path.sep).join("/")
+        const sha256 = createHash("sha256").update(bytes).digest("hex")
+        return {
+          content: [{ type: "text", text: JSON.stringify({ path: stagedPath, bytes: bytes.byteLength, sha256 }) }],
+          details: { path: stagedPath, bytes: bytes.byteLength, sha256 },
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(
+          message
+            .replaceAll(skill.root, "<skill-package>")
+            .replaceAll(canonicalWorkarea ?? stagingRoot, "<workarea>")
+            .replaceAll(stagingRoot, "<workarea>"),
+        )
+      }
+    },
+  }
+}
+
 // ── Search Discovers Metadata Without Loading Instructions ──────
 // Exact and prefix name matches dominate a deterministic lexical score. The
 // search result contains only bounded indexed metadata: it neither exposes host
@@ -457,6 +728,9 @@ function searchScore(skill: PromptSkill, query: string): number | undefined {
   const description = (skill.description ?? "").toLowerCase()
   const triggers = (skill.triggers ?? []).map((term) => term.toLowerCase())
   const searchTerms = (skill.searchTerms ?? []).map((term) => term.toLowerCase())
+  if (triggers.includes(normalizedQuery)) return 300_000
+  if (searchTerms.includes(normalizedQuery)) return 200_000
+  if (category === normalizedQuery) return 100_000
   let score = 0
   let matched = 0
   for (const token of tokens) {
@@ -501,7 +775,7 @@ function createSearchTool(catalog: readonly PromptSkill[]): SkillRegistry["searc
     name: "skill_search",
     label: "Search Cyberful Skills",
     description:
-      'Search available skill metadata by name, category, capability, trigger, tag, or security-framework identifier. Use query "*" to enumerate all skills, then call skill_read before applying one.',
+      'Search every available skill by name, category, capability, trigger, tag, or identifiers from MITRE ATT&CK, NIST CSF, MITRE ATLAS, MITRE D3FEND, NIST AI RMF, MITRE F3, PCI DSS, and GDPR. Use query "*" to enumerate all skills, then call skill_read before applying one.',
     parameters: SkillSearchParameters,
     executionMode: "sequential",
     execute: async (_toolCallID, input) => {
@@ -574,6 +848,7 @@ export async function discover(options: DiscoverSkillOptions): Promise<SkillRegi
     catalog,
     tool,
     searchTool: createSearchTool(catalog),
+    stageTool: createStageTool(packages, options.stagingRoot, maxFileBytes),
     read,
   }
 }

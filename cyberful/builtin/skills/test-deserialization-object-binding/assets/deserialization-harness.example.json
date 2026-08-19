@@ -1,0 +1,32 @@
+{
+  "$schema": "./deserialization-harness.schema.json",
+  "campaign_id": "closed-type-control",
+  "authority": {
+    "confirmed": true,
+    "authorization_reference": "disposable-loopback-lab",
+    "allowed_origin": "http://127.0.0.1:8080",
+    "max_requests": 2,
+    "request_timeout_seconds": 5
+  },
+  "fixtures": [
+    {
+      "fixture_id": "data-only-control",
+      "format": "json",
+      "expected_boundary": "closed DTO accepts known primitive fields",
+      "url": "http://127.0.0.1:8080/lab/decode",
+      "content_type": "application/json",
+      "secret_headers": {},
+      "body_base64": "eyJuYW1lIjoiY29udHJvbCIsImNvdW50IjoxfQ=="
+    },
+    {
+      "fixture_id": "unknown-type-marker",
+      "format": "json",
+      "expected_boundary": "unknown type discriminator is rejected before construction",
+      "url": "http://127.0.0.1:8080/lab/decode",
+      "content_type": "application/json",
+      "secret_headers": {},
+      "body_base64": "eyJAdHlwZSI6IkN5YmVyZnVsTWFya2VyIiwibmFtZSI6ImNvbnRyb2wifQ=="
+    }
+  ]
+}
+

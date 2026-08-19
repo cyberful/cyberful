@@ -1,5 +1,11 @@
 # Supply Chain Fieldbook
 
+## Campaign contract
+
+Stage the campaign script and schemas only after reading the skill. Each invocation is confined to one workarea artifact and a declared subset of Syft, Grype, Trivy, and Gitleaks. The script disables updater behavior, uses argv with no shell, caps each native output, and records command, version, exit code, output digest, and bounded streams. It neither bootstraps scanners nor interprets their findings.
+
+Keep the provider proxy and CA environment intact, but do not add credentials to JSON or argv. Code Audit remains offline: if a command or local vulnerability database is unavailable, record the limitation and omit that tool rather than installing, updating, or opening egress.
+
 ## Inventory blind spots
 
 - statically linked native libraries without package metadata;

@@ -1,0 +1,10 @@
+{
+  "$schema": "./iac-audit-campaign.schema.json",
+  "campaign_id": "iac-review-2026-08",
+  "scope_reference": "engagement-scope:IAC-17",
+  "source_directory": "inputs/iac",
+  "max_files": 5000,
+  "max_total_bytes": 67108864,
+  "timeout_seconds": 90,
+  "stdout_limit_bytes": 1048576
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/release-control-ledger.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "release", "boundaries", "gaps"],
+  "properties": {
+    "format": {"const": "cyberful.release-control-ledger.v1"},
+    "release": {"type": "object", "additionalProperties": false, "required": ["source_digest", "artifact_digest", "target"], "properties": {"source_digest": {"type": "string", "minLength": 1}, "artifact_digest": {"type": ["string", "null"]}, "target": {"type": "string", "minLength": 1}}},
+    "boundaries": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["stage", "identity", "mutable_inputs", "control", "status", "evidence"], "properties": {"stage": {"enum": ["source", "build", "artifact", "promotion", "deployment", "rollback"]}, "identity": {"type": "string", "minLength": 1}, "mutable_inputs": {"type": "array", "items": {"type": "string"}}, "control": {"type": "string", "minLength": 1}, "status": {"enum": ["enforced", "advisory", "bypassable", "unknown", "not-applicable"]}, "evidence": {"type": "array", "items": {"type": "string"}}}}},
+    "gaps": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["boundary", "actor", "protected_effect", "preconditions"], "properties": {"boundary": {"type": "string", "minLength": 1}, "actor": {"type": "string", "minLength": 1}, "protected_effect": {"type": "string", "minLength": 1}, "preconditions": {"type": "array", "items": {"type": "string"}}}}}
+  }
+}

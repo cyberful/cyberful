@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/workload-identity-probe.v1.json",
+  "title": "Cyberful workload identity probe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "authority", "cases"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "campaign_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_reference", "allowed_origins", "max_requests", "requests_per_second", "request_timeout_seconds", "campaign_timeout_seconds"],
+      "properties": {
+        "authorization_reference": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "format": "uri", "maxLength": 2048 } },
+        "max_requests": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "requests_per_second": { "type": "number", "minimum": 0.1, "maximum": 4 },
+        "request_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "campaign_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 120 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "workload", "issuer", "subject", "audience", "tenant", "expected_binding", "method", "url", "headers", "secret_headers", "body_base64"],
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "workload": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "tenant": { "type": ["string", "null"], "maxLength": 512 },
+          "expected_binding": { "enum": ["accept", "reject"] },
+          "method": { "enum": ["GET", "HEAD", "POST"] },
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "headers": { "type": "object", "maxProperties": 24, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+          "secret_headers": { "type": "object", "maxProperties": 2, "additionalProperties": { "enum": ["CYBERFUL_WORKLOAD_AUTHORIZATION", "CYBERFUL_WORKLOAD_ASSERTION"] } },
+          "body_base64": { "type": "string", "contentEncoding": "base64", "maxLength": 87384 }
+        }
+      }
+    }
+  }
+}

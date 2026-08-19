@@ -72,6 +72,13 @@ DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
 PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY", "CYBERFUL_OS_CA_BUNDLE")
+HOST_OWNED_TRANSPORT_ENV_KEYS = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+    "GIT_SSL_CAINFO", "GIT_SSL_NO_VERIFY", "PIP_CERT", "NODE_EXTRA_CA_CERTS",
+    "NODE_USE_ENV_PROXY", "BUNDLE_SSL_CA_CERT", "BUNDLE_SSL_VERIFY_MODE",
+})
 CORE_PROXY_TRUST_DIRECTORY = "/run/cyberful/proxy-trust"
 MAX_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 NO_TELEMETRY_ENV = {
@@ -361,9 +368,11 @@ def docker_environment() -> dict[str, str]:
 
 # ── Host-Owned Exec Environment Wins Over Caller Input ──────────────────────
 # Docker exec overrides the image environment, so caller configuration is
-# normalized before proxy trust, EVM compiler homes, and no-telemetry policy are
-# applied. An EVM engagement therefore cannot redirect its compiler into `/root`,
-# while every dedicated tool and the shell share the same fixed policy boundary.
+# normalized before host policy is applied. Transport variables are removed even
+# when an engagement has no proxy, preventing a caller from inventing a route or
+# trust root; an admitted host-owned proxy/CA pair is then mapped to standard
+# variables after that boundary. EVM homes and no-telemetry policy follow the
+# same host-wins rule for every dedicated tool and the general shell.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def validated_ca_bundle(value: str) -> str:
@@ -389,6 +398,8 @@ def validated_ca_bundle(value: str) -> str:
 
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     next_env = normalize_extra_env(extra_env) or {}
+    for key in HOST_OWNED_TRANSPORT_ENV_KEYS:
+        next_env.pop(key, None)
     host_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
     proxy = host_env.get("CYBERFUL_OS_HTTP_PROXY")
     ca_bundle = host_env.get("CYBERFUL_OS_CA_BUNDLE")

@@ -1,6 +1,26 @@
 ---
 name: operate-binary-analysis-toolchain
 description: Operate Ghidra headless analysis, radare2, platform binary utilities, decompilers, and targeted dynamic evidence for advanced native and bytecode security review. Use for stripped or optimized binary triage, architecture and hardening analysis, call-graph and dataflow reconstruction, patch diffing, parser or trust-boundary review, JNI/native correlation, or resolving disagreements between decompilers and actual machine behavior.
+metadata:
+  domain: security-tooling
+  subdomain: binary-analysis
+  triggers:
+    - reverse engineer binary
+    - inspect executable
+    - analyze disassembly
+    - inspect binary mitigations
+    - decompile native code
+    - assess exploit primitives
+  tags:
+    - Ghidra
+    - radare2
+    - ELF
+    - PE
+    - Mach-O
+    - reverse-engineering
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate Binary Analysis Toolchain

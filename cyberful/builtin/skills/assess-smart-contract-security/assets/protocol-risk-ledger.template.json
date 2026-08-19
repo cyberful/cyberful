@@ -1,0 +1,26 @@
+{
+  "protocol": "",
+  "scope_reference": "",
+  "networks": [],
+  "deployments": [],
+  "assets": [],
+  "principals": [],
+  "external_dependencies": [],
+  "unacceptable_outcomes": [],
+  "risks": [
+    {
+      "id": "R-001",
+      "outcome": "",
+      "mechanism": "",
+      "required_authority": [],
+      "required_state": [],
+      "affected_assets": [],
+      "evidence": [],
+      "controls": [],
+      "uncertainty": "",
+      "owner": "",
+      "treatment": "",
+      "validation_skill": ""
+    }
+  ]
+}

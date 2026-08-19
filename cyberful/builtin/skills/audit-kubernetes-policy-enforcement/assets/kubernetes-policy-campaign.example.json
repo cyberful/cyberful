@@ -1,0 +1,11 @@
+{
+  "$schema": "./kubernetes-policy-campaign.schema.json",
+  "campaign_id": "kubernetes-policy-review-2026-08",
+  "scope_reference": "code-audit-scope:K8S-12",
+  "manifest_directory": "inputs/kubernetes/manifests",
+  "policy_directory": "inputs/kubernetes/policy",
+  "max_files": 5000,
+  "max_total_bytes": 67108864,
+  "timeout_seconds": 90,
+  "stdout_limit_bytes": 1048576
+}

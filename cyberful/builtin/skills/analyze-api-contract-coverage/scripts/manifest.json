@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "analyze_api_contract_coverage.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "index", "trace"],
+  "tools": ["python3"],
+  "dependencies": {"commands": ["python3"], "python": [], "bootstrap": null},
+  "effects": ["reads bounded confined OpenAPI JSON contracts", "writes deterministic bounded coverage evidence"],
+  "timeout_seconds": 30,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "cyberful.api-contract-coverage.v1", "schema": "assets/api-contract-coverage-input.schema.json"},
+  "output": {"format": "cyberful.api-contract-coverage.raw.v1", "schema": "assets/api-contract-coverage-evidence.schema.json", "raw": true}
+}

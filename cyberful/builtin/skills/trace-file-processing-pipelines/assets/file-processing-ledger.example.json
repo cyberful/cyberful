@@ -1,0 +1,19 @@
+{
+  "artifact_id": "controlled-document-001",
+  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authority_reference": "engagement-scope-file-pipeline",
+  "stages": [
+    {
+      "id": "accept",
+      "component": "upload-api",
+      "operation": "store controlled object",
+      "input_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "canonical_path": "tenant-a/objects/generated-id",
+      "principal": "upload-service",
+      "network": "none",
+      "evidence": "workarea/evidence/upload-response.json"
+    }
+  ]
+}
+

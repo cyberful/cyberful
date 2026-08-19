@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test"
 import path from "node:path"
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import * as Builtin from "@/builtin"
 import { PiSkills } from "./pi-skills"
@@ -47,7 +47,7 @@ describe("PiSkills", () => {
     expect(registry.catalog.find((skill) => skill.name === "test-authorization-boundaries")).toMatchObject({
       category: "authorization",
       triggers: expect.arrayContaining(["authorization boundary", "tenant isolation"]),
-      searchTerms: expect.arrayContaining(["CWE-639", "T1078", "PR.AA"]),
+      searchTerms: expect.arrayContaining(["MITRE ATT&CK", "T1078", "NIST CSF", "PR.AA-05"]),
     })
   })
 
@@ -171,6 +171,7 @@ describe("PiSkills", () => {
   test("never follows package or resource symlinks and rejects traversal", async () => {
     const trusted = await temporaryRoot("boundary")
     const outside = await temporaryRoot("outside")
+    const workarea = await temporaryRoot("boundary-workarea")
     await writeSkill(
       trusted,
       "audit-safe-package",
@@ -178,12 +179,14 @@ describe("PiSkills", () => {
       "Read references/local.md.",
     )
     await mkdir(path.join(trusted, "audit-safe-package", "references"))
+    await mkdir(path.join(trusted, "audit-safe-package", "assets"))
     await writeFile(path.join(trusted, "audit-safe-package", "references", "local.md"), "Local.\n")
     await writeFile(path.join(outside, "secret.md"), "Outside secret.\n")
     await symlink(path.join(outside, "secret.md"), path.join(trusted, "audit-safe-package", "references", "linked.md"))
+    await symlink(path.join(outside, "secret.md"), path.join(trusted, "audit-safe-package", "assets", "linked.md"))
     await writeSkill(outside, "external", ["name: external-skill", "description: Must stay outside."], "Outside.")
     await symlink(path.join(outside, "external"), path.join(trusted, "linked-package"))
-    const registry = await PiSkills.discover({ roots: [trusted] })
+    const registry = await PiSkills.discover({ roots: [trusted], stagingRoot: workarea })
 
     expect(registry.catalog.map((skill) => skill.name)).toEqual(["audit-safe-package"])
     await expect(registry.read({ skill: "audit-safe-package", path: "../outside/secret.md" })).rejects.toThrow(
@@ -195,10 +198,20 @@ describe("PiSkills", () => {
     await expect(registry.read({ skill: "audit-safe-package", path: "references/linked.md" })).rejects.toThrow(
       "must not be a symbolic link",
     )
+    const stageError = await registry.stageTool
+      .execute("stage-linked", { skill: "audit-safe-package", path: "assets/linked.md" })
+      .then(
+        () => "",
+        (error) => (error instanceof Error ? error.message : String(error)),
+      )
+    expect(stageError).toContain("must not be a symbolic link")
+    expect(stageError).not.toContain(trusted)
+    expect(stageError).not.toContain(outside)
   })
 
   test("applies the configured byte bound to manifests and package resources", async () => {
     const trusted = await temporaryRoot("limit")
+    const workarea = await temporaryRoot("limit-workarea")
     await writeSkill(
       trusted,
       "analyze-bounded-resource",
@@ -208,10 +221,39 @@ describe("PiSkills", () => {
     await mkdir(path.join(trusted, "analyze-bounded-resource", "assets"))
     await writeFile(path.join(trusted, "analyze-bounded-resource", "assets", "large.txt"), "x".repeat(257))
 
-    const registry = await PiSkills.discover({ roots: [trusted], maxFileBytes: 256 })
+    const registry = await PiSkills.discover({ roots: [trusted], maxFileBytes: 256, stagingRoot: workarea })
     await expect(registry.read({ skill: "analyze-bounded-resource", path: "assets/large.txt" })).rejects.toThrow(
       "exceeds the 256-byte limit",
     )
+    const stageError = await registry.stageTool
+      .execute("stage-large", { skill: "analyze-bounded-resource", path: "assets/large.txt" })
+      .then(
+        () => "",
+        (error) => (error instanceof Error ? error.message : String(error)),
+      )
+    expect(stageError).toContain("exceeds the 256-byte limit")
+    expect(stageError).not.toContain(trusted)
+
+    await writeSkill(
+      trusted,
+      "analyze-bounded-package",
+      ["name: analyze-bounded-package", "description: Bound the complete package snapshot before staging."],
+      "Keep the complete snapshot bounded.",
+    )
+    const boundedAssets = path.join(trusted, "analyze-bounded-package", "assets")
+    await mkdir(boundedAssets)
+    await Promise.all(
+      Array.from({ length: 17 }, (_, index) =>
+        writeFile(path.join(boundedAssets, `${index}.bin`), Buffer.alloc(256, index)),
+      ),
+    )
+    const boundedRegistry = await PiSkills.discover({ roots: [trusted], maxFileBytes: 256, stagingRoot: workarea })
+    await expect(
+      boundedRegistry.stageTool.execute("stage-package-limit", {
+        skill: "analyze-bounded-package",
+        path: "assets/0.bin",
+      }),
+    ).rejects.toThrow("4096-byte staging limit")
 
     await writeFile(
       path.join(trusted, "analyze-bounded-resource", "SKILL.md"),
@@ -262,6 +304,75 @@ describe("PiSkills", () => {
         text: "---\nname: assess-shared-skill\ndescription: Trusted override.\n---\n\nOverride instructions.",
       },
     ])
+  })
+
+  test("stages reviewed scripts and assets atomically under a content-addressed workarea path", async () => {
+    const trusted = await temporaryRoot("stage-package")
+    const workarea = await temporaryRoot("stage-workarea")
+    await writeSkill(
+      trusted,
+      "operate-stage-fixture",
+      ["name: operate-stage-fixture", "description: Stage a bounded package resource."],
+      "Stage scripts only after reading these complete instructions.",
+    )
+    await mkdir(path.join(trusted, "operate-stage-fixture", "scripts"))
+    await mkdir(path.join(trusted, "operate-stage-fixture", "assets"))
+    await writeFile(path.join(trusted, "operate-stage-fixture", "scripts", "campaign.py"), "print('raw')\n")
+    await writeFile(path.join(trusted, "operate-stage-fixture", "scripts", "manifest.json"), '{"version":1}\n')
+    await writeFile(path.join(trusted, "operate-stage-fixture", "assets", "schema.json"), '{"type":"object"}\n')
+    const registry = await PiSkills.discover({ roots: [trusted], stagingRoot: workarea })
+
+    const cancelled = new AbortController()
+    cancelled.abort(new Error("cancel staging"))
+    await expect(
+      registry.stageTool.execute(
+        "stage-cancelled",
+        { skill: "operate-stage-fixture", path: "scripts/campaign.py" },
+        cancelled.signal,
+      ),
+    ).rejects.toThrow("cancel staging")
+    const first = await registry.stageTool.execute("stage-1", {
+      skill: "operate-stage-fixture",
+      path: "scripts/campaign.py",
+    })
+    const second = await registry.stageTool.execute("stage-2", {
+      skill: "operate-stage-fixture",
+      path: "scripts/campaign.py",
+    })
+    expect(first.details).toEqual(second.details)
+    expect(Object.keys(first.details).toSorted()).toEqual(["bytes", "path", "sha256"])
+    expect(first.details.path).toMatch(
+      /^raw\/skill-resources\/operate-stage-fixture\/[a-f0-9]{64}\/scripts\/campaign\.py$/,
+    )
+    expect(JSON.stringify(first)).not.toContain(trusted)
+    const stagedScript = path.join(workarea, first.details.path)
+    expect(await readFile(stagedScript, "utf8")).toBe("print('raw')\n")
+    expect((await stat(stagedScript)).mode & 0o777).toBe(0o700)
+
+    const scriptManifest = await registry.stageTool.execute("stage-manifest", {
+      skill: "operate-stage-fixture",
+      path: "scripts/manifest.json",
+    })
+    expect((await stat(path.join(workarea, scriptManifest.details.path))).mode & 0o777).toBe(0o600)
+
+    const asset = await registry.stageTool.execute("stage-asset", {
+      skill: "operate-stage-fixture",
+      path: "assets/schema.json",
+    })
+    expect(asset.details.path.split("/").at(3)).toBe(first.details.path.split("/").at(3))
+    expect((await stat(path.join(workarea, asset.details.path))).mode & 0o777).toBe(0o600)
+    await expect(
+      registry.stageTool.execute("stage-reference", {
+        skill: "operate-stage-fixture",
+        path: "references/field-guide.md",
+      }),
+    ).rejects.toThrow("below scripts/ or assets/")
+    await expect(
+      registry.stageTool.execute("stage-traversal", {
+        skill: "operate-stage-fixture",
+        path: "scripts/../SKILL.md",
+      }),
+    ).rejects.toThrow("forbidden traversal")
   })
 
   test("searches indexed metadata deterministically without exposing paths or reading instructions", async () => {
@@ -332,5 +443,103 @@ describe("PiSkills", () => {
       "cursor is invalid",
     )
     await expect(registry.read({ skill: "missing" })).rejects.toThrow("use skill_search")
+  })
+
+  test("keeps all 106 built-in skills reachable through the complete progressive search index", async () => {
+    const registry = await PiSkills.discover({ roots: [path.join(Builtin.DIR, "skills")] })
+    type SearchItem = {
+      readonly name: string
+      readonly category: string
+      readonly description: string
+      readonly matched_terms: readonly string[]
+    }
+    type SearchPage = {
+      readonly total: number
+      readonly results: readonly SearchItem[]
+      readonly next_cursor?: string
+    }
+    const page = async (query: string, cursor?: string): Promise<SearchPage> => {
+      const result = await registry.searchTool.execute(`search-${query}-${cursor ?? "first"}`, {
+        query,
+        limit: 20,
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+      const content = result.content[0]
+      if (!content || content.type !== "text") throw new Error("skill_search did not return text")
+      expect(content.text).not.toContain(Builtin.DIR)
+      return JSON.parse(content.text) as SearchPage
+    }
+    const allResults = async (query: string): Promise<readonly SearchItem[]> => {
+      const results: SearchItem[] = []
+      let cursor: string | undefined
+      do {
+        const current = await page(query, cursor)
+        results.push(...current.results)
+        cursor = current.next_cursor
+      } while (cursor !== undefined)
+      return results
+    }
+    const names = registry.catalog.map((skill) => skill.name)
+
+    expect(names).toHaveLength(106)
+    expect(new Set(names).size).toBe(106)
+    for (const skill of registry.catalog) {
+      expect((await page(skill.name)).results[0]?.name).toBe(skill.name)
+
+      const uniquePrefix = Array.from({ length: skill.name.length - 1 }, (_, index) => skill.name.slice(0, index + 1)).find(
+        (prefix) => names.filter((name) => name.startsWith(prefix)).length === 1,
+      )
+      if (uniquePrefix) expect((await page(uniquePrefix)).results[0]?.name).toBe(skill.name)
+      else expect((await allResults(skill.name.slice(0, -1))).map((result) => result.name)).toContain(skill.name)
+
+      const canonicalTrigger = skill.triggers?.[0]
+      expect(canonicalTrigger).toBeDefined()
+      expect((await page(canonicalTrigger ?? "")).results.map((result) => result.name)).toContain(skill.name)
+      expect((await allResults(skill.category ?? "uncategorized")).map((result) => result.name)).toContain(skill.name)
+
+      const tag = skill.searchTerms?.find(
+        (term) =>
+          !(skill.triggers ?? []).includes(term) &&
+          !/^(?:MITRE ATT&CK|NIST CSF|MITRE ATLAS|MITRE D3FEND|NIST AI RMF|MITRE F3|PCI DSS|GDPR)$/.test(term) &&
+          !/^(?:T\d{4}(?:\.\d{3})?|AML\.(?:TA|T|M)\d{4}(?:\.\d{3})?|D3-[A-Z0-9-]+|F\d{4}(?:\.\d{3})?|(?:GV|ID|PR|DE|RS|RC)\.[A-Z]{2}(?:-\d{2})?|(?:GOVERN|MAP|MEASURE|MANAGE)(?:[ .-]\d+(?:\.\d+)?)?|\d+(?:\.\d+){2,3}|Article (?:[1-9]|[1-9]\d)(?:\(\d+\))?)$/.test(
+            term,
+          ),
+      )
+      expect(tag).toBeDefined()
+      expect((await allResults(tag ?? "")).map((result) => result.name)).toContain(skill.name)
+    }
+
+    const frameworkLabels = [
+      "MITRE ATT&CK",
+      "NIST CSF",
+      "MITRE ATLAS",
+      "MITRE D3FEND",
+      "NIST AI RMF",
+      "MITRE F3",
+      "PCI DSS",
+      "GDPR",
+    ] as const
+    for (const framework of frameworkLabels) expect((await allResults(framework)).length).toBeGreaterThan(0)
+
+    const identifiers = new Set(
+      registry.catalog.flatMap((skill) =>
+        (skill.searchTerms ?? []).filter((term) =>
+          /^(?:T\d{4}(?:\.\d{3})?|AML\.(?:TA|T|M)\d{4}(?:\.\d{3})?|D3-[A-Z0-9-]+|F\d{4}(?:\.\d{3})?|(?:GV|ID|PR|DE|RS|RC)\.[A-Z]{2}(?:-\d{2})?|(?:GOVERN|MAP|MEASURE|MANAGE)(?:[ .-]\d+(?:\.\d+)?)?|\d+(?:\.\d+){2,3}|Article (?:[1-9]|[1-9]\d)(?:\(\d+\))?)$/.test(
+            term,
+          ),
+        ),
+      ),
+    )
+    for (const identifier of identifiers) {
+      const expected = registry.catalog
+        .filter((skill) => skill.searchTerms?.includes(identifier))
+        .map((skill) => skill.name)
+      const found = (await allResults(identifier)).map((result) => result.name)
+      for (const name of expected) expect(found).toContain(name)
+    }
+
+    const wildcard = await allResults("*")
+    expect(wildcard.map((result) => result.name)).toEqual(names)
+    expect(new Set(wildcard.map((result) => result.name)).size).toBe(106)
   })
 })

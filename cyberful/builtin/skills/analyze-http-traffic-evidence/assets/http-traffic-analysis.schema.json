@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/http-traffic-analysis.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "analysis_id", "scope_reference", "traffic_files", "max_transactions", "max_total_bytes", "timeout_seconds", "output_limit_bytes"],
+  "properties": {
+    "$schema": {"const": "./http-traffic-analysis.schema.json"},
+    "analysis_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512},
+    "traffic_files": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "max_transactions": {"type": "integer", "minimum": 1, "maximum": 10000},
+    "max_total_bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+    "output_limit_bytes": {"type": "integer", "minimum": 1024, "maximum": 4194304}
+  }
+}

@@ -13,6 +13,7 @@ export const FIRST_PARTY_SKILL_INTENTS = [
   { prefix: "operate-", explanation: "use tools/toolchains" },
   { prefix: "assess-", explanation: "combine analysis modes" },
   { prefix: "plan-", explanation: "prepare scope/strategy/coverage" },
+  { prefix: "report-", explanation: "assemble reviewed evidence into draft deliverables" },
 ] as const
 
 const FIRST_PARTY_SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)+$/

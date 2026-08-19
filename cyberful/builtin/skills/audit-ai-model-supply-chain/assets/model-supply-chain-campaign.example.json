@@ -1,0 +1,1 @@
+{"authority":{"scope_id":"audit-001","allowed_artifacts":["models/release"],"max_invocations":1},"artifacts":[{"id":"release-model","path":"models/release"}]}

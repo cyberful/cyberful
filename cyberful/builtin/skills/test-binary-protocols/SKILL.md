@@ -1,6 +1,28 @@
 ---
 name: test-binary-protocols
 description: Build bounded corpora, mutations, handshakes, timing controls, and differential tests for binary, stateful, appliance, or undocumented protocols.
+metadata:
+  domain: application-security
+  subdomain: binary-protocols
+  triggers:
+    - binary protocol testing
+    - stateful protocol fuzzing
+    - undocumented protocol
+    - appliance protocol
+    - protocol framing
+    - protocol timing differential
+  tags:
+    - binary-protocol
+    - state-machine
+    - framing
+    - corpus
+    - differential-testing
+    - boofuzz
+  frameworks:
+    mitre_attack:
+      - T1190
+    nist_csf:
+      - ID.RA-01
 ---
 
 # Test Binary Protocols

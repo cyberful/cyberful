@@ -1,44 +1,45 @@
 ---
 name: test-http-intermediaries
-description: Assess disagreements among clients, CDNs, reverse proxies, load balancers, API gateways, caches, and origin servers during authorized penetration tests or code audits. Use for request smuggling and desynchronization, HTTP/2 or HTTP/3 downgrade, cache poisoning or deception, host and forwarded-header trust, path normalization, method confusion, parameter pollution, and response splitting.
+description: Route HTTP intermediary testing across request normalization, web-cache behavior, and offline traffic evidence. Use when clients, CDNs, reverse proxies, gateways, meshes, caches, frameworks, or origins may disagree about message boundaries, routing, identity, normalization, or cache keys.
+metadata:
+  domain: application-security
+  subdomain: http-intermediaries
+  triggers:
+    - http request smuggling
+    - http desynchronization
+    - web cache poisoning
+    - cache deception
+    - forwarded header trust
+    - request normalization
+  tags:
+    - http
+    - reverse-proxy
+    - request-smuggling
+    - cache-poisoning
+    - normalization
+    - routing
+  frameworks:
+    mitre_attack:
+      - T1190
+    nist_csf:
+      - ID.RA-01
+      - PR.PS-01
 ---
 
 # Test HTTP Intermediaries
 
-## Model the Processing Chain
+Use this router to identify which HTTP interpretation boundary needs specialist handling. Read each selected specialist's `SKILL.md` completely before applying its procedure.
 
-Enumerate every hop from user agent to application and back: CDN, WAF, edge proxy, protocol translator, ingress, service mesh, framework, cache, and downstream client. Record protocol versions, connection reuse, routing keys, normalization, decoding, header rewriting, body limits, and cache behavior.
+## Route by evidence question
 
-The core question is whether two components derive different message boundaries, targets, identities, or cache keys from the same request.
+- Message framing, protocol translation, duplicate fields, path/query decoding, authority derivation, forwarded headers, method handling, or hop-to-hop disagreement: `trace-request-normalization`.
+- Cache keys, response-varying inputs, authenticated caching, poisoning, deception, collision, TTL, purge, or partitioning: `test-web-cache-behavior`.
+- HAR, ZAP history, raw request/response captures, proxy traces, cache headers, or repeated observations requiring bounded offline normalization: `analyze-http-traffic-evidence`.
 
-Read [message-boundaries.md](references/message-boundaries.md) for desynchronization and normalization. Read [cache-routing.md](references/cache-routing.md) for routing, host trust, and cache analysis.
+Desynchronization begins with `trace-request-normalization`; use live probes only after the predicted disagreement and safe connection model are explicit. Cache tests begin with `test-web-cache-behavior`; never place a candidate into a shared victim-reachable key without express authorization.
 
-## Compare Interpretations
+## Establish the shared hop model
 
-1. Establish stable baselines and connection behavior.
-2. Identify one interpretation differential with harmless markers.
-3. Exercise a dedicated connection or low-risk route.
-4. Detect effects through response ordering, marker routing, timing, cache metadata, or origin logs.
-5. Expand only after the parser model predicts the next result.
+Record every client, edge, proxy, protocol translator, gateway, mesh, framework, cache, and origin hop. Capture protocol version, connection reuse, routing authority, decoding order, header rewriting, body limits, cache partitioning, and available component logs. Preserve raw traffic before normalizing it.
 
-A reproducible differential with a component-level explanation outranks unstable anomalies. Bound queue and shared-cache effects so the test remains attributable.
-
-## Audit Target and Identity Derivation
-
-Trace scheme, authority, host, port, path, query, client IP, and TLS identity. Review trust in `Host`, absolute-form targets, `Forwarded`, `X-Forwarded-*`, rewrite headers, original URL headers, and service-mesh metadata.
-
-Confirm whether untrusted routing data influences password-reset links, OAuth redirects, tenant selection, cache partitioning, signed URLs, internal routing, or security logging.
-
-## Analyze Cache Semantics
-
-For each cacheable route, derive the effective key and compare it with all response-varying inputs. Test normalization, unkeyed headers and cookies, query handling, method treatment, redirect and error caching, path extensions, and authenticated-content controls.
-
-Differentiate:
-
-- cache poisoning: attacker influence stored under a victim-reachable key;
-- cache deception: private victim output stored at a public-looking key;
-- cache-key collision: distinct security principals or resources normalized to one key.
-
-## Report the Differential
-
-Document the exact hop disagreement, trigger, connection and cache prerequisites, observable effect, blast radius, and deterministic reproduction. Remediation must align parsing and normalization across the entire chain; sample-string blocking is not a parser fix.
+Report the exact pair of components that disagreed, the bytes or semantic input that triggered the difference, connection or cache prerequisites, bounded observable effect, controls, and evidence paths. An unstable response, header reflection, or cache hit alone is a lead rather than a confirmed vulnerability.

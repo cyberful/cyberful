@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test RAG Isolation and Integrity"
+  short_description: "Probe retrieval isolation and source integrity"
+  default_prompt: "Use $test-rag-isolation-integrity to design a bounded canary-based test of this RAG boundary."

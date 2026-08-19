@@ -95,6 +95,7 @@ Start a specific headless workflow with `cyberful run --workflow bug-bounty --wo
 - [Architecture](https://cyberful.io/concepts/architecture/)
 - [Execution model](https://cyberful.io/concepts/execution-model/)
 - [Security runtimes](https://cyberful.io/runtimes/)
+- [Built-in skill catalog](https://cyberful.io/runtimes/skill-catalog/)
 - [CVE Dictionary](https://cyberful.io/runtimes/cve-dictionary/)
 - [CVE Dictionary technical README](cyberful/src/cve-dictionary/README.md)
 - [Contributing](CONTRIBUTING.md)

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Promotion Entitlement Abuse"
+  short_description: "Test promotion, quota, and entitlement invariants"
+  default_prompt: "Use $test-promotion-entitlement-abuse to design bounded tests for these benefit invariants."

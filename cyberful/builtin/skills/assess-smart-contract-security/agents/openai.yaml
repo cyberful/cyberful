@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assess Smart Contract Security"
+  short_description: "Assess protocol and deployment security risk"
+  default_prompt: "Use $assess-smart-contract-security to assess this protocol's architecture, economics, deployment, and trust assumptions."

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/smart-contract-invariant-campaign.schema.json",
+  "title": "Smart-contract invariant campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "scope_reference", "source_directory", "test_pattern", "fuzz_seed", "max_files", "max_total_bytes", "timeout_seconds", "stdout_limit_bytes"],
+  "properties": {
+    "$schema": {"const": "assets/smart-contract-invariant-campaign.schema.json"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512},
+    "source_directory": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "test_pattern": {"type": "string", "minLength": 1, "maxLength": 256},
+    "fuzz_seed": {"type": "string", "pattern": "^0x[0-9a-fA-F]{64}$"},
+    "max_files": {"type": "integer", "minimum": 1, "maximum": 20000},
+    "max_total_bytes": {"type": "integer", "minimum": 1, "maximum": 536870912},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 180},
+    "stdout_limit_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+  }
+}

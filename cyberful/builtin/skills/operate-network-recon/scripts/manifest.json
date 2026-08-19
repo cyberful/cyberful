@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_network_recon_campaign.py",
+  "class": "orchestrator",
+  "network": "target",
+  "transport": {"authority": "runtime", "route": "target-network", "loopback": "direct", "proxy_environment": [], "trust_environment": []},
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["recon", "exploit"],
+  "tools": ["nmap"],
+  "dependencies": {"commands": ["nmap"], "python": [], "bootstrap": null},
+  "effects": ["active TCP connect probes to explicitly authorized hosts and ports", "writes bounded raw command evidence"],
+  "timeout_seconds": 120,
+  "limits": {"requests": 4096, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "cyberful.network-recon-campaign.v1", "schema": "assets/network-recon-campaign.schema.json"},
+  "output": {"format": "cyberful.network-recon-campaign.raw.v1", "schema": "assets/network-recon-evidence.schema.json", "raw": true}
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Embedded Firmware Security"
+  short_description: "Audit extracted firmware security boundaries"
+  default_prompt: "Use $audit-embedded-firmware-security to audit this extracted firmware and its boot, update, service, and privilege boundaries."

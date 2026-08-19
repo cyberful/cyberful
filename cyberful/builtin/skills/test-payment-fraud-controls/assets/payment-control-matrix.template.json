@@ -1,0 +1,24 @@
+{
+  "$schema": "./payment-control-matrix.schema.json",
+  "matrix_id": "synthetic-payment-controls",
+  "authorization_reference": "engagement-scope-payment-sandbox",
+  "value_ceiling_minor": 100,
+  "currency": "USD",
+  "cases": [
+    {
+      "case_id": "synthetic-threshold-control",
+      "lifecycle_stage": "authorization",
+      "invariant": "risk decision is enforced before value reservation",
+      "actor": "controlled-customer",
+      "instrument": "processor-test-token",
+      "beneficiary": "controlled-merchant",
+      "preconditions": ["sandbox rail", "reversible synthetic value"],
+      "action": "authorize at approved lower value",
+      "expected_decision": "allow",
+      "expected_effect": "single bounded reservation",
+      "evidence_refs": ["risk-decision", "processor-response", "ledger-entry"],
+      "cleanup": "void reservation and verify ledger release",
+      "stop_condition": "stop on any non-sandbox settlement"
+    }
+  ]
+}

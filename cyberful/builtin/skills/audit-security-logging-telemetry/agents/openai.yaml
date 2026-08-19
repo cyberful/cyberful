@@ -1,0 +1,6 @@
+interface:
+  display_name: "Audit Security Logging and Telemetry"
+  short_description: "Trace security events from decision to evidence"
+  default_prompt: "Use $audit-security-logging-telemetry to audit whether protected actions produce durable, usable security evidence."
+policy:
+  allow_implicit_invocation: true

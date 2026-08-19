@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Automated Account Abuse"
+  short_description: "Test bounded automated account abuse controls"
+  default_prompt: "Use $test-automated-account-abuse to design a rate-bounded controlled automation experiment."

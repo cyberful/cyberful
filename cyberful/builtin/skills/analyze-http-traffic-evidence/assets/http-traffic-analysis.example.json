@@ -1,0 +1,10 @@
+{
+  "$schema": "./http-traffic-analysis.schema.json",
+  "analysis_id": "http-evidence-17",
+  "scope_reference": "engagement:web-traffic",
+  "traffic_files": ["evidence/session.har"],
+  "max_transactions": 2000,
+  "max_total_bytes": 16777216,
+  "timeout_seconds": 15,
+  "output_limit_bytes": 2097152
+}

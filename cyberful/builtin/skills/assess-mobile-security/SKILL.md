@@ -1,6 +1,28 @@
 ---
 name: assess-mobile-security
 description: Assess Android and iOS applications through coordinated static, dynamic, backend, platform, and resilience analysis. Use for mobile app security assessments covering storage, cryptography, authentication, network communication, deep links, IPC, WebViews, platform permissions, biometrics, code loading, update integrity, reverse engineering, tampering, device compromise assumptions, and MASVS or MASTG-aligned coverage.
+metadata:
+  domain: application-security
+  subdomain: mobile-security
+  triggers:
+    - mobile security assessment
+    - Android application review
+    - iOS application review
+    - MASVS assessment
+    - MASTG testing
+    - mobile trust boundary
+  tags:
+    - Android
+    - iOS
+    - OWASP-MASVS
+    - OWASP-MASTG
+    - mobile-backend
+    - application-resilience
+  frameworks:
+    nist_csf:
+      - ID.RA
+      - PR.AA
+      - PR.DS
 ---
 
 # Assess Mobile Security

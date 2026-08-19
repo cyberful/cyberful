@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "analyze_cloud_control_plane.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "report", "index", "trace", "hunt"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-bounded-confined-cloud-json-snapshots", "writes-deterministic-raw-drift-evidence"],
+  "timeout_seconds": 20,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/cloud-control-plane-input.schema.json"},
+  "output": {"format": "json", "schema": "assets/cloud-control-plane-evidence.schema.json", "raw": true}
+}

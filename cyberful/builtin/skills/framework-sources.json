@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-08-18",
+  "update_policy": "manual",
+  "frameworks": {
+    "mitre_attack": {
+      "name": "MITRE ATT&CK",
+      "version": "19.1",
+      "source": "https://github.com/mitre-attack/attack-stix-data/archive/refs/tags/v19.1.tar.gz",
+      "sha256": "e9d5b5a54f5cf329e484165b723eaefb7894275c37887eb9ee57f7f9bec06ae8"
+    },
+    "nist_csf": {
+      "name": "NIST CSF",
+      "version": "2.0",
+      "source": "https://doi.org/10.6028/NIST.CSWP.29",
+      "sha256": "3c31f46fee98cac0c4323453e5109291a213b4de7fef8c058af9bf67f717433c"
+    },
+    "mitre_atlas": {
+      "name": "MITRE ATLAS",
+      "version": "2026.06",
+      "source": "https://github.com/mitre-atlas/atlas-data/releases/download/v2026.06/ATLAS-2026.06.yaml",
+      "sha256": "b771de8b1489564b2838a709c7429849a9575dbd94073928817fe1a21661e70a"
+    },
+    "mitre_d3fend": {
+      "name": "MITRE D3FEND",
+      "version": "1.5.0",
+      "source": "https://d3fend.mitre.org/ontologies/d3fend/1.5.0/d3fend.owl",
+      "sha256": "b53b438a11ec5cb7377b98b46091f03a63d233588dcd377a65d6c91890b1a7f9"
+    },
+    "nist_ai_rmf": {
+      "name": "NIST AI RMF",
+      "version": "1.0",
+      "source": "https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf",
+      "sha256": "7576edb531d9848825814ee88e28b1795d3a84b435b4b797d3670eafdc4a89f1"
+    },
+    "mitre_f3": {
+      "name": "MITRE F3",
+      "version": "commit-1939f92dafd702253874318ee201d6b2ba37a67a",
+      "source": "https://github.com/center-for-threat-informed-defense/fight-fraud-framework/archive/1939f92dafd702253874318ee201d6b2ba37a67a.tar.gz",
+      "sha256": "9ecf7fce940328cb5480013bc62a2008510aa83bdaaf8e54cf33c1a8f8d76af4"
+    },
+    "pci_dss": {
+      "name": "PCI DSS",
+      "version": "4.0.1",
+      "source": "https://docs-prv.pcisecuritystandards.org/PCI%20DSS/Standard/PCI-DSS-v4_0_1.pdf",
+      "sha256": "5e6b9093b84007b973097d20126a3768ea2f0a1d4200255c849b0fb3bf04ebc7"
+    },
+    "gdpr": {
+      "name": "GDPR",
+      "version": "Regulation (EU) 2016/679, OJ L 119",
+      "source": "https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32016R0679",
+      "sha256": "bd84e63f5b622b739a83389afc3b30d240f792bb88d8eb03a816c9a82b0c2499"
+    }
+  }
+}

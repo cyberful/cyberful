@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trace Transaction State"
+  short_description: "Trace transaction states and value across artifacts"
+  default_prompt: "Use $trace-transaction-state to reconstruct these transaction events and identify causal gaps."

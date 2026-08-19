@@ -1,0 +1,6 @@
+{
+  "format": "cyberful.release-control-ledger.v1",
+  "release": {"source_digest": "git:0123456789abcdef", "artifact_digest": null, "target": "production/service-a"},
+  "boundaries": [{"stage": "build", "identity": "ci-workload", "mutable_inputs": ["workflow", "lockfile"], "control": "protected workflow and isolated runner", "status": "unknown", "evidence": [".ci/build.yaml"]}],
+  "gaps": []
+}

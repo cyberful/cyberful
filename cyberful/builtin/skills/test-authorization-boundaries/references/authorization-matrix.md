@@ -30,3 +30,7 @@ Check search suggestions, autocomplete, counts, error differences, notification 
 ## Matrix reduction
 
 Reduce only when code or configuration proves a common dominating policy. Record the enforcement component, policy identifier, representative operations, and evidence that no path bypasses it. Expand whenever middleware, resolver, controller, repository, version, or asynchronous consumer differs.
+
+## Runtime boundary
+
+The campaign JSON records an authorization reference, exact origins, and conservative limits only. Those values constrain a known engagement; they do not grant authority and cannot select a proxy, CA bundle, or TLS policy. Cyberful owns the transport route after the model boundary: literal loopback IP targets run direct with proxy use disabled, while all other targets require the runtime-provided HTTP(S) proxy and CA bundle. Absence of that route is a preflight refusal before any request or secret resolution.

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Browser Messaging Tester"
+  short_description: "Trace cross-context capabilities"
+  default_prompt: "Use $test-browser-messaging-boundaries to map browser message channels and prove sender capability and lifecycle boundaries."
+

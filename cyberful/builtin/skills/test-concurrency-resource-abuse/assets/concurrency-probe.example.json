@@ -1,0 +1,1 @@
+{"authority":{"scope_id":"engagement-001","allowed_origins":["http://127.0.0.1:8080"],"max_requests":2,"max_concurrency":2},"cases":[{"id":"redeem-race","url":"http://127.0.0.1:8080/redeem","method":"POST","headers":{"Content-Type":"application/json"},"body":"{\"entitlement\":\"tester-owned\"}","concurrency":2,"repetitions":1}]}

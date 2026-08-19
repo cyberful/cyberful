@@ -1,0 +1,5 @@
+{
+  "format": "cyberful.serverless-boundary-ledger.v1",
+  "functions": [{"function": "orders-handler", "event_source": "queue/orders", "producer_authority": "orders-api role", "execution_identity": "orders-worker role", "context_binding": "tenant from signed queue attributes", "destinations": ["orders-table"], "failure_path": "dead-letter queue", "evidence": ["infra/functions.yaml"]}],
+  "open_questions": ["Verify dead-letter queue reader policy"]
+}

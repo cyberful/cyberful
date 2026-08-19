@@ -4,11 +4,18 @@ description: Operate ProjectDiscovery Nuclei for authorized template-driven scan
 metadata:
   domain: security-tooling
   subdomain: dynamic-scanning
-  keywords:
+  triggers:
+    - Nuclei template scan
+    - ProjectDiscovery scanning
+    - template-driven vulnerability scan
+    - Nuclei result triage
+  tags:
     - nuclei
     - nuclei_templates
-    - template scanner
+    - template-scanner
     - projectdiscovery
+    - dynamic-analysis
+  frameworks: {}
 ---
 
 # Operate Nuclei

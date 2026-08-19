@@ -1,42 +1,57 @@
 ---
 name: audit-cloud-native-security
-description: Audit cloud IAM, workload identity, infrastructure as code, containers, Kubernetes, serverless, secrets, network boundaries, control planes, storage, and tenancy during authorized code audits and security assessments. Use for privilege escalation, confused deputies, metadata and identity abuse, exposed resources, IaC drift, container escape paths, admission-policy gaps, cross-namespace access, and cloud control-plane compromise.
+description: Route a cloud-native security audit across effective IAM, infrastructure as code, build and release paths, containers, Kubernetes, serverless workloads, secrets, event sources, and control-plane evidence. Use when the assignment spans multiple cloud-native boundaries or the correct specialist is not yet clear.
+metadata:
+  domain: cloud-security
+  subdomain: cloud-native-security
+  triggers:
+    - cloud native audit
+    - infrastructure as code review
+    - kubernetes policy review
+    - serverless security
+    - workload identity
+    - cloud control plane
+  tags:
+    - cloud-iam
+    - kubernetes
+    - containers
+    - serverless
+    - iac
+    - workload-identity
+  frameworks:
+    mitre_attack:
+      - T1078.004
+      - T1552.005
+      - T1610
+      - T1611
+    nist_csf:
+      - ID.AM-02
+      - ID.RA-01
+      - PR.AA-05
 ---
 
 # Audit Cloud-Native Security
 
-## Build the Effective Authority Graph
+Use this router to decompose a broad cloud-native assignment. Read every selected specialist's `SKILL.md` completely before applying its procedure; this entrypoint supplies routing and shared scope only.
 
-Model principals, groups, roles, policies, trust policies, workload identities, service accounts, resources, data planes, control planes, and delegation edges. Include conditions, boundaries, deny rules, session policies, organization policy, resource policy, and identity federation.
+## Route by security question
 
-Evaluate effective capability, not policy text in isolation. Ask whether a principal can directly act, pass an identity, modify code or configuration executed by another identity, alter a trust relationship, read credentials, or influence a deployment.
+- Source IaC, generated plans, modules, state exposure, provider defaults, or drift: `audit-infrastructure-as-code`.
+- CI identity, untrusted contributions, build jobs, artifact promotion, signing, or deployment authority: `audit-build-release-pipelines`.
+- Function identity, event sources, invocation policy, packaging, ephemeral storage, or platform configuration: `audit-serverless-security`.
+- RBAC, admission, policy engines, namespace boundaries, or declared-versus-enforced Kubernetes controls: `audit-kubernetes-policy-enforcement`.
+- Container privileges, capabilities, mounts, namespaces, host reach, runtime controls, or escape paths: `audit-container-runtime-isolation`.
+- Secret creation, storage, access, injection, rotation, revocation, or auditability: `audit-secrets-management`.
+- A secret's propagation through code, jobs, logs, artifacts, workloads, or downstream services: `trace-secret-propagation`.
+- Serverless event authenticity, replay, ordering, destination binding, or cross-tenant dispatch: `test-serverless-event-security`.
+- Cloud logs, IAM evaluations, resource snapshots, scanner exports, or control-plane records requiring offline reconciliation: `analyze-cloud-control-plane-evidence`.
 
-Read [iam-secrets-network.md](references/iam-secrets-network.md) for identity and boundary review. Read [containers-kubernetes-serverless.md](references/containers-kubernetes-serverless.md) for workload platforms. Read [iac-and-drift.md](references/iac-and-drift.md) for configuration provenance.
+## Establish the shared scope
 
-## Trace Workload Identity
+Before routing, record the authorized accounts, projects, subscriptions, regions, clusters, namespaces, repositories, environments, and evidence sources. Identify the initial principals and the control-plane or data-plane boundary under review. Do not infer permission to enumerate or mutate a live cloud environment from repository access alone.
 
-For each workload, record runtime identity, token issuance, audience, subject, TTL, refresh, metadata access, mounted credentials, node or host fallback, and downstream impersonation. Determine whether tenant input can select role, account, project, subscription, namespace, or resource.
+When several specialists apply, order them by dependency: declared configuration and build provenance first, effective identity and runtime enforcement second, raw evidence analysis last. Preserve disagreements among source, plan, deployment, runtime, and logs rather than collapsing them into one assumed state.
 
-Review confused-deputy protections when a service performs cloud actions for users. Bind requested resource and delegated identity to the authenticated tenant and business authorization.
+## Deliver integrated evidence
 
-## Evaluate Control-Plane Mutation
-
-Prioritize capabilities that:
-
-- pass or attach privileged roles;
-- update function, job, image, template, user-data, or startup code;
-- mutate admission, policy, network, logging, or key controls;
-- create credentials or federation;
-- alter build or deployment systems;
-- read secrets, snapshots, backups, or state;
-- schedule workloads onto privileged nodes or identities.
-
-Read-only labels often conceal write-equivalent paths such as snapshot restore, policy simulation with data, function invocation, or signed URL generation.
-
-## Correlate Configuration With Runtime
-
-Compare source IaC, plan, deployed configuration, admission result, and live workload. Account for defaults, generated resources, manual changes, controllers, operators, inheritance, and provider-side mutation.
-
-## Report an Attack Path
-
-State initial principal or network position, exact authority edges, conditions, reachable resource, resulting identity or data capability, and any cross-account or cross-tenant boundary. Recommend removing the graph edge, narrowing trust conditions, separating identities, enforcing policy before deployment, and detecting drift.
+Report each path as an initial principal or input, the exact authority or trust edges, the reachable workload or resource, the observed effect, and the specialist evidence supporting it. Missing credentials, runtime visibility, or deployment state are coverage limits, not proof that a control exists.

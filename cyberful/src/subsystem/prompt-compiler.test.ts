@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { PiSkills } from "./pi-skills"
 import { AgentPromptCompiler, type CompileInput } from "./prompt-compiler"
 
 const BUILTIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../builtin")
@@ -91,9 +92,9 @@ describe("AgentPromptCompiler", () => {
     expect(compiled.system).toContain("Use the phase-owned artifact workarea.")
     expect(compiled.system).toContain("# Cyberful Host Runtime Contract")
     expect(compiled.system).toContain("Write RECON.md, preserve evidence, and hand off to Exploit.")
-    expect(compiled.system).toContain("<name>operate-content-discovery</name>")
-    expect(compiled.system).toContain("<triggers>DOM, CORS</triggers>")
-    expect(compiled.system).toContain("call skill_search")
+    expect(compiled.system).toContain('n="operate-content-discovery"')
+    expect(compiled.system).toContain('t="DOM, CORS"')
+    expect(compiled.system).toContain("Use skill_search")
     expect(compiled.system).toContain("read SKILL.md completely")
     const intent = compiled.system.indexOf("Skill intents by prefix:")
     const catalog = compiled.system.indexOf("<skill_name_index>")
@@ -291,8 +292,8 @@ describe("AgentPromptCompiler", () => {
       describedSkills: 2,
       nameOnlySkills: 0,
     })
-    expect(first.system.indexOf("<name>operate-content-discovery</name>")).toBeLessThan(
-      first.system.indexOf("<name>test-browser-security</name>"),
+    expect(first.system.indexOf('<category name="browser-security">')).toBeLessThan(
+      first.system.indexOf('<category name="reconnaissance">'),
     )
   })
 
@@ -319,15 +320,15 @@ describe("AgentPromptCompiler", () => {
       },
     ])
 
-    const blocks = [...catalog.text.matchAll(/<skill>\n([\s\S]*?)\n  <\/skill>/g)].map((match) => match[1] ?? "")
+    const blocks = [...catalog.text.matchAll(/<s n="([^"]+)"(?: t="([^"]*)")?>(.*?)<\/s>/g)].map(
+      (match) => ({ name: match[1] ?? "", triggers: match[2] ?? "", description: match[3] ?? "" }),
+    )
     expect(blocks).toHaveLength(3)
     for (const block of blocks) {
-      const description = block.match(/<description>(.*?)<\/description>/)?.[1] ?? ""
-      const triggers = block.match(/<triggers>(.*?)<\/triggers>/)?.[1] ?? ""
-      expect(Array.from(`${description}${triggers}`).length).toBeLessThanOrEqual(1_536)
+      expect(Array.from(`${block.description}${block.triggers}`).length).toBeLessThanOrEqual(1_536)
     }
-    expect(blocks.find((block) => block.includes("description-limit"))).toContain("…</description>")
-    expect(blocks.find((block) => block.includes("trigger-limit"))).toContain("…</triggers>")
+    expect(blocks.find((block) => block.name === "description-limit")?.description).toEndWith("…")
+    expect(blocks.find((block) => block.name === "trigger-limit")?.triggers).toEndWith("…")
     expect(catalog.text).not.toContain(location)
     expect(catalog.text).not.toContain("<location>")
   })
@@ -364,14 +365,13 @@ describe("AgentPromptCompiler", () => {
     expect(first.manifest.describedSkills + first.manifest.nameOnlySkills).toBe(817)
     for (const skill of skills) expect(first.text).toContain(skill.name)
     expect(first.text).not.toContain("/never/expose")
-    for (const name of ["skill-000", "skill-001", "skill-002"]) expect(first.text).toContain(`<name>${name}</name>`)
-    const detailedBlocks = [...first.text.matchAll(/<skill>\n([\s\S]*?)\n  <\/skill>/g)].map((match) => match[1] ?? "")
-    const detailedCategories = new Set(detailedBlocks.map((block) => block.match(/<category>(.*?)<\/category>/)?.[1]))
+    for (const name of ["skill-000", "skill-001", "skill-002"]) expect(first.text).toContain(`n="${name}"`)
+    const detailedCategories = new Set(
+      [...serializedMetadata.matchAll(/<c n="([^"]+)">/g)].map((match) => match[1]),
+    )
     expect(detailedCategories.size).toBeGreaterThan(1)
-    const extensionCategories = detailedBlocks
-      .slice(3, 7)
-      .map((block) => block.match(/<category>(.*?)<\/category>/)?.[1])
-    expect(extensionCategories).toEqual(["category-00", "category-01", "category-02", "category-03"])
+    for (const category of ["category-00", "category-01", "category-02", "category-03"])
+      expect(detailedCategories).toContain(category)
 
     const nameOnly = AgentPromptCompiler.skillCatalog(skills, {
       ...budget,
@@ -398,7 +398,9 @@ describe("AgentPromptCompiler", () => {
         descriptionBudgetPercentage: 2,
       },
     )
-    const excerpts = [...catalog.text.matchAll(/<description>(.*?)<\/description>/g)].map((match) => match[1] ?? "")
+    const excerpts = [...catalog.text.matchAll(/<s n="[^"]+"(?: t="[^"]*")?>(.*?)<\/s>/g)].map(
+      (match) => match[1] ?? "",
+    )
 
     expect(catalog.manifest).toMatchObject({
       descriptionBudgetCharacters: 1_000,
@@ -408,6 +410,78 @@ describe("AgentPromptCompiler", () => {
     })
     expect(new Set(excerpts.map((excerpt) => Array.from(excerpt).length)).size).toBe(1)
     expect(excerpts.every((excerpt) => Array.from(excerpt).length >= 64 && excerpt.endsWith("…"))).toBe(true)
+  })
+
+  test("keeps one coherent excerpt for 106 first-party skills even when every category is distinct", () => {
+    const skills = Array.from({ length: 106 }, (_, index) => ({
+      name: `test-distinct-boundary-${String(index).padStart(3, "0")}`,
+      description:
+        "Inspect the boundary, then preserve a deterministic evidence ledger that distinguishes observation from supported conclusion for independent verification.",
+      triggers: ["distinct boundary", "evidence ledger", "independent verification", "authorized test"],
+      origin: "first_party" as const,
+      category: `distinct-security-category-${String(index).padStart(3, "0")}`,
+      location: `/builtin/test-distinct-boundary-${String(index).padStart(3, "0")}/SKILL.md`,
+    }))
+    const budget = {
+      operationalContextWindow: 256_000,
+      contextSource: "catalog_default" as const,
+      descriptionBudgetPercentage: 2,
+    }
+    const first = AgentPromptCompiler.skillCatalog(skills, budget)
+    const reordered = AgentPromptCompiler.skillCatalog(skills.toReversed(), budget)
+    const excerpts = [...first.text.matchAll(/<s n="[^"]+"(?: t="[^"]*")?>(.*?)<\/s>/g)].map(
+      (match) => match[1] ?? "",
+    )
+
+    expect(first).toEqual(reordered)
+    expect(first.manifest).toMatchObject({
+      descriptionBudgetCharacters: 20_480,
+      totalSkills: 106,
+      describedSkills: 106,
+      compressedSkills: 106,
+      nameOnlySkills: 0,
+    })
+    expect(first.manifest.metadataCharacters).toBeLessThanOrEqual(20_480)
+    expect(excerpts).toHaveLength(106)
+    expect(excerpts.every((excerpt) => Array.from(excerpt).length >= 64)).toBe(true)
+  })
+
+  test("fits one coherent excerpt for every real built-in skill inside the 256K two-percent budget", async () => {
+    const registry = await PiSkills.discover({ roots: [path.join(BUILTIN, "skills")] })
+    const budget = {
+      operationalContextWindow: 256_000,
+      contextSource: "catalog_default" as const,
+      descriptionBudgetPercentage: 2,
+    }
+    const first = AgentPromptCompiler.skillCatalog(registry.catalog, budget)
+    const reordered = AgentPromptCompiler.skillCatalog(registry.catalog.toReversed(), budget)
+    const excerpts = [...first.text.matchAll(/<s n="[^"]+"(?: t="[^"]*")?>(.*?)<\/s>/g)].map(
+      (match) => match[1] ?? "",
+    )
+
+    expect(registry.catalog).toHaveLength(106)
+    expect(first).toEqual(reordered)
+    expect(first.manifest).toMatchObject({
+      descriptionBudgetCharacters: 20_480,
+      totalSkills: 106,
+      describedSkills: 106,
+      nameOnlySkills: 0,
+    })
+    expect(first.manifest.metadataCharacters).toBeLessThanOrEqual(20_480)
+    expect(excerpts).toHaveLength(106)
+    expect(excerpts.every((excerpt) => Array.from(excerpt).length >= 64)).toBe(true)
+    for (const skill of registry.catalog) {
+      expect(first.text).toContain(skill.name)
+      expect(first.text).not.toContain(skill.location)
+    }
+
+    const nameOnly = AgentPromptCompiler.skillCatalog(registry.catalog, {
+      ...budget,
+      operationalContextWindow: 100,
+    })
+    expect(nameOnly.manifest.metadataCharacters).toBe(0)
+    expect(nameOnly.manifest.nameOnlySkills).toBe(106)
+    for (const skill of registry.catalog) expect(nameOnly.text).toContain(skill.name)
   })
 
   test("keeps Bug Bounty research personas distinct and permits only their advisory critics", async () => {

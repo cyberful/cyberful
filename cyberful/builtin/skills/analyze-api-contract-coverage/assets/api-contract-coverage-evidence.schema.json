@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "input_sha256", "contracts", "operations", "gaps", "counts"],
+  "properties": {
+    "format": {"const": "cyberful.api-contract-coverage.raw.v1"},
+    "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contracts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "operations"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "operations": {"type": "integer", "minimum": 0}}}},
+    "operations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["key", "source", "pointer", "security"], "properties": {"key": {"type": "string"}, "source": {"type": "string"}, "pointer": {"type": "string"}, "security": {"enum": ["declared", "explicitly-anonymous", "unspecified"]}}}},
+    "gaps": {"type": "object", "additionalProperties": false, "required": ["undocumented_implementation", "unimplemented_contract", "unexercised_contract", "explicitly_anonymous"], "properties": {"undocumented_implementation": {"type": "array", "items": {"type": "string"}}, "unimplemented_contract": {"type": "array", "items": {"type": "string"}}, "unexercised_contract": {"type": "array", "items": {"type": "string"}}, "explicitly_anonymous": {"type": "array", "items": {"type": "string"}}}},
+    "counts": {"type": "object", "additionalProperties": false, "required": ["contracts", "contract_operations", "implementation_operations", "observed_operations"], "properties": {"contracts": {"type": "integer", "minimum": 0}, "contract_operations": {"type": "integer", "minimum": 0}, "implementation_operations": {"type": "integer", "minimum": 0}, "observed_operations": {"type": "integer", "minimum": 0}}}
+  }
+}

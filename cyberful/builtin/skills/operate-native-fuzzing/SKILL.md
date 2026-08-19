@@ -1,6 +1,26 @@
 ---
 name: operate-native-fuzzing
 description: Operate AFL++, libFuzzer with Clang sanitizers, and Jazzer for advanced coverage-guided native and JVM fuzzing. Use when designing harnesses, constructing and minimizing corpora, diagnosing coverage plateaus, selecting sanitizers or instrumentation modes, fuzzing parsers and state machines, deduplicating crashes, or turning audit hypotheses into deterministic regression cases.
+metadata:
+  domain: native-security
+  subdomain: coverage-guided-fuzzing
+  triggers:
+    - native fuzzing campaign
+    - libfuzzer harness
+    - afl++ campaign
+    - jazzer fuzzing
+    - sanitizer crash triage
+    - corpus minimization
+  tags:
+    - aflplusplus
+    - libfuzzer
+    - jazzer
+    - sanitizers
+    - corpus
+    - crash-triage
+  frameworks:
+    nist_csf:
+      - ID.RA-01
 ---
 
 # Operate Native Fuzzing

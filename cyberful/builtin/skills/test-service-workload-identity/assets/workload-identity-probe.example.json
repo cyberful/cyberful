@@ -1,0 +1,28 @@
+{
+  "$schema": "https://cyberful.local/schemas/workload-identity-probe.v1.json",
+  "campaign_id": "synthetic-workload-001",
+  "authority": {
+    "authorization_reference": "replace-with-engagement-scope-reference",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "max_requests": 1,
+    "requests_per_second": 1,
+    "request_timeout_seconds": 5,
+    "campaign_timeout_seconds": 15
+  },
+  "cases": [
+    {
+      "case_id": "accepted-control",
+      "workload": "synthetic-worker",
+      "issuer": "https://issuer.test",
+      "subject": "workload-a",
+      "audience": "service-a",
+      "tenant": "tenant-a",
+      "expected_binding": "accept",
+      "method": "GET",
+      "url": "http://127.0.0.1:8080/workload/control",
+      "headers": { "X-Cyberful-Case": "accepted-control" },
+      "secret_headers": { "Authorization": "CYBERFUL_WORKLOAD_AUTHORIZATION" },
+      "body_base64": ""
+    }
+  ]
+}

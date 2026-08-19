@@ -54,6 +54,15 @@ const EMPTY_SKILLS = {
       throw new Error("no test skills are configured")
     },
   },
+  stageTool: {
+    name: "skill_stage",
+    label: "Stage trusted skill resource",
+    description: "No skills are configured in this isolated phase test.",
+    parameters: Type.Object({ skill: Type.String({ minLength: 1 }), path: Type.String({ minLength: 1 }) }),
+    execute: async () => {
+      throw new Error("no test skills are configured")
+    },
+  },
   read: async () => {
     throw new Error("no test skills are configured")
   },

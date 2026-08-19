@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_fraud_control_analysis.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "report", "index", "trace", "hunt"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-bounded-local-fraud-evidence", "writes-bounded-raw-analysis"],
+  "timeout_seconds": 10,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/fraud-control-observations.schema.json"},
+  "output": {"format": "json", "schema": "assets/fraud-control-analysis.schema.json", "raw": true}
+}

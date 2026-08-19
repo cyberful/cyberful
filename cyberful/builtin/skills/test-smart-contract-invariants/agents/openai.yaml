@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Smart Contract Invariants"
+  short_description: "Run bounded offline Foundry invariant tests"
+  default_prompt: "Use $test-smart-contract-invariants to define and run a bounded offline Foundry property test for this contract hypothesis."

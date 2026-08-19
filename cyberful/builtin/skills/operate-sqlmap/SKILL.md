@@ -1,6 +1,24 @@
 ---
 name: operate-sqlmap
 description: Use sqlmap to confirm and characterize suspected SQL injection with faithful requests and bounded evidence. Trigger for URL, form, JSON, XML, header, cookie, multipart, GraphQL-variable, authenticated, stored/second-order, or custom request-file injection hypotheses after manual differential evidence or code tracing identifies a plausible SQL dataflow.
+metadata:
+  domain: security-tooling
+  subdomain: sql-injection
+  triggers:
+    - sqlmap confirmation
+    - suspected SQL injection
+    - second-order SQL injection
+    - authenticated SQL injection test
+    - database injection proof
+  tags:
+    - sqlmap
+    - SQLi
+    - injection
+    - database
+    - request-replay
+  frameworks:
+    mitre_attack:
+      - T1190
 ---
 
 # Operate SQLMap

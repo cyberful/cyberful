@@ -1,0 +1,13 @@
+{
+  "$schema": "./scan-finding-analysis.schema.json",
+  "analysis_id": "scan-correlation-23",
+  "scope_reference": "code-audit:scanner-results",
+  "scan_files": [
+    {"path": "evidence/static-analysis.sarif", "format": "sarif-2.1"},
+    {"path": "evidence/runtime-findings.json", "format": "normalized-json"}
+  ],
+  "max_findings": 25000,
+  "max_total_bytes": 33554432,
+  "timeout_seconds": 20,
+  "output_limit_bytes": 4194304
+}

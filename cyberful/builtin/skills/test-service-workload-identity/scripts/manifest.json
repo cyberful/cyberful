@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_workload_identity_probe.py",
+  "class": "probe",
+  "network": "target",
+  "transport": { "authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"] },
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["exploit", "hacker", "verify"],
+  "tools": ["curl"],
+  "dependencies": { "commands": ["curl"], "python": [], "bootstrap": null },
+  "effects": ["authorized-target-http-requests-through-runtime-mission-route", "writes-bounded-secret-redacted-raw-evidence"],
+  "timeout_seconds": 120,
+  "limits": { "requests": 8, "concurrency": 1, "output_bytes": 1048576 },
+  "secrets": { "environment": ["CYBERFUL_WORKLOAD_AUTHORIZATION", "CYBERFUL_WORKLOAD_ASSERTION"] },
+  "input": { "format": "json", "schema": "assets/workload-identity-probe.schema.json" },
+  "output": { "format": "json", "schema": "assets/workload-identity-evidence.schema.json", "raw": true }
+}

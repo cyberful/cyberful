@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze Fraud Control Evidence"
+  short_description: "Compare fraud-control decisions from local evidence"
+  default_prompt: "Use $analyze-fraud-control-evidence to normalize and compare this local fraud-control evidence ledger."

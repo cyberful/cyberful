@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test gRPC and Protobuf Security"
+  short_description: "Probe gRPC authority and parser boundaries"
+  default_prompt: "Use $test-grpc-protobuf-security to design and run bounded authorized tests for this gRPC service."

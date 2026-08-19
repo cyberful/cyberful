@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/content-discovery-record.v1.json",
+  "title": "Raw content discovery campaign record",
+  "type": "object",
+  "required": ["format", "authorization_reference", "command", "tool_version", "exit_code", "wordlist", "raw_output", "stdout", "stderr"],
+  "properties": {
+    "format": {"const": "cyberful.content-discovery-campaign.v1"},
+    "authorization_reference": {"type": "string"},
+    "command": {"type": "array", "items": {"type": "string"}},
+    "tool_version": {"type": "string"},
+    "exit_code": {"type": "integer"},
+    "wordlist": {"type": "object"},
+    "raw_output": {"type": "object"},
+    "stdout": {"type": "string"},
+    "stderr": {"type": "string"}
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_realtime_probe.py",
+  "class": "probe",
+  "network": "target",
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["exploit", "hacker", "verify"],
+  "tools": ["curl"],
+  "dependencies": {
+    "commands": ["curl"],
+    "python": [],
+    "bootstrap": null
+  },
+  "effects": ["authorized-target-http-requests-via-runtime-owned-route", "opens-bounded-stream-handshakes", "writes-bounded-secret-redacted-raw-evidence"],
+  "timeout_seconds": 180,
+  "limits": {
+    "requests": 12,
+    "concurrency": 1,
+    "output_bytes": 1048576
+  },
+  "secrets": {
+    "environment": ["CYBERFUL_PROBE_AUTHORIZATION", "CYBERFUL_PROBE_COOKIE", "CYBERFUL_WEBHOOK_SIGNATURE"]
+  },
+  "transport": {
+    "authority": "runtime",
+    "route": "http-proxy",
+    "loopback": "direct",
+    "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"],
+    "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]
+  },
+  "input": {
+    "format": "json",
+    "schema": "assets/realtime-probe.schema.json"
+  },
+  "output": {
+    "format": "json",
+    "schema": "assets/realtime-probe-evidence.schema.json",
+    "raw": true
+  }
+}

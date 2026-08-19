@@ -1,6 +1,28 @@
 ---
 name: operate-metasploit
 description: Use the complete Metasploit framework for evidence-led testing in an authorized engagement.
+metadata:
+  domain: security-tooling
+  subdomain: exploit-validation
+  triggers:
+    - Metasploit module
+    - exploit validation
+    - auxiliary scanner
+    - controlled payload generation
+    - session evidence
+    - module check action
+  tags:
+    - Metasploit
+    - exploit-framework
+    - payload
+    - auxiliary-module
+    - post-exploitation
+  frameworks:
+    mitre_attack:
+      - T1190
+      - T1210
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate Metasploit

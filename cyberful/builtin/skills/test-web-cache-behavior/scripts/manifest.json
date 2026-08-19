@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_cache_probe.py",
+  "class": "probe",
+  "network": "target",
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["recon", "exploit", "verify"],
+  "tools": ["curl"],
+  "dependencies": {"commands": ["curl"], "python": [], "bootstrap": null},
+  "effects": ["authorized-isolated-cache-requests-via-runtime-owned-route", "may-create-short-lived-isolated-cache-entries", "writes-bounded-secret-redacted-raw-evidence"],
+  "timeout_seconds": 120,
+  "limits": {"requests": 12, "concurrency": 1, "output_bytes": 1048576},
+  "secrets": {"environment": ["CYBERFUL_PROBE_AUTHORIZATION", "CYBERFUL_PROBE_COOKIE"]},
+  "transport": {"authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]},
+  "input": {"format": "json", "schema": "assets/cache-probe.schema.json"},
+  "output": {"format": "json", "schema": "assets/cache-evidence.schema.json", "raw": true}
+}

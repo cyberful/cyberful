@@ -1,0 +1,21 @@
+{
+  "application": "",
+  "scope_reference": "",
+  "platforms": [],
+  "package_identity": {},
+  "boundaries": [
+    {
+      "id": "DB-001",
+      "producer": "",
+      "consumer": "",
+      "channel": "",
+      "input": "",
+      "canonicalization": "",
+      "peer_identity": "",
+      "authorization_owner": "",
+      "effects": [],
+      "evidence": [],
+      "validation": ""
+    }
+  ]
+}

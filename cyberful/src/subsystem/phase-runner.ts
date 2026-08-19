@@ -198,7 +198,7 @@ export interface PhaseDeps {
   runStreaming: typeof SubsystemCli.runStreaming
   subsystem: Subsystem.Subsystem
   loadSettings: (directory: string) => Promise<Settings.Info>
-  discoverSkills: (roots: readonly (string | SkillRoot)[]) => Promise<SkillRegistry>
+  discoverSkills: (roots: readonly (string | SkillRoot)[], workarea: string) => Promise<SkillRegistry>
   // Reads budgets.json. Injected so budget resolution remains testable.
   readFile: (filePath: string) => Promise<string>
   // Reads the private gateway's first required-upstream failure marker. Kept
@@ -298,7 +298,7 @@ export function defaultDeps(): PhaseDeps {
     runStreaming: SubsystemCli.runStreaming,
     subsystem: Subsystem.pi,
     loadSettings: Settings.load,
-    discoverSkills: (roots) => PiSkills.discover({ roots }),
+    discoverSkills: (roots, workarea) => PiSkills.discover({ roots, stagingRoot: workarea }),
     readFile: (filePath) => readFile(filePath, "utf8"),
     readUpstreamFailureSignal: (filePath) => readFile(filePath, "utf8"),
     ensureDirectory: (directory) =>
@@ -1224,10 +1224,10 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
         origin: "extension",
       }),
     )
-    const skills = await deps.discoverSkills([
-      { path: SubsystemPhase.skillRoot(spec.home), origin: "first_party" },
-      ...configuredSkillRoots,
-    ])
+    const skills = await deps.discoverSkills(
+      [{ path: SubsystemPhase.skillRoot(spec.home), origin: "first_party" }, ...configuredSkillRoots],
+      spec.workareaCwd,
+    )
     return { settings, sources, skills }
   })().then(
     (value) => ({ ok: true as const, value }),

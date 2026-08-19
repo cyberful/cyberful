@@ -1,0 +1,4 @@
+interface:
+  display_name: "Account Recovery Assurance Tester"
+  short_description: "Test recovery proof and invalidation"
+  default_prompt: "Use $test-account-recovery-assurance to test this controlled recovery ceremony and its resulting authority."

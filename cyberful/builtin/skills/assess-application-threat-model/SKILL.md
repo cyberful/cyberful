@@ -1,6 +1,24 @@
 ---
 name: assess-application-threat-model
 description: Build or challenge an application threat model from architecture, dataflows, identities, trust boundaries, business invariants, dependencies, and deployment context. Use for design reviews, code-audit planning, pentest hypothesis generation, feature changes, abuse-case discovery, control requirements, architecture assessment, or residual-risk analysis.
+metadata:
+  domain: application-security
+  subdomain: threat-modeling
+  triggers:
+    - application threat model
+    - architecture threat review
+    - abuse case model
+    - trust boundary analysis
+    - security design review
+  tags:
+    - threat-modeling
+    - STRIDE
+    - attack-trees
+    - trust-boundaries
+    - security-requirements
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Assess an Application Threat Model

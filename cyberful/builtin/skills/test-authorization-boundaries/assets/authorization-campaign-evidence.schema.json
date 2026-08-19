@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/authorization-campaign-evidence.v1.json",
+  "title": "Cyberful authorization campaign raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "authorization_reference", "source_sha256", "limits", "cases", "interpretation"],
+  "properties": {
+    "format": { "const": "cyberful.authorization-campaign-evidence.v1" },
+    "campaign_id": { "type": "string" },
+    "authorization_reference": { "type": "string" },
+    "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "limits": { "type": "object" },
+    "cases": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "actor", "tenant", "resource", "action", "expected_policy", "request", "transport", "response"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "actor": { "type": "string" },
+          "tenant": { "type": "string" },
+          "resource": { "type": "string" },
+          "action": { "type": "string" },
+          "expected_policy": { "enum": ["allow", "deny"] },
+          "request": { "type": "object" },
+          "transport": { "type": "object" },
+          "response": { "type": "object" }
+        }
+      }
+    },
+    "interpretation": { "type": "string" }
+  }
+}

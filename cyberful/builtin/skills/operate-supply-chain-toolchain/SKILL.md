@@ -1,6 +1,30 @@
 ---
 name: operate-supply-chain-toolchain
 description: Operate Syft, Grype, Trivy, Gitleaks, Retire.js, package-manager metadata, and build evidence for advanced software-supply-chain assessment. Use for SBOM construction, dependency reconciliation, image and filesystem analysis, secret-history review, vulnerability triage, provenance gaps, release-diff analysis, and separating package presence from reachable exploitability.
+metadata:
+  domain: software-supply-chain
+  subdomain: artifact-analysis-tooling
+  triggers:
+    - generate SBOM
+    - scan dependency vulnerabilities
+    - scan container image
+    - search repository secrets
+    - correlate package inventory
+    - supply chain toolchain
+  tags:
+    - Syft
+    - Grype
+    - Trivy
+    - Gitleaks
+    - SBOM
+    - provenance
+  frameworks:
+    mitre_attack:
+      - T1195
+    nist_csf:
+      - ID.AM
+      - ID.RA
+      - GV.SC
 ---
 
 # Operate Supply Chain Toolchain
@@ -23,7 +47,7 @@ Scan source trees, build outputs, container images, and deployed artifacts separ
 
 Read [references/supply-chain-fieldbook.md](references/supply-chain-fieldbook.md) for reconciliation and high-value edge cases.
 
-For structured Syft, Grype, and Trivy output, copy [assets/supply-chain-manifest.example.json](assets/supply-chain-manifest.example.json) into the workarea and preserve [assets/supply-chain-manifest.schema.json](assets/supply-chain-manifest.schema.json). Run [scripts/reconcile_supply_chain_inventory.py](scripts/reconcile_supply_chain_inventory.py) offline to correlate package identities, inventory disagreement, and advisory observations. Validate artifact identity, backports, runtime presence, and reachability before promoting any correlation.
+For a bounded active campaign, stage [scripts/run_supply_chain_campaign.py](scripts/run_supply_chain_campaign.py), [assets/supply-chain-campaign.example.json](assets/supply-chain-campaign.example.json), and [assets/supply-chain-campaign.schema.json](assets/supply-chain-campaign.schema.json). Replace the example paths in the workarea, set `authorized`, the local artifact, selected tools, run ceiling, and timeout explicitly, then execute the staged script with `--workspace` and `--config`. The orchestrator resolves only fixed Syft, Grype, Trivy, or Gitleaks command names from the trusted runtime, invokes them update-disabled with argv and no shell, and bounds streams and native output while each process runs. It never installs or updates dependencies. A missing local tool degrades that run; it must not open a network route, especially during Code Audit.
 
 ## Triage vulnerabilities as hypotheses
 

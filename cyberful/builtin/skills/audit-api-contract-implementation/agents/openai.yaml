@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit API Contract Implementation"
+  short_description: "Reconcile API contracts with executable code"
+  default_prompt: "Use $audit-api-contract-implementation to trace this API contract into its handlers and identify security-relevant drift."

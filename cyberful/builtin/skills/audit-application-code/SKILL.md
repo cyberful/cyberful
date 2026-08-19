@@ -1,92 +1,55 @@
 ---
 name: audit-application-code
-description: Execute a full white-box application security audit across architecture, source, configuration, dependencies, build and deployment paths. Use for repository-wide code audits, secure code review, security assessments, design-to-implementation verification, taint and authorization review, security test design, or when a diff-only review is insufficient.
+description: Coordinate a repository-wide white-box application security audit across architecture, source, configuration, dependencies, build, and deployment paths. Use when multiple specialist reviews must share scope, trust boundaries, coverage, and evidence; use a narrower audit or trace skill for a single mechanism.
+metadata:
+  domain: code-audit
+  subdomain: application-security-routing
+  triggers:
+    - repository security audit
+    - secure code review
+    - white box assessment
+    - application code audit
+    - source security review
+    - security architecture implementation
+  tags:
+    - OWASP-ASVS
+    - CWE
+    - NIST-SSDF
+    - trust-boundaries
+    - code-audit
+  frameworks:
+    nist_csf:
+      - ID.RA
+      - PR.PS
 ---
 
 # Audit Application Code
 
-Audit the implemented security model, not isolated suspicious lines. Treat scanners and search patterns as indexing aids; independently establish reachability, trust boundaries, control placement, and impact.
+Coordinate the audit; do not reproduce every specialist procedure in this skill.
 
-## Define the audit contract
+## Establish the shared audit contract
 
-1. Establish repository, commit, components, environments, languages, generated code policy, and excluded assets.
-2. Identify required assurance target: focused vulnerability hunt, ASVS verification, architectural review, release gate, or full product assessment.
-3. Record available tests, build instructions, runtime configuration, deployment manifests, schemas, documentation, and production differences.
-4. Separate audit findings from SDLC maturity observations.
+Record repository and commit, components, environments, languages, build/deployment paths, generated-code policy, exclusions, assurance objective, available tests, and inaccessible evidence. Read [references/repository-mapping.md](references/repository-mapping.md) to produce a component, entry-point, trust-boundary, identity, persistence, dependency, and privileged-operation map.
 
-## Map before hunting
+Create one coverage ledger:
 
-Read [references/repository-mapping.md](references/repository-mapping.md) and produce:
+`component | entry point | security objective | specialist | evidence | result | limitation | next action`
 
-- component and deployment inventory;
-- entry-point and trust-boundary map;
-- data classification and persistence map;
-- identity, session, authorization, and tenant enforcement map;
-- privileged operation and business-invariant inventory;
-- external dependency, build, CI/CD, and secret-flow inventory.
+## Route the review
 
-Do not begin broad sink searches until the owning component and reachable entry points are known.
+- Authorization and policy placement: `audit-access-policy-enforcement` and `test-authorization-boundaries`.
+- API contract drift and binding: `audit-api-contract-implementation` and `analyze-api-contract-coverage`.
+- Persistence authority: `audit-database-access-layer`.
+- Logs and detection evidence: `audit-security-logging-telemetry`.
+- Attacker-controlled interpreter paths: `trace-injection-dataflows`.
+- Producer-to-runtime trust: `audit-software-supply-chain`.
+- Release change risk: `analyze-release-security-diff`.
+- Cloud, AI, mobile, native, firmware, desktop, and smart-contract components: the matching `audit-`, `assess-`, or `trace-` specialist.
 
-## Review in risk order
+Use [references/language-patterns.md](references/language-patterns.md) only to select relevant specialists and search anchors for languages actually in scope.
 
-1. Security invariants and architectural assumptions.
-2. Identity proofing, authentication, federation, session, and account lifecycle.
-3. Authorization placement, tenant scoping, relationship checks, and privileged workflows.
-4. Untrusted dataflows into interpreters, parsers, filesystems, templates, browsers, outbound requests, logs, and dynamic loading.
-5. Secrets, cryptography, signing, randomness, sensitive-data copies, and retention.
-6. Concurrency, retries, idempotency, state transitions, quotas, and resource amplification.
-7. Dependency resolution, build scripts, CI authority, provenance, deployment and cloud configuration.
-8. Language-runtime, framework, native-memory, mobile, and agentic-AI hazards when applicable.
+## Integrate evidence
 
-Route deep work to the narrowest matching built-in skill. Use [references/language-patterns.md](references/language-patterns.md) only for languages detected in scope.
+Require each specialist to identify the reachable path, enforcement owner, expected negative case, observed effect, evidence location, and residual uncertainty. Apply the shared classifications in [references/evidence-model.md](references/evidence-model.md); scanner output and suspicious syntax remain leads until a complete path or control failure is supported.
 
-## Trace findings end to end
-
-For dataflow findings, trace:
-
-`attacker-controlled source -> normalization/transforms -> validation/authorization -> storage or propagation -> security-sensitive sink -> observable effect`
-
-For control findings, trace:
-
-`security requirement -> policy owner -> enforcement points -> bypass paths -> downstream authority -> audit and revocation behavior`
-
-Inspect aliases, wrappers, callbacks, dependency injection, middleware ordering, generated clients, background workers, message consumers, batch paths, retries, and error fallbacks. Search both forward from sources and backward from sinks.
-
-## Prove reachability and exploitability
-
-Classify each candidate:
-
-- `UNREACHABLE`: no production entry point reaches it under documented builds.
-- `CONTROLLED`: reachable, but a correctly placed control dominates every path examined.
-- `CONTEXT_DEPENDENT`: safety depends on deployment, caller, configuration, or data invariant not available in the audit.
-- `VULNERABLE`: reachable attacker capability crosses a security boundary and produces a material effect.
-
-Do not call dead code, test fixtures, privileged maintenance scripts, or safe constant construction vulnerable without a realistic activation path. Do not dismiss dangerous code solely because the current UI does not expose it when APIs, jobs, plugins, or alternate clients can.
-
-Read [references/evidence-model.md](references/evidence-model.md) before finalizing findings.
-
-## Validate controls negatively
-
-For each critical control, inspect at least one expected-success and expected-denial path. Verify default-deny behavior, failure handling, revocation, stale caches, alternate channels, asynchronous paths, and tests that fail when the control is removed. Prefer a small regression test or non-destructive PoC when the repository can be executed safely.
-
-## Deliver an auditable result
-
-Produce:
-
-1. Scope, commit and environmental assumptions.
-2. Architecture and trust-boundary summary.
-3. Coverage ledger by component and control family.
-4. Confirmed findings with complete code paths and evidence.
-5. Context-dependent and suspected issues with missing proof.
-6. Controls reviewed with no issue observed, bounded to the paths examined.
-7. Systemic root causes and representative affected sites.
-8. Remediation architecture and regression tests.
-9. Residual risk, inaccessible components, unbuilt paths, and deployment uncertainty.
-
-## Authoritative anchors
-
-- OWASP Code Review Guide: https://owasp.org/www-project-code-review-guide/
-- OWASP ASVS 5.0: https://owasp.org/www-project-application-security-verification-standard/
-- CWE: https://cwe.mitre.org/
-- NIST SSDF: https://csrc.nist.gov/pubs/sp/800/218/final
-- SEI CERT Coding Standards: https://wiki.sei.cmu.edu/confluence/display/seccode
+Deduplicate by violated invariant and enforcement owner, not by file or endpoint. Reconcile uncovered components, alternative channels, background processing, deployment-only controls, and unavailable builds before closing the ledger. Deliver scope, architecture, coverage, confirmed findings, context-dependent leads, controls observed, systemic causes, remediation ownership, regression evidence, and limitations.

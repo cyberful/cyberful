@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false, "required": ["release_id", "source_revision", "artifacts"],
+  "properties": {
+    "release_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source_revision": {"type": "string", "minLength": 1, "maxLength": 256},
+    "artifacts": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "sha256", "provenance_sha256", "signer", "permissions", "dependencies"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 512},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "provenance_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+          "signer": {"type": ["string", "null"], "maxLength": 512},
+          "permissions": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+          "dependencies": {"type": "array", "maxItems": 2048, "uniqueItems": true, "items": {"type": "string", "maxLength": 512}}
+        }
+      }
+    }
+  }
+}

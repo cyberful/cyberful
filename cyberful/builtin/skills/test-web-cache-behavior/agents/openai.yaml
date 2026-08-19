@@ -1,0 +1,5 @@
+interface:
+  display_name: "Web Cache Boundary Tester"
+  short_description: "Prove isolated cache-key failures"
+  default_prompt: "Use $test-web-cache-behavior to model the cache key and run only isolated paired cache controls within explicit authority."
+

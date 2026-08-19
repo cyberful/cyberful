@@ -1,0 +1,7 @@
+{
+  "format": "cyberful.container-isolation-matrix.v1",
+  "workload": "namespace-a/service-a",
+  "runtime": "containerd/runc",
+  "controls": [{"layer": "privilege", "setting": "seccomp profile", "provenance": "rendered workload manifest", "protected_resource": "host kernel syscall surface", "status": "unknown", "evidence": ["rendered/deployment.yaml"]}],
+  "boundary_hypotheses": []
+}

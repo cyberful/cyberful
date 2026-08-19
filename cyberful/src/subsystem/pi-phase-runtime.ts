@@ -257,7 +257,7 @@ function dynamicAgentTool(tool: DynamicTool): AgentTool & { readonly deferLoadin
 }
 
 export function eagerSkillTools(skills: SkillRegistry): readonly AgentTool[] {
-  return [skills.searchTool, skills.tool]
+  return [skills.searchTool, skills.tool, skills.stageTool]
 }
 
 function failureOf(result: AgentRunResult): SubsystemFailure | undefined {

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/realtime-probe.v1.json",
+  "title": "Cyberful realtime integration probe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "authority", "probes"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "campaign_id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_reference", "allowed_origins", "max_requests", "requests_per_second", "request_timeout_seconds"],
+      "properties": {
+        "authorization_reference": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "format": "uri", "maxLength": 2048 } },
+        "max_requests": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "requests_per_second": { "type": "number", "minimum": 0.1, "maximum": 4 },
+        "request_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["probe_id", "kind", "principal", "tenant", "channel", "method", "url", "headers", "secret_headers", "body_base64"],
+        "properties": {
+          "probe_id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "kind": { "enum": ["webhook", "callback", "sse", "websocket-handshake"] },
+          "principal": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "tenant": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "channel": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] },
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "headers": { "type": "object", "maxProperties": 32, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+          "secret_headers": { "type": "object", "maxProperties": 3, "additionalProperties": { "enum": ["CYBERFUL_PROBE_AUTHORIZATION", "CYBERFUL_PROBE_COOKIE", "CYBERFUL_WEBHOOK_SIGNATURE"] } },
+          "body_base64": { "type": "string", "contentEncoding": "base64", "maxLength": 87384 }
+        }
+      }
+    }
+  }
+}

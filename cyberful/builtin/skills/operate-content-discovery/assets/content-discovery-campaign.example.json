@@ -1,0 +1,12 @@
+{
+  "$schema": "./content-discovery-campaign.schema.json",
+  "authorization_reference": "replace-with-engagement-scope-reference",
+  "allowed_origins": ["https://app.test"],
+  "target": "https://app.test/FUZZ",
+  "wordlist": "inputs/routes.txt",
+  "output_directory": "raw/content-discovery",
+  "request_limit": 500,
+  "rate_per_second": 10,
+  "concurrency": 5,
+  "timeout_seconds": 120
+}

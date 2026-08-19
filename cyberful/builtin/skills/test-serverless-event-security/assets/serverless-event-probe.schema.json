@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "attribution", "limits", "cases"],
+  "properties": {
+    "$schema": {"const": "assets/serverless-event-probe.schema.json"},
+    "attribution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authorization_reference", "expires_at", "allowed_origins", "actor_id", "tenant_id", "source_id"],
+      "properties": {
+        "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "allowed_origins": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^https?://"}},
+        "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "tenant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false, "required": ["max_requests", "requests_per_second"],
+      "properties": {"max_requests": {"type": "integer", "minimum": 1, "maximum": 8}, "requests_per_second": {"type": "number", "exclusiveMinimum": 0, "maximum": 4}}
+    },
+    "cases": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "endpoint", "event_id", "event_type", "schema_version", "payload", "actor_id", "tenant_id", "source_id", "expected_effect"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "endpoint": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^https?://"},
+          "event_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "event_type": {"type": "string", "minLength": 1, "maxLength": 256},
+          "schema_version": {"type": "string", "minLength": 1, "maxLength": 64},
+          "payload": {"type": "object"},
+          "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "tenant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "source_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "expected_effect": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      }
+    }
+  }
+}

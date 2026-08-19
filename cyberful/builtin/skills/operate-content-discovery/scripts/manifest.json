@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_content_discovery_campaign.py",
+  "class": "orchestrator",
+  "network": "target",
+  "transport": {"authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]},
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["recon", "exploit", "hacker"],
+  "tools": ["ffuf"],
+  "dependencies": {"commands": ["ffuf"], "python": [], "bootstrap": null},
+  "effects": ["sends bounded HTTP requests through the runtime mission route", "writes raw ffuf JSON and a campaign record"],
+  "timeout_seconds": 300,
+  "limits": {"requests": 10000, "concurrency": 50, "output_bytes": 16000000},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/content-discovery-campaign.schema.json"},
+  "output": {"format": "json", "schema": "assets/content-discovery-record.schema.json", "raw": true}
+}

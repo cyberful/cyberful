@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/deserialization-evidence.v1.json",
+  "title": "Cyberful loopback deserialization raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "authorization_reference", "source_sha256", "limits", "fixtures", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.deserialization-evidence.v1"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "limits": {"$ref": "#/$defs/limits"},
+    "fixtures": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/evidence"}},
+    "interpretation": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requests", "concurrency", "request_timeout_seconds", "campaign_timeout_seconds", "network"],
+      "properties": {
+        "requests": {"type": "integer", "minimum": 1, "maximum": 8}, "concurrency": {"const": 1},
+        "request_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 20},
+        "campaign_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 120}, "network": {"const": "loopback"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixture_id", "format", "expected_boundary", "request", "transport", "response"],
+      "properties": {
+        "fixture_id": {"type": "string", "minLength": 1, "maxLength": 128}, "format": {"enum": ["json", "yaml", "xml", "binary", "language-native", "custom"]},
+        "expected_boundary": {"type": "string", "minLength": 1, "maxLength": 256},
+        "request": {"$ref": "#/$defs/request"}, "transport": {"$ref": "#/$defs/transport"}, "response": {"$ref": "#/$defs/response"}
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "url", "content_type", "secret_headers", "body_bytes", "body_sha256", "request_sha256"],
+      "properties": {
+        "method": {"const": "POST"}, "url": {"type": "string", "format": "uri", "maxLength": 2048}, "content_type": {"type": "string", "minLength": 1, "maxLength": 256},
+        "secret_headers": {"type": "array", "maxItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["name", "environment", "value_sha256"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "environment": {"const": "CYBERFUL_LAB_AUTHORIZATION"}, "value_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}},
+        "body_bytes": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "body_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "transport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["return_code", "timed_out", "limit_exceeded", "elapsed_ms", "http_status", "route", "stderr", "stderr_redactions"],
+      "properties": {
+        "return_code": {"type": "integer"}, "timed_out": {"type": "boolean"},
+        "limit_exceeded": {"enum": [null, "stdout", "stderr", "response headers", "response body"]},
+        "elapsed_ms": {"type": "integer", "minimum": 0}, "http_status": {"type": ["integer", "null"], "minimum": 0, "maximum": 599},
+        "route": {"const": "direct-loopback"}, "stderr": {"type": "string", "maxLength": 4096}, "stderr_redactions": {"type": "integer", "minimum": 0}
+      }
+    },
+    "response": {
+      "type": "object", "additionalProperties": false,
+      "required": ["headers_base64", "headers_bytes", "headers_truncated", "headers_redactions", "body_base64", "body_bytes", "body_truncated", "body_redactions"],
+      "properties": {
+        "headers_base64": {"type": "string", "contentEncoding": "base64", "maxLength": 21848}, "headers_bytes": {"type": "integer", "minimum": 0, "maximum": 16384},
+        "headers_truncated": {"type": "boolean"}, "headers_redactions": {"type": "integer", "minimum": 0},
+        "body_base64": {"type": "string", "contentEncoding": "base64", "maxLength": 21848}, "body_bytes": {"type": "integer", "minimum": 0, "maximum": 16384},
+        "body_truncated": {"type": "boolean"}, "body_redactions": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

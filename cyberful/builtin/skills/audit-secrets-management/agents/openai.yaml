@@ -1,0 +1,4 @@
+interface:
+  display_name: "Secrets Management Auditor"
+  short_description: "Audit secret lifecycle and accepted authority"
+  default_prompt: "Use $audit-secrets-management to trace these secret lifecycles without exposing secret values."

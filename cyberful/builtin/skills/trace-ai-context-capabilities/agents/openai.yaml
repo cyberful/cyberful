@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Context Capability Tracer"
+  short_description: "Trace agent context identity and tool causality"
+  default_prompt: "Use $trace-ai-context-capabilities to reconstruct instruction, identity, memory, delegation, and tool-capability paths."

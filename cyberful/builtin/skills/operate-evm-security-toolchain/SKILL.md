@@ -1,6 +1,26 @@
 ---
 name: operate-evm-security-toolchain
 description: Operate Cyberful's pinned Foundry toolchain and engagement-owned Anvil lab for authorized EVM smart-contract bug bounty work. Use when importing scoped Solidity repositories, building or testing with Forge, running fuzz or invariant tests, reproducing behavior on a deterministic fork, collecting traces or state changes, or registering a concise PoC for verification and reporting.
+metadata:
+  domain: application-security
+  subdomain: smart-contract-tooling
+  triggers:
+    - EVM security toolchain
+    - Foundry test campaign
+    - Slither analysis
+    - Echidna fuzzing
+    - Solidity invariant testing
+    - transaction trace analysis
+  tags:
+    - EVM
+    - Solidity
+    - Foundry
+    - Slither
+    - Echidna
+    - Anvil
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate EVM Security Toolchain

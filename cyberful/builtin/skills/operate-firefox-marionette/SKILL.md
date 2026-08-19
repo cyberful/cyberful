@@ -1,6 +1,22 @@
 ---
 name: operate-firefox-marionette
 description: Operate a managed Firefox/Marionette laboratory for privileged chrome-context experiments, content automation, real WebDriver windows, permission readback, and synthetic X11 clipboard controls. Use when a browser-security discriminator depends on a specific Firefox executable, chrome/content context, Marionette responses, permission APIs, window lifecycle, or X11 clipboard ownership.
+metadata:
+  domain: security-tooling
+  subdomain: browser-laboratory
+  triggers:
+    - Firefox Marionette laboratory
+    - privileged Firefox experiment
+    - Firefox permission readback
+    - chrome context browser test
+    - X11 clipboard browser test
+  tags:
+    - Firefox
+    - Marionette
+    - WebDriver
+    - browser-lab
+    - X11
+  frameworks: {}
 ---
 
 # Operate Firefox Marionette

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_files", "implementation_operations", "observed_operations"],
+  "properties": {
+    "contract_files": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "implementation_operations": {"type": "array", "maxItems": 10000, "uniqueItems": true, "items": {"type": "string", "pattern": "^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE) /"}},
+    "observed_operations": {"type": "array", "maxItems": 10000, "uniqueItems": true, "items": {"type": "string", "pattern": "^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE) /"}}
+  }
+}

@@ -1,6 +1,30 @@
 ---
 name: trace-injection-dataflows
 description: Trace and test untrusted data through SQL, NoSQL, LDAP, XPath, XML, shell, process, template, expression-language, code-evaluation, log, spreadsheet, mail, header, and browser interpreters. Use for injection vulnerability research, taint analysis, source review, parser-confusion analysis, sanitizer validation, or proving whether data reaches an executable or structurally significant sink.
+metadata:
+  domain: application-security
+  subdomain: injection-dataflows
+  triggers:
+    - injection dataflow
+    - source to sink trace
+    - taint analysis
+    - sanitizer validation
+    - second-order injection
+    - interpreter boundary
+  tags:
+    - injection
+    - taint-analysis
+    - source-to-sink
+    - sanitization
+    - parser-differential
+    - interpreter
+  frameworks:
+    mitre_attack:
+      - T1059
+      - T1190
+    nist_csf:
+      - ID.RA-01
+      - PR.PS-01
 ---
 
 # Trace Injection Dataflows

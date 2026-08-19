@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "analyze_scan_findings.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "hunt", "verify"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-confined-scan-result-snapshots", "writes-bounded-raw-finding-correlation-evidence"],
+  "timeout_seconds": 60,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 8388608},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/scan-finding-analysis.schema.json"},
+  "output": {"format": "json", "schema": "assets/scan-finding-evidence.schema.json", "raw": true}
+}
