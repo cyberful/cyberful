@@ -133,6 +133,13 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
         self.assertIn("203 cyberful-os CLI tools", catalog)
         self.assertIn("13 cyberful-os managed workflows", catalog)
 
+    def test_archive_extract_description_advertises_signature_detected_tar_support(self):
+        archive_extract = next(entry for entry in cyberful_os_mcp._exposed_tool_registry() if entry[0] == "archive_extract")
+
+        self.assertIn("detected by signature", archive_extract[1])
+        self.assertIn("compressed TAR", archive_extract[1])
+        self.assertIn("bounded atomic publication", archive_extract[1])
+
     def test_shell_schema_remains_the_bounded_fallback_contract(self):
         shell = next(entry for entry in cyberful_os_mcp._exposed_tool_registry() if entry[0] == "shell")
         schema = shell[2]

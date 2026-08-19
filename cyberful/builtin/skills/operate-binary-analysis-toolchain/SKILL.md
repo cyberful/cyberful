@@ -29,7 +29,7 @@ Treat decompiler output as a lossy hypothesis. Anchor conclusions in bytes, relo
 
 ## Establish artifact identity
 
-Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Use bounded `xxd` views when raw bytes resolve format ambiguity, and `archive_extract` for deterministic atomic ZIP/optimized-ZIP publication. Keep universal/fat slices and platform variants separate.
+Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Use bounded `xxd` views when raw bytes resolve format ambiguity, and `archive_extract` for signature-detected, bounded, atomic ZIP, TAR-family, compressed-stream, and native 7-Zip publication. Keep universal/fat slices and platform variants separate.
 
 ## Triage before decompiling
 

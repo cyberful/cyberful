@@ -32,6 +32,7 @@ const STATES = [
 export type HypothesisState = (typeof STATES)[number]
 const ACTIVE_HYPOTHESIS_STATES = ["OPEN", "QUEUED", "TESTING", "SUSPECTED"] as const
 const EXECUTED_DISPOSITIONS = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE"] as const
+const ORACLE_MATCHES = ["POSITIVE", "NEGATIVE", "INVALID", "CONFLICT"] as const
 const TERMINAL_PORTFOLIO_STATES = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE", "UNTESTABLE"] as const
 const TEST_COSTS = ["LOW", "MEDIUM", "HIGH"] as const
 const REWARD_GROUP_STATUSES = ["MAPPED", "UNRESOLVED", "NOT_APPLICABLE"] as const
@@ -50,6 +51,25 @@ const OMISSION_REASONS = [
   "not_needed",
 ] as const
 type OmissionReason = (typeof OMISSION_REASONS)[number]
+
+export interface HypothesisOracle {
+  readonly primary_observation: string
+  readonly positive_condition: string
+  readonly negative_condition: string
+  readonly invalid_condition: string
+  readonly controls: readonly string[]
+}
+
+export type HypothesisOracleMatch = (typeof ORACLE_MATCHES)[number]
+
+export interface HypothesisTestResult {
+  readonly match: HypothesisOracleMatch
+  readonly observation: string
+  readonly primary_evidence_paths: readonly string[]
+  readonly derived_evidence_paths: readonly string[]
+  readonly conflicts: readonly string[]
+  readonly interpretation: string
+}
 
 interface ScopeResolution {
   readonly exact_action: string
@@ -70,6 +90,7 @@ interface Transition {
   readonly to: HypothesisState
   readonly evidence: readonly string[]
   readonly reason?: string
+  readonly test_result?: HypothesisTestResult
 }
 
 interface OwnershipTransition {
@@ -127,6 +148,7 @@ export interface Hypothesis {
   readonly root_cause: string
   readonly surface: string
   readonly discriminator: string
+  readonly oracle?: HypothesisOracle
   readonly candidate_tools: readonly string[]
   readonly omitted_tools: ReadonlyArray<{ readonly tool: string; readonly reason: OmissionReason }>
   readonly state: HypothesisState
@@ -189,6 +211,8 @@ export interface HypothesisRegistryView {
     readonly rootCause: string
     readonly surface: string
     readonly discriminator: string
+    readonly oracle?: HypothesisOracle
+    readonly latestTestResult?: HypothesisTestResult
     readonly candidateTools: readonly string[]
     readonly omittedTools: ReadonlyArray<{ readonly tool: string; readonly reason: string }>
     readonly state: HypothesisState
@@ -208,6 +232,7 @@ export interface HypothesisRegistryView {
       readonly to: HypothesisState
       readonly evidence: readonly string[]
       readonly reason?: string
+      readonly testResult?: HypothesisTestResult
     }>
   }>
 }
@@ -352,6 +377,21 @@ function requiredTextArray(value: unknown, label: string, maximumItems: number):
   return values
 }
 
+function evidencePath(value: unknown, label: string): string {
+  const candidate = boundedText(value, label, 1_024).replaceAll("\\", "/")
+  if (path.posix.isAbsolute(candidate) || candidate.split("/").some((part) => !part || part === "." || part === ".."))
+    throw new Error(`${label} must be a safe workarea-relative path`)
+  return candidate
+}
+
+function evidencePaths(value: unknown, label: string, maximumItems: number, required = false): readonly string[] {
+  if (!Array.isArray(value) || value.length > maximumItems || (required && value.length === 0))
+    throw new Error(
+      `${label} must be an array of ${required ? `1 to ${maximumItems}` : `at most ${maximumItems}`} safe workarea-relative paths`,
+    )
+  return [...new Set(value.map((item, index) => evidencePath(item, `${label}[${index}]`)))]
+}
+
 function exactObject(value: unknown, label: string, allowedKeys: readonly string[]): Readonly<Record<string, unknown>> {
   if (!isRecord(value)) throw new Error(`${label} must be an object`)
   const unexpected = Object.keys(value).filter((key) => !allowedKeys.includes(key))
@@ -367,6 +407,77 @@ function enumValue<const Values extends readonly string[]>(
   if (typeof value !== "string" || !values.includes(value))
     throw new Error(`${label} must be one of ${values.join(", ")}`)
   return value as Values[number]
+}
+
+function hypothesisOracle(value: unknown): HypothesisOracle {
+  const input = exactObject(value, "hypothesis oracle", [
+    "primary_observation",
+    "positive_condition",
+    "negative_condition",
+    "invalid_condition",
+    "controls",
+  ])
+  if (!Array.isArray(input.controls)) throw new Error("hypothesis oracle.controls must be an array")
+  return {
+    primary_observation: boundedText(input.primary_observation, "hypothesis oracle.primary_observation", 1_000),
+    positive_condition: boundedText(input.positive_condition, "hypothesis oracle.positive_condition", 1_000),
+    negative_condition: boundedText(input.negative_condition, "hypothesis oracle.negative_condition", 1_000),
+    invalid_condition: boundedText(input.invalid_condition, "hypothesis oracle.invalid_condition", 1_000),
+    controls: textArray(input.controls, "hypothesis oracle.controls", 20),
+  }
+}
+
+// ── Primary Evidence Remains The Authority ──────────────────────
+// The registry preserves raw observations separately from parser, scanner, and
+// classifier output. Derived evidence may inform interpretation, but any
+// disagreement remains explicit in the same immutable test transition.
+// State validation then binds the declared oracle match to its disposition.
+// ────────────────────────────────────────────────────────────────
+function hypothesisTestResult(value: unknown): HypothesisTestResult {
+  const input = exactObject(value, "hypothesis test_result", [
+    "match",
+    "observation",
+    "primary_evidence_paths",
+    "derived_evidence_paths",
+    "conflicts",
+    "interpretation",
+  ])
+  if (!Array.isArray(input.conflicts)) throw new Error("hypothesis test_result.conflicts must be an array")
+  const result = {
+    match: enumValue(input.match, "hypothesis test_result.match", ORACLE_MATCHES),
+    observation: boundedText(input.observation, "hypothesis test_result.observation", 4_000),
+    primary_evidence_paths: evidencePaths(
+      input.primary_evidence_paths,
+      "hypothesis test_result.primary_evidence_paths",
+      50,
+      true,
+    ),
+    derived_evidence_paths: evidencePaths(
+      input.derived_evidence_paths,
+      "hypothesis test_result.derived_evidence_paths",
+      50,
+    ),
+    conflicts: textArray(input.conflicts, "hypothesis test_result.conflicts", 20),
+    interpretation: boundedText(input.interpretation, "hypothesis test_result.interpretation", 4_000),
+  }
+  if (result.match === "CONFLICT" && result.conflicts.length === 0)
+    throw new Error("CONFLICT hypothesis test_result requires at least one explicit conflict")
+  return result
+}
+
+function validateTestResult(state: HypothesisState, result: HypothesisTestResult | undefined): void {
+  if (!EXECUTED_DISPOSITIONS.some((candidate) => candidate === state)) return
+  if (!result) throw new Error(`${state} hypothesis requires test_result`)
+  if ((state === "SUSPECTED" || state === "CONFIRMED") && result.match !== "POSITIVE")
+    throw new Error(`${state} hypothesis requires a POSITIVE test_result`)
+  if (state === "DISPROVED" && result.match !== "NEGATIVE")
+    throw new Error("DISPROVED hypothesis requires a NEGATIVE test_result")
+  if (state === "INCONCLUSIVE" && result.match !== "INVALID" && result.match !== "CONFLICT")
+    throw new Error("INCONCLUSIVE hypothesis requires an INVALID or CONFLICT test_result")
+}
+
+function latestTestResult(hypothesis: Hypothesis): HypothesisTestResult | undefined {
+  return hypothesis.transitions.findLast((transition) => transition.test_result)?.test_result
 }
 
 async function bountyContext(value: unknown, workarea: string): Promise<BountyContext> {
@@ -814,6 +925,8 @@ export async function readHypothesisRegistryView(
         rootCause: hypothesis.root_cause,
         surface: hypothesis.surface,
         discriminator: hypothesis.discriminator,
+        ...(hypothesis.oracle ? { oracle: hypothesis.oracle } : {}),
+        ...(latestTestResult(hypothesis) ? { latestTestResult: latestTestResult(hypothesis) } : {}),
         candidateTools: hypothesis.candidate_tools ?? [],
         omittedTools: hypothesis.omitted_tools ?? [],
         state: hypothesis.state,
@@ -833,6 +946,7 @@ export async function readHypothesisRegistryView(
           to: transition.to,
           evidence: transition.evidence,
           ...(transition.reason ? { reason: transition.reason } : {}),
+          ...(transition.test_result ? { testResult: transition.test_result } : {}),
         })),
       })),
   }
@@ -1033,7 +1147,8 @@ export class HypothesisRegistry {
       const description = boundedText(args.description ?? args.objective ?? args.title, "hypothesis description", 1_000)
       const rootCause = boundedText(args.root_cause, "hypothesis root_cause", 500)
       const surface = boundedText(args.surface, "hypothesis surface", 500)
-      const discriminator = boundedText(args.discriminator ?? args.oracle, "hypothesis discriminator", 1_000)
+      const discriminator = boundedText(args.discriminator, "hypothesis discriminator", 1_000)
+      const oracle = hypothesisOracle(args.oracle)
       const id = identifier(args.id, "hypothesis id")
       const fingerprintSha256 = fingerprint({
         workflow: this.#workflow,
@@ -1061,6 +1176,7 @@ export class HypothesisRegistry {
           JSON.stringify(existing.evidence) === JSON.stringify(evidence) &&
           JSON.stringify(existing.evidence_refs) === JSON.stringify(evidenceRefs) &&
           JSON.stringify(existing.graph_refs) === JSON.stringify(graphRefs) &&
+          JSON.stringify(existing.oracle) === JSON.stringify(oracle) &&
           JSON.stringify(existing.bounty_context) === JSON.stringify(context)
         if (repeated) return { registry, result: existing, changed: false }
         throw new Error(`hypothesis '${id}' already exists with different content`)
@@ -1086,6 +1202,7 @@ export class HypothesisRegistry {
         root_cause: rootCause,
         surface,
         discriminator,
+        oracle,
         candidate_tools: candidateTools,
         omitted_tools: omitted,
         state: "OPEN",
@@ -1158,8 +1275,31 @@ export class HypothesisRegistry {
         throw new Error(`hypothesis '${id}' requires set_bounty_context before a Bug Bounty state transition`)
       const actor = hostActor(args._cyberful_actor)
       const nextState = state(args.state)
-      const evidence = textArray(args.evidence, "hypothesis evidence", 50)
-      const evidenceRefs = textArray(args.evidence_refs, "hypothesis evidence_refs", 50)
+      if (
+        EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState) &&
+        previous.state !== "TESTING" &&
+        nextState !== previous.state
+      )
+        throw invalidHypothesisTransition(
+          registry,
+          previous,
+          nextState,
+          ["TESTING"],
+          `hypothesis '${id}' must enter TESTING before an executed ${nextState} disposition`,
+        )
+      const testResult = EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState)
+        ? hypothesisTestResult(args.test_result)
+        : undefined
+      validateTestResult(nextState, testResult)
+      const suppliedEvidence = textArray(args.evidence, "hypothesis evidence", 50)
+      const evidence = testResult ? mergeUnique(suppliedEvidence, [testResult.observation], "hypothesis evidence") : suppliedEvidence
+      const evidenceRefs = testResult
+        ? mergeUnique(
+            textArray(args.evidence_refs, "hypothesis evidence_refs", 50),
+            [...testResult.primary_evidence_paths, ...testResult.derived_evidence_paths],
+            "hypothesis evidence_refs",
+          )
+        : textArray(args.evidence_refs, "hypothesis evidence_refs", 50)
       const graphRefs = textArray(args.graph_refs, "hypothesis graph_refs", 50)
       const omissions = omittedTools(args.omitted_tools)
       const owner = optionalText(args.owner, "hypothesis owner", 160) ?? previous.owner
@@ -1176,6 +1316,12 @@ export class HypothesisRegistry {
       const mergedOmissions = mergeOmissions(previous.omitted_tools ?? [], omissions)
 
       if (nextState === previous.state) {
+        if (
+          testResult &&
+          JSON.stringify(previous.transitions.findLast((transition) => transition.test_result)?.test_result) !==
+            JSON.stringify(testResult)
+        )
+          throw new Error(`hypothesis '${id}' must re-enter TESTING before recording a different test_result`)
         const updated: Hypothesis = {
           ...previous,
           phase: this.#phase,
@@ -1208,17 +1354,6 @@ export class HypothesisRegistry {
         hypotheses[index] = updated
         return { registry: { ...registry, hypotheses }, result: updated }
       }
-      if (
-        EXECUTED_DISPOSITIONS.some((candidate) => candidate === nextState) &&
-        previous.state !== "TESTING"
-      )
-        throw invalidHypothesisTransition(
-          registry,
-          previous,
-          nextState,
-          ["TESTING"],
-          `hypothesis '${id}' must enter TESTING before an executed ${nextState} disposition`,
-        )
       if (
         nextState === "TESTING" &&
         previous.state !== "OPEN" &&
@@ -1281,6 +1416,7 @@ export class HypothesisRegistry {
             to: nextState,
             evidence,
             ...(reason ? { reason } : {}),
+            ...(testResult ? { test_result: testResult } : {}),
           },
         ],
       }
@@ -1314,6 +1450,11 @@ export class HypothesisRegistry {
       const previous = registry.hypotheses[index]!
       if (this.#bountyPortfolio && !previous.bounty_context)
         throw new Error(`hypothesis '${id}' requires set_bounty_context before a Bug Bounty claim`)
+      const suppliedOracle = args.oracle === undefined ? undefined : hypothesisOracle(args.oracle)
+      if (!previous.oracle && !suppliedOracle)
+        throw new Error(`hypothesis '${id}' requires oracle when it first enters TESTING`)
+      if (previous.oracle && suppliedOracle && JSON.stringify(previous.oracle) !== JSON.stringify(suppliedOracle))
+        throw new Error(`hypothesis '${id}' oracle is immutable once recorded`)
       const actor = hostActor(args._cyberful_actor)
       if (
         previous.state === "TESTING" &&
@@ -1322,8 +1463,13 @@ export class HypothesisRegistry {
         previous.ownerRunID !== actor.runID
       )
         throw ownedHypothesis(registry, previous, actor)
-      if (previous.state === "TESTING" && (!actor || previous.ownerRunID === actor.runID))
-        return { registry, result: previous, changed: false }
+      if (previous.state === "TESTING" && (!actor || previous.ownerRunID === actor.runID)) {
+        if (previous.oracle) return { registry, result: previous, changed: false }
+        const updated = { ...previous, oracle: suppliedOracle }
+        const hypotheses = [...registry.hypotheses]
+        hypotheses[index] = updated
+        return { registry: { ...registry, hypotheses }, result: updated }
+      }
       if (previous.state === "QUEUED" && previous.next_phase !== this.#phase)
         throw invalidHypothesisTransition(
           registry,
@@ -1346,6 +1492,7 @@ export class HypothesisRegistry {
       const now = new Date().toISOString()
       const updated: Hypothesis = {
         ...previous,
+        ...(previous.oracle ? {} : { oracle: suppliedOracle }),
         phase: this.#phase,
         owner,
         ...reassignedOwnership(previous, actor, now, "claimed"),
@@ -1590,6 +1737,54 @@ const scopeResolutionSchema = {
   ],
 }
 
+const hypothesisOracleSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    primary_observation: { type: "string" },
+    positive_condition: { type: "string" },
+    negative_condition: { type: "string" },
+    invalid_condition: { type: "string" },
+    controls: { type: "array", maxItems: 20, items: { type: "string" } },
+  },
+  required: [
+    "primary_observation",
+    "positive_condition",
+    "negative_condition",
+    "invalid_condition",
+    "controls",
+  ],
+}
+
+const hypothesisTestResultSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    match: { type: "string", enum: ORACLE_MATCHES },
+    observation: { type: "string" },
+    primary_evidence_paths: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+    derived_evidence_paths: { type: "array", maxItems: 50, items: { type: "string" } },
+    conflicts: { type: "array", maxItems: 20, items: { type: "string" } },
+    interpretation: { type: "string" },
+  },
+  required: [
+    "match",
+    "observation",
+    "primary_evidence_paths",
+    "derived_evidence_paths",
+    "conflicts",
+    "interpretation",
+  ],
+}
+
+const positiveHypothesisTestResultSchema = {
+  ...hypothesisTestResultSchema,
+  properties: {
+    ...hypothesisTestResultSchema.properties,
+    match: { type: "string", enum: ["POSITIVE"] },
+  },
+}
+
 const bountyContextSchema = {
   type: "object",
   additionalProperties: false,
@@ -1673,7 +1868,7 @@ function hypothesisActionSchema(
 export const HYPOTHESIS_TOOL_DEF = {
   name: "hypothesis",
   description:
-    "Record, contextualize, claim, carry, and close durable hypotheses. Bug Bounty portfolio phases require reward-aware bounty_context and structurally referenced pivots; no numeric ranking is performed.",
+    "Record, contextualize, claim, carry, and close durable hypotheses against a declared oracle while preserving primary and derived evidence. Bug Bounty portfolio phases require reward-aware bounty_context and structurally referenced pivots; no numeric ranking is performed.",
   inputSchema: {
     type: "object" as const,
     oneOf: [
@@ -1686,11 +1881,12 @@ export const HYPOTHESIS_TOOL_DEF = {
           root_cause: { type: "string" },
           surface: { type: "string" },
           discriminator: { type: "string" },
+          oracle: hypothesisOracleSchema,
           candidate_tools: { type: "array", maxItems: 30, items: { type: "string" } },
           bounty_context: bountyContextSchema,
           ...hypothesisEvidenceProperties,
         },
-        ["id", "owner", "description", "root_cause", "surface", "discriminator"],
+        ["id", "owner", "description", "root_cause", "surface", "discriminator", "oracle"],
       ),
       hypothesisActionSchema(
         "set_bounty_context",
@@ -1704,6 +1900,7 @@ export const HYPOTHESIS_TOOL_DEF = {
           state: { type: "string", enum: ["TESTING"] },
           owner: { type: "string" },
           reason: { type: "string" },
+          oracle: hypothesisOracleSchema,
         },
         ["id", "state"],
       ),
@@ -1728,9 +1925,10 @@ export const HYPOTHESIS_TOOL_DEF = {
             owner: { type: "string" },
             finding_id: { type: "string" },
             reason: { type: "string" },
+            test_result: hypothesisTestResultSchema,
             ...hypothesisEvidenceProperties,
           },
-          ["id", "state", "finding_id", "evidence", "reason"],
+          ["id", "state", "finding_id", "test_result", "reason"],
         ),
       ),
       hypothesisActionSchema(
@@ -1740,9 +1938,10 @@ export const HYPOTHESIS_TOOL_DEF = {
           state: { type: "string", enum: ["DISPROVED"] },
           owner: { type: "string" },
           reason: { type: "string" },
+          test_result: hypothesisTestResultSchema,
           ...hypothesisEvidenceProperties,
         },
-        ["id", "state", "evidence", "reason"],
+        ["id", "state", "test_result", "reason"],
       ),
       hypothesisActionSchema(
         "update",
@@ -1753,9 +1952,10 @@ export const HYPOTHESIS_TOOL_DEF = {
           blocker: { type: "string" },
           next_step: { type: "string" },
           reason: { type: "string" },
+          test_result: hypothesisTestResultSchema,
           ...hypothesisEvidenceProperties,
         },
-        ["id", "state", "evidence", "blocker", "next_step", "reason"],
+        ["id", "state", "test_result", "blocker", "next_step", "reason"],
       ),
       hypothesisActionSchema(
         "update",
@@ -1774,7 +1974,12 @@ export const HYPOTHESIS_TOOL_DEF = {
       ),
       hypothesisActionSchema(
         "claim",
-        { id: { type: "string" }, owner: { type: "string" }, reason: { type: "string" } },
+        {
+          id: { type: "string" },
+          owner: { type: "string" },
+          reason: { type: "string" },
+          oracle: hypothesisOracleSchema,
+        },
         ["id"],
       ),
       hypothesisActionSchema(
@@ -1793,14 +1998,30 @@ export const HYPOTHESIS_TOOL_DEF = {
             ],
           },
           evidence_paths: { type: "array", maxItems: 64, items: { type: "string" } },
+          test_result: positiveHypothesisTestResultSchema,
           next_step: { type: "string" },
           reason: { type: "string" },
         },
-        ["id", "disposition", "title", "severity", "summary", "positive_evidence", "evidence_paths", "reason"],
+        [
+          "id",
+          "disposition",
+          "title",
+          "severity",
+          "summary",
+          "positive_evidence",
+          "evidence_paths",
+          "test_result",
+          "reason",
+        ],
       ),
       hypothesisActionSchema(
         "reopen",
-        { id: { type: "string" }, owner: { type: "string" }, reason: { type: "string" } },
+        {
+          id: { type: "string" },
+          owner: { type: "string" },
+          reason: { type: "string" },
+          oracle: hypothesisOracleSchema,
+        },
         ["id"],
       ),
       hypothesisActionSchema("get", { id: { type: "string" } }, ["id"]),

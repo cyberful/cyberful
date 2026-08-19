@@ -20,6 +20,25 @@ export const State = Schema.Literals([
   "UNTESTABLE",
 ])
 
+export const Oracle = Schema.Struct({
+  primary_observation: Schema.String,
+  positive_condition: Schema.String,
+  negative_condition: Schema.String,
+  invalid_condition: Schema.String,
+  controls: Schema.Array(Schema.String),
+})
+
+export const OracleMatch = Schema.Literals(["POSITIVE", "NEGATIVE", "INVALID", "CONFLICT"])
+
+export const TestResult = Schema.Struct({
+  match: OracleMatch,
+  observation: Schema.String,
+  primary_evidence_paths: Schema.Array(Schema.String),
+  derived_evidence_paths: Schema.Array(Schema.String),
+  conflicts: Schema.Array(Schema.String),
+  interpretation: Schema.String,
+})
+
 export const Item = Schema.Struct({
   id: Schema.String,
   phase: Schema.String,
@@ -29,6 +48,8 @@ export const Item = Schema.Struct({
   rootCause: Schema.String,
   surface: Schema.String,
   discriminator: Schema.String,
+  oracle: Schema.optional(Oracle),
+  latestTestResult: Schema.optional(TestResult),
   candidateTools: Schema.Array(Schema.String),
   omittedTools: Schema.Array(
     Schema.Struct({
@@ -54,6 +75,7 @@ export const Item = Schema.Struct({
       to: State,
       evidence: Schema.Array(Schema.String),
       reason: Schema.optional(Schema.String),
+      testResult: Schema.optional(TestResult),
     }),
   ),
 })

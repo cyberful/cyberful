@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import {
+  HYPOTHESIS_REGISTRY_PATH,
   HYPOTHESIS_TOOL_DEF,
   HypothesisRegistry,
   HypothesisRegistryError,
@@ -42,6 +43,32 @@ async function configureRewardPolicy(workarea: string) {
       ],
     }),
   )
+}
+
+function oracle() {
+  return {
+    primary_observation: "The target's direct response to the controlled differential.",
+    positive_condition: "The tested effect occurs only for the positive case.",
+    negative_condition: "The target retains the expected control behavior.",
+    invalid_condition: "Transport or fixture failure prevents comparison of the cases.",
+    controls: ["Repeat the same request without the candidate trigger."],
+  }
+}
+
+function testResult(
+  match: "POSITIVE" | "NEGATIVE" | "INVALID" | "CONFLICT",
+  observation: string,
+  primaryEvidencePath: string,
+  input: { derived?: readonly string[]; conflicts?: readonly string[]; interpretation?: string } = {},
+) {
+  return {
+    match,
+    observation,
+    primary_evidence_paths: [primaryEvidencePath],
+    derived_evidence_paths: input.derived ?? [],
+    conflicts: input.conflicts ?? [],
+    interpretation: input.interpretation ?? `The primary observation matches the ${match.toLowerCase()} condition.`,
+  }
 }
 
 function bountyContext(input: {
@@ -78,6 +105,7 @@ function bountyHypothesis(id: string, context: ReturnType<typeof bountyContext>)
     root_cause: `${id} missing contextual authorization`,
     surface: `${id} account API`,
     discriminator: `${id} controlled cross-boundary differential`,
+    oracle: oracle(),
     bounty_context: context,
   }
 }
@@ -90,6 +118,11 @@ async function disprove(registry: HypothesisRegistry, id: string) {
     state: "DISPROVED",
     evidence: [`${id} retained the secure control under the target-specific differential.`],
     evidence_refs: [`raw/evidence/${id}.json`],
+    test_result: testResult(
+      "NEGATIVE",
+      `${id} retained the secure control under the target-specific differential.`,
+      `raw/evidence/${id}.json`,
+    ),
     reason: "The controlled bypass did not reproduce.",
   })
 }
@@ -112,6 +145,7 @@ describe("hypothesis registry", () => {
         root_cause: "missing authority check",
         surface: "release pipeline",
         discriminator: "guard dominance between manifest parser and process launch",
+        oracle: oracle(),
         candidate_tools: ["code_graph_path"],
         graph_refs: ["node:manifest", "node:release"],
         _cyberful_actor: traceActor,
@@ -152,6 +186,11 @@ describe("hypothesis registry", () => {
         finding_id: "F-CODE-1",
         evidence: ["The launch path is reachable and the expected authority guard does not dominate it."],
         evidence_refs: ["code-graph:path:manifest-to-release"],
+        test_result: testResult(
+          "POSITIVE",
+          "The launch path is reachable and the expected authority guard does not dominate it.",
+          "raw/evidence/H-CODE-1.json",
+        ),
         omitted_tools: [{ tool: "audit_lab", reason: "not_needed" }],
         reason: "Positive static reachability evidence warrants runtime validation.",
         _cyberful_actor: huntActor,
@@ -173,6 +212,7 @@ describe("hypothesis registry", () => {
         root_cause: "ownership checked only on list",
         surface: "project API",
         discriminator: "tenant-specific read differential",
+        oracle: oracle(),
       }
       await registry.handle({ ...candidate, id: "H-LIVE-1" })
       await expect(registry.handle({ ...candidate, id: "H-LIVE-2" })).rejects.toThrow("duplicates")
@@ -183,6 +223,11 @@ describe("hypothesis registry", () => {
           state: "SUSPECTED",
           finding_id: "F-LIVE-1",
           evidence: ["A second tenant received the synthetic object's metadata."],
+          test_result: testResult(
+            "POSITIVE",
+            "A second tenant received the synthetic object's metadata.",
+            "raw/evidence/H-LIVE-1.json",
+          ),
           reason: "The cross-tenant differential is positive and reproducible.",
         }),
       ).rejects.toThrow("must enter TESTING")
@@ -197,6 +242,11 @@ describe("hypothesis registry", () => {
         state: "SUSPECTED",
         finding_id: "F-LIVE-1",
         evidence: ["A second tenant received the synthetic object's metadata."],
+        test_result: testResult(
+          "POSITIVE",
+          "A second tenant received the synthetic object's metadata.",
+          "raw/evidence/H-LIVE-1.json",
+        ),
         reason: "The cross-tenant differential is positive and reproducible.",
       })
       expect(await registry.get("H-LIVE-1")).toMatchObject({
@@ -216,6 +266,11 @@ describe("hypothesis registry", () => {
         id: "H-LIVE-1",
         state: "DISPROVED",
         evidence: ["The repeated differential no longer reproduces under the same controls."],
+        test_result: testResult(
+          "NEGATIVE",
+          "The repeated differential no longer reproduces under the same controls.",
+          "raw/evidence/H-LIVE-1-retest.json",
+        ),
         reason: "The retest invalidated the prior positive result.",
       })
       const disproved = await registry.get("H-LIVE-1")
@@ -238,6 +293,7 @@ describe("hypothesis registry", () => {
         root_cause: "missing ownership check",
         surface: "object API",
         discriminator: "cross-tenant object differential",
+        oracle: oracle(),
         candidate_tools: ["browser_request"],
       }
       await registry.handle(record)
@@ -257,6 +313,11 @@ describe("hypothesis registry", () => {
         finding_id: "F-IDEM-1",
         evidence: ["The second tenant received the synthetic object."],
         evidence_refs: ["raw/evidence/one.json"],
+        test_result: testResult(
+          "POSITIVE",
+          "The second tenant received the synthetic object.",
+          "raw/evidence/one.json",
+        ),
         reason: "The controlled cross-tenant differential is positive.",
       }
       await registry.handle(suspected)
@@ -285,6 +346,207 @@ describe("hypothesis registry", () => {
     }
   })
 
+  test("enforces the complete oracle-match matrix for executed dispositions", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      const states = ["SUSPECTED", "CONFIRMED", "DISPROVED", "INCONCLUSIVE"] as const
+      const matches = ["POSITIVE", "NEGATIVE", "INVALID", "CONFLICT"] as const
+      for (const disposition of states) {
+        for (const match of matches) {
+          const id = `H-MATRIX-${disposition}-${match}`
+          await registry.handle({
+            action: "record",
+            id,
+            owner: "root",
+            description: `${disposition} with ${match}`,
+            root_cause: "controlled matrix candidate",
+            surface: "test boundary",
+            discriminator: "compare the direct target observation with the declared conditions",
+            oracle: oracle(),
+          })
+          await registry.handle({ action: "claim", id })
+          const observation = `${id} produced a direct observation.`
+          const update = registry.handle({
+            action: "update",
+            id,
+            state: disposition,
+            ...(disposition === "SUSPECTED" || disposition === "CONFIRMED" ? { finding_id: `F-${id}` } : {}),
+            ...(disposition === "INCONCLUSIVE"
+              ? { blocker: "The result does not resolve the oracle.", next_step: "Repeat with a valid control." }
+              : {}),
+            test_result: testResult(match, observation, `raw/evidence/${id}.json`, {
+              conflicts: match === "CONFLICT" ? ["Primary and derived evidence disagree."] : [],
+            }),
+            reason: `${disposition} is evaluated against ${match}.`,
+          })
+          const allowed =
+            ((disposition === "SUSPECTED" || disposition === "CONFIRMED") && match === "POSITIVE") ||
+            (disposition === "DISPROVED" && match === "NEGATIVE") ||
+            (disposition === "INCONCLUSIVE" && (match === "INVALID" || match === "CONFLICT"))
+          if (allowed) await expect(update).resolves.toMatchObject({ state: disposition })
+          else await expect(update).rejects.toThrow("test_result")
+        }
+      }
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("fills a legacy oracle at claim and keeps it immutable once testing starts", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      await registry.handle({
+        action: "record",
+        id: "H-LEGACY-ORACLE",
+        owner: "root",
+        description: "A legacy hypothesis without an oracle",
+        root_cause: "legacy registry shape",
+        surface: "legacy boundary",
+        discriminator: "controlled differential",
+        oracle: oracle(),
+      })
+      const registryPath = path.join(workarea, HYPOTHESIS_REGISTRY_PATH)
+      const persisted = (await Bun.file(registryPath).json()) as { hypotheses: Array<{ oracle?: unknown }> }
+      delete persisted.hypotheses[0]!.oracle
+      await Bun.write(registryPath, `${JSON.stringify(persisted, null, 2)}\n`)
+
+      await expect(registry.handle({ action: "claim", id: "H-LEGACY-ORACLE" })).rejects.toThrow(
+        "requires oracle",
+      )
+      await expect(
+        registry.handle({ action: "claim", id: "H-LEGACY-ORACLE", oracle: oracle() }),
+      ).resolves.toMatchObject({ state: "TESTING", oracle: oracle() })
+      await expect(
+        registry.handle({
+          action: "claim",
+          id: "H-LEGACY-ORACLE",
+          oracle: { ...oracle(), positive_condition: "A different positive condition." },
+        }),
+      ).rejects.toThrow("immutable")
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("preserves primary and derived CyberGym evidence when their interpretations disagree", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      for (const id of ["H-CYBERGYM-RESOLVED", "H-CYBERGYM-UNRESOLVED"]) {
+        await registry.handle({
+          action: "record",
+          id,
+          owner: "root",
+          description: `${id} malformed-input experiment may trigger undefined behavior`,
+          root_cause: "unchecked parser state",
+          surface: "native parser",
+          discriminator: "direct target exit and sanitizer output under the malformed fixture",
+          oracle: oracle(),
+        })
+        await registry.handle({ action: "claim", id })
+      }
+
+      const observation = "The target returned exit_code 1 and emitted a UBSan diagnostic for the candidate input."
+      const primaryPath = "raw/cybergym/submission.json"
+      const derivedPath = "raw/classifiers/crash-verdict.json"
+      const conflict = "The derived classifier returned INCONCLUSIVE despite the direct exit code and UBSan output."
+      const resolved = await registry.handle({
+        action: "update",
+        id: "H-CYBERGYM-RESOLVED",
+        state: "SUSPECTED",
+        finding_id: "F-CYBERGYM-RESOLVED",
+        test_result: testResult("POSITIVE", observation, primaryPath, {
+          derived: [derivedPath],
+          conflicts: [conflict],
+          interpretation:
+            "The raw target response satisfies the declared positive condition; the classifier is retained as conflicting derived evidence but does not replace the primary observation.",
+        }),
+        reason: "The declared target-level oracle is positive.",
+      })
+      expect(resolved).toMatchObject({
+        evidence_refs: [primaryPath, derivedPath],
+        transitions: [
+          {},
+          {},
+          {
+            test_result: {
+              match: "POSITIVE",
+              primary_evidence_paths: [primaryPath],
+              derived_evidence_paths: [derivedPath],
+              conflicts: [conflict],
+            },
+          },
+        ],
+      })
+
+      await expect(
+        registry.handle({
+          action: "update",
+          id: "H-CYBERGYM-UNRESOLVED",
+          state: "INCONCLUSIVE",
+          blocker: "The evidence conflict has not been resolved against the declared oracle.",
+          next_step: "Inspect the raw runner and target process observations independently.",
+          test_result: testResult("CONFLICT", observation, primaryPath, {
+            derived: [derivedPath],
+            interpretation: "The available evidence disagrees and no source has yet resolved the oracle.",
+          }),
+          reason: "The unresolved primary-versus-derived disagreement remains inconclusive.",
+        }),
+      ).rejects.toThrow("explicit conflict")
+
+      await expect(
+        registry.handle({
+          action: "update",
+          id: "H-CYBERGYM-UNRESOLVED",
+          state: "INCONCLUSIVE",
+          blocker: "The evidence conflict has not been resolved against the declared oracle.",
+          next_step: "Inspect the raw runner and target process observations independently.",
+          test_result: testResult("CONFLICT", observation, primaryPath, {
+            derived: [derivedPath],
+            conflicts: [conflict],
+            interpretation: "The available evidence disagrees and no source has yet resolved the oracle.",
+          }),
+          reason: "The unresolved primary-versus-derived disagreement remains inconclusive.",
+        }),
+      ).resolves.toMatchObject({ state: "INCONCLUSIVE" })
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects unsafe primary and derived evidence paths", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      await registry.handle({
+        action: "record",
+        id: "H-UNSAFE-PATH",
+        owner: "root",
+        description: "Evidence paths must remain inside the workarea",
+        root_cause: "unsafe evidence reference",
+        surface: "evidence boundary",
+        discriminator: "validate the evidence path before recording the result",
+        oracle: oracle(),
+      })
+      await registry.handle({ action: "claim", id: "H-UNSAFE-PATH" })
+      for (const unsafePath of ["/tmp/result.json", "../result.json", "raw/../result.json", "raw//result.json"]) {
+        await expect(
+          registry.handle({
+            action: "update",
+            id: "H-UNSAFE-PATH",
+            state: "DISPROVED",
+            test_result: testResult("NEGATIVE", "The control held.", unsafePath),
+            reason: "The control held.",
+          }),
+        ).rejects.toThrow("safe workarea-relative path")
+      }
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
   test("counts active states and transfers child ownership through the host-only writer", async () => {
     const workarea = await temporaryWorkarea()
     try {
@@ -302,6 +564,7 @@ describe("hypothesis registry", () => {
         root_cause: "missing object authorization",
         surface: "project API",
         discriminator: "cross-tenant read differential",
+        oracle: oracle(),
         _cyberful_actor: actor,
       })
       await registry.handle({
@@ -312,6 +575,7 @@ describe("hypothesis registry", () => {
         root_cause: "candidate parsing ambiguity",
         surface: "import parser",
         discriminator: "controlled malformed input",
+        oracle: oracle(),
         _cyberful_actor: actor,
       })
       await registry.handle({
@@ -325,6 +589,11 @@ describe("hypothesis registry", () => {
         id: "H-OWN-2",
         state: "DISPROVED",
         evidence: ["The parser rejected every controlled malformed fixture before interpretation."],
+        test_result: testResult(
+          "NEGATIVE",
+          "The parser rejected every controlled malformed fixture before interpretation.",
+          "raw/evidence/H-OWN-2.json",
+        ),
         reason: "The proposed primitive is not reachable.",
         _cyberful_actor: actor,
       })
@@ -404,6 +673,7 @@ describe("hypothesis registry", () => {
         root_cause: "ambiguous dispatch",
         surface: "document parser",
         discriminator: "controlled parser differential",
+        oracle: oracle(),
         _cyberful_actor: firstActor,
       })
 
@@ -466,6 +736,7 @@ describe("hypothesis registry", () => {
         root_cause: "legacy authorization gap",
         surface: "legacy API",
         discriminator: "legacy controlled differential",
+        oracle: oracle(),
       })
 
       const registry = new HypothesisRegistry({
@@ -483,6 +754,7 @@ describe("hypothesis registry", () => {
           root_cause: "missing context",
           surface: "account API",
           discriminator: "controlled differential",
+          oracle: oracle(),
         }),
       ).rejects.toThrow("bounty_context")
       await expect(registry.handle({ action: "claim", id: "BB-LEGACY" })).rejects.toThrow("set_bounty_context")
@@ -648,6 +920,11 @@ describe("hypothesis registry", () => {
         state: "INCONCLUSIVE",
         evidence: ["The identity path produced an ambiguous target oracle before cluster convergence."],
         evidence_refs: ["raw/evidence/BB-EARLY-PIVOT.json"],
+        test_result: testResult(
+          "INVALID",
+          "The identity path produced an ambiguous target oracle before cluster convergence.",
+          "raw/evidence/BB-EARLY-PIVOT.json",
+        ),
         blocker: "The response did not distinguish identity binding from session refresh.",
         next_step: "Repeat only if a later portfolio convergence makes this boundary strategically relevant.",
         reason: "The early structural path did not yet produce a conclusive verdict.",
@@ -672,6 +949,11 @@ describe("hypothesis registry", () => {
         state: "DISPROVED",
         evidence: ["The third same-cluster discriminator also retained the secure control."],
         evidence_refs: ["raw/evidence/BB-SAME-3.json"],
+        test_result: testResult(
+          "NEGATIVE",
+          "The third same-cluster discriminator also retained the secure control.",
+          "raw/evidence/BB-SAME-3.json",
+        ),
         reason: "The additional same-cluster test did not reproduce.",
       })
 
@@ -935,6 +1217,7 @@ describe("hypothesis registry", () => {
         root_cause: "missing check",
         surface: "API",
         discriminator: "controlled differential",
+        oracle: oracle(),
       })
       const missing = await registry.get("H-MISSING").catch((error) => error)
       expect(missing).toBeInstanceOf(HypothesisRegistryError)
@@ -950,6 +1233,7 @@ describe("hypothesis registry", () => {
           state: "CONFIRMED",
           finding_id: "F-1",
           evidence: ["x"],
+          test_result: testResult("POSITIVE", "x", "raw/evidence/H-TYPED-1.json"),
           reason: "x",
         })
         .catch((error) => error)

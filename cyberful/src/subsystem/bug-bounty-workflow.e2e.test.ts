@@ -77,6 +77,13 @@ function hypothesis(
     root_cause: rootCause,
     surface: `${rootCause} service`,
     discriminator: `differential response for ${rootCause}`,
+    oracle: {
+      primary_observation: "The target's direct response to the controlled cross-boundary request.",
+      positive_condition: "The cross-boundary effect succeeds.",
+      negative_condition: "The control rejects the effect.",
+      invalid_condition: "The target or fixture cannot produce a comparable response.",
+      controls: ["Repeat the request without the cross-boundary identifier."],
+    },
     bounty_context: {
       cluster: context.cluster,
       impact_class: context.impact,
@@ -156,6 +163,14 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
           id: entry.id,
           state: "DISPROVED",
           evidence: [`${entry.id} exercised the ${entry.surface} discriminator.`],
+          test_result: {
+            match: "NEGATIVE",
+            observation: `${entry.id} exercised the ${entry.surface} discriminator.`,
+            primary_evidence_paths: [`raw/evidence/${entry.id}.json`],
+            derived_evidence_paths: [],
+            conflicts: [],
+            interpretation: "The target retained the declared secure control.",
+          },
           reason: "The controlled differential did not reproduce.",
         })
       }

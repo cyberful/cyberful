@@ -63,6 +63,8 @@ Reproduce outside the fuzzer with the exact build and environment; minimize whil
 
 Use `crash_triage` for reproduction, symbolization, classification, deduplication, minimization, and evidence export. A campaign crash list is discovery evidence, never a confirmed vulnerability.
 
+Keep transport success, fuzzing runner status, target-process exit, sanitizer observation, and infrastructure failure as distinct facts. Preserve the raw target exit and sanitizer output as primary evidence; runner summaries and ad hoc classifiers are derived evidence and cannot silently override it. Prefer `crash_triage` over a custom classifier when the operation fits its contract, and record any disagreement against the hypothesis oracle explicitly.
+
 ## Deliver
 
 Preserve source/build hash, compiler, flags, harness, corpus provenance, engine configuration, coverage and stability metrics, crash input, minimized reproducer, sanitizer log, root-cause trace, and untested state space. "No crashes" is only meaningful with the harness and coverage evidence attached.

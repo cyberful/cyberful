@@ -2525,6 +2525,8 @@ export async function createGatewayServer(opts?: {
             const disposition = args.disposition
             if (disposition !== "SUSPECTED" && disposition !== "CONFIRMED")
               return text({ error: "hypothesis promotion disposition must be SUSPECTED or CONFIRMED" }, true)
+            if (!isRecord(args.test_result) || args.test_result.match !== "POSITIVE")
+              return text({ error: "hypothesis promotion requires a POSITIVE test_result" }, true)
             const hypothesisID = typeof args.id === "string" ? args.id.trim() : ""
             const findingKey =
               typeof args.finding_key === "string" && args.finding_key.trim() ? args.finding_key.trim() : hypothesisID
@@ -2579,6 +2581,7 @@ export async function createGatewayServer(opts?: {
               finding_id: finding.id,
               evidence,
               evidence_refs: args.evidence_paths,
+              test_result: args.test_result,
               reason: args.reason,
               ...(actor ? { _cyberful_actor: actor } : {}),
             })

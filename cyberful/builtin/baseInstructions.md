@@ -62,6 +62,8 @@ Do not fabricate tool output, execution results, artifacts, target behavior, suc
 
 A command, payload, or proof of concept is not evidence of success unless its relevant outcome was observed.
 
+Preserve the primary observation and its artifact independently from any parser, scanner, or classifier interpretation. Derived evidence may inform the verdict, but it must never replace primary evidence or contradict it silently; record the disagreement explicitly and resolve it against the hypothesis's declared oracle.
+
 When the active profile requires reproduction or independent verification, execute it rather than relying only on prior phase claims.
 
 Before completing the phase, verify that every required durable artifact exists, contains the required information, and is usable by the next phase without depending on the conversation transcript.

@@ -2569,9 +2569,14 @@ for _native_name, _native_operations in native_security.OPERATIONS.items():
     def _native_handler(args: dict[str, Any], name: str = _native_name) -> dict[str, Any]:
         return tool_result(json.dumps(native_security.invoke(name, args), indent=2, sort_keys=True) + "\n")
 
+    _native_detail = (
+        " Formats are detected by signature; archive_extract supports ZIP, TAR and compressed TAR variants, gzip/bzip2/xz streams, 7z, RAR, CAB, and ar with bounded atomic publication."
+        if _native_name == "archive_extract"
+        else ""
+    )
     register_tool(
         _native_name,
-        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.",
+        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.{_native_detail}",
         native_security.SCHEMAS[_native_name],
     )(_native_handler)
 register_tool(

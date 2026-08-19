@@ -1606,6 +1606,13 @@ describe("expert-gateway handoff tool", () => {
           root_cause: "missing ownership check",
           surface: "configuration API",
           discriminator: "tenant-specific response differential",
+          oracle: {
+            primary_observation: "The target's direct response to the controlled tenant request.",
+            positive_condition: "The adjacent tenant state is returned.",
+            negative_condition: "The target enforces the tenant boundary.",
+            invalid_condition: "The first-party configuration is unavailable.",
+            controls: ["Repeat against the tester-owned tenant."],
+          },
         },
       })
       await c.callTool({
@@ -1686,9 +1693,41 @@ describe("expert-gateway handoff tool", () => {
           root_cause: "missing validation",
           surface: "document action dispatch",
           discriminator: "controlled external action",
+          oracle: {
+            primary_observation: "Whether the controlled external handler is invoked.",
+            positive_condition: "The external handler is invoked across the expected boundary.",
+            negative_condition: "The action remains blocked at the boundary.",
+            invalid_condition: "The handler control cannot be observed.",
+            controls: ["Submit the same document without the external action."],
+          },
         },
       })
       await client.callTool({ name: "hypothesis", arguments: { action: "claim", id: "PDF-IPC-1" } })
+      const rejected = jsonContent(
+        await client.callTool({
+          name: "hypothesis",
+          arguments: {
+            action: "promote",
+            id: "PDF-IPC-1",
+            disposition: "SUSPECTED",
+            title: "External document action crosses the expected boundary",
+            severity: "MEDIUM",
+            summary: "A controlled document action reached an external handler.",
+            positive_evidence: ["Observed the controlled handler invocation."],
+            evidence_paths: ["evidence/pdf-ipc/control.json"],
+            test_result: {
+              match: "NEGATIVE",
+              observation: "The external handler was not invoked.",
+              primary_evidence_paths: ["evidence/pdf-ipc/control.json"],
+              derived_evidence_paths: [],
+              conflicts: [],
+              interpretation: "The direct observation matches the negative condition.",
+            },
+            reason: "A negative result cannot be promoted.",
+          },
+        }),
+      )
+      expect(rejected.error).toBeDefined()
       const argumentsValue = {
         action: "promote",
         id: "PDF-IPC-1",
@@ -1698,6 +1737,14 @@ describe("expert-gateway handoff tool", () => {
         summary: "A controlled document action reached an external handler.",
         positive_evidence: ["Observed the controlled handler invocation."],
         evidence_paths: ["evidence/pdf-ipc/control.json"],
+        test_result: {
+          match: "POSITIVE",
+          observation: "Observed the controlled handler invocation.",
+          primary_evidence_paths: ["evidence/pdf-ipc/control.json"],
+          derived_evidence_paths: [],
+          conflicts: [],
+          interpretation: "The direct handler observation satisfies the positive condition.",
+        },
         next_step: "Complete the negative control.",
         reason: "Positive evidence warrants durable finding tracking.",
       }

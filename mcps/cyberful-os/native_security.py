@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import hashlib
 import ipaddress
 import json
+import lzma
 import os
 import re
 import select
@@ -17,6 +20,8 @@ import selectors
 import shutil
 import signal
 import socket
+import stat
+import tarfile
 import tempfile
 import threading
 import subprocess
@@ -24,7 +29,7 @@ import time
 import urllib.request
 import urllib.parse
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 WORKSPACE = Path(os.environ.get("CYBERFUL_OS_MOUNT", "/workspace")).resolve()
@@ -41,6 +46,7 @@ PROCESS_META: dict[str, dict[str, Any]] = {}
 DEBUGGER_LOCK = threading.RLock()
 MAX_FILES = 20_000
 MAX_CAPTURE = 2 * 1024 * 1024
+MAX_ARCHIVE_FILE_SIZE = MAX_CAPTURE * 128
 CPP_SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ixx", ".cppm"})
 
 
@@ -262,21 +268,258 @@ def _automatic_harness_validation(argv: list[str], timeout: int) -> dict[str, An
     return None
 
 
-# ── Optimized ZIP Recovery Publishes Only Complete Trees ───────────
-# Ordinary archives use Info-ZIP first. A prepended local-header offset, status
-# 2 result, or ordinary extraction failure retries native 7-Zip in a fresh
-# temporary destination. Every member is bounded and traversal-safe before the
-# complete temporary tree is atomically renamed to its requested destination.
+# ── Multi-Format Archives Publish Only Complete Safe Trees ─────────
+# Signatures, rather than attacker-controlled suffixes, select ZIP, TAR-family,
+# single-stream compression, or the bounded native 7-Zip path. TAR members are
+# copied directly without links, devices, traversal, or inherited permissions.
+# Every engine writes a fresh temporary tree that is validated before an atomic
+# rename publishes it, so failures cannot leave a plausible partial result.
 # ─────────────────────────────────────────────────────────────────────
+def _archive_timeout(args: dict[str, Any]) -> int:
+    timeout = int(args.get("timeout_seconds", 300))
+    if timeout < 1 or timeout > 3600:
+        raise ValueError("timeout_seconds must be between 1 and 3600")
+    return timeout
+
+
+def _archive_member_path(name: str) -> Path:
+    if not name or "\0" in name:
+        raise ValueError("archive contains an empty or NUL-bearing member path")
+    portable = name.replace("\\", "/")
+    member = PurePosixPath(portable)
+    if member.is_absolute() or re.match(r"^[A-Za-z]:", portable) or ".." in member.parts:
+        raise ValueError(f"archive member escapes its destination: {name}")
+    parts = tuple(part for part in member.parts if part not in {"", "."})
+    if not parts:
+        return Path(".")
+    return Path(*parts)
+
+
+def _archive_format(source: Path) -> tuple[str, int]:
+    with source.open("rb") as handle:
+        header = handle.read(1024 * 1024)
+    prefix = header.find(b"PK\x03\x04")
+    if prefix == 0 or header.startswith((b"PK\x05\x06", b"PK\x07\x08")):
+        return "zip", max(prefix, 0)
+    try:
+        with tarfile.open(source, "r:*") as archive:
+            archive.next()
+        if header.startswith(b"\x1f\x8b"):
+            return "tar.gz", 0
+        if header.startswith(b"BZh"):
+            return "tar.bz2", 0
+        if header.startswith(b"\xfd7zXZ\x00"):
+            return "tar.xz", 0
+        return "tar", 0
+    except (tarfile.TarError, OSError, EOFError):
+        pass
+    if prefix > 0:
+        return "zip", prefix
+    signatures = (
+        (b"7z\xbc\xaf'\x1c", "7z"),
+        (b"Rar!\x1a\x07", "rar"),
+        (b"MSCF", "cab"),
+        (b"!<arch>\n", "ar"),
+        (b"\x28\xb5\x2f\xfd", "tar.zst"),
+        (b"\x1f\x8b", "gzip"),
+        (b"BZh", "bzip2"),
+        (b"\xfd7zXZ\x00", "xz"),
+    )
+    for signature, format_name in signatures:
+        if header.startswith(signature):
+            return format_name, 0
+    raise ValueError("unsupported or malformed archive format")
+
+
+def _archive_result(engine: str, detail: str) -> dict[str, Any]:
+    return {
+        "argv": [f"python:{engine}"],
+        "exit_code": 0,
+        "stdout": detail,
+        "stderr": "",
+    }
+
+
+def _tar_entries(source: Path, deadline: float) -> tuple[list[tarfile.TarInfo], list[dict[str, Any]]]:
+    members: list[tarfile.TarInfo] = []
+    entries: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    try:
+        with tarfile.open(source, "r:*") as archive:
+            for member in archive:
+                if time.monotonic() > deadline:
+                    raise ValueError("archive operation exceeded timeout_seconds")
+                if len(members) >= MAX_FILES:
+                    raise ValueError("archive exceeds its entry safety bound")
+                relative = _archive_member_path(member.name)
+                if relative in seen and relative != Path("."):
+                    raise ValueError(f"archive contains a duplicate member path: {member.name}")
+                if not member.isdir() and not member.isreg():
+                    raise ValueError(f"archive contains a link or special member: {member.name}")
+                if member.isreg() and member.size > MAX_ARCHIVE_FILE_SIZE:
+                    raise ValueError("archive extraction exceeds its per-file safety bound")
+                seen.add(relative)
+                members.append(member)
+                entries.append({"path": str(relative), "size": member.size, "type": "directory" if member.isdir() else "file"})
+    except (tarfile.TarError, OSError, EOFError) as error:
+        raise ValueError(f"archive inspection failed with tarfile: {error}") from error
+    return members, entries
+
+
+def _extract_tar(source: Path, destination: Path, members: list[tarfile.TarInfo], deadline: float) -> None:
+    try:
+        with tarfile.open(source, "r:*") as archive:
+            for member in members:
+                if time.monotonic() > deadline:
+                    raise ValueError("archive operation exceeded timeout_seconds")
+                relative = _archive_member_path(member.name)
+                target = destination / relative
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                reader = archive.extractfile(member)
+                if reader is None:
+                    raise ValueError(f"archive member could not be read: {member.name}")
+                written = 0
+                with reader, target.open("xb") as output:
+                    while chunk := reader.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_ARCHIVE_FILE_SIZE:
+                            raise ValueError("archive extraction exceeds its per-file safety bound")
+                        if time.monotonic() > deadline:
+                            raise ValueError("archive operation exceeded timeout_seconds")
+                        output.write(chunk)
+                if written != member.size:
+                    raise ValueError(f"archive member size changed during extraction: {member.name}")
+    except (tarfile.TarError, OSError, EOFError) as error:
+        raise ValueError(f"archive extraction failed with tarfile: {error}") from error
+
+
+def _stream_name(source: Path, format_name: str) -> str:
+    suffixes = {"gzip": ".gz", "bzip2": ".bz2", "xz": ".xz"}
+    name = source.name
+    suffix = suffixes[format_name]
+    if name.lower().endswith(suffix):
+        name = name[:-len(suffix)]
+    return name or "content"
+
+
+def _consume_stream(source: Path, format_name: str, deadline: float, target: Path | None = None) -> int:
+    openers = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}
+    written = 0
+    output = None
+    try:
+        if target is not None:
+            output = target.open("xb")
+        with openers[format_name](source, "rb") as reader:
+            while chunk := reader.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_ARCHIVE_FILE_SIZE:
+                    raise ValueError("archive extraction exceeds its per-file safety bound")
+                if time.monotonic() > deadline:
+                    raise ValueError("archive operation exceeded timeout_seconds")
+                if output is not None:
+                    output.write(chunk)
+    except (OSError, EOFError, lzma.LZMAError) as error:
+        raise ValueError(f"archive stream failed with {format_name}: {error}") from error
+    finally:
+        if output is not None:
+            output.close()
+    return written
+
+
+def _extract_stream(source: Path, destination: Path, format_name: str, deadline: float) -> list[dict[str, Any]]:
+    target = destination / _stream_name(source, format_name)
+    written = _consume_stream(source, format_name, deadline, target)
+    return [{"path": target.name, "size": written}]
+
+
+def _seven_zip_entries(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    if listing["exit_code"] != 0:
+        raise ValueError(f"archive inspection failed with 7zz: {listing['stderr'] or listing['stdout']}")
+    if len(listing["stdout"].encode("utf-8")) >= MAX_CAPTURE:
+        raise ValueError("archive listing exceeds its output safety bound")
+    body = listing["stdout"].split("----------", 1)[-1]
+    entries: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for block in re.split(r"\n\s*\n", body.strip()):
+        properties = dict(line.split(" = ", 1) for line in block.splitlines() if " = " in line)
+        name = properties.get("Path")
+        if not name:
+            continue
+        relative = _archive_member_path(name)
+        if relative in seen:
+            raise ValueError(f"archive contains a duplicate member path: {name}")
+        attributes = properties.get("Attributes", "")
+        if "Symbolic Link" in properties or "Hard Link" in properties or re.search(r"(?:^|\s)l[rwx-]{9}(?:\s|$)", attributes):
+            raise ValueError(f"archive contains a link member: {name}")
+        try:
+            size = int(properties.get("Size", "0"))
+        except ValueError as error:
+            raise ValueError(f"archive contains an invalid member size: {name}") from error
+        if size < 0 or size > MAX_ARCHIVE_FILE_SIZE:
+            raise ValueError("archive extraction exceeds its per-file safety bound")
+        if len(entries) >= MAX_FILES:
+            raise ValueError("archive exceeds its entry safety bound")
+        entries.append({"path": str(relative), "size": size, "type": "directory" if attributes.startswith("D") else "file"})
+        seen.add(relative)
+    return entries
+
+
+def _zip_entries(source: Path) -> list[dict[str, Any]] | None:
+    entries: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    try:
+        with zipfile.ZipFile(source) as archive:
+            for member in archive.infolist():
+                if len(entries) >= MAX_FILES:
+                    raise ValueError("archive exceeds its entry safety bound")
+                relative = _archive_member_path(member.filename)
+                if relative in seen:
+                    raise ValueError(f"archive contains a duplicate member path: {member.filename}")
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"archive contains a link member: {member.filename}")
+                if member.file_size > MAX_ARCHIVE_FILE_SIZE:
+                    raise ValueError("archive extraction exceeds its per-file safety bound")
+                entries.append({"path": str(relative), "size": member.file_size, "type": "directory" if member.is_dir() else "file"})
+                seen.add(relative)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile):
+        return None
+    return entries
+
+
+def _expand_tar_zstd(
+    source: Path,
+    destination: Path,
+    deadline: float,
+) -> tuple[dict[str, Any], Path, list[tarfile.TarInfo], list[dict[str, Any]]]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError("archive operation exceeded timeout_seconds")
+    result = _run([_command("7zz"), "x", "-y", f"-o{destination}", str(source)], timeout=max(1, int(remaining)))
+    if result["exit_code"] != 0:
+        raise ValueError(f"archive extraction failed with 7zz: {result['stderr'] or result['stdout']}")
+    compressed_files = _safe_archive_tree(destination)
+    if len(compressed_files) != 1:
+        raise ValueError("tar.zst expansion must produce exactly one TAR stream")
+    inner = destination / compressed_files[0]["path"]
+    members, entries = _tar_entries(inner, deadline)
+    return result, inner, members, entries
+
+
 def _safe_archive_tree(root: Path) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     for candidate in sorted(root.rglob("*")):
         if candidate.is_symlink():
             raise ValueError("archive extraction produced a symbolic link")
-        if not candidate.is_file():
+        if candidate.is_dir():
             continue
+        if not candidate.is_file():
+            raise ValueError("archive extraction produced a special file")
         relative = candidate.relative_to(root)
-        if len(files) >= MAX_FILES or candidate.stat().st_size > MAX_CAPTURE * 128:
+        if len(files) >= MAX_FILES or candidate.stat().st_size > MAX_ARCHIVE_FILE_SIZE:
             raise ValueError("archive extraction exceeds its file or per-file safety bound")
         files.append({"path": str(relative), "size": candidate.stat().st_size})
     return files
@@ -287,46 +530,147 @@ def archive_extract(args: dict[str, Any]) -> dict[str, Any]:
     source = _path(args.get("path"), exists=True)
     if not source.is_file():
         raise ValueError("archive path must be a regular file")
-    timeout = int(args.get("timeout_seconds", 300))
-    prefix = source.read_bytes()[:1024 * 1024].find(b"PK\x03\x04")
-    if prefix < 0:
-        raise ValueError("archive does not contain a ZIP local header within the first MiB")
+    timeout = _archive_timeout(args)
+    deadline = time.monotonic() + timeout
+    format_name, prefix = _archive_format(source)
+    if format_name.startswith("tar") and format_name != "tar.zst":
+        members, entries = _tar_entries(source, deadline)
+        if operation == "inspect":
+            result = _archive_result("tarfile", f"{len(entries)} archive entries inspected")
+            return _record("archives", operation, {
+                "path": str(source.relative_to(WORKSPACE)),
+                "format": format_name,
+                "prepended_bytes": 0,
+                "engine": "tarfile",
+                "entries_preview": entries[:500],
+                "truncated": len(entries) > 500,
+                "result": result,
+            })
+        return _extract_archive_to_output(args, source, format_name, prefix, "tarfile", deadline, members=members)
+    if format_name in {"gzip", "bzip2", "xz"}:
+        if operation == "inspect":
+            size = _consume_stream(source, format_name, deadline)
+            entry = {"path": _stream_name(source, format_name), "size": size, "type": "file"}
+            result = _archive_result(format_name, "single compressed stream inspected")
+            return _record("archives", operation, {
+                "path": str(source.relative_to(WORKSPACE)),
+                "format": format_name,
+                "prepended_bytes": 0,
+                "engine": format_name,
+                "entries_preview": [entry],
+                "truncated": False,
+                "result": result,
+            })
+        return _extract_archive_to_output(args, source, format_name, prefix, format_name, deadline)
+    if format_name in {"7z", "rar", "cab", "ar", "tar.zst"}:
+        listing = _run([_command("7zz"), "l", "-slt", str(source)], timeout=timeout)
+        entries = _seven_zip_entries(listing)
+        if operation == "inspect":
+            engine = "7zz"
+            result = listing
+            if format_name == "tar.zst":
+                temporary = Path(tempfile.mkdtemp(prefix=".cyberful-archive-", dir=source.parent))
+                try:
+                    expansion, _inner, _members, entries = _expand_tar_zstd(source, temporary, deadline)
+                    result = {**listing, "inner_expansion": expansion}
+                    engine = "7zz+tarfile"
+                finally:
+                    shutil.rmtree(temporary)
+            return _record("archives", operation, {
+                "path": str(source.relative_to(WORKSPACE)),
+                "format": format_name,
+                "prepended_bytes": 0,
+                "engine": engine,
+                "entries_preview": entries[:500],
+                "truncated": len(entries) > 500,
+                "result": result,
+            })
+        return _extract_archive_to_output(args, source, format_name, prefix, "7zz", deadline, listing=listing)
+    entries = _zip_entries(source)
+    validation_listing = None
+    if entries is None:
+        validation_listing = _run([_command("7zz"), "l", "-slt", str(source)], timeout=timeout)
+        entries = _seven_zip_entries(validation_listing)
     if operation == "inspect":
         ordinary = _run([_command("unzip"), "-Z1", str(source)], timeout=timeout)
         engine = "unzip"
         listing = ordinary
         if prefix > 0 or ordinary["exit_code"] == 2:
-            listing = _run([_command("7zz"), "l", "-slt", str(source)], timeout=timeout)
+            listing = validation_listing or _run([_command("7zz"), "l", "-slt", str(source)], timeout=timeout)
             engine = "7zz"
-        names = [line for line in listing["stdout"].splitlines() if line and not line.startswith(("Path = ", "Type = "))][:MAX_FILES]
         return _record("archives", operation, {
             "path": str(source.relative_to(WORKSPACE)),
+            "format": format_name,
             "prepended_bytes": prefix,
             "engine": engine,
-            "entries_preview": names[:500],
-            "truncated": len(names) > 500,
+            "entries_preview": entries[:500],
+            "truncated": len(entries) > 500,
             "result": listing,
         })
+    return _extract_archive_to_output(args, source, format_name, prefix, "zip", deadline)
+
+
+def _extract_archive_to_output(
+    args: dict[str, Any],
+    source: Path,
+    format_name: str,
+    prefix: int,
+    engine: str,
+    deadline: float,
+    *,
+    members: list[tarfile.TarInfo] | None = None,
+    listing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     output = _path(args.get("output"))
     if output.exists():
         raise ValueError("archive output must not already exist")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".cyberful-archive-", dir=output.parent))
-    engine = "unzip"
     try:
-        result = _run([_command("unzip"), "-qq", str(source), "-d", str(temporary)], timeout=timeout)
-        if prefix > 0 or result["exit_code"] == 2:
-            shutil.rmtree(temporary)
-            temporary = Path(tempfile.mkdtemp(prefix=".cyberful-archive-", dir=output.parent))
-            result = _run([_command("7zz"), "x", "-y", f"-o{temporary}", str(source)], timeout=timeout)
-            engine = "7zz"
-        if result["exit_code"] != 0:
-            raise ValueError(f"archive extraction failed with {engine}: {result['stderr'] or result['stdout']}")
-        files = _safe_archive_tree(temporary)
+        timeout = max(1, int(deadline - time.monotonic()))
+        if engine == "tarfile":
+            if members is None:
+                raise ValueError("archive TAR inventory is unavailable")
+            _extract_tar(source, temporary, members, deadline)
+            result = _archive_result("tarfile", f"{len(members)} archive entries extracted")
+        elif engine in {"gzip", "bzip2", "xz"}:
+            files = _extract_stream(source, temporary, engine, deadline)
+            result = _archive_result(engine, "single compressed stream extracted")
+        elif engine == "7zz":
+            if listing is None:
+                raise ValueError("archive 7-Zip inventory is unavailable")
+            _seven_zip_entries(listing)
+            if format_name == "tar.zst":
+                result, inner, inner_members, _entries = _expand_tar_zstd(source, temporary, deadline)
+                expanded = Path(tempfile.mkdtemp(prefix=".cyberful-archive-", dir=output.parent))
+                try:
+                    _extract_tar(inner, expanded, inner_members, deadline)
+                except BaseException:
+                    shutil.rmtree(expanded)
+                    raise
+                shutil.rmtree(temporary)
+                temporary = expanded
+                engine = "7zz+tarfile"
+            else:
+                result = _run([_command("7zz"), "x", "-y", f"-o{temporary}", str(source)], timeout=timeout)
+                if result["exit_code"] != 0:
+                    raise ValueError(f"archive extraction failed with 7zz: {result['stderr'] or result['stdout']}")
+        else:
+            result = _run([_command("unzip"), "-qq", str(source), "-d", str(temporary)], timeout=timeout)
+            engine = "unzip"
+            if prefix > 0 or result["exit_code"] == 2:
+                shutil.rmtree(temporary)
+                temporary = Path(tempfile.mkdtemp(prefix=".cyberful-archive-", dir=output.parent))
+                result = _run([_command("7zz"), "x", "-y", f"-o{temporary}", str(source)], timeout=timeout)
+                engine = "7zz"
+            if result["exit_code"] != 0:
+                raise ValueError(f"archive extraction failed with {engine}: {result['stderr'] or result['stdout']}")
+        files = files if engine in {"gzip", "bzip2", "xz"} else _safe_archive_tree(temporary)
         os.replace(temporary, output)
-        return _record("archives", operation, {
+        return _record("archives", "extract", {
             "path": str(source.relative_to(WORKSPACE)),
             "output": str(output.relative_to(WORKSPACE)),
+            "format": format_name,
             "prepended_bytes": prefix,
             "engine": engine,
             "files": files,

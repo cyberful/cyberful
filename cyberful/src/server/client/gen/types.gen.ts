@@ -2368,6 +2368,21 @@ export type SessionHypothesisRegistryView = {
     rootCause: string
     surface: string
     discriminator: string
+    oracle?: {
+      primary_observation: string
+      positive_condition: string
+      negative_condition: string
+      invalid_condition: string
+      controls: Array<string>
+    }
+    latestTestResult?: {
+      match: "POSITIVE" | "NEGATIVE" | "INVALID" | "CONFLICT"
+      observation: string
+      primary_evidence_paths: Array<string>
+      derived_evidence_paths: Array<string>
+      conflicts: Array<string>
+      interpretation: string
+    }
     candidateTools: Array<string>
     omittedTools: Array<{
       tool: string
@@ -2390,6 +2405,14 @@ export type SessionHypothesisRegistryView = {
       to: "OPEN" | "QUEUED" | "TESTING" | "SUSPECTED" | "CONFIRMED" | "DISPROVED" | "INCONCLUSIVE" | "UNTESTABLE"
       evidence: Array<string>
       reason?: string
+      testResult?: {
+        match: "POSITIVE" | "NEGATIVE" | "INVALID" | "CONFLICT"
+        observation: string
+        primary_evidence_paths: Array<string>
+        derived_evidence_paths: Array<string>
+        conflicts: Array<string>
+        interpretation: string
+      }
     }>
   }>
 }
