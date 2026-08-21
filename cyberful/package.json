@@ -69,7 +69,7 @@
     "@huggingface/transformers": "3.8.1",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@npmcli/arborist": "9.4.0",
-    "@npmcli/config": "10.8.1",
+    "@npmcli/config": "11.0.1",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
