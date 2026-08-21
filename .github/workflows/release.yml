@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -99,7 +99,7 @@ jobs:
       CYBERFUL_VERSION: ${{ inputs.version }}
       CYBERFUL_BUILD_ID: ${{ inputs.version }}-${{ github.sha }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -159,7 +159,7 @@ jobs:
       PACKAGE_PLATFORM: ${{ matrix.platform }}
       CYBERFUL_MITRE_ATTACK_SNAPSHOT_DIR: ${{ github.workspace }}/mitre-attack-snapshot
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -262,7 +262,7 @@ jobs:
     env:
       RELEASE_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -328,7 +328,7 @@ jobs:
     permissions:
       contents: write # Create the annotated tag, draft release, and immutable assets.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -438,7 +438,7 @@ jobs:
       contents: read
       id-token: write # Authenticate npm trusted publishing through GitHub OIDC.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -510,7 +510,7 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       RESUME_RUN_ID: ${{ inputs.resume_run_id }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
