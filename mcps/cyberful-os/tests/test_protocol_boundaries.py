@@ -11,7 +11,6 @@ import io
 import json
 import os
 import pathlib
-import re
 import sys
 import tempfile
 import types
@@ -117,21 +116,24 @@ class ToolSchemaBoundaryTest(unittest.TestCase):
                 self.assertFalse(schema.get("additionalProperties", True))
                 self.assertTrue(callable(handler))
 
-    def test_complete_catalog_matches_every_declared_cyberful_os_tool_and_count(self):
-        catalog = (ROOT.parents[1] / "docs" / "runtimes" / "tool-catalog.md").read_text(encoding="utf-8")
-        rows = set(re.findall(r"^\| `([^`]+)` \|", catalog, re.MULTILINE))
+    def test_exposed_catalog_matches_every_declared_cyberful_os_tool_and_count(self):
         cli_names = {spec.name for spec in cyberful_os_mcp.CLI_TOOL_SPECS}
         library_names = {spec.name for spec in cyberful_os_mcp.LIBRARY_TOOL_SPECS}
         workflow_names = set(cyberful_os_mcp.native_security.OPERATIONS)
         utility_names = {"capability_attestation", "nuclei_templates", "shell", "tool_inventory", "wordlists"}
         declared = cli_names | library_names | workflow_names | utility_names
+        optional = {
+            spec.name
+            for spec in (*cyberful_os_mcp.CLI_TOOL_SPECS, *cyberful_os_mcp.LIBRARY_TOOL_SPECS)
+            if spec.optional
+        }
+        exposed = {entry[0] for entry in cyberful_os_mcp._exposed_tool_registry()}
 
-        self.assertEqual(declared - rows, set())
+        self.assertEqual(optional, {"jeb"})
+        self.assertEqual(exposed, declared - optional)
         self.assertEqual(len(cli_names), 203)
         self.assertEqual(len(workflow_names), 13)
         self.assertEqual(len(declared), 224)
-        self.assertIn("203 cyberful-os CLI tools", catalog)
-        self.assertIn("13 cyberful-os managed workflows", catalog)
 
     def test_archive_extract_description_advertises_signature_detected_tar_support(self):
         archive_extract = next(entry for entry in cyberful_os_mcp._exposed_tool_registry() if entry[0] == "archive_extract")

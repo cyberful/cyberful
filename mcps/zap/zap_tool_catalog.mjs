@@ -82,7 +82,7 @@ export const ZAP_BRIDGE_TOOLS = [
   {
     name: "zap_history_search",
     description:
-      "Return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Request and response bodies are opt-in.",
+      "Return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Metadata reads use adaptive upstream chunks and report scanned plus next_start; request and response bodies are opt-in and remain one adaptive page.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

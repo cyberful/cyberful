@@ -11,7 +11,22 @@ import { tmpdir } from "node:os"
 import type { AgentEvent } from "./agent-subsystem"
 import * as Builtin from "@/builtin"
 import { PiSkills } from "./pi-skills"
-import { eagerSkillTools, projectLiveEvent, TUI_TOOL_OUTPUT_BYTES } from "./pi-phase-runtime"
+import { eagerSkillTools, phaseRootBudget, projectLiveEvent, TUI_TOOL_OUTPUT_BYTES } from "./pi-phase-runtime"
+
+describe("Pi phase root budget", () => {
+  test("does not reinterpret a model response limit as cumulative AgentRun output", () => {
+    const budget = phaseRootBudget({
+      deadlineAt: 123_456,
+      closeoutReserveMs: 30_000,
+    })
+
+    expect(budget).toEqual({
+      deadlineAt: 123_456,
+      closeoutReserveMs: 30_000,
+    })
+    expect(budget).not.toHaveProperty("maxCumulativeOutputTokens")
+  })
+})
 
 describe("Pi live tool output projection", () => {
   test("a 3.5 MB result reaches the TUI only as 12 KiB plus a lazy artifact reference", async () => {

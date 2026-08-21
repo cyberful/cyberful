@@ -38,7 +38,7 @@ import {
 } from "./zap_http_request.mjs"
 import { replayRequest } from "./zap_history_replay.mjs"
 import { engagementReportPath, normalizedReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
-import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
+import { adaptiveHistoryProjection, messageMetadata, storeContentAddressed } from "./zap_history.mjs"
 import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
 import { ZAP_BRIDGE_TOOLS } from "./zap_tool_catalog.mjs"
 
@@ -341,12 +341,20 @@ async function nativeTool(name, args) {
     )
   }
   if (name === "zap_history_search") {
-    const result = await hostApiJson("core", "view", "messages", {
-      baseurl: args.base_url || "",
-      start: args.start ?? 0,
-      count: Math.min(args.count ?? 100, 500),
-    })
-    const projected = projectHistory(result, { search: args.search, includeBodies: args.include_bodies === true })
+    const projected = await adaptiveHistoryProjection(
+      ({ start, count }) =>
+        hostApiJson("core", "view", "messages", {
+          baseurl: args.base_url || "",
+          start,
+          count,
+        }),
+      {
+        start: args.start ?? 0,
+        count: Math.min(args.count ?? 100, 500),
+        search: args.search,
+        includeBodies: args.include_bodies === true,
+      },
+    )
     if (!args.include_bodies) return text(projected)
     const data = new TextEncoder().encode(JSON.stringify(projected))
     return text(

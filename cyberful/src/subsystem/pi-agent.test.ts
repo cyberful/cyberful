@@ -525,7 +525,7 @@ interface RootSpecOptions {
   readonly maxConcurrent?: number
   readonly maxDepth?: number
   readonly deadlineAt?: number
-  readonly maxOutputTokens?: number
+  readonly maxCumulativeOutputTokens?: number | null
   readonly workarea?: string
   readonly budgetClock?: AgentRunSpec["budget"]["clock"]
   readonly closeoutReserveMs?: number
@@ -570,7 +570,9 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     skills: SKILLS,
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
-      maxOutputTokens: options.maxOutputTokens ?? 8_192,
+      ...(options.maxCumulativeOutputTokens === null
+        ? {}
+        : { maxCumulativeOutputTokens: options.maxCumulativeOutputTokens ?? 8_192 }),
       ...(options.budgetClock ? { clock: options.budgetClock } : {}),
       ...(options.closeoutReserveMs ? { closeoutReserveMs: options.closeoutReserveMs } : {}),
     },
@@ -1546,7 +1548,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve a large tool result and continue the same run",
         tools: [evidenceDump, smallCheckpoint],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1625,7 +1627,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "rotate before the historical 283K to 307K failure range",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 8_000,
+        maxCumulativeOutputTokens: 8_000,
       }),
     )
 
@@ -1698,7 +1700,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "rotate through a declared alternate summarizer route",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1764,7 +1766,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "recover one rejected summary without opening another route",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1812,7 +1814,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve context after a blocked semantic summary",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1873,7 +1875,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve working notes when deterministic compaction is exhausted",
         tools: [smallCheckpoint],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1945,7 +1947,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "retain an indispensable active notebook below the trigger",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 8_000,
+        maxCumulativeOutputTokens: 8_000,
       }),
     )
 
@@ -2306,7 +2308,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "fail context artifact persistence without losing the result",
         tools: [evidenceDump],
         workarea: unavailableWorkarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -2405,7 +2407,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "continue safely after one malformed summary",
         tools: [first, second],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -3970,7 +3972,7 @@ describe("Pi AgentRun steering and cancellation", () => {
       rootSpec(runtime.models, {
         id: "output-budget-root",
         objective: "respect the AgentRun output budget",
-        maxOutputTokens: 2,
+        maxCumulativeOutputTokens: 2,
       }),
     )
 
@@ -3979,6 +3981,43 @@ describe("Pi AgentRun steering and cancellation", () => {
       output: "bounded output",
       usage: { output: 3 },
     })
+  })
+
+  test("allows cumulative output beyond one response limit when no AgentRun output budget is configured", async () => {
+    let executions = 0
+    const checkpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "checkpoint",
+      label: "Checkpoint",
+      description: "Record one durable checkpoint before the final response.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: "checkpoint complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) =>
+      call.ordinal === 1 ? toolCall(call, "checkpoint", {}) : assistant(call, "phase complete"),
+    )
+    const runtime = subsystem(provider, registryWithLimits(131_072, 4))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "unbounded-cumulative-output-root",
+        objective: "complete more than one model response worth of cumulative output",
+        tools: [checkpoint],
+        maxCumulativeOutputTokens: null,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "phase complete",
+      usage: { output: 6 },
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls).toHaveLength(2)
   })
 
   test("pauses the active-execution deadline while a host approval is pending", async () => {

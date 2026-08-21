@@ -982,10 +982,10 @@ function validateSpec(spec: AgentRunSpec): void {
   if (!spec.task.objective.trim()) throw new Error("AgentRun task objective is empty")
   if (!Number.isFinite(spec.budget.deadlineAt)) throw new Error("AgentRun deadline must be finite")
   if (
-    spec.budget.maxOutputTokens !== undefined &&
-    (!Number.isSafeInteger(spec.budget.maxOutputTokens) || spec.budget.maxOutputTokens <= 0)
+    spec.budget.maxCumulativeOutputTokens !== undefined &&
+    (!Number.isSafeInteger(spec.budget.maxCumulativeOutputTokens) || spec.budget.maxCumulativeOutputTokens <= 0)
   )
-    throw new Error("AgentRun maxOutputTokens must be a positive safe integer")
+    throw new Error("AgentRun maxCumulativeOutputTokens must be a positive safe integer")
 }
 
 function terminationFor(state: RunState, failure: Failure | undefined): AgentRunTermination {
@@ -1637,9 +1637,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
         .digest("hex")
         .slice(0, 24)}`
       const remainingOutputTokens =
-        input.state.spec.budget.maxOutputTokens === undefined
+        input.state.spec.budget.maxCumulativeOutputTokens === undefined
           ? undefined
-          : Math.max(0, input.state.spec.budget.maxOutputTokens - input.state.cumulativeUsage.output)
+          : Math.max(0, input.state.spec.budget.maxCumulativeOutputTokens - input.state.cumulativeUsage.output)
       const recoveryPolicy = Settings.phaseRecoveryPolicy(this.#settings)
       const sourceRoute =
         input.state.spec.providerAffinity === "fallback" || sourceProvider === fallbackProvider ? "fallback" : "main"
@@ -1782,7 +1782,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         messages: checkpointMessages,
         tools: [],
       })
-      const limit = input.state.spec.budget.maxOutputTokens
+      const limit = input.state.spec.budget.maxCumulativeOutputTokens
       const remainingOutput =
         limit === undefined ? MODEL_SUMMARY_MAX_TOKENS : limit - input.state.cumulativeUsage.output
       if (remainingOutput < 512)
@@ -2857,7 +2857,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           },
         })
         const initialChildState = this.#states.get(child.id)
-        const initialOutputBudget = initialChildState?.spec.budget.maxOutputTokens
+        const initialOutputBudget = initialChildState?.spec.budget.maxCumulativeOutputTokens
         const initialResult = await child.result
         let result = initialResult
         const recoveryFailure = initialResult.failure
@@ -3386,7 +3386,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
       budget: {
         ...parent.spec.budget,
         deadlineAt,
-        ...(options.recoveryOutputTokens === undefined ? {} : { maxOutputTokens: options.recoveryOutputTokens }),
+        ...(options.recoveryOutputTokens === undefined
+          ? {}
+          : { maxCumulativeOutputTokens: options.recoveryOutputTokens }),
       },
     })
   }
@@ -3605,8 +3607,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         },
       })
       if (
-        state.spec.budget.maxOutputTokens !== undefined &&
-        state.cumulativeUsage.output >= state.spec.budget.maxOutputTokens &&
+        state.spec.budget.maxCumulativeOutputTokens !== undefined &&
+        state.cumulativeUsage.output >= state.spec.budget.maxCumulativeOutputTokens &&
         event.message.stopReason !== "error" &&
         event.message.stopReason !== "aborted"
       ) {
@@ -3926,7 +3928,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
               state.contextRecoveryProviderCallsRemaining--
             }
             const localOnlyOptions = { ...options, telemetryContext: NOOP_TELEMETRY_CONTEXT }
-            const limit = state.spec.budget.maxOutputTokens
+            const limit = state.spec.budget.maxCumulativeOutputTokens
             if (limit === undefined) return this.#streamFn(model, context, localOnlyOptions)
             const remaining = Math.max(1, limit - state.cumulativeUsage.output)
             const requested = options?.maxTokens ?? model.maxTokens

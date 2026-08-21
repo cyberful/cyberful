@@ -7,7 +7,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { createServer, type Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
@@ -29,6 +29,11 @@ const nativeSessionSocketDirectory = path.join(socketRoot, `cyb-ab-it-${process.
 const nativeSessionNamespace = `it${process.pid}-session`
 const searchSocketDirectory = path.join(socketRoot, `cyb-ab-it-${process.pid}-search`)
 const searchNamespace = `it${process.pid}-search`
+const transferSocketDirectories = [
+  path.join(socketRoot, `cyb-ab-it-${process.pid}-transfer-1`),
+  path.join(socketRoot, `cyb-ab-it-${process.pid}-transfer-2`),
+]
+const transferNamespaces = [`it${process.pid}-transfer-1`, `it${process.pid}-transfer-2`]
 let server: Server | undefined
 let serverPort = 0
 
@@ -155,6 +160,12 @@ afterAll(async () => {
   )
   await rm(nativeSessionSocketDirectory, { recursive: true, force: true })
   await rm(searchSocketDirectory, { recursive: true, force: true })
+  await Promise.all(transferSocketDirectories.map((directory) => rm(directory, { recursive: true, force: true })))
+  await Promise.all(
+    transferNamespaces.map((namespace) =>
+      rm(path.join(os.homedir(), ".agent-browser", "namespaces", namespace), { recursive: true, force: true }),
+    ),
+  )
   await rm(root, { recursive: true, force: true })
 })
 
@@ -303,6 +314,70 @@ describe("real agent-browser profiles", () => {
       )
     } finally {
       await runtime.close()
+    }
+  }, 120_000)
+
+  test("release an owned persistent profile before a distinct phase runtime starts", async () => {
+    const profile = path.join(root, "phase-transfer-profile")
+    const artifacts = path.join(root, "phase-transfer-artifacts")
+    const ownedProcesses = [new Set<number>(), new Set<number>()]
+    const phaseRuntime = (index: number) =>
+      createBrowserProfileProcess({
+        label: "browser-1",
+        command: [browserLauncher, "mcp"],
+        environment: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          ),
+          AGENT_BROWSER_PROFILE: profile,
+          AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
+          AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
+          AGENT_BROWSER_SESSION: `it-transfer-${index + 1}`,
+          AGENT_BROWSER_NAMESPACE: transferNamespaces[index]!,
+          AGENT_BROWSER_SOCKET_DIR: transferSocketDirectories[index]!,
+          AGENT_BROWSER_HEADED: "0",
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "0",
+          AGENT_BROWSER_ARGS: "--restore-last-session",
+        },
+        diagnosticSink: (message) => {
+          if (process.env.CYBERFUL_TEST_BROWSER_DIAGNOSTICS === "1") process.stderr.write(message)
+        },
+        ownProcess: (pid) => ownedProcesses[index]!.add(pid),
+      })
+    const phases = [phaseRuntime(0), phaseRuntime(1)]
+    const invoke = (index: number, name: string, args: Record<string, unknown> = {}) =>
+      phases[index]!.call(`phase-${index + 1}`, async (client) => {
+        const result = await client.callTool({ name, arguments: args }, CallToolResultSchema, {
+          timeout: 60_000,
+          maxTotalTimeout: 60_000,
+        })
+        return CallToolResultSchema.parse(result)
+      })
+    const base = `http://127.0.0.1:${serverPort}`
+
+    try {
+      data(await invoke(0, "agent_browser_open", { url: `${base}/phase-one` }))
+      const firstDaemonPID = Number(
+        (
+          await readFile(
+            path.join(
+              transferSocketDirectories[0]!,
+              "namespaces",
+              transferNamespaces[0]!,
+              "run",
+              "it-transfer-1.pid",
+            ),
+            "utf8",
+          )
+        ).trim(),
+      )
+      expect(ownedProcesses[0]!.has(firstDaemonPID)).toBe(true)
+
+      await phases[0]!.close()
+      data(await invoke(1, "agent_browser_open", { url: `${base}/phase-two` }))
+      expect(data(await invoke(1, "agent_browser_get_url")).url).toBe(`${base}/phase-two`)
+    } finally {
+      await Promise.all(phases.map((runtime) => runtime.close().catch(() => undefined)))
     }
   }, 120_000)
 })

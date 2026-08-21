@@ -19,8 +19,8 @@ const LIST_TIMEOUT_MS = 20_000
 const TOOL_TIMEOUT_MS = 600_000
 const ZAP_PROBE_TIMEOUT_MS = 5_000
 const CANCELLATION_SETTLE_MS = 2_250
-const DAEMON_CLOSE_TIMEOUT_MS = 10_000
-const DAEMON_RELEASE_TIMEOUT_MS = 2_000
+const DAEMON_CLOSE_TIMEOUT_MS = 30_000
+const DAEMON_RELEASE_TIMEOUT_MS = 5_000
 const PROCESS_DIAGNOSTIC_BYTES = 8 * 1024
 
 export interface BrowserProfileProcessOptions {
@@ -99,22 +99,51 @@ class OwnedStdioClientTransport extends StdioClientTransport {
   }
 }
 
-async function waitForDaemonRelease(environment: Readonly<Record<string, string>>): Promise<void> {
+interface AgentBrowserDaemonPaths {
+  readonly endpoint: string
+  readonly pidFile: string
+}
+
+function agentBrowserDaemonPaths(
+  environment: Readonly<Record<string, string>>,
+): AgentBrowserDaemonPaths | undefined {
   const root = environment.AGENT_BROWSER_SOCKET_DIR?.trim()
   const session = environment.AGENT_BROWSER_SESSION?.trim()
-  if (!root || !session) {
-    await Bun.sleep(100)
-    return
-  }
+  if (!root || !session) return
   const namespace = environment.AGENT_BROWSER_NAMESPACE?.trim()
   const directory = namespace ? path.join(root, "namespaces", namespace, "run") : root
-  const endpoint = path.join(directory, `${session}.${process.platform === "win32" ? "port" : "sock"}`)
+  return {
+    endpoint: path.join(directory, `${session}.${process.platform === "win32" ? "port" : "sock"}`),
+    pidFile: path.join(directory, `${session}.pid`),
+  }
+}
+
+function registerDaemonOwner(options: BrowserProfileProcessOptions): boolean {
+  const paths = agentBrowserDaemonPaths(options.environment)
+  if (!paths || !fs.existsSync(paths.pidFile)) return false
+  try {
+    const pid = Number(fs.readFileSync(paths.pidFile, "utf8").trim())
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return false
+    options.ownProcess(pid)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForDaemonRelease(environment: Readonly<Record<string, string>>): Promise<boolean> {
+  const paths = agentBrowserDaemonPaths(environment)
+  if (!paths) {
+    await Bun.sleep(100)
+    return false
+  }
   const deadline = Date.now() + DAEMON_RELEASE_TIMEOUT_MS
-  while (fs.existsSync(endpoint) && Date.now() < deadline) await Bun.sleep(25)
+  while (fs.existsSync(paths.endpoint) && Date.now() < deadline) await Bun.sleep(25)
   // The daemon removes its endpoint just before process exit. One quiet
   // interval prevents a replacement MCP from observing that dying daemon
   // as ready and then losing the socket on its first browser command.
   await Bun.sleep(100)
+  return !fs.existsSync(paths.endpoint)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -459,14 +488,17 @@ export class AgentBrowserProfileProcess {
     const queued = this.queue.then(async () => {
       signal?.throwIfAborted()
       try {
-        return await this.upstream.call(async (connection) => {
+        const result = await this.upstream.call(async (connection) => {
           try {
             return await operation(connection.client)
           } catch (error) {
             throw browserProcessError(this.options, connection, error)
           }
         }, signal)
+        registerDaemonOwner(this.options)
+        return result
       } catch (error) {
+        registerDaemonOwner(this.options)
         if (signal?.aborted) {
           await this.upstream.reset()
           await this.closeDaemon()
@@ -501,18 +533,25 @@ export class AgentBrowserProfileProcess {
   }
 
   private async closeDaemon(): Promise<void> {
-    if (this.upstream.status().generation === 0) return
+    const paths = agentBrowserDaemonPaths(this.options.environment)
+    if (!paths || (!fs.existsSync(paths.endpoint) && !fs.existsSync(paths.pidFile))) return
+    registerDaemonOwner(this.options)
     const [command, ...mcpArgs] = this.options.command
     const mcpIndex = mcpArgs.indexOf("mcp")
     const args = mcpIndex >= 0 ? [...mcpArgs.slice(0, mcpIndex), "close"] : ["close"]
-    await Process.run([command, ...args], {
+    const result = await Process.run([command, ...args], {
       abort: AbortSignal.timeout(DAEMON_CLOSE_TIMEOUT_MS),
       env: { ...this.options.environment },
       maxOutputBytes: 64 * 1024,
       nothrow: true,
       timeout: 1_000,
-    }).catch(() => undefined)
-    await waitForDaemonRelease(this.options.environment)
+    })
+    const released = await waitForDaemonRelease(this.options.environment)
+    if (released) return
+    const detail = result.stderr.toString("utf8").replace(/\s+/g, " ").trim()
+    throw new BrowserProfileProcessError(
+      `${this.options.label} agent-browser daemon did not release its profile after close (exit ${result.code})${detail ? `: ${detail}` : ""}`,
+    )
   }
 }
 

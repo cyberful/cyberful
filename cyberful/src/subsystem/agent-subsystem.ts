@@ -68,7 +68,7 @@ export interface SubsystemStatus {
 
 export interface AgentRunBudget {
   readonly deadlineAt: number
-  readonly maxOutputTokens?: number
+  readonly maxCumulativeOutputTokens?: number
   readonly clock?: PhaseBudgetClock
   readonly closeoutReserveMs?: number
 }
