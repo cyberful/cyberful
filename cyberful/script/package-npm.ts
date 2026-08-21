@@ -3,16 +3,13 @@
 // Stages platform binaries and the portable launcher into their public npm
 // layouts, writes exact-version manifests, and packs one audited artifact.
 // → cyberful/bin/resolve.cjs — resolves optional platform packages at runtime.
-// @docs/development/release.md
 // ────────────────────────────────────────────────────────────────────
 
-import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { gunzipSync } from "node:zlib"
-import { gzipAsync } from "@gfx/zopfli"
 import semver from "semver"
+import { extract, list } from "tar"
 
 export type NpmPlatform = "darwin" | "linux" | "windows"
 export type NpmArchitecture = "arm64" | "x64"
@@ -27,8 +24,7 @@ const publicPackages = [
   "@cyberful-org/cyberful-windows-x64",
 ]
 const publicTargets = new Set(["darwin-arm64", "darwin-x64", "linux-x64", "windows-x64"])
-const npmCompressionThresholdBytes = 250_000_000
-const npmUploadLimitBytes = 256_000_000
+const npmPublishTarballLimitBytes = 190_000_000
 const maximumUnpackedTarBytes = 1_500_000_000
 const releaseNotices = [
   ["THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
@@ -222,67 +218,131 @@ export function packNpmPackage(directory: string, destination: string) {
   }
 }
 
-// ── Large Packages Preserve Their Exact Tar Payload ────────────────
-// npm rejects compressed uploads near 256 MB even when every declared file is
-// valid. npm pack already uses gzip level 9, so oversized platform packages are
-// recompressed deterministically with one Zopfli iteration while retaining the
-// exact tar bytes. A bounded inflate plus a post-compression digest check makes
-// archive corruption or an unexpectedly large input fail before publication.
+function parsePackageManifest(packageRoot: string) {
+  const manifestFile = path.join(packageRoot, "package.json")
+  let value: unknown
+  try {
+    value = JSON.parse(fs.readFileSync(manifestFile, "utf8"))
+  } catch (error) {
+    throw new Error(`Cannot read npm package manifest ${manifestFile}`, { cause: error })
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("name" in value) ||
+    typeof value.name !== "string" ||
+    !("version" in value) ||
+    typeof value.version !== "string" ||
+    !semver.valid(value.version)
+  ) {
+    throw new Error(`npm package manifest must contain a package name and valid version: ${manifestFile}`)
+  }
+  return { name: value.name, version: value.version }
+}
+
+async function validateNpmArchive(file: string) {
+  let unpackedBytes = 0
+  let entries = 0
+  try {
+    await list({
+      file,
+      strict: true,
+      onReadEntry(entry) {
+        const normalized = entry.path.replaceAll("\\", "/").replace(/\/$/, "")
+        if (
+          (normalized !== "package" && !normalized.startsWith("package/")) ||
+          normalized.split("/").some((segment) => segment === "..") ||
+          path.posix.isAbsolute(normalized) ||
+          (entry.type !== "File" && entry.type !== "Directory")
+        ) {
+          throw new Error(`npm package contains an unsafe archive entry: ${entry.path}`)
+        }
+        unpackedBytes += entry.size
+        entries += 1
+        if (unpackedBytes > maximumUnpackedTarBytes) {
+          throw new Error(`npm package expands beyond ${maximumUnpackedTarBytes} bytes: ${file}`)
+        }
+      },
+    })
+  } catch (error) {
+    throw new Error(`Cannot validate npm package ${file}`, { cause: error })
+  }
+  if (entries === 0) throw new Error(`npm package is empty: ${file}`)
+}
+
+// ── Universal x64 Packages Store One Binary Body ───────────────────
+// npm publishes a tarball inside a larger registry request, so two independent
+// standalone executables can exceed the request limit even when the compressed
+// archive itself appears smaller than that limit. Linux and Windows npm packages
+// therefore retain both launcher-visible filenames as hard links to the baseline
+// executable, which runs on AVX2 and older x64 hosts while storing one byte body.
+// Standalone release archives are assembled before this transformation and keep
+// their distinct optimized and baseline binaries.
 // ────────────────────────────────────────────────────────────────────
-export async function optimizeNpmPackage(
-  file: string,
-  options: { compressionThresholdBytes?: number; uploadLimitBytes?: number } = {},
-) {
+export async function repackUniversalX64Package(file: string, options: { uploadLimitBytes?: number } = {}) {
   const packageFile = path.resolve(file)
   const source = fs.statSync(packageFile, { throwIfNoEntry: false })
   if (!source?.isFile() || !packageFile.endsWith(".tgz")) throw new Error("An npm .tgz package is required")
-  const compressionThresholdBytes = options.compressionThresholdBytes ?? npmCompressionThresholdBytes
-  const uploadLimitBytes = options.uploadLimitBytes ?? npmUploadLimitBytes
-  if (!Number.isSafeInteger(compressionThresholdBytes) || compressionThresholdBytes <= 0) {
-    throw new Error("The npm compression threshold must be a positive integer")
-  }
+  const uploadLimitBytes = options.uploadLimitBytes ?? npmPublishTarballLimitBytes
   if (!Number.isSafeInteger(uploadLimitBytes) || uploadLimitBytes <= 0) {
     throw new Error("The npm upload limit must be a positive integer")
   }
-  if (source.size < compressionThresholdBytes) {
-    return { bytes: source.size, optimized: false }
-  }
+  await validateNpmArchive(packageFile)
 
-  const original = Buffer.from(await Bun.file(packageFile).arrayBuffer())
-  let tar: Buffer
+  const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-universal-"))
+  const replacementRoot = fs.mkdtempSync(path.join(path.dirname(packageFile), ".cyberful-npm-repack-"))
   try {
-    tar = gunzipSync(original, { maxOutputLength: maximumUnpackedTarBytes })
-  } catch (error) {
-    throw new Error(`Cannot inflate npm package ${packageFile}`, { cause: error })
-  }
-  const tarDigest = crypto.createHash("sha256").update(tar).digest("hex")
-  const optimized = Buffer.from(await gzipAsync(tar, { numiterations: 1 }))
-  let restored: Buffer
-  try {
-    restored = gunzipSync(optimized, { maxOutputLength: maximumUnpackedTarBytes })
-  } catch (error) {
-    throw new Error(`Cannot verify optimized npm package ${packageFile}`, { cause: error })
-  }
-  if (
-    restored.byteLength !== tar.byteLength ||
-    crypto.createHash("sha256").update(restored).digest("hex") !== tarDigest
-  ) {
-    throw new Error(`Optimized npm package changed the tar payload: ${packageFile}`)
-  }
-  const selected = optimized.byteLength < original.byteLength ? optimized : original
-  if (selected.byteLength >= uploadLimitBytes) {
-    throw new Error(`npm package remains above the ${uploadLimitBytes}-byte upload limit: ${packageFile}`)
-  }
-  if (selected === original) return { bytes: original.byteLength, optimized: false }
+    await extract({ file: packageFile, cwd: stagingRoot, strict: true, preservePaths: false, unlink: true })
+    const packageRoot = path.join(stagingRoot, "package")
+    const manifest = parsePackageManifest(packageRoot)
+    const extension = manifest.name === "@cyberful-org/cyberful-windows-x64" ? ".exe" : ""
+    if (
+      manifest.name !== "@cyberful-org/cyberful-linux-x64" &&
+      manifest.name !== "@cyberful-org/cyberful-windows-x64"
+    ) {
+      throw new Error(`Only Linux and Windows x64 npm packages can be repacked: ${manifest.name}`)
+    }
 
-  const temporary = `${packageFile}.${crypto.randomUUID()}.tmp`
-  try {
-    await Bun.write(temporary, selected)
-    fs.renameSync(temporary, packageFile)
+    const optimizedBinary = path.join(packageRoot, "bin", `cyberful${extension}`)
+    const baselineBinary = path.join(packageRoot, "bin", `cyberful-baseline${extension}`)
+    for (const binary of [optimizedBinary, baselineBinary]) {
+      if (!fs.statSync(binary, { throwIfNoEntry: false })?.isFile()) {
+        throw new Error(`Required x64 npm binary is missing: ${binary}`)
+      }
+    }
+    fs.rmSync(optimizedBinary)
+    fs.linkSync(baselineBinary, optimizedBinary)
+
+    const repacked = packNpmPackage(packageRoot, replacementRoot)
+    if (path.basename(repacked) !== path.basename(packageFile)) {
+      throw new Error(`Repacked npm filename changed from ${path.basename(packageFile)} to ${path.basename(repacked)}`)
+    }
+    const bytes = fs.statSync(repacked).size
+    if (bytes >= uploadLimitBytes) {
+      throw new Error(`npm package remains above the ${uploadLimitBytes}-byte publish limit: ${packageFile}`)
+    }
+
+    const verificationRoot = path.join(stagingRoot, "verification")
+    fs.mkdirSync(verificationRoot)
+    await extract({ file: repacked, cwd: verificationRoot, strict: true, preservePaths: false, unlink: true })
+    const verifiedBin = path.join(verificationRoot, "package", "bin")
+    const verifiedOptimized = path.join(verifiedBin, `cyberful${extension}`)
+    const verifiedBaseline = path.join(verifiedBin, `cyberful-baseline${extension}`)
+    const optimizedStat = fs.statSync(verifiedOptimized)
+    const baselineStat = fs.statSync(verifiedBaseline)
+    if (
+      optimizedStat.ino !== baselineStat.ino ||
+      !fs.readFileSync(verifiedOptimized).equals(fs.readFileSync(verifiedBaseline))
+    ) {
+      throw new Error(`Repacked npm package did not preserve one universal hard-linked binary: ${packageFile}`)
+    }
+
+    fs.renameSync(repacked, packageFile)
+    return { afterBytes: bytes, beforeBytes: source.size, packageName: manifest.name, version: manifest.version }
   } finally {
-    fs.rmSync(temporary, { force: true })
+    fs.rmSync(stagingRoot, { recursive: true, force: true })
+    fs.rmSync(replacementRoot, { recursive: true, force: true })
   }
-  return { bytes: selected.byteLength, optimized: true }
 }
 
 if (import.meta.main) {
@@ -315,6 +375,5 @@ if (import.meta.main) {
     })
   }
   const artifact = packNpmPackage(staged, path.join(output, "packages"))
-  const compression = await optimizeNpmPackage(artifact)
-  console.log(JSON.stringify({ artifact, compression, staged }, null, 2))
+  console.log(JSON.stringify({ artifact, staged }, null, 2))
 }
