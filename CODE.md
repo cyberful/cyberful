@@ -90,7 +90,7 @@ Opening and closing separators are mandatory. Replace only the comment prefix fo
 - Make the title a precise design claim, not `Helpers`, `Utilities`, or `Logic`. Use the same title for the same concept wherever it reappears.
 - Cover the context that makes the section necessary, the decision embodied by the code, and the invariant or failure mode it protects. Do not paraphrase the next function or list implementation steps.
 - Make every claim provable by nearby code, types, schemas, assertions, tests, or an explicit review condition. Prose that disagrees with code is a defect.
-- Keep the source understandable locally. When wider context exists, add one dedicated `@docs/<path>.md` line per document inside the frame. The path after `@` is repository-root-relative and must exist.
+- Keep the source understandable locally. When wider context exists, add one dedicated `@docs/<path>.md` line per document inside the frame. The path after `@docs/` is relative to the canonical documentation root in the sibling `../cy-website/src/content/documentation/` repository. A local checkout validates that file when the sibling repository is available; the website build owns complete navigation and link validation.
 - Update code, prose, tests, and linked docs together. Remove stale notes.
 - AI agents must not invent intent, add filler, or overstate guarantees.
 

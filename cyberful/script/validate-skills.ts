@@ -14,6 +14,10 @@ import addFormats from "ajv-formats"
 import matter from "gray-matter"
 
 const skillRoot = path.resolve(import.meta.dir, "../builtin/skills")
+const configuredDocumentationRoot = process.env.CYBERFUL_DOCUMENTATION_ROOT
+const documentationRoot = path.resolve(
+  configuredDocumentationRoot ?? path.join(import.meta.dir, "../../../cy-website/src/content/documentation"),
+)
 const intentPattern = /^(?:test|audit|trace|analyze|operate|assess|plan|report)-[a-z0-9]+(?:-[a-z0-9]+)*$/
 const frameworkKeys = ["mitre_attack", "nist_csf", "mitre_atlas", "mitre_d3fend", "nist_ai_rmf", "mitre_f3", "pci_dss", "gdpr"] as const
 const pinnedFrameworkKeys = ["nist_csf", "mitre_atlas", "mitre_d3fend", "nist_ai_rmf", "mitre_f3", "pci_dss", "gdpr"] as const
@@ -335,9 +339,15 @@ async function validateFrameworkIdentifiers(
 }
 
 async function validatePublishedSkillInventory(entries: readonly string[]): Promise<void> {
-  const filename = path.resolve(import.meta.dir, "../../docs/runtimes/skill-catalog.md")
+  const filename = path.join(documentationRoot, "runtimes/skill-catalog.md")
+  if (!await Bun.file(filename).exists()) {
+    if (configuredDocumentationRoot) {
+      throw new Error(`configured documentation root does not contain runtimes/skill-catalog.md: ${documentationRoot}`)
+    }
+    return
+  }
   const source = await Bun.file(filename).text()
-  const rows = [...source.matchAll(/^- `((?:test|audit|trace|analyze|operate|assess|plan|report)-[^`]+)` — `([^`]+)`$/gm)].map(
+  const rows = [...source.matchAll(/^- `((?:test|audit|trace|analyze|operate|assess|plan|report)-[^`]+)` - `([^`]+)`$/gm)].map(
     (match) => ({ name: match[1] ?? "", category: match[2] ?? "" }),
   )
   if (rows.map((row) => row.name).toSorted().join("\0") !== entries.join("\0"))

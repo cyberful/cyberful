@@ -2,7 +2,7 @@
 
 Cyberful accepts changes to the terminal workbench, Pi Agent subsystem, first-party configuration, MCP tooling, container runtimes, tests, and engineer documentation. Contributions must preserve the authorized-security boundary, localhost-first service posture, and zero-telemetry policy.
 
-The extended contributor guide starts at [`docs/development/README.md`](docs/development/README.md).
+The extended contributor guide starts in the [Cyberful documentation](https://cyberful.ai/open-docs/development/).
 
 ## Read Before Changing Code
 
@@ -16,7 +16,7 @@ Directory-level instructions add narrower constraints; they do not replace the r
 
 ## Prepare The Workspace
 
-Install the supported tools from the [requirements guide](docs/getting-started/requirements.md), then install dependencies:
+Install the supported tools from the [requirements guide](https://cyberful.ai/open-docs/getting-started/requirements/), then install dependencies:
 
 ```sh
 make deps
@@ -29,7 +29,7 @@ Inspect the worktree before editing. Do not discard, overwrite, or reformat unre
 - Keep the patch narrow and give one component clear ownership of the behavior.
 - Follow every applicable section of `CODE.md`. Every added or functionally changed code file needs a current ornamental file header contract; non-obvious internal sections follow the compact Literate Code rules.
 - Add or strengthen tests for changed behavior.
-- Update `docs/`, `mkdocs.yml`, and `README.md` when their contracts or entry points change.
+- Update the canonical pages in the sibling `../cy-website/src/content/documentation/` repository and `README.md` when their contracts or entry points change. Do not recreate documentation sources in this repository.
 - Regenerate derived files from their source rather than editing generated output by hand.
 - Never add credentials, engagement data, transcripts, reports, browser state, databases, caches, container state, or telemetry.
 
@@ -42,7 +42,7 @@ bun run --cwd cyberful check:code
 make typecheck
 make test-bun
 make test-python
-make docs-build
+npm --prefix ../cy-website run documentation:check
 ```
 
 The first command is the fast repository-wide `CODE.md` conformance gate; `make typecheck` runs it again before compiling TypeScript.
@@ -54,13 +54,13 @@ make runtime-build
 make test-runtime
 ```
 
-The image build can use more than 100 GB; the complete local test needs at least 40 GB free. `make test-zap` and `make test-ghidra` reuse the image selected by `CYBERFUL_OS_IMAGE` and do not build component images. Docker, network, Pi, and provider-adapter changes require their corresponding integration targets. See [Build Cyberful with us](docs/development/README.md) for the full verification matrix and [Testing and CI](docs/development/testing.md) for CI behavior.
+The image build can use more than 100 GB; the complete local test needs at least 40 GB free. `make test-zap` and `make test-ghidra` reuse the image selected by `CYBERFUL_OS_IMAGE` and do not build component images. Docker, network, Pi, and provider-adapter changes require their corresponding integration targets. See [Build Cyberful with us](https://cyberful.ai/open-docs/development/) for the full verification matrix and [Testing and CI](https://cyberful.ai/open-docs/development/testing/) for CI behavior.
 
 If a required tier cannot run locally, state exactly what was not run and why. Do not describe an unexecuted check as passing.
 
 ## Submit For Review
 
-A review-ready change explains the owned behavior, important constraints, tests actually run, documentation affected, and any remaining risk. The complete review gates are in the [contributor checklist](docs/development/README.md).
+A review-ready change explains the owned behavior, important constraints, tests actually run, documentation affected, and any remaining risk. The complete review gates are in the [contributor checklist](https://cyberful.ai/open-docs/development/).
 
 ## License Of Contributions
 

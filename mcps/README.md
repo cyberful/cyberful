@@ -114,7 +114,7 @@ Or directly:
 mcps/browser/bin/cyber-browser
 ```
 
-The first operational browser result from `tool_search` includes the validated, version-matched `core-mcp-managed` instructions automatically. Use `agent_browser_skills_list` and `agent_browser_skills_get` only for narrower specialized instructions. The full upstream inventory and effective Cyberful availability rules are maintained in [`docs/runtimes/tool-catalog.md`](../docs/runtimes/tool-catalog.md).
+The first operational browser result from `tool_search` includes the validated, version-matched `core-mcp-managed` instructions automatically. Use `agent_browser_skills_list` and `agent_browser_skills_get` only for narrower specialized instructions. The full upstream inventory and effective Cyberful availability rules are maintained in the [complete tool and MCP catalog](https://cyberful.ai/open-docs/runtimes/tool-catalog/).
 
 Cyberful starts one shared serialized session per profile and phase. Numbered persistent profiles always traverse ZAP with its CA SPKI and QUIC disabled; missing ZAP state fails without a direct fallback. `search` is ephemeral, has inherited proxy and persistent-profile state removed, and blocks every host outside DuckDuckGo and Google. Cyberful owns the allowlist, session, namespace, profile directory, connection, proxy, request-header, and lifecycle fields and rejects direct or nested attempts to replace them.
 
@@ -124,10 +124,10 @@ The fixed first-party `agent-browser-plugin-captcha` plugin is registered in eve
 
 The `zap/` sources are bundled into cyberful-os. The engagement supervisor starts ZAP when live traffic is enabled, and gateways create bridge processes with `docker exec`. Browser traffic is proxied automatically with trust scoped to the engagement ZAP CA SPKI; core clients receive the same attested public CA through an engagement-only read-only bundle, while ZAP's private key remains masked from the core.
 
-ZAP and browser proxying are enabled by default. Set `CYBER_ZAP_ENABLED=0` to disable the runtime or `CYBER_BROWSER_THROUGH_ZAP=0` to leave ZAP available without chaining the browser. See [`docs/runtimes/zap.md`](../docs/runtimes/zap.md).
+ZAP and browser proxying are enabled by default. Set `CYBER_ZAP_ENABLED=0` to disable the runtime or `CYBER_BROWSER_THROUGH_ZAP=0` to leave ZAP available without chaining the browser. See the [OWASP ZAP runtime guide](https://cyberful.ai/open-docs/runtimes/zap/).
 
 ## Ghidra service and bridge
 
 The `ghidra/` sources are bundled into the same image with Kali's native Ghidra/PyGhidra package for amd64 and arm64. Cyberful keeps one JVM and project alive across eligible phases. Removing and recreating the engagement container does not delete the separately mounted host-owned project store.
 
-The MCP exposes bounded semantic tools for import, job control, search, disassembly, decompilation, cross-references, call graphs, and annotations. It does not expose arbitrary scripts or binary mutation. See [`docs/runtimes/ghidra.md`](../docs/runtimes/ghidra.md).
+The MCP exposes bounded semantic tools for import, job control, search, disassembly, decompilation, cross-references, call graphs, and annotations. It does not expose arbitrary scripts or binary mutation. See the [Ghidra runtime guide](https://cyberful.ai/open-docs/runtimes/ghidra/).

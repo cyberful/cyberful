@@ -40,10 +40,6 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.1.2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          version: 0.11.16
-          enable-cache: true
       - run: bun install --frozen-lockfile
       - name: Require main and a new stable version
         env:
@@ -81,10 +77,6 @@ jobs:
           fi
       - run: npm ci --prefix mcps
       - run: make typecheck test-bun test-python
-      - name: Build documentation
-        env:
-          NO_MKDOCS_2_WARNING: "true"
-        run: uv run --with-requirements docs-requirements.txt mkdocs build --strict
 
   attack-snapshot:
     name: Prepare MITRE ATT&CK release snapshot
