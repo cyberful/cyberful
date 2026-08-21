@@ -145,7 +145,7 @@ describe("npm package staging", () => {
 })
 
 describe("npm package upload size", () => {
-  test("stores one baseline-compatible binary body behind both x64 filenames", async () => {
+  test("stores one regular baseline-compatible binary in registry-sized x64 packages", async () => {
     const repositoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-universal-"))
     temporaryRoots.push(repositoryRoot)
     fs.writeFileSync(path.join(repositoryRoot, "LICENSE"), "AGPL-3.0-only")
@@ -186,8 +186,7 @@ describe("npm package upload size", () => {
     const installed = path.join(extracted, "package/bin/cyberful")
     const installedBaseline = path.join(extracted, "package/bin/cyberful-baseline")
     expect(fs.readFileSync(installed)).toEqual(baseline)
-    expect(fs.readFileSync(installedBaseline)).toEqual(baseline)
-    expect(fs.statSync(installed).ino).toBe(fs.statSync(installedBaseline).ino)
+    expect(fs.existsSync(installedBaseline)).toBeFalse()
   })
 
   test("rejects a repacked package that still exceeds the publish limit", async () => {

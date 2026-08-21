@@ -270,14 +270,14 @@ async function validateNpmArchive(file: string) {
   if (entries === 0) throw new Error(`npm package is empty: ${file}`)
 }
 
-// ── Universal x64 Packages Store One Binary Body ───────────────────
+// ── Universal x64 Packages Store One Baseline Binary ───────────────
 // npm publishes a tarball inside a larger registry request, so two independent
 // standalone executables can exceed the request limit even when the compressed
-// archive itself appears smaller than that limit. Linux and Windows npm packages
-// therefore retain both launcher-visible filenames as hard links to the baseline
-// executable, which runs on AVX2 and older x64 hosts while storing one byte body.
-// Standalone release archives are assembled before this transformation and keep
-// their distinct optimized and baseline binaries.
+// archive itself appears smaller than that limit. npm also rejects hard links in
+// published packages. Linux and Windows npm packages therefore expose only the
+// baseline executable under the canonical cyberful filename; it runs on AVX2 and
+// older x64 hosts. Their matching launcher knows this layout. Standalone release
+// archives are assembled first and keep distinct optimized and baseline binaries.
 // ────────────────────────────────────────────────────────────────────
 export async function repackUniversalX64Package(file: string, options: { uploadLimitBytes?: number } = {}) {
   const packageFile = path.resolve(file)
@@ -311,7 +311,7 @@ export async function repackUniversalX64Package(file: string, options: { uploadL
       }
     }
     fs.rmSync(optimizedBinary)
-    fs.linkSync(baselineBinary, optimizedBinary)
+    fs.renameSync(baselineBinary, optimizedBinary)
 
     const repacked = packNpmPackage(packageRoot, replacementRoot)
     if (path.basename(repacked) !== path.basename(packageFile)) {
@@ -328,13 +328,8 @@ export async function repackUniversalX64Package(file: string, options: { uploadL
     const verifiedBin = path.join(verificationRoot, "package", "bin")
     const verifiedOptimized = path.join(verifiedBin, `cyberful${extension}`)
     const verifiedBaseline = path.join(verifiedBin, `cyberful-baseline${extension}`)
-    const optimizedStat = fs.statSync(verifiedOptimized)
-    const baselineStat = fs.statSync(verifiedBaseline)
-    if (
-      optimizedStat.ino !== baselineStat.ino ||
-      !fs.readFileSync(verifiedOptimized).equals(fs.readFileSync(verifiedBaseline))
-    ) {
-      throw new Error(`Repacked npm package did not preserve one universal hard-linked binary: ${packageFile}`)
+    if (!fs.statSync(verifiedOptimized).isFile() || fs.existsSync(verifiedBaseline)) {
+      throw new Error(`Repacked npm package did not preserve one universal baseline binary: ${packageFile}`)
     }
 
     fs.renameSync(repacked, packageFile)

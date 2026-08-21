@@ -94,9 +94,10 @@ function target(
   if (!platform || !architecture) return
   if (platform === "linux" && musl) return
   if (architecture === "arm64" && platform !== "darwin") return
+  const baseline = architecture === "x64" && !avx2
   return {
     packageName: `@cyberful-org/cyberful-${platform}-${architecture}`,
-    binaryName: `cyberful${architecture === "x64" && !avx2 ? "-baseline" : ""}${platform === "windows" ? ".exe" : ""}`,
+    binaryName: `cyberful${platform === "darwin" && baseline ? "-baseline" : ""}${platform === "windows" ? ".exe" : ""}`,
   }
 }
 
