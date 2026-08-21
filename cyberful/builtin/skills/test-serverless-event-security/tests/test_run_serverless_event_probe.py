@@ -191,11 +191,12 @@ class ServerlessEventProbeTests(unittest.TestCase):
             with self.assertRaisesRegex(self.module.ProbeError, "symbolic links"):
                 self.module._read_input(workspace, "link.json")
             real_open = os.open
+            replacement = workspace / "replacement.json"
+            replacement.write_text(json.dumps(payload(self.origin)), encoding="utf-8")
 
             def swap_before_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
                 if Path(os.path.realpath(path)) == Path(os.path.realpath(source)):
-                    source.unlink()
-                    source.write_text(json.dumps(payload(self.origin)), encoding="utf-8")
+                    os.replace(replacement, source)
                 return real_open(path, flags, *args, **kwargs)
 
             with patch.object(self.module.os, "open", side_effect=swap_before_open):
