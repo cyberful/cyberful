@@ -8,7 +8,15 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { metaManifest, packNpmPackage, platformManifest, stageMetaPackage, stagePlatformPackage } from "./package-npm"
+import { gunzipSync, gzipSync } from "node:zlib"
+import {
+  metaManifest,
+  optimizeNpmPackage,
+  packNpmPackage,
+  platformManifest,
+  stageMetaPackage,
+  stagePlatformPackage,
+} from "./package-npm"
 
 const temporaryRoots: string[] = []
 
@@ -134,5 +142,41 @@ describe("npm package staging", () => {
       "cannot replace the repository root",
     )
     expect(fs.readFileSync(path.join(repositoryRoot, "LICENSE"), "utf8")).toBe("AGPL-3.0-only")
+  })
+})
+
+describe("npm package upload size", () => {
+  test("recompresses an oversized archive without changing its tar payload", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-compression-"))
+    temporaryRoots.push(root)
+    const file = path.join(root, "package.tgz")
+    const tar = Buffer.from("cyberful-release-payload\n".repeat(100_000))
+    const original = gzipSync(tar, { level: 1 })
+    fs.writeFileSync(file, original)
+
+    const result = await optimizeNpmPackage(file, {
+      compressionThresholdBytes: 1,
+      uploadLimitBytes: original.byteLength,
+    })
+
+    expect(result.optimized).toBeTrue()
+    expect(result.bytes).toBeLessThan(original.byteLength)
+    const first = fs.readFileSync(file)
+    expect(gunzipSync(first)).toEqual(tar)
+
+    fs.writeFileSync(file, original)
+    await optimizeNpmPackage(file, { compressionThresholdBytes: 1, uploadLimitBytes: original.byteLength })
+    expect(fs.readFileSync(file)).toEqual(first)
+  })
+
+  test("rejects a package that still exceeds the upload limit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-limit-"))
+    temporaryRoots.push(root)
+    const file = path.join(root, "package.tgz")
+    fs.writeFileSync(file, gzipSync(Buffer.from("cyberful")))
+
+    await expect(optimizeNpmPackage(file, { compressionThresholdBytes: 1, uploadLimitBytes: 1 })).rejects.toThrow(
+      "remains above",
+    )
   })
 })
