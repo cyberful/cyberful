@@ -2,7 +2,7 @@
 
 Use the project documentation and existing issues before opening a new request.
 
-- Setup and usage: start with the [documentation](docs/README.md) and [requirements guide](docs/getting-started/requirements.md).
+- Setup and usage: start with the [documentation](https://cyberful.ai/open-docs/) and [requirements guide](https://cyberful.ai/open-docs/getting-started/requirements/).
 - Reproducible defects: open a [bug report](https://github.com/cyberful/cyberful/issues/new?template=bug_report.yml).
 - Product proposals: open a [feature request](https://github.com/cyberful/cyberful/issues/new?template=feature_request.yml).
 - Security vulnerabilities: follow the private process in [SECURITY.md](SECURITY.md); never disclose an unpatched vulnerability in a public issue.

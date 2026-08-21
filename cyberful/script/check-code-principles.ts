@@ -11,6 +11,11 @@ import { stat } from "node:fs/promises"
 import ts from "typescript"
 
 const repositoryRoot = path.resolve(import.meta.dir, "../..")
+const configuredDocumentationRoot = process.env.CYBERFUL_DOCUMENTATION_ROOT
+const documentationRoot = path.resolve(
+  configuredDocumentationRoot ?? path.join(repositoryRoot, "../cy-website/src/content/documentation"),
+)
+const documentationRootAvailable = stat(documentationRoot).then((entry) => entry.isDirectory()).catch(() => false)
 const codeExtensions = new Set([".cjs", ".js", ".mjs", ".py", ".sh", ".sql", ".ts", ".tsx"])
 const ignoredSegments = new Set([
   ".browsers",
@@ -243,17 +248,25 @@ async function inspectReferences(file: string, lines: string[], violations: Viol
     const comment = lines[index].match(/^\s*(?:\/\/|#|--) ?(.*)$/)
     if (!comment) continue
     const body = comment[1]
-    const reference = body.startsWith("@docs/")
-      ? body.slice(1)
-      : body.startsWith("→ ")
-        ? body.slice(2).split(" —", 1)[0]
-        : undefined
+    const documentationReference = body.startsWith("@docs/") ? body.slice("@docs/".length) : undefined
+    const repositoryReference = body.startsWith("→ ") ? body.slice(2).split(" —", 1)[0] : undefined
+    const reference = documentationReference ?? repositoryReference
     if (!reference) continue
 
+    if (documentationReference && !await documentationRootAvailable) {
+      if (configuredDocumentationRoot) {
+        violations.push({ file, line: index + 1, message: `configured documentation root is unavailable: ${documentationRoot}` })
+      }
+      continue
+    }
+
+    const referenceRoot = documentationReference ? documentationRoot : repositoryRoot
+
     try {
-      await stat(path.join(repositoryRoot, reference))
+      await stat(path.join(referenceRoot, reference))
     } catch {
-      violations.push({ file, line: index + 1, message: `broken repository reference: ${reference}` })
+      const kind = documentationReference ? "documentation" : "repository"
+      violations.push({ file, line: index + 1, message: `broken ${kind} reference: ${reference}` })
     }
   }
 }

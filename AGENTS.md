@@ -13,7 +13,7 @@ From the repository root:
 - `make build` — build standalone binaries for all platforms.
 - `make install` — build and install the `cyberful` command for the current system.
 - `make run` — launch Cyberful with the repository root as its workspace.
-- `make docs` / `make docs-build` — serve or build the engineer docs.
+- `npm --prefix ../cy-website run documentation:check` — validate the canonical engineer documentation when the sibling website checkout is available.
 
 When working under `mcps/`, follow [`mcps/AGENTS.md`](mcps/AGENTS.md).
 
@@ -74,8 +74,8 @@ Skills and hooks are shared repository behavior. When adding, changing, renaming
 
 Do not hard-wrap Markdown prose. Keep each paragraph and each list item on one physical line unless a line break is required by Markdown syntax, embedded HTML structure, a code block, a table, or an intentional hard break.
 
-The engineer site under `docs/` is a first-class maintenance target. Update it in the same change whenever behavior, configuration, phase contracts, tools, or event semantics change. Describe the present system, not migration history. Keep pages self-contained and add published pages to `mkdocs.yml`.
+The canonical engineer documentation lives in the Cyberful website repository at `~/Sites/cy-website/src/content/documentation/` (normally the sibling path `../cy-website/src/content/documentation/`). Update it in the same coordinated change whenever behavior, configuration, phase contracts, tools, or event semantics change. Describe the present system, not migration history. Keep pages self-contained and register every published page in `shared/documentation-config.mjs` in that repository. Never recreate a `docs/` tree or documentation publishing pipeline in this repository.
 
-Keep [`docs/runtimes/tool-catalog.md`](docs/runtimes/tool-catalog.md) complete and current whenever a Pi-native tool, gateway tool, MCP server or tool, runtime CLI or library wrapper, ZAP extension, version pin, availability rule, name, description, or use case changes. Reconcile its names and counts against the executable registries, distinguish pinned versions from locally build-resolved versions, and verify the catalog through the documentation build in the same change.
+Keep `../cy-website/src/content/documentation/runtimes/tool-catalog.md` complete and current whenever a Pi-native tool, gateway tool, MCP server or tool, runtime CLI or library wrapper, ZAP extension, version pin, availability rule, name, description, or use case changes. Reconcile its names and counts against the executable registries, distinguish pinned versions from locally build-resolved versions, and run `npm --prefix ../cy-website run documentation:check` in the same coordinated change.
 
 Keep [`README.md`](README.md) aligned when a change affects components, setup, commands, or user-facing behavior.

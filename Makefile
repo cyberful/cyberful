@@ -1,4 +1,4 @@
-.PHONY: all help deps install typecheck test test-bun test-browser test-python runtime-build test-runtime test-cyberful-os test-network test-zap test-ghidra test-all build run cve_dictionary cve_dictionary_publish browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 docs docs-build clean
+.PHONY: all help deps install typecheck test test-bun test-browser test-python runtime-build test-runtime test-cyberful-os test-network test-zap test-ghidra test-all build run cve_dictionary cve_dictionary_publish browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5 clean
 
 PYTHON ?= python3
 CYBERFUL_OS_IMAGE ?= cyberful-os:latest
@@ -33,9 +33,7 @@ help:
 	@echo "  make cve_dictionary Rebuild the pinned offline CVE dictionary and its manifests"
 	@echo "  make cve_dictionary_publish Sign and publish the verified local CVE snapshot"
 	@echo "  make browser-run-{1..5} Open a persistent browser profile for target pre-authentication"
-	@echo "  make docs         Serve the engineer docs locally"
-	@echo "  make docs-build   Build the static documentation site"
-	@echo "  make clean        Remove generated build and documentation output"
+	@echo "  make clean        Remove generated build output"
 
 deps:
 	bun install
@@ -130,12 +128,6 @@ cve_dictionary_publish:
 
 browser-run-1 browser-run-2 browser-run-3 browser-run-4 browser-run-5:
 	bun cyberful/script/browser-run.ts $(@:browser-run-%=%)
-
-docs:
-	cd $(dir $(abspath $(firstword $(MAKEFILE_LIST)))) && ./scripts/serve-docs.sh
-
-docs-build:
-	cd $(dir $(abspath $(firstword $(MAKEFILE_LIST)))) && ./scripts/serve-docs.sh build
 
 clean:
 	rm -rf site dist ts-dist cyberful/dist

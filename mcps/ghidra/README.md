@@ -13,4 +13,4 @@ make test-ghidra
 
 The public tools are `ghidra_project`, `ghidra_import`, `ghidra_job`, `ghidra_search`, `ghidra_listing`, `ghidra_decompile`, `ghidra_xrefs`, `ghidra_call_graph`, and `ghidra_annotations`. Arbitrary scripts, debugger control, binary patching, and generic Java/Python evaluation are intentionally absent.
 
-See [the Ghidra runtime guide](../../docs/runtimes/ghidra.md) for lifecycle, phase policy, persistence, hardening, and configuration.
+See [the Ghidra runtime guide](https://cyberful.ai/open-docs/runtimes/ghidra/) for lifecycle, phase policy, persistence, hardening, and configuration.
