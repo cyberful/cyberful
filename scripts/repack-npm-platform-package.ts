@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
-// ── npm Release Artifact Optimization ───────────────────────────────
-// Applies the package assembler's bounded, byte-preserving compression policy
-// to one existing npm tarball so a staged partial release can resume safely.
-// → cyberful/script/package-npm.ts — owns the compression and integrity checks.
-// @docs/development/release.md
+// ── npm x64 Release Artifact Repacking ─────────────────────────────
+// Rewrites one staged Linux or Windows x64 npm tarball around a single
+// baseline-compatible binary body while preserving both public filenames.
+// → cyberful/script/package-npm.ts — owns archive validation and repacking.
 // ────────────────────────────────────────────────────────────────────
 
 import path from "node:path"
-import { optimizeNpmPackage } from "../cyberful/script/package-npm"
+import { repackUniversalX64Package } from "../cyberful/script/package-npm"
 
 function argument(name: string) {
   const indexes = Bun.argv.flatMap((value, index) => (value === name ? [index] : []))
@@ -21,5 +20,5 @@ function argument(name: string) {
 const file = argument("--file")
 if (!file) throw new Error("--file is required")
 const packageFile = path.resolve(file)
-const result = await optimizeNpmPackage(packageFile)
+const result = await repackUniversalX64Package(packageFile)
 console.log(JSON.stringify({ file: packageFile, ...result }, null, 2))

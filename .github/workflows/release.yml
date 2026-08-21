@@ -289,6 +289,13 @@ jobs:
           --input release-inputs
           --output release-assets
           --version "$RELEASE_VERSION"
+      - name: Fit x64 npm packages within the registry request limit
+        shell: bash
+        run: |
+          for platform in linux windows; do
+            bun scripts/repack-npm-platform-package.ts \
+              --file "release-assets/cyberful-org-cyberful-$platform-x64-$RELEASE_VERSION.tgz"
+          done
       - name: Pack the public launcher
         shell: bash
         run: >-
@@ -296,6 +303,13 @@ jobs:
           --meta
           --version "$RELEASE_VERSION"
           --output release-meta
+      - name: Install and execute the registry-sized Linux package
+        shell: bash
+        run: >-
+          bun cyberful/script/smoke-npm.ts
+          --platform-package "release-assets/cyberful-org-cyberful-linux-x64-$RELEASE_VERSION.tgz"
+          --meta-package "release-meta/packages/cyberful-$RELEASE_VERSION.tgz"
+          --version "$RELEASE_VERSION"
       - name: Add the launcher to the release set
         shell: bash
         run: cp release-meta/packages/*.tgz release-assets/
@@ -580,29 +594,39 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.resume_run_id }}
-      - name: Recompress the oversized npm package without changing its tar payload
-        env:
-          PACKAGE_ASSET: cyberful-org-cyberful-linux-x64-${{ inputs.version }}.tgz
+      - name: Fit x64 npm packages within the registry request limit
         shell: bash
         run: |
-          bun scripts/optimize-npm-package.ts --file "release-assets/$PACKAGE_ASSET"
+          for platform in linux windows; do
+            bun scripts/repack-npm-platform-package.ts \
+              --file "release-assets/cyberful-org-cyberful-$platform-x64-$RELEASE_VERSION.tgz"
+          done
           bun scripts/write-checksums.ts release-assets
-      - name: Reconcile only the recompressed draft assets
+      - name: Install and execute the registry-sized Linux package
+        shell: bash
+        run: >-
+          bun cyberful/script/smoke-npm.ts
+          --platform-package "release-assets/cyberful-org-cyberful-linux-x64-$RELEASE_VERSION.tgz"
+          --meta-package "release-assets/cyberful-$RELEASE_VERSION.tgz"
+          --version "$RELEASE_VERSION"
+      - name: Reconcile only the repacked draft assets
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_ASSET: cyberful-org-cyberful-linux-x64-${{ inputs.version }}.tgz
           RELEASE_ID: ${{ steps.release.outputs.release_id }}
           TAG: v${{ inputs.version }}
         shell: bash
         run: |
-          # ── Recovery Mutates Only Two Named Draft Assets ─────────────
+          # ── Recovery Mutates Only Three Named Draft Assets ────────────
           # The failed run already staged a complete draft whose other files must
-          # remain byte-identical. Recovery permits replacement only for the npm
-          # tarball whose deflate stream changed and the checksum manifest that
-          # records that new digest. Matching retries preserve both assets, while
-          # any mismatch elsewhere still fails closed in the uploader below.
+          # remain byte-identical. Recovery permits replacement only for the two
+          # x64 npm tarballs whose binary storage changed and the checksum manifest
+          # that records their new digests. Matching retries preserve these assets,
+          # while any mismatch elsewhere still fails closed in the uploader below.
           # ─────────────────────────────────────────────────────────────
-          for asset_name in "$PACKAGE_ASSET" SHA256SUMS; do
+          for asset_name in \
+            "cyberful-org-cyberful-linux-x64-$RELEASE_VERSION.tgz" \
+            "cyberful-org-cyberful-windows-x64-$RELEASE_VERSION.tgz" \
+            SHA256SUMS; do
             local_digest="sha256:$(sha256sum "release-assets/$asset_name" | cut -d' ' -f1)"
             asset_record="$(
               gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \

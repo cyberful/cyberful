@@ -37,7 +37,6 @@
     "./*": "./src/*.ts"
   },
   "devDependencies": {
-    "@gfx/zopfli": "1.0.15",
     "@hey-api/openapi-ts": "0.99.0",
     "@parcel/watcher-darwin-arm64": "2.5.1",
     "@parcel/watcher-darwin-x64": "2.5.1",

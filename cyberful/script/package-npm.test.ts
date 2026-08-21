@@ -8,12 +8,11 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { gunzipSync, gzipSync } from "node:zlib"
 import {
   metaManifest,
-  optimizeNpmPackage,
   packNpmPackage,
   platformManifest,
+  repackUniversalX64Package,
   stageMetaPackage,
   stagePlatformPackage,
 } from "./package-npm"
@@ -146,37 +145,65 @@ describe("npm package staging", () => {
 })
 
 describe("npm package upload size", () => {
-  test("recompresses an oversized archive without changing its tar payload", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-compression-"))
-    temporaryRoots.push(root)
-    const file = path.join(root, "package.tgz")
-    const tar = Buffer.from("cyberful-release-payload\n".repeat(100_000))
-    const original = gzipSync(tar, { level: 1 })
-    fs.writeFileSync(file, original)
+  test("stores one baseline-compatible binary body behind both x64 filenames", async () => {
+    const repositoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-universal-"))
+    temporaryRoots.push(repositoryRoot)
+    fs.writeFileSync(path.join(repositoryRoot, "LICENSE"), "AGPL-3.0-only")
+    writePackageDocuments(repositoryRoot)
+    const optimized = Buffer.alloc(1_000_000)
+    const baseline = Buffer.alloc(1_000_000)
+    for (let index = 0, state = 0x12345678; index < optimized.length; index += 1) {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      optimized[index] = state & 0xff
+      baseline[index] = (state >>> 8) & 0xff
+    }
+    for (const [target, contents] of [
+      ["cyberful-linux-x64", optimized],
+      ["cyberful-linux-x64-baseline", baseline],
+    ] as const) {
+      const binary = path.join(repositoryRoot, "cyberful/dist", target, "bin/cyberful")
+      fs.mkdirSync(path.dirname(binary), { recursive: true })
+      fs.writeFileSync(binary, contents)
+    }
 
-    const result = await optimizeNpmPackage(file, {
-      compressionThresholdBytes: 1,
-      uploadLimitBytes: original.byteLength,
+    const packageRoot = path.join(repositoryRoot, "package")
+    stagePlatformPackage({ repositoryRoot, packageRoot, platform: "linux", architecture: "x64", version: "1.2.3" })
+    const artifact = packNpmPackage(packageRoot, path.join(repositoryRoot, "packed"))
+    const result = await repackUniversalX64Package(artifact)
+
+    expect(result.afterBytes).toBeLessThan(result.beforeBytes * 0.75)
+    const extracted = path.join(repositoryRoot, "extracted")
+    fs.mkdirSync(extracted)
+    const unpack = Bun.spawnSync(["tar", "-xzf", artifact, "-C", extracted], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+      maxBuffer: 1_048_576,
     })
-
-    expect(result.optimized).toBeTrue()
-    expect(result.bytes).toBeLessThan(original.byteLength)
-    const first = fs.readFileSync(file)
-    expect(gunzipSync(first)).toEqual(tar)
-
-    fs.writeFileSync(file, original)
-    await optimizeNpmPackage(file, { compressionThresholdBytes: 1, uploadLimitBytes: original.byteLength })
-    expect(fs.readFileSync(file)).toEqual(first)
+    expect(unpack.exitCode).toBe(0)
+    const installed = path.join(extracted, "package/bin/cyberful")
+    const installedBaseline = path.join(extracted, "package/bin/cyberful-baseline")
+    expect(fs.readFileSync(installed)).toEqual(baseline)
+    expect(fs.readFileSync(installedBaseline)).toEqual(baseline)
+    expect(fs.statSync(installed).ino).toBe(fs.statSync(installedBaseline).ino)
   })
 
-  test("rejects a package that still exceeds the upload limit", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-limit-"))
-    temporaryRoots.push(root)
-    const file = path.join(root, "package.tgz")
-    fs.writeFileSync(file, gzipSync(Buffer.from("cyberful")))
+  test("rejects a repacked package that still exceeds the publish limit", async () => {
+    const repositoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-npm-limit-"))
+    temporaryRoots.push(repositoryRoot)
+    fs.writeFileSync(path.join(repositoryRoot, "LICENSE"), "AGPL-3.0-only")
+    writePackageDocuments(repositoryRoot)
+    for (const target of ["cyberful-linux-x64", "cyberful-linux-x64-baseline"]) {
+      const binary = path.join(repositoryRoot, "cyberful/dist", target, "bin/cyberful")
+      fs.mkdirSync(path.dirname(binary), { recursive: true })
+      fs.writeFileSync(binary, target)
+    }
+    const packageRoot = path.join(repositoryRoot, "package")
+    stagePlatformPackage({ repositoryRoot, packageRoot, platform: "linux", architecture: "x64", version: "1.2.3" })
+    const artifact = packNpmPackage(packageRoot, path.join(repositoryRoot, "packed"))
 
-    await expect(optimizeNpmPackage(file, { compressionThresholdBytes: 1, uploadLimitBytes: 1 })).rejects.toThrow(
-      "remains above",
-    )
+    await expect(repackUniversalX64Package(artifact, { uploadLimitBytes: 1 })).rejects.toThrow("remains above")
   })
 })
