@@ -601,6 +601,11 @@ jobs:
             bun scripts/repack-npm-platform-package.ts \
               --file "release-assets/cyberful-org-cyberful-$platform-x64-$RELEASE_VERSION.tgz"
           done
+          bun cyberful/script/package-npm.ts \
+            --meta \
+            --version "$RELEASE_VERSION" \
+            --output release-recovery-meta
+          cp "release-recovery-meta/packages/cyberful-$RELEASE_VERSION.tgz" release-assets/
           bun scripts/write-checksums.ts release-assets
       - name: Install and execute the registry-sized Linux package
         shell: bash
@@ -616,14 +621,15 @@ jobs:
           TAG: v${{ inputs.version }}
         shell: bash
         run: |
-          # ── Recovery Mutates Only Three Named Draft Assets ────────────
+          # ── Recovery Mutates Only Four Named Draft Assets ─────────────
           # The failed run already staged a complete draft whose other files must
-          # remain byte-identical. Recovery permits replacement only for the two
-          # x64 npm tarballs whose binary storage changed and the checksum manifest
-          # that records their new digests. Matching retries preserve these assets,
-          # while any mismatch elsewhere still fails closed in the uploader below.
+          # remain byte-identical. Recovery permits replacement only for the two x64
+          # npm tarballs whose binary layout changed, their matching launcher, and
+          # the checksum manifest that records their new digests. Matching retries
+          # preserve these assets; any mismatch elsewhere still fails closed below.
           # ─────────────────────────────────────────────────────────────
           for asset_name in \
+            "cyberful-$RELEASE_VERSION.tgz" \
             "cyberful-org-cyberful-linux-x64-$RELEASE_VERSION.tgz" \
             "cyberful-org-cyberful-windows-x64-$RELEASE_VERSION.tgz" \
             SHA256SUMS; do

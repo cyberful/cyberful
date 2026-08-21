@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // ── npm x64 Release Artifact Repacking ─────────────────────────────
-// Rewrites one staged Linux or Windows x64 npm tarball around a single
-// baseline-compatible binary body while preserving both public filenames.
+// Rewrites one staged Linux or Windows x64 npm tarball around one regular
+// baseline-compatible binary exposed under the canonical public filename.
 // → cyberful/script/package-npm.ts — owns archive validation and repacking.
 // ────────────────────────────────────────────────────────────────────
 

@@ -66,10 +66,11 @@ describe("npm launcher", () => {
     })
   })
 
-  test("selects the baseline x64 binary when AVX2 is unavailable", () => {
+  test("uses the universal package binary outside macOS", () => {
     expect(resolver.target("linux", "x64", false, true)?.binaryName).toBe("cyberful")
-    expect(resolver.target("linux", "x64", false, false)?.binaryName).toBe("cyberful-baseline")
-    expect(resolver.target("windows", "x64", false, false)?.binaryName).toBe("cyberful-baseline.exe")
+    expect(resolver.target("linux", "x64", false, false)?.binaryName).toBe("cyberful")
+    expect(resolver.target("windows", "x64", false, false)?.binaryName).toBe("cyberful.exe")
+    expect(resolver.target("darwin", "x64", false, false)?.binaryName).toBe("cyberful-baseline")
   })
 
   test("finds scoped platform packages above the launcher", () => {
