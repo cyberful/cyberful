@@ -70,8 +70,8 @@ export function projectHistory(result, options = {}) {
 export async function storeContentAddressed(workarea, data, metadata = {}) {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
   const sha256 = createHash("sha256").update(bytes).digest("hex")
-  const directory = path.join(workarea, ".cyberful-zap", "objects")
-  const file = path.join(directory, sha256)
+  const directory = path.join(workarea, "raw", "zap", "history", "objects")
+  const file = path.join(directory, `${sha256}.json`)
   await mkdir(directory, { recursive: true })
   const temporary = path.join(directory, `.${sha256}.${randomUUID()}.tmp`)
   const artifact = await open(temporary, "wx", 0o600)

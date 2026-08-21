@@ -54,6 +54,7 @@ describe("ZAP history projection", () => {
       const first = await storeContentAddressed(root, new TextEncoder().encode("same"))
       const second = await storeContentAddressed(root, new TextEncoder().encode("same"))
       expect(first.saved).toBe(second.saved)
+      expect(first.saved).toMatch(/^raw\/zap\/history\/objects\/[a-f0-9]{64}\.json$/)
       expect(first.deduplicated).toBe(false)
       expect(second.deduplicated).toBe(true)
       expect(await readFile(path.join(root, first.saved), "utf8")).toBe("same")

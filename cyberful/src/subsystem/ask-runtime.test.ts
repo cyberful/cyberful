@@ -16,6 +16,7 @@ function runtime(stop: () => Promise<void>, env: Record<string, string> = {}): E
     degraded: false,
     warnings: [],
     preparePhase: async () => ({ warnings: [], env: {} }),
+    capturePassiveEvidence: async () => ({ state: "not_applicable" }),
     stop,
   }
 }

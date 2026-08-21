@@ -133,6 +133,7 @@ nav:
       - Ghidra: runtimes/ghidra.md
       - EVM lab: runtimes/evm.md
       - CVE Dictionary: runtimes/cve-dictionary.md
+      - MITRE ATT&CK MCP: runtimes/mitre-attack.md
   - Build with us:
       - Contributing: development/README.md
       - Testing: development/testing.md

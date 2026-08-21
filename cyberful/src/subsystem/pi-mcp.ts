@@ -11,6 +11,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import { createHash } from "node:crypto"
 import { Unsafe, type TUnsafe } from "typebox"
 import {
   approvalElicitationContent,
@@ -27,18 +28,43 @@ import type { RecoveredTestObject } from "./agent-subsystem"
 
 const LIST_TIMEOUT_MS = 20_000
 const TOOL_TIMEOUT_MS = 600_000
+const GATEWAY_INITIALIZATION_TIMEOUT_MS = 6 * 60_000
 const HUMAN_WAIT_HEARTBEAT_MS = 30_000
 const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HANDOFF_TOOL_NAME = "handoff"
 const TARGET_COOLDOWN_TOOL_NAME = "target_cooldown"
 const TEST_OBJECT_TOOL_NAME = "test_object"
-const BROWSER_CLOSE_TOOL_NAME = "browser_close"
 const BROWSER_OWNER_RELEASE_TOOL_NAME = "_cyberful_browser_owner_release"
 const HUMAN_WAIT_TOOL_NAMES = new Set(["question", "source_import"])
+const AGENT_BROWSER_SKILLS_GET_TOOL_NAME = "agent_browser_skills_get"
+const AGENT_BROWSER_MANAGED_INSTRUCTION_BUNDLE = "agent-browser/core-mcp-managed"
+const AGENT_BROWSER_INSTRUCTION_BUNDLE_META = "cyberful.dev/instruction-bundle"
+const AGENT_BROWSER_SKILL_RESULT_META = "io.cyberful/agent-browser-skills"
+const AGENT_BROWSER_MANAGED_SKILL_NAME = "core-mcp-managed"
+const AGENT_BROWSER_MANAGED_SKILL_MAX_BYTES = 32_768
+const AGENT_BROWSER_SOURCE_VERSION = "0.34.0-cyberful.3"
 
 type ToolArguments = Record<string, unknown>
 type ToolParameters = TUnsafe<ToolArguments>
 type PiToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+
+export interface PiMcpInstructionBundle {
+  readonly id: string
+  readonly source: "agent-browser"
+  readonly sourceVersion: string
+  readonly content: string
+  readonly bytes: number
+  readonly sha256: string
+}
+
+export interface PiMcpInstructionBundleLoader {
+  readonly id: string
+  readonly load: (signal?: AbortSignal) => Promise<PiMcpInstructionBundle>
+}
+
+type PiMcpAgentTool = AgentTool<ToolParameters, PiMcpToolDetails> & {
+  readonly instructionBundles?: readonly PiMcpInstructionBundleLoader[]
+}
 
 export interface PiMcpToolDetails {
   readonly serverName: string
@@ -46,6 +72,14 @@ export interface PiMcpToolDetails {
   readonly isError: false
   readonly synthesisOutcome?: "diversified" | "exhausted"
   readonly activeBlockingHypotheses?: number
+  readonly researchCloseout?: {
+    readonly version: 1
+    readonly webTarget: boolean
+    readonly unusedProfiles: readonly number[]
+    readonly coverageCandidateCount: number
+    readonly coverageCandidateSamples: readonly string[]
+    readonly collectorDegraded: boolean
+  }
   readonly convergence?: {
     readonly cluster: string
     readonly negativeHypothesisIDs: readonly string[]
@@ -54,6 +88,7 @@ export interface PiMcpToolDetails {
 
 export interface PiMcpConnectOptions {
   readonly cwd?: string
+  readonly initializationTimeoutMs?: number
   readonly isToolAllowed?: (name: string) => boolean
   readonly askQuestion?: AskHuman
   readonly diagnostics?: RuntimeDiagnosticRecorder
@@ -142,7 +177,8 @@ function diagnosticComponent(message: string): "gateway" | "zap" | "browser" | "
 
 function toolDiagnosticRoute(name: string): Pick<RuntimeDiagnosticInput, "component" | "route"> {
   if (name === "shell") return { component: "cyberful-os", route: "cyberful-os/shell" }
-  if (name.startsWith("browser_")) return { component: "browser", route: `browser/${name}` }
+  if (name === "web_search" || name.startsWith("agent_browser_"))
+    return { component: "browser", route: `browser/${name}` }
   if (name.startsWith("zap_")) return { component: "zap", route: `zap/${name}` }
   if (name.startsWith("ghidra_")) return { component: "ghidra", route: `ghidra/${name}` }
   return { component: "gateway", route: `gateway/${name}` }
@@ -158,7 +194,7 @@ function classifyGatewayStderr(
       severity: "info",
       errorClass: "GatewayLifecycle",
     }
-  if (/\blaunching\s+patchright-core\s+chromium\b/iu.test(line))
+  if (/\bagent-browser\b.*\b(?:launch|daemon|chrome)\b/iu.test(line))
     return {
       stage: "startup",
       severity: "info",
@@ -204,15 +240,46 @@ function classifyGatewayStderr(
   }
 }
 
-function hypothesisDetails(
+function researchCloseoutMetadata(result: McpCallResult): PiMcpToolDetails["researchCloseout"] {
+  if ("toolResult" in result || !isRecord(result._meta)) return
+  const value = result._meta["cyberful.dev/research-closeout"]
+  if (!isRecord(value) || value.version !== 1 || typeof value.webTarget !== "boolean") return
+  if (
+    !Array.isArray(value.unusedProfiles) ||
+    !value.unusedProfiles.every(
+      (profile) => typeof profile === "number" && Number.isInteger(profile) && profile >= 1 && profile <= 5,
+    ) ||
+    typeof value.coverageCandidateCount !== "number" ||
+    !Number.isInteger(value.coverageCandidateCount) ||
+    value.coverageCandidateCount < 0 ||
+    !Array.isArray(value.coverageCandidateSamples) ||
+    !value.coverageCandidateSamples.every((route) => typeof route === "string") ||
+    typeof value.collectorDegraded !== "boolean"
+  )
+    return
+  return {
+    version: 1,
+    webTarget: value.webTarget,
+    unusedProfiles: [...new Set(value.unusedProfiles)].toSorted(),
+    coverageCandidateCount: value.coverageCandidateCount,
+    coverageCandidateSamples: value.coverageCandidateSamples.slice(0, 8),
+    collectorDegraded: value.collectorDegraded,
+  }
+}
+
+export function hypothesisDetails(
   name: string,
   result: McpCallResult,
-): Pick<PiMcpToolDetails, "synthesisOutcome" | "activeBlockingHypotheses" | "convergence"> {
+): Pick<
+  PiMcpToolDetails,
+  "synthesisOutcome" | "activeBlockingHypotheses" | "convergence" | "researchCloseout"
+> {
   if (name !== "hypothesis" || "toolResult" in result) return {}
+  const researchCloseout = researchCloseoutMetadata(result)
   const text = result.content.find(
     (block): block is Extract<(typeof result.content)[number], { type: "text" }> => block.type === "text",
   )?.text
-  if (!text) return {}
+  if (!text) return { ...(researchCloseout ? { researchCloseout } : {}) }
   try {
     const value: unknown = JSON.parse(text)
     if (!isRecord(value)) return {}
@@ -229,9 +296,10 @@ function hypothesisDetails(
       ...(typeof convergence?.cluster === "string" && negativeHypothesisIDs.length >= 2
         ? { convergence: { cluster: convergence.cluster, negativeHypothesisIDs } }
         : {}),
+      ...(researchCloseout ? { researchCloseout } : {}),
     }
   } catch {
-    return {}
+    return { ...(researchCloseout ? { researchCloseout } : {}) }
   }
 }
 
@@ -242,7 +310,7 @@ function hypothesisDetails(
 // Pi. Unsupported media is represented as text so results remain observable
 // without serializing the server descriptor or its private environment.
 // ─────────────────────────────────────────────────────────────────
-function convertContent(result: McpCallResult): PiToolContent[] {
+function convertContent(result: McpCallResult, options: { readonly structured?: boolean } = {}): PiToolContent[] {
   if ("toolResult" in result) return [{ type: "text", text: printableJson(result.toolResult) }]
 
   const content: PiToolContent[] = []
@@ -295,7 +363,7 @@ function convertContent(result: McpCallResult): PiToolContent[] {
     })
   }
 
-  if (result.structuredContent)
+  if (options.structured !== false && result.structuredContent)
     content.push({
       type: "text",
       text: `MCP structured output:\n${printableJson(result.structuredContent)}`,
@@ -310,7 +378,6 @@ function isGloballyAuthorized(name: string, options: PiMcpConnectOptions): boole
 
 function isRunAuthorized(name: string, policy: PiMcpRunToolPolicy): boolean {
   if (name === HANDOFF_TOOL_NAME && !policy.handoffAuthorized) return false
-  if (name === BROWSER_CLOSE_TOOL_NAME && policy.actor?.kind !== "root") return false
   return policy.isToolAllowed(name)
 }
 
@@ -403,12 +470,26 @@ function piTool(
   connectOptions: PiMcpConnectOptions,
   runPolicy: PiMcpRunToolPolicy,
   isClosed: () => boolean,
-): AgentTool<ToolParameters, PiMcpToolDetails> {
+  loadInstructionBundle: (id: string, signal?: AbortSignal) => Promise<PiMcpInstructionBundle>,
+): PiMcpAgentTool {
+  const eager = isRecord(definition._meta) && definition._meta["cyberful.dev/eager"] === true
+  const instructionBundle = isRecord(definition._meta) ? definition._meta[AGENT_BROWSER_INSTRUCTION_BUNDLE_META] : undefined
   return {
     name: definition.name,
     label: definition.title ?? definition.annotations?.title ?? definition.name,
     description: definition.description ?? `Call the ${definition.name} Cyberful gateway tool.`,
     parameters: Unsafe<ToolArguments>(definition.inputSchema),
+    ...(eager ? { deferLoading: false } : {}),
+    ...(typeof instructionBundle === "string"
+      ? {
+          instructionBundles: [
+            {
+              id: instructionBundle,
+              load: (signal?: AbortSignal) => loadInstructionBundle(instructionBundle, signal),
+            },
+          ] satisfies PiMcpInstructionBundleLoader[],
+        }
+      : {}),
     execute: async (toolCallID, params, signal) => {
       if (isClosed()) throw new Error(`MCP bridge ${serverName} is closed`)
       if (!isGloballyAuthorized(definition.name, connectOptions) || !isRunAuthorized(definition.name, runPolicy))
@@ -516,7 +597,7 @@ function piTool(
       }
       const hypothesis = hypothesisDetails(definition.name, result)
       return {
-        content: convertContent(result),
+        content: convertContent(result, { structured: definition.name !== AGENT_BROWSER_SKILLS_GET_TOOL_NAME }),
         details: {
           serverName,
           toolName: definition.name,
@@ -552,8 +633,86 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
           isGloballyAuthorized(definition.name, this.connectOptions) && isRunAuthorized(definition.name, runPolicy),
       )
       .map((definition) =>
-        piTool(definition, this.client, this.serverName, this.connectOptions, runPolicy, () => this.closing),
+        piTool(
+          definition,
+          this.client,
+          this.serverName,
+          this.connectOptions,
+          runPolicy,
+          () => this.closing,
+          (id, signal) => this.loadInstructionBundle(id, runPolicy, signal),
+        ),
       )
+  }
+
+  // ── Browser Instructions Arrive Before Browser Capability ──────
+  // The bundle is fetched through the same private gateway and AgentRun actor
+  // as the tool catalog that requested it. The gateway has already collapsed
+  // agent-browser's repeated CLI envelope, but the bridge still validates the
+  // expected name, byte count, and digest before model-visible use. A failed
+  // load rejects tool discovery, so an operational tool never appears alone.
+  // ─────────────────────────────────────────────────────────────────
+  private async loadInstructionBundle(
+    id: string,
+    runPolicy: PiMcpRunToolPolicy,
+    signal?: AbortSignal,
+  ): Promise<PiMcpInstructionBundle> {
+    if (id !== AGENT_BROWSER_MANAGED_INSTRUCTION_BUNDLE)
+      throw new Error(`Unknown deferred instruction bundle '${id}'`)
+    if (this.closing) throw new Error(`MCP bridge ${this.serverName} is closed`)
+    const definition = this.definitions.find((candidate) => candidate.name === AGENT_BROWSER_SKILLS_GET_TOOL_NAME)
+    if (!definition) throw new Error("agent-browser managed instructions are unavailable")
+    if (!runPolicy.actor) throw new Error("agent-browser managed instructions require an AgentRun identity")
+    const result = await this.client.callTool(
+      {
+        name: definition.name,
+        arguments: {
+          names: [AGENT_BROWSER_MANAGED_SKILL_NAME],
+          full: false,
+          profile: "search",
+        },
+        _meta: {
+          "io.cyberful/tool-actor": {
+            runID: runPolicy.actor.runID,
+            role: runPolicy.actor.kind,
+            ...(runPolicy.actor.parentID ? { parentRunID: runPolicy.actor.parentID } : {}),
+          },
+        },
+      },
+      undefined,
+      {
+        signal,
+        timeout: LIST_TIMEOUT_MS,
+        maxTotalTimeout: LIST_TIMEOUT_MS,
+      },
+    )
+    if (!("toolResult" in result) && result.isError)
+      throw new Error(toolErrorText(result.content, result.structuredContent))
+    if ("toolResult" in result) throw new Error("agent-browser managed instructions returned an unsupported result")
+    const metadata = isRecord(result._meta) ? result._meta[AGENT_BROWSER_SKILL_RESULT_META] : undefined
+    const entry = Array.isArray(metadata) && metadata.length === 1 && isRecord(metadata[0]) ? metadata[0] : undefined
+    const content = result.content.length === 1 && result.content[0]?.type === "text" ? result.content[0].text : undefined
+    if (
+      entry?.name !== AGENT_BROWSER_MANAGED_SKILL_NAME ||
+      typeof entry.bytes !== "number" ||
+      typeof entry.sha256 !== "string" ||
+      typeof content !== "string"
+    )
+      throw new Error("agent-browser managed instructions returned a malformed projection")
+    const bytes = Buffer.byteLength(content)
+    if (bytes <= 0 || bytes > AGENT_BROWSER_MANAGED_SKILL_MAX_BYTES)
+      throw new Error(`agent-browser managed instructions exceed ${AGENT_BROWSER_MANAGED_SKILL_MAX_BYTES} bytes`)
+    const sha256 = createHash("sha256").update(content).digest("hex")
+    if (entry.bytes !== bytes || entry.sha256 !== sha256)
+      throw new Error("agent-browser managed instructions failed integrity validation")
+    return {
+      id,
+      source: "agent-browser",
+      sourceVersion: AGENT_BROWSER_SOURCE_VERSION,
+      content,
+      bytes,
+      sha256,
+    }
   }
 
   async recoverHypotheses(input: {
@@ -712,10 +871,15 @@ class ConnectedPiMcpBridge implements PiMcpBridge {
 // A worker calls this factory once and shares its discovered definitions across
 // all root, child, and fallback contexts. Each context independently projects
 // those definitions through toolsFor, so handoff ownership never becomes a
-// worker-wide setting. Partial initialization failure closes the process, while
-// successful ownership remains until the idempotent close method settles.
+// worker-wide setting. Gateway initialization has an explicit finite allowance
+// for its sequential local upstreams instead of inheriting the SDK's generic
+// one-minute request timeout. Partial failure closes the process, while successful
+// ownership remains until the idempotent close method settles.
 // ─────────────────────────────────────────────────────────────────
 export async function connectPiMcp(server: SubsystemMcpServer, options: PiMcpConnectOptions): Promise<PiMcpBridge> {
+  const initializationTimeoutMs = options.initializationTimeoutMs ?? GATEWAY_INITIALIZATION_TIMEOUT_MS
+  if (!Number.isSafeInteger(initializationTimeoutMs) || initializationTimeoutMs <= 0)
+    throw new RangeError("MCP gateway initialization timeout must be a positive safe integer")
   const transport = new StdioClientTransport({
     command: server.command,
     args: [...server.args],
@@ -751,7 +915,10 @@ export async function connectPiMcp(server: SubsystemMcpServer, options: PiMcpCon
   installElicitationHandler(client, options.askQuestion, lifecycleAbort.signal)
 
   try {
-    await client.connect(transport)
+    await client.connect(transport, {
+      timeout: initializationTimeoutMs,
+      maxTotalTimeout: initializationTimeoutMs,
+    })
     const definitions = await listAllTools(client)
     const names = new Set<string>()
     for (const definition of definitions) {

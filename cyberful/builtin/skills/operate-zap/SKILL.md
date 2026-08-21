@@ -27,27 +27,26 @@ metadata:
 
 # Operate ZAP
 
-Use engagement ZAP under the mission and active persona; keep identities separate. Cyberful adds no ZAP-specific traffic or category restriction.
+Use ZAP within mission and persona; keep identities separate. Cyberful adds no ZAP-specific traffic or category restriction.
 
 ## Captured traffic and replay
 
-`zap_history_search` is metadata-only by default. Filter results, then use `zap_history_get`; set `include_bodies: true` only when needed.
+`zap_history_search` is metadata-only by default. Filter before `zap_history_get`; set `include_bodies: true` only when needed.
 
 Prefer `zap_history_replay`; it keeps captured cookies and authorization headers inside ZAP. Never rebuild session-bearing requests.
 
-Use `zap_http_request` for an exact raw request without a capture. An origin-form request line requires the exact absolute HTTP(S) destination as `target_url`; never infer its scheme.
+Use `zap_http_request` for an exact raw request. An origin-form request line requires the exact absolute HTTP(S) destination as `target_url`.
 
 ## Evidence and verdicts
 
-Treat alerts as leads until a reproducible effect and control establish a verdict. Re-derive TLS and application claims with an independent tool or exact replay.
+Treat alerts as leads until a reproducible effect and control establish a verdict. Independently re-derive TLS/application claims. Neither an alert nor the absence of alerts is a vulnerability verdict.
 
-Redact and bound evidence; cite message or scan IDs. Missing visibility is not a negative result.
+Bound/redact evidence; cite IDs. Missing visibility is no negative result.
 
-## Final engagement snapshot
+## Host-owned passive checkpoints
 
-When requested by the active persona:
+After each accepted Pentest or Bug Bounty phase, host closes the gateway, filters observed HTTP(S) origins by `authorized_http_hosts`, waits ten seconds, then writes `raw/zap/passive/<workflow>/<phase>.json` and content-addressed `traditional-json` objects under `raw/zap/passive/objects/`.
 
-1. Treat ZAP as a local evidence source. Do not navigate, replay, spider, start a scan, or otherwise create target traffic.
-2. Read `zap_get_passive_scan_status`; record an unfinished passive queue.
-3. Call `zap_generate_workarea_report` with `file_path: "raw/zap/final-report.json"` and `template: "traditional-json"`.
-4. Cite the path. Empty output is missing evidence, not a negative result.
+Do not recreate this checkpoint or generate a complete unfiltered report. `not_applicable`: no authorized HTTP hosts; `no_observed_traffic`: none observed. `partial`/`failed` denote degradation without changing handoff.
+
+Report reads Verify's immutable objects; later checkpoint archival. Empty filtered reports never prove security.

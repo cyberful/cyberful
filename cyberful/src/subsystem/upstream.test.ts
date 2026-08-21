@@ -42,6 +42,14 @@ function restoreEnv(snapshot: Record<string, string | undefined>) {
 }
 
 describe("SubsystemUpstream.builtin", () => {
+  test("always registers the release-local MITRE ATT&CK MCP", () => {
+    expect(SubsystemUpstream.builtin()["mitre-attack"]).toMatchObject({
+      type: "local",
+      enabled: true,
+      timeout: 60_000,
+    })
+  })
+
   test("registers the canonical cyberful-os image and container identities", () => {
     const env = snapshotEnv()
     try {

@@ -52,14 +52,14 @@ Use the session ID shown by the TUI, or run `cyberful session list` from the sam
 
 The command prints the stable steering ID, mode, and lifecycle state only after the active root AgentRun acknowledges the text. The HTTP response is a structured receipt with `accepted`, `recipients`, `mode`, `state`, timestamps, and an exact rejection reason. Accepted steering is durably visible as `queued`, then `applied` or `superseded` in `raw/operations/run-state.json`. The command exits with an error if the session is idle, finished, a child session, missing, or no longer able to accept steering. It never starts a replacement turn.
 
-Steering is context, not authorization. It cannot answer a pending question, approve an action, or resolve a CAPTCHA handoff. For a pending CAPTCHA question, inspect its immutable choices and answer the exact request instead:
+Steering is context, not authorization. It cannot answer a pending question, approve an action, or resolve a CAPTCHA fallback. Cyberful asks that question only after the agent tried ordinary browser interaction and the fixed `captcha.solve` plugin and reported a structured failure. Inspect the immutable choices and answer the exact pending request instead:
 
 ```sh
 cyberful approval list --session ses_...
 cyberful approval reply que_... --select "No challenge visible"
 ```
 
-Choose `No challenge visible` only after a human checks the browser Cyberful foregrounded. `Resolved` means the human actually completed the visible challenge; `Cannot resolve` keeps the affected browser profile and origin paused.
+Choose `No challenge visible` only after a human checks the shared active agent-browser tab. `Resolved` means the human actually completed the visible challenge; `Cannot resolve` reports that the preserved tab cannot be completed. After `Resolved`, the agent takes a new snapshot and verifies the page before continuing.
 
 An active turn created by the removed Codex runtime cannot be resumed through Pi: Cyberful rejects both additional prompts and execution for that turn before contacting a provider. Its completed reports, transcripts, artifacts, and history remain readable. Once the legacy workflow is complete, a new Ask turn may be started normally and is recorded as a Pi run.
 

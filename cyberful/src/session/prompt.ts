@@ -1032,6 +1032,9 @@ export const layer = Layer.effect(
         warnings: [],
         env: {},
       })
+      let captureEngagementPassiveEvidence: NonNullable<
+        SubsystemPhaseRunner.PhaseDeps["capturePassiveEvidence"]
+      > = async () => ({ state: "not_applicable" })
       const runPhaseStreaming = async (spec: SubsystemPhaseRunner.PhaseSpec) => {
         const run = {}
         activePhaseRuns.add(run)
@@ -1043,6 +1046,7 @@ export const layer = Layer.effect(
           return await SubsystemPhaseRunner.runPhase(spec, {
             ...SubsystemPhaseRunner.defaultDeps(),
             preparePhase: (input) => prepareEngagementPhase(input),
+            capturePassiveEvidence: (input) => captureEngagementPassiveEvidence(input),
             dynamicTools:
               spec.phase === "report"
                 ? [
@@ -1345,6 +1349,7 @@ export const layer = Layer.effect(
         }
       })
       prepareEngagementPhase = engagementRuntime.preparePhase
+      captureEngagementPassiveEvidence = engagementRuntime.capturePassiveEvidence
       const engagementEvm = SubsystemPhase.hasCapability(workflow, "evm-lab")
         ? yield* Effect.promise(async () => {
             try {

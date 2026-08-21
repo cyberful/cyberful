@@ -14,6 +14,7 @@ import type { GatewayRewardPolicy } from "@/subsystem/gateway/reward-policy"
 import { isRecord } from "@/util/record"
 import { SessionID } from "./schema"
 import { Schema } from "effect"
+import { attackAssessmentInputSchema } from "@/mitre-attack/assessment"
 
 export const Event = {
   Updated: EventDefinition.define(
@@ -26,7 +27,7 @@ export const Event = {
   ),
 }
 
-const mutationActions = new Set(["record", "revisit", "update", "alias"])
+const mutationActions = new Set(["record", "revisit", "update", "set_attack_assessment", "alias"])
 const positiveEvidenceSchema = {
   oneOf: [
     { type: "string", maxLength: 8_000 },
@@ -67,11 +68,7 @@ const decisionProperties = {
   submission_rationale: { type: "string" },
 }
 
-function actionSchema(
-  action: string,
-  properties: Record<string, unknown> = {},
-  required: readonly string[] = [],
-) {
+function actionSchema(action: string, properties: Record<string, unknown> = {}, required: readonly string[] = []) {
   return {
     type: "object",
     additionalProperties: false,
@@ -83,11 +80,9 @@ function actionSchema(
   }
 }
 
-function findingInputSchema(readonly: boolean) {
-  const reads = [
-    actionSchema("list"),
-    actionSchema("get", { id: { type: "string" } }, ["id"]),
-  ]
+function findingInputSchema(readonly: boolean, allowAttackReview: boolean) {
+  const attackAssessmentSchema = attackAssessmentInputSchema({ allowReview: allowAttackReview })
+  const reads = [actionSchema("list"), actionSchema("get", { id: { type: "string" } }, ["id"])]
   if (readonly) return { oneOf: reads }
   const updateCommon = {
     id: { type: "string" },
@@ -96,6 +91,7 @@ function findingInputSchema(readonly: boolean) {
     severity: severitySchema,
     evidence_paths: evidencePathsSchema,
     maturation: maturationSchema,
+    attack_assessment: attackAssessmentSchema,
     ...decisionProperties,
   }
   return {
@@ -111,6 +107,7 @@ function findingInputSchema(readonly: boolean) {
           severity: severitySchema,
           evidence_paths: evidencePathsSchema,
           maturation: maturationSchema,
+          attack_assessment: attackAssessmentSchema,
         },
         ["key", "title", "positive_evidence", "severity"],
       ),
@@ -125,6 +122,10 @@ function findingInputSchema(readonly: boolean) {
         ["id", "plan"],
       ),
       actionSchema("alias", { id: { type: "string" }, alias: { type: "string" } }, ["id", "alias"]),
+      actionSchema("set_attack_assessment", { id: { type: "string" }, assessment: attackAssessmentSchema }, [
+        "id",
+        "assessment",
+      ]),
       actionSchema(
         "update",
         {
@@ -214,7 +215,7 @@ export function dynamicTool(
         ? "Read the authoritative workarea finding registry. Report is read-only: use list or get."
         : "Record and maintain supported security findings in the authoritative workarea registry. Use record immediately after positive evidence and include a required provisional INFO/LOW/MEDIUM/HIGH/CRITICAL severity; answer host-authored maturation checkpoints with PURSUE, MAXIMIZED, or DEFERRED; revisit historical findings, update every technical/verification/submission decision, alias stable workflow IDs, and list/get before handoff.",
       deferLoading: false,
-      inputSchema: findingInputSchema(options.readonly),
+      inputSchema: findingInputSchema(options.readonly, run.phase === "verify"),
     },
     execute: async (input, context) => {
       const action = actionOf(input)
@@ -261,15 +262,16 @@ export function dynamicTool(
           return {
             success: true,
             text: JSON.stringify(
-              rewardPolicyWarning && isRecord(result) ? { ...result, reward_policy_warning: rewardPolicyWarning } : result,
+              rewardPolicyWarning && isRecord(result)
+                ? { ...result, reward_policy_warning: rewardPolicyWarning }
+                : result,
             ),
           }
         const notice: MaturationNotice = {
           workflow: run.workflow,
           phase: run.phase,
           findingID: typeof result.id === "string" ? result.id : String(record.id ?? record.key ?? "finding"),
-          alias:
-            Array.isArray(result.aliases) && typeof result.aliases[0] === "string" ? result.aliases[0] : undefined,
+          alias: Array.isArray(result.aliases) && typeof result.aliases[0] === "string" ? result.aliases[0] : undefined,
           title: typeof result.title === "string" ? result.title : "Supported finding",
           currentSeverity: advisory.currentSeverity,
           targetSeverity: advisory.targetSeverity,

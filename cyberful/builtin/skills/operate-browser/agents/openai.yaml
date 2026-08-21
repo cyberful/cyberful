@@ -1,4 +1,4 @@
 interface:
   display_name: "Operate Browser"
-  short_description: "Operate Cyberful isolated browser safely"
-  default_prompt: "Use $operate-browser to operate Cyberful isolated browser profiles safely and preserve usable evidence."
+  short_description: "Operate agent-browser through Cyberful profiles"
+  default_prompt: "Use $operate-browser to follow Cyberful routing, authorization, secret-handling, evidence, and lifecycle policy during browser research or target navigation."

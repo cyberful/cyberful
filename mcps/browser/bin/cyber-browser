@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ── Browser MCP Launcher ─────────────────────────────────────────────
-# Resolves the embedded browser tree, validates its Node driver dependency, and
-# replaces the launcher process with the isolated browser MCP server.
-# → mcps/browser/browser_mcp.mjs — implements the stdio MCP process.
+# ── agent-browser Launcher ──────────────────────────────────────────────
+# Resolves the pinned platform-native executable and replaces this compatibility
+# launcher with agent-browser. MCP mode always publishes the full typed catalog.
+# → cyberful/src/subsystem/gateway/browser-profile-process.ts — owns profiles and routing.
 # @docs/runtimes/browser.md
 # ─────────────────────────────────────────────────────────────────────
 
@@ -10,13 +10,37 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_ROOT="$(cd "$ROOT/.." && pwd)"
+AGENT_BROWSER_ROOT="$PACKAGE_ROOT/node_modules/agent-browser"
 
-export PLAYWRIGHT_BROWSERS_PATH="${CYBER_BROWSER_BROWSERS_PATH:-$ROOT/.browsers}"
+if [ -n "${CYBER_AGENT_BROWSER_BINARY:-}" ]; then
+  BINARY="$CYBER_AGENT_BROWSER_BINARY"
+else
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) BINARY="$AGENT_BROWSER_ROOT/bin/agent-browser-darwin-arm64" ;;
+    Darwin-x86_64) BINARY="$AGENT_BROWSER_ROOT/bin/agent-browser-darwin-x64" ;;
+    Linux-aarch64|Linux-arm64) BINARY="$AGENT_BROWSER_ROOT/bin/agent-browser-linux-arm64" ;;
+    Linux-x86_64)
+      if ldd --version 2>&1 | grep -qi musl; then
+        BINARY="$AGENT_BROWSER_ROOT/bin/agent-browser-linux-musl-x64"
+      else
+        BINARY="$AGENT_BROWSER_ROOT/bin/agent-browser-linux-x64"
+      fi
+      ;;
+    *) BINARY="" ;;
+  esac
+fi
 
-if [ ! -d "$PACKAGE_ROOT/node_modules/patchright-core" ]; then
-  printf 'patchright-core (the stealth browser driver) is not installed.\n' >&2
+if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+  printf 'agent-browser 0.34.0-cyberful.3 native binary is not installed for this platform.\n' >&2
   printf 'Run from mcps package root: npm install\n' >&2
   exit 127
 fi
 
-exec node "$ROOT/browser_mcp.mjs"
+chmod +x "$BINARY" 2>/dev/null || true
+
+if [ "${1:-}" = "mcp" ]; then
+  shift
+  exec "$BINARY" mcp --tools all "$@"
+fi
+
+exec "$BINARY" "$@"

@@ -25,7 +25,7 @@
     "cve-dictionary:publish": "bun run script/cve-dictionary-release.ts",
     "test": "bun test --isolate --path-ignore-patterns='**/*.integration.test.ts'",
     "test:cyberful-os": "bun test --isolate --no-orphans --timeout 300000 src/subsystem/cyberful-os.integration.test.ts src/subsystem/evm/runtime.integration.test.ts",
-    "test:network": "CYBERFUL_TEST_LOOPBACK=1 bun test --isolate --timeout 70000 src/subsystem/browser-cdp.integration.test.ts src/subsystem/gateway/browser-profile-process.integration.test.ts",
+    "test:network": "CYBERFUL_TEST_LOOPBACK=1 bun test --isolate --timeout 70000 src/subsystem/gateway/browser-profile-process.integration.test.ts",
     "test:zap": "bun test --isolate --no-orphans src/subsystem/zap/runtime.integration.test.ts",
     "test:all": "bun run test && bun run test:network && bun run test:zap",
     "dev": "bun run --conditions=browser ./src/index.ts"

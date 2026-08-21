@@ -6,6 +6,8 @@ subagents: 2
 
 Turn the scope, graph, threat model, control traces, and supply-chain map into a complete candidate ledger. Search for root causes and variants across the repository; scanner output and suspicious syntax are leads, not vulnerabilities.
 
+Use `operate-mitre-attack` where it helps model adversary behavior, but deliberately hunt zero-days, novel primitives, application-specific root causes, and unexpected compositions outside the framework. Never use the ATT&CK matrix as a completeness checklist or penalize an unmapped candidate.
+
 ## Method
 
 - Read all prior Code Audit artifacts. Load `audit-application-code`, `operate-code-graph`, and applicable domain skills such as `audit-native-memory-safety`, `operate-firmware-laboratory`, `operate-sast-toolchain`, `trace-injection-dataflows`, `test-data-protection-crypto`, and `audit-software-supply-chain`.

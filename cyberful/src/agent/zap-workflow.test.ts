@@ -3,7 +3,7 @@
 //   phase, category, retry, or traffic restrictions beyond the mission.
 // → cyberful/builtin/skills/operate-zap/SKILL.md — defines the shared workflow under test.
 // → cyberful/builtin/agents/pentest/verify.md — activates ZAP for independent retesting.
-// → cyberful/builtin/agents/pentest/report.md — invokes the final evidence snapshot.
+// → cyberful/builtin/agents/pentest/report.md — consumes the Verify checkpoint.
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
@@ -27,7 +27,7 @@ describe("built-in ZAP MCP skill", () => {
 
   test("owns selective history replay and exact raw-request handling", async () => {
     const skill = await read()
-    expect(skill).toMatch(/`zap_history_search`[\s\S]*metadata-only by default/i)
+    expect(skill).toMatch(/`zap_history_search`[\s\S]*metadata/i)
     expect(skill).toMatch(/`zap_history_get`[\s\S]*`include_bodies: true`/i)
     expect(skill).toMatch(/Prefer `zap_history_replay`/i)
     expect(skill).toMatch(/captured cookies and authorization headers inside ZAP/i)
@@ -35,14 +35,14 @@ describe("built-in ZAP MCP skill", () => {
     expect(skill).toMatch(/origin-form request line[\s\S]*exact absolute HTTP\(S\) destination as `target_url`/i)
   })
 
-  test("defines a traffic-free final engagement snapshot", async () => {
+  test("defines host-owned filtered passive checkpoints without scanner verdicts", async () => {
     const skill = await read()
-    expect(skill).toContain("## Final engagement snapshot")
-    expect(skill).toMatch(/ZAP as a local evidence source[\s\S]*Do not navigate, replay, spider, start a scan/i)
-    expect(skill).toContain("`zap_get_passive_scan_status`")
-    expect(skill).toContain("`zap_generate_workarea_report`")
-    expect(skill).toContain('`file_path: "raw/zap/final-report.json"`')
-    expect(skill).toContain('`template: "traditional-json"`')
+    expect(skill).toContain("## Host-owned passive checkpoints")
+    expect(skill).toMatch(/after each accepted Pentest or Bug Bounty phase/i)
+    expect(skill).toContain("`authorized_http_hosts`")
+    expect(skill).toContain("`raw/zap/passive/<workflow>/<phase>.json`")
+    expect(skill).toMatch(/Do not recreate this checkpoint or generate a complete unfiltered report/i)
+    expect(skill).toMatch(/Neither an alert nor the absence of alerts is a vulnerability verdict/i)
   })
 
   test("is activated by exact catalog name while personas retain phase policy", async () => {
@@ -51,13 +51,15 @@ describe("built-in ZAP MCP skill", () => {
       /Before using a `zap_\*` tool or `zap:\/\/` resource, load and follow the builtin `operate-zap` skill/,
     )
     expect(verify).not.toMatch(/zap_history_search|zap_history_get|zap_history_replay|zap_http_request/)
-    expect(report).toMatch(/builtin `operate-zap` skill, including its \*\*Final engagement snapshot\*\* procedure/)
+    expect(report).toMatch(/builtin `operate-zap` skill/)
+    expect(report).toContain("`raw/zap/passive/pentest/verify.json`")
+    expect(report).toMatch(/do not generate another ZAP report/i)
     expect(report).toMatch(/terminal phase[\s\S]*do not navigate, replay, spider, scan/i)
   })
 
   test("does not introduce phase gates or HTTP-response retry policy", async () => {
     const skill = await read()
-    expect(skill).not.toMatch(/defer|blocked|approval gate|scoped report|required phase/i)
+    expect(skill).not.toMatch(/defer|blocked|approval gate|required phase/i)
     expect(skill).not.toMatch(/403|429|WAF|managed challenge|retry/i)
   })
 })

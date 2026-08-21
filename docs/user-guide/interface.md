@@ -6,9 +6,9 @@ Cyberful starts on a welcome screen that collects the workarea, workflow, and fi
 
 Use `cyberful browser-1` through `cyberful browser-5` to open one isolated, persistent browser identity before a test. The command works from the global npm installation, provisions Chromium when necessary, and stays attached until the window closes or the terminal command is interrupted. Fully close the window before starting Cyberful so the test can acquire that profile without replacing it with a temporary unauthenticated fallback.
 
-Each number retains separate cookies, local storage, cache, tabs, and downloads. Use only the authorized target account assigned to that identity; the command never opens a personal browser profile. An invalid number or a profile that cannot be started returns a non-zero status with a terminal error. See the [browser runtime](../runtimes/browser.md) for storage paths and configuration.
+Each number retains separate cookies, local storage, cache, tabs, and downloads. Reopening a profile preserves Chrome-restored tabs instead of replacing the selected tab with `about:blank`. Use only the authorized target account assigned to that identity; the command never opens a personal browser profile. An invalid number or a profile that cannot be started returns a non-zero status with a terminal error. See the [browser runtime](../runtimes/browser.md) for storage paths and configuration.
 
-Cyberful also maintains a persistent browser identity named `search` for unauthenticated DuckDuckGo research. It has no `cyberful browser-search` command, never shares cookies with target identities, uses a direct connection instead of the engagement ZAP proxy, and is excluded from target coverage evidence.
+Cyberful also creates a phase-ephemeral browser identity named `search` for unauthenticated DuckDuckGo and Google research. It has no `cyberful browser-search` command, never shares cookies with target identities, uses a direct connection instead of the engagement ZAP proxy, and is excluded from target coverage evidence. Its host-owned native allowlist blocks every domain outside `*.duckduckgo.com` and `*.google.com`; selected targets must use a numbered ZAP-routed identity.
 
 ## Manage the CVE Dictionary
 

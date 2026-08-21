@@ -459,16 +459,16 @@ describe("AgentPromptCompiler", () => {
       (match) => match[1] ?? "",
     )
 
-    expect(registry.catalog).toHaveLength(106)
+    expect(registry.catalog).toHaveLength(107)
     expect(first).toEqual(reordered)
     expect(first.manifest).toMatchObject({
       descriptionBudgetCharacters: 20_480,
-      totalSkills: 106,
-      describedSkills: 106,
+      totalSkills: 107,
+      describedSkills: 107,
       nameOnlySkills: 0,
     })
     expect(first.manifest.metadataCharacters).toBeLessThanOrEqual(20_480)
-    expect(excerpts).toHaveLength(106)
+    expect(excerpts).toHaveLength(107)
     expect(excerpts.every((excerpt) => Array.from(excerpt).length >= 64)).toBe(true)
     for (const skill of registry.catalog) {
       expect(first.text).toContain(skill.name)
@@ -480,7 +480,7 @@ describe("AgentPromptCompiler", () => {
       operationalContextWindow: 100,
     })
     expect(nameOnly.manifest.metadataCharacters).toBe(0)
-    expect(nameOnly.manifest.nameOnlySkills).toBe(106)
+    expect(nameOnly.manifest.nameOnlySkills).toBe(107)
     for (const skill of registry.catalog) expect(nameOnly.text).toContain(skill.name)
   })
 
@@ -513,6 +513,8 @@ describe("AgentPromptCompiler", () => {
     )
 
     expect(bugBountyRecon.system).toStartWith("# Cyberful Instruction Authority")
+    expect(bugBountyRecon.system).toContain("# MITRE ATT&CK is a lens, not a boundary")
+    expect(bugBountyRecon.system).toContain("Do not hard-code an expected match count")
     expect(bugBountyRecon.system).toContain("This is an authorized Bug Bounty Program session.")
     expect(bugBountyRecon.system).toContain("# Bug Bounty Recon")
     expect(bugBountyRecon.system).toContain("bounty_context")
@@ -531,6 +533,7 @@ describe("AgentPromptCompiler", () => {
     expect(bugBountyExploit.system).toContain('display_name: "portfolio-critic"')
     expect(bugBountyExploit.system).toContain("raw/strategy/exploit-portfolio-critic.md")
     expect(bugBountyExploit.system).toContain('display_name: "finding-breaker"')
-    expect(bugBountyExploit.system).toContain("raw/strategy/exploit-finding-breaker.md")
+    expect(bugBountyExploit.system).toContain('output_artifact: "raw/strategy/exploit-finding-breaker.md"')
+    expect(bugBountyExploit.system).toContain("never Verify-only")
   })
 })

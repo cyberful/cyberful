@@ -39,7 +39,9 @@ import { CveDictionaryCommand } from "./cli/cmd/cve-dictionary"
 import { RuntimeCommand } from "./cli/cmd/runtime"
 import { bootstrapConfigReady } from "./bootstrap-config"
 import { bootstrapBrowserReady } from "./bootstrap-browser"
+import { bootstrapMitreAttackReady } from "./bootstrap-mitre-attack"
 import { GATEWAY_ARGV } from "./subsystem/gateway/config"
+import { MITRE_ATTACK_ARGV } from "./subsystem/mitre-attack/config"
 import { JsonMigration } from "@/storage/json-migration"
 import { Database } from "@/storage/db"
 import { errorMessage } from "./util/error"
@@ -67,7 +69,7 @@ const processMetadata = ensureProcessMetadata("main")
 // ─────────────────────────────────────────────────────────────────
 if (process.env.CYBERFUL_DEBUG_BOOTSTRAP)
   console.error(
-    `[bootstrap] env-applied=${bootstrapEnvApplied} pi-oauth=${piOAuthFlowsRegistered} embedded-config=${bootstrapConfigReady} embedded-browser=${bootstrapBrowserReady}`,
+    `[bootstrap] env-applied=${bootstrapEnvApplied} pi-oauth=${piOAuthFlowsRegistered} embedded-config=${bootstrapConfigReady} embedded-browser=${bootstrapBrowserReady} embedded-mitre-attack=${bootstrapMitreAttackReady}`,
   )
 
 process.once("exit", emptyTruncationDirSync)
@@ -92,6 +94,12 @@ process.on("uncaughtException", (e) => {
 // wait leaves process ownership with the gateway until the in-process Pi owner closes
 // its pipe.
 // ─────────────────────────────────────────────────────────────────
+if (process.argv.includes(MITRE_ATTACK_ARGV)) {
+  const { runMitreAttackMain } = await import("./subsystem/mitre-attack/server")
+  await runMitreAttackMain()
+  await new Promise<never>(() => {})
+}
+
 if (process.argv.includes(GATEWAY_ARGV)) {
   const { runGatewayMain } = await import("./subsystem/gateway/server")
   await runGatewayMain()

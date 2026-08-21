@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import { SessionID } from "../../session/schema"
@@ -51,7 +51,6 @@ const {
   writeGatewayPidSignal,
 } = await import("./server")
 const { humanDecisionMetadata } = await import("../human-question")
-const { activateCircuitBreaker, readCircuitBreakers } = await import("./circuit-breaker")
 const { Database } = await import("../../storage/db")
 const { SessionTable } = await import("../../session/session.sql")
 const { ProjectTable } = await import("../../project/project.sql")
@@ -462,6 +461,71 @@ describe("expert-gateway workflow capability policy", () => {
     }
   })
 
+  test("publishes the exact hypothesis contract for standard, portfolio, and report phases", async () => {
+    const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "expert-hypothesis-schema-test-")))
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+      novelty: process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT,
+    }
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = directory
+
+    async function hypothesisDefinition(workflow: string, phase: string, novelty?: string) {
+      process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = workflow
+      process.env.CYBERFUL_SUBSYSTEM_PHASE = phase
+      if (novelty === undefined) delete process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT
+      else process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = novelty
+      const scoped = await createGatewayServer({ upstreams: [] })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await scoped.connect(serverTransport)
+      const client = new Client({ name: `${workflow}-${phase}-hypothesis-schema`, version: "0" })
+      await client.connect(clientTransport)
+      try {
+        const definition = (await client.listTools()).tools.find((tool) => tool.name === "hypothesis")
+        if (!definition) throw new Error(`${workflow}/${phase} did not publish hypothesis`)
+        return definition
+      } finally {
+        await client.close()
+        await scoped.closeGateway()
+      }
+    }
+
+    try {
+      const brief = await hypothesisDefinition("bug-bounty", "brief")
+      expect(brief.description).toContain("standard research contract")
+      expect(JSON.stringify(brief.inputSchema)).not.toContain("bounty_context")
+
+      const portfolio = await hypothesisDefinition(
+        "bug-bounty",
+        "recon",
+        JSON.stringify({ required: true, mode: "bounty-portfolio" }),
+      )
+      expect(portfolio.description).toContain("Bug Bounty portfolio contract")
+      expect(JSON.stringify(portfolio.inputSchema)).toContain("bounty_context")
+      expect(JSON.stringify(portfolio.inputSchema)).toContain("set_bounty_context")
+
+      const report = await hypothesisDefinition("bug-bounty", "report")
+      expect(report.description).toContain("read-only")
+      const actions = (
+        report.inputSchema.oneOf as ReadonlyArray<{
+          readonly properties?: { readonly action?: { readonly enum?: readonly string[] } }
+        }>
+      ).flatMap((schema) => schema.properties?.action?.enum ?? [])
+      expect(actions).toEqual(["get", "list"])
+    } finally {
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
+      if (previous.novelty === undefined) delete process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT
+      else process.env.CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT = previous.novelty
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test("publishes source and lab tools only to eligible workflow phases", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-workflow-tools-"))
     const source = path.join(directory, "source")
@@ -697,10 +761,14 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "expert-gateway-pid-test-"))
     const signal = path.join(dir, "gateway-pid.json")
     try {
-      await writeGatewayPidSignal(signal, 4242)
-      expect(JSON.parse(await readFile(signal, "utf8"))).toEqual({ pid: 4242 })
+      await writeGatewayPidSignal(signal, process.pid)
+      expect(JSON.parse(await readFile(signal, "utf8"))).toMatchObject({
+        version: 2,
+        pid: process.pid,
+        processes: [{ pid: process.pid }],
+      })
       await expect(writeGatewayPidSignal(signal, 4243)).rejects.toThrow()
-      await expect(writeGatewayPidSignal("relative.json", 4242)).rejects.toThrow("must be absolute")
+      await expect(writeGatewayPidSignal("relative.json", process.pid)).rejects.toThrow("must be absolute")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -712,7 +780,11 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     try {
       expect(await claimGatewayPidSignal(signal, process.pid)).toEqual({ owner: true, pid: process.pid })
       expect(await claimGatewayPidSignal(signal, process.pid + 1)).toEqual({ owner: false, pid: process.pid })
-      expect(JSON.parse(await readFile(signal, "utf8"))).toEqual({ pid: process.pid })
+      expect(JSON.parse(await readFile(signal, "utf8"))).toMatchObject({
+        version: 2,
+        pid: process.pid,
+        processes: [{ pid: process.pid }],
+      })
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -893,7 +965,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     const calls: { profile: number; args: Record<string, unknown> }[] = []
     const browserTool = (profile: 1 | 2): UpstreamTool => ({
       def: {
-        name: "browser_navigate",
+        name: "agent_browser_open",
         description: "Open a URL.",
         inputSchema: {
           type: "object",
@@ -916,7 +988,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     await browserClient.connect(clientTransport)
     try {
       const browserDefinitions = (await browserClient.listTools()).tools.filter(
-        (tool) => tool.name === "browser_navigate",
+        (tool) => tool.name === "agent_browser_open",
       )
       expect(browserDefinitions).toHaveLength(1)
       expect(browserDefinitions[0]?.inputSchema).toMatchObject({
@@ -924,12 +996,12 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       })
 
       const explicit = await browserClient.callTool({
-        name: "browser_navigate",
+        name: "agent_browser_open",
         arguments: { profile: 2, url: "https://example.test/account" },
         _meta: rootActorMeta(),
       })
       const defaulted = await browserClient.callTool({
-        name: "browser_navigate",
+        name: "agent_browser_open",
         arguments: { url: "https://example.test/default" },
         _meta: rootActorMeta(),
       })
@@ -945,11 +1017,162 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("rejects browser_close without phase-root identity at the gateway boundary", async () => {
+  test("creates a nested workarea directory before an explicit browser screenshot", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "gateway-browser-screenshot-test-")))
+    const previousWorkarea = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = root
+    const screenshot: UpstreamTool = {
+      def: {
+        name: "agent_browser_screenshot",
+        description: "Capture a screenshot.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+      capability: "browser",
+      browserProfile: 1,
+      call: async (args) => {
+        expect((await lstat(path.join(root, path.dirname(String(args.path))))).isDirectory()).toBe(true)
+        return { content: [{ type: "text", text: JSON.stringify({ path: args.path }) }] }
+      },
+    }
+    const server = await createGatewayServer({ upstreams: [screenshot] })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "browser-screenshot-parent-test", version: "0" })
+    await client.connect(clientTransport)
+    try {
+      const result = await client.callTool({
+        name: "agent_browser_screenshot",
+        arguments: { profile: 1, path: "raw/screenshots/recon/home.png" },
+        _meta: rootActorMeta(),
+      })
+      expect(result.isError).not.toBe(true)
+    } finally {
+      await client.close()
+      await server.closeGateway()
+      if (previousWorkarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previousWorkarea
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("collects passive browser traffic from ZAP without a model ZAP call", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "expert-passive-zap-coverage-"))
+    const previous = {
+      workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
+      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
+      workarea: process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT,
+    }
+    process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = "pentest"
+    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
+    process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = root
+    await mkdir(path.join(root, "raw/policy"), { recursive: true })
+    await writeFile(
+      path.join(root, "raw/policy/engagement.json"),
+      JSON.stringify({
+        version: 1,
+        stage: "final",
+        updated_at: "2026-08-20T00:00:00.000Z",
+        profiles: [{ profile: 1, readiness: "READY", scope: "IN_SCOPE", origin: "https://app.example.test" }],
+        authorized_http_hosts: ["app.example.test"],
+        global_http_rps: null,
+        required_http_headers: [],
+      }),
+    )
+    let historyCalls = 0
+    const browser: UpstreamTool = {
+      def: {
+        name: "agent_browser_open",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { url: { type: "string" } },
+          required: ["url"],
+        },
+      },
+      capability: "browser",
+      browserProfile: 1,
+      call: async () => ({ content: [{ type: "text", text: JSON.stringify({ data: { tabId: "tab-1" } }) }] }),
+    }
+    const history: UpstreamTool = {
+      def: {
+        name: "zap_history_search",
+        inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      },
+      capability: "zap",
+      call: async (args) => {
+        historyCalls += 1
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                messages:
+                  args.start === 0
+                    ? [
+                        {
+                          id: 31,
+                          method: "GET",
+                          url: "https://app.example.test/account/42?token=secret",
+                          status_code: 200,
+                          response_header_bytes: 20,
+                        },
+                      ]
+                    : [],
+                returned: args.start === 0 ? 1 : 0,
+              }),
+            },
+          ],
+        }
+      },
+    }
+    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
+    let client: McpClient | undefined
+    try {
+      server = await createGatewayServer({ upstreams: [browser, history] })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      client = new Client({ name: "passive-zap-coverage-test", version: "0" })
+      await client.connect(clientTransport)
+      await client.callTool({
+        name: "agent_browser_open",
+        arguments: { profile: 1, url: "https://app.example.test/account" },
+        _meta: rootActorMeta(),
+      })
+      expect(historyCalls).toBe(1)
+      const summary = JSON.parse(
+        await readFile(path.join(root, "raw/operations/surface-coverage/recon.summary.json"), "utf8"),
+      )
+      expect(summary.http_route_families).toEqual(["https://app.example.test/account/:id"])
+      expect(summary.per_profile[0]).toMatchObject({
+        profile: 1,
+        meaningful_actions: 1,
+        meaningful_origins: ["https://app.example.test"],
+      })
+      const ledger = await readFile(path.join(root, "raw/operations/surface-coverage.jsonl"), "utf8")
+      expect(ledger).not.toContain("token")
+    } finally {
+      await client?.close()
+      await server?.closeGateway()
+      if (previous.workflow === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKFLOW
+      else process.env.CYBERFUL_SUBSYSTEM_WORKFLOW = previous.workflow
+      if (previous.phase === undefined) delete process.env.CYBERFUL_SUBSYSTEM_PHASE
+      else process.env.CYBERFUL_SUBSYSTEM_PHASE = previous.phase
+      if (previous.workarea === undefined) delete process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT
+      else process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT = previous.workarea
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps agent-browser lifecycle host-owned for every AgentRun", async () => {
     let closes = 0
     const closeTool: UpstreamTool = {
       def: {
-        name: "browser_close",
+        name: "agent_browser_close",
         description: "Close the selected browser profile.",
         inputSchema: { type: "object", additionalProperties: false, properties: {} },
       },
@@ -966,47 +1189,15 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     const client = new Client({ name: "browser-close-authority-test", version: "0" })
     await client.connect(clientTransport)
     try {
-      expect(jsonContent(await client.callTool({ name: "browser_close", arguments: {} })).error).toContain(
-        "host-owned AgentRun identity",
-      )
-      expect(
-        jsonContent(
-          await client.callTool({
-            name: "browser_close",
-            arguments: {},
-            _meta: {
-              "io.cyberful/tool-actor": {
-                runID: "child-1",
-                role: "subagent",
-                parentRunID: "root-1",
-                toolCallID: "close-1",
-              },
-            },
-          }),
-        ).error,
-      ).toContain("phase root")
-      expect(
-        jsonContent(
-          await client.callTool({
-            name: "browser_close",
-            arguments: {},
-            _meta: {
-              "io.cyberful/tool-actor": {
-                runID: "malformed-root",
-                role: "root",
-                parentRunID: "unexpected-parent",
-                toolCallID: "close-2",
-              },
-            },
-          }),
-        ).error,
-      ).toContain("host-owned AgentRun identity")
-      expect(
-        textContent(
-          await client.callTool({ name: "browser_close", arguments: {}, _meta: rootActorMeta("root-1") }),
-        ),
-      ).toBe("browser closed")
-      expect(closes).toBe(1)
+      expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain("agent_browser_close")
+      const result = await client.callTool({
+        name: "agent_browser_close",
+        arguments: {},
+        _meta: rootActorMeta("root-1"),
+      })
+      expect(jsonContent(result).error).toContain("unknown tool")
+      expect(result.isError).toBe(true)
+      expect(closes).toBe(0)
     } finally {
       await client.close()
       await server.closeGateway()
@@ -1065,6 +1256,9 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       await client.connect(clientTransport)
       const tools = (await client.listTools()).tools
       expect(tools.find((tool) => tool.name === "web_search")?.inputSchema.properties).not.toHaveProperty("profile")
+      expect(tools.find((tool) => tool.name === "web_search")?._meta).toMatchObject({
+        "cyberful.dev/eager": true,
+      })
       const response = await client.callTool({ name: "web_search", arguments: { query }, _meta: rootActorMeta() })
       expect(response._meta).toMatchObject({ cyberful: { browserProfile: "search" } })
     } finally {
@@ -1095,7 +1289,7 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
     }
   })
 
-  test("filters injected Brief upstreams to local shell and ordinary browser preflight", async () => {
+  test("filters injected Brief upstreams to local shell and browser readiness operations", async () => {
     const previous = {
       workflow: process.env.CYBERFUL_SUBSYSTEM_WORKFLOW,
       phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
@@ -1114,8 +1308,10 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
         upstream("shell", "isolated-exec"),
         upstream("nmap", "isolated-exec"),
         { ...upstream("web_search", "browser"), browserProfile: "search" },
-        upstream("browser_navigate", "browser"),
-        upstream("browser_evaluate", "browser"),
+        { ...upstream("agent_browser_open", "browser"), browserProfile: 1 },
+        { ...upstream("agent_browser_eval", "browser"), browserProfile: 1 },
+        { ...upstream("agent_browser_skills_get", "browser"), browserProfile: "search" },
+        { ...upstream("agent_browser_close", "browser"), browserProfile: 1 },
         upstream("zap_history", "zap"),
       ],
     })
@@ -1127,9 +1323,11 @@ describe("expert-gateway cyberful-os/browser proxy", () => {
       const names = (await briefClient.listTools()).tools.map((tool) => tool.name)
       expect(names).toContain("shell")
       expect(names).toContain("web_search")
-      expect(names).toContain("browser_navigate")
+      expect(names).toContain("agent_browser_open")
+      expect(names).toContain("agent_browser_skills_get")
+      expect(names).not.toContain("agent_browser_eval")
+      expect(names).not.toContain("agent_browser_close")
       expect(names).not.toContain("nmap")
-      expect(names).not.toContain("browser_evaluate")
       expect(names).not.toContain("zap_history")
     } finally {
       await briefClient.close()
@@ -2102,185 +2300,30 @@ describe("expert-gateway question tool", () => {
     }
   })
 
-  test("requires visible CAPTCHA attestation and pauses only its browser profile and origin", async () => {
-    const parent = await mkdtemp(path.join(os.tmpdir(), "expert-captcha-gateway-test-"))
-    const circuit = path.join(parent, "circuit.json")
-    const previous = {
-      question: process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED,
-      circuit: process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH,
-      phase: process.env.CYBERFUL_SUBSYSTEM_PHASE,
-    }
-    process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED = "1"
-    process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH = circuit
-    process.env.CYBERFUL_SUBSYSTEM_PHASE = "recon"
-    let navigations = 0
-    const browserMeta = (profile: number, pageID: string, origin: string, action: string) => ({
-      "cyberful.dev/browser-action": {
-        profile,
-        page_id: pageID,
-        origin,
-        path_family: "/challenge",
-        action,
-        action_family: action.startsWith("browser_captcha") ? "captcha" : "navigation",
-        page_transition: "none",
-        outcome: "ok",
-        status: 200,
-      },
-    })
-    const upstreams: UpstreamTool[] = [
-      {
-        def: { name: "browser_captcha_handoff", inputSchema: { type: "object" } },
-        call: async () => ({
-          content: [{ type: "text", text: JSON.stringify({ detected: true, action: "manual_handoff_ready" }) }],
-          _meta: browserMeta(1, "page-challenge", "https://example.test", "browser_captcha_handoff"),
-        }),
-        browserProfile: 1,
-      },
-      {
-        def: { name: "browser_captcha_status", inputSchema: { type: "object" } },
-        call: async () => ({
-          content: [{ type: "text", text: JSON.stringify({ detected: false }) }],
-          _meta: browserMeta(1, "page-challenge", "https://example.test", "browser_captcha_status"),
-        }),
-        browserProfile: 1,
-      },
-      ...([1, 2] as const).map(
-        (profile): UpstreamTool => ({
-          def: { name: "browser_navigate", inputSchema: { type: "object" } },
-          call: async (args) => {
-            navigations += 1
-            const url = new URL(String(args.url))
-            return {
-              content: [{ type: "text", text: "navigated" }],
-              _meta: browserMeta(profile, `page-${profile}`, url.origin, "browser_navigate"),
-            }
-          },
-          browserProfile: profile,
-        }),
-      ),
-    ]
-    let server: Awaited<ReturnType<typeof createGatewayServer>> | undefined
-    let c: McpClient | undefined
-    let captchaAnswer = "No challenge visible"
-    let replaceCaptchaBeforeAnswer = false
+  test("hands an already visible human challenge to the operator without a custom browser state machine", async () => {
+    const connected = await questionClient(() => ({
+      action: "accept",
+      content: { q0: JSON.stringify(["Resolved"]) },
+    }))
     try {
-      server = await createGatewayServer({ upstreams })
-      const [ct, st] = InMemoryTransport.createLinkedPair()
-      await server.connect(st)
-      c = new Client({ name: "captcha-test", version: "0" }, { capabilities: { elicitation: { form: {} } } })
-      c.setRequestHandler(ElicitRequestSchema, async () => {
-        if (replaceCaptchaBeforeAnswer) {
-          replaceCaptchaBeforeAnswer = false
-          await activateCircuitBreaker(
-            circuit,
-            "recon",
+      const result = await connected.client.callTool({
+        name: "question",
+        arguments: {
+          kind: "captcha",
+          questions: [
             {
-              ownerRunID: "captcha-root",
-              profile: 2,
-              origin: "https://replacement.test",
-              pageID: "page-replacement",
+              header: "CAPTCHA",
+              question: "Resolve the visible challenge, then continue.",
+              options: [{ label: "Resolved", description: "The visible challenge is complete." }],
+              custom: false,
             },
-            true,
-          )
-        }
-        return {
-          action: "accept",
-          content: { q0: JSON.stringify([captchaAnswer]) },
-        }
+          ],
+        },
       })
-      await c.connect(ct)
-      const browserCall = (name: string, arguments_: Record<string, unknown>) =>
-        c!.callTool({ name, arguments: arguments_, _meta: rootActorMeta("captcha-root") })
-      const question = {
-        kind: "captcha",
-        questions: [
-          {
-            header: "CAPTCHA",
-            question: "Solve the visible challenge, then continue.",
-            options: [{ label: "Solved", description: "The challenge is complete." }],
-          },
-        ],
-      }
-      expect(
-        jsonContent(
-          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
-        ).error,
-      ).toContain(
-        "already visible",
-      )
-      await browserCall("browser_captcha_handoff", { profile: 1 })
-      expect(
-        jsonContent(
-          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
-        ).error,
-      ).toContain("human resolution")
-      expect(navigations).toBe(0)
-      expect(
-        textContent(
-          await browserCall("browser_navigate", { profile: 2, url: "https://example.test/account" }),
-        ),
-      ).toBe("navigated")
-      expect(
-        textContent(
-          await browserCall("browser_navigate", { profile: 1, url: "https://other.test/account" }),
-        ),
-      ).toBe("navigated")
-      expect(navigations).toBe(2)
-      expect(
-        jsonContent(
-          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
-        ).output,
-      ).toContain(
-        "false-positive pause is cleared",
-      )
-      expect(
-        textContent(
-          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
-        ),
-      ).toBe("navigated")
-      expect(navigations).toBe(3)
-      await browserCall("browser_captcha_handoff", { profile: 1 })
-      captchaAnswer = "Resolved"
-      await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") })
-      expect(
-        jsonContent(
-          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
-        ).error,
-      ).toContain("human resolution")
-      await browserCall("browser_captcha_status", { profile: 1 })
-      expect(
-        textContent(
-          await browserCall("browser_navigate", { profile: 1, url: "https://example.test/account" }),
-        ),
-      ).toBe("navigated")
-      expect(navigations).toBe(4)
-      await browserCall("browser_captcha_handoff", { profile: 1 })
-      captchaAnswer = "No challenge visible"
-      replaceCaptchaBeforeAnswer = true
-      expect(
-        jsonContent(
-          await c.callTool({ name: "question", arguments: question, _meta: rootActorMeta("captcha-root") }),
-        ).output,
-      ).toContain("false-positive pause is cleared")
-      expect(await readCircuitBreakers(circuit)).toContainEqual(
-        expect.objectContaining({
-          profile: 2,
-          origin: "https://replacement.test",
-          pageID: "page-replacement",
-          status: "awaiting_human",
-        }),
-      )
+      expect(jsonContent(result).output).toContain("fresh agent-browser snapshot")
+      expect(result.isError).not.toBe(true)
     } finally {
-      await c?.close()
-      await server?.closeGateway()
-      const restore = (key: string, value: string | undefined) => {
-        if (value === undefined) delete process.env[key]
-        else process.env[key] = value
-      }
-      restore("CYBERFUL_SUBSYSTEM_QUESTION_ENABLED", previous.question)
-      restore("CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH", previous.circuit)
-      restore("CYBERFUL_SUBSYSTEM_PHASE", previous.phase)
-      await rm(parent, { recursive: true, force: true })
+      await connected.close()
     }
   })
 })

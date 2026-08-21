@@ -17,6 +17,11 @@ import pkg from "../package.json"
 import * as Builtin from "../src/builtin"
 import { removeBunBuildArtifacts } from "./bun-build-artifacts"
 import { embeddedRuntimeVersions, RUNTIME_VERSION_ARGV } from "../src/runtime-version"
+import {
+  buildAttackSnapshot,
+  embeddedAttackSnapshot,
+  validateAttackRoutingIdentifiers,
+} from "../src/mitre-attack/builder"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -306,6 +311,60 @@ if (requestedTargets.size && targets.some((item) => item.os !== process.platform
 
 await fs.promises.rm(path.join(dir, "dist"), { recursive: true, force: true })
 
+// ── One Build Resolves One Official ATT&CK Snapshot ──────────────
+// Local builds resolve the latest Enterprise, Mobile, and ICS collections once
+// before compiling any target. Release matrix jobs may consume one prepared
+// directory from the snapshot job, but they still verify and embed its exact
+// bytes; neither path permits a runtime download or a stale-cache fallback.
+// → cyberful/src/bootstrap-mitre-attack.ts — restores these bytes offline.
+// @docs/runtimes/mitre-attack.md
+// ─────────────────────────────────────────────────────────────────
+const attackOutput = path.join(dir, "dist", "mitre-attack")
+const preparedAttack = process.env.CYBERFUL_MITRE_ATTACK_SNAPSHOT_DIR?.trim()
+await fs.promises.mkdir(path.dirname(attackOutput), { recursive: true })
+if (preparedAttack) {
+  const source = fs.realpathSync(preparedAttack)
+  if (!fs.statSync(source).isDirectory()) throw new Error("CYBERFUL_MITRE_ATTACK_SNAPSHOT_DIR must be a directory")
+  embeddedAttackSnapshot(source)
+  await fs.promises.cp(source, attackOutput, { recursive: true, errorOnExist: true, force: false })
+} else {
+  await buildAttackSnapshot({
+    outputDir: attackOutput,
+    cyberfulVersion: Script.version,
+    buildID,
+  })
+}
+const embeddedAttack = embeddedAttackSnapshot(attackOutput)
+const frameworkIdentifiers: unknown = JSON.parse(
+  fs.readFileSync(path.join(Builtin.DIR, "skills", "framework-identifiers.json"), "utf8"),
+)
+if (
+  typeof frameworkIdentifiers !== "object" ||
+  frameworkIdentifiers === null ||
+  !("frameworks" in frameworkIdentifiers) ||
+  typeof frameworkIdentifiers.frameworks !== "object" ||
+  frameworkIdentifiers.frameworks === null ||
+  !("mitre_attack" in frameworkIdentifiers.frameworks) ||
+  typeof frameworkIdentifiers.frameworks.mitre_attack !== "object" ||
+  frameworkIdentifiers.frameworks.mitre_attack === null ||
+  !("identifiers" in frameworkIdentifiers.frameworks.mitre_attack) ||
+  !Array.isArray(frameworkIdentifiers.frameworks.mitre_attack.identifiers) ||
+  !frameworkIdentifiers.frameworks.mitre_attack.identifiers.every((item) => typeof item === "string")
+) {
+  throw new Error("Built-in MITRE ATT&CK routing identifiers are invalid")
+}
+validateAttackRoutingIdentifiers(
+  path.join(attackOutput, embeddedAttack.manifest.database.file),
+  frameworkIdentifiers.frameworks.mitre_attack.identifiers,
+)
+await fs.promises.writeFile(
+  path.join(dir, "dist", "mitre-attack-manifest.json"),
+  `${JSON.stringify(embeddedAttack.manifest, null, 2)}\n`,
+)
+console.log(
+  `Embedding MITRE ATT&CK ${embeddedAttack.manifest.domains.map((item) => `${item.domain}=${item.version}`).join(" ")} (${embeddedAttack.manifest.snapshot_id})`,
+)
+
 if (!skipInstall) {
   await runBuildCommand(["bun", "install", "--os=*", "--cpu=*", `@opentui/core@${pkg.dependencies["@opentui/core"]}`])
   await runBuildCommand([
@@ -420,11 +479,11 @@ await fs.promises.writeFile(
   `${JSON.stringify({ version: 1, fingerprint: runtimeFingerprint, files: Object.keys(embeddedCyberfulOs).sort() }, null, 2)}\n`,
 )
 
-// ── Browser Driver Embedding Preserves Binary Assets ─────────────────
-// The browser MCP and Patchright driver ship inside Cyberful; only Chromium is
-// fetched at first use. Bootstrap recreates the exact launcher layout in a
-// build-specific cache. Text remains text, while driver fonts, images, native
-// modules, and compressed assets use base64 so bundling cannot corrupt bytes.
+// ── agent-browser Embedding Preserves Binary Assets ──────────────────
+// The pinned agent-browser package, matching native binary, skill data, license,
+// and first-party CAPTCHA plugin ship inside Cyberful. Bootstrap recreates that
+// exact layout in a build-specific cache. Binary assets use base64 so bundling
+// cannot corrupt bytes.
 // → cyberful/src/bootstrap-browser.ts — materializes and verifies this cache.
 // ─────────────────────────────────────────────────────────────────────
 const BROWSER_BIN_EXT = new Set([
@@ -456,7 +515,7 @@ const bakeBrowserTree = async (root: string, prefix: string) => {
     if (norm.split("/").some((seg) => EXCLUDE_SEG.has(seg))) continue
     const key = `${prefix}/${norm}`
     const file = Bun.file(path.join(root, rel))
-    if (BROWSER_BIN_EXT.has(norm.split(".").pop()?.toLowerCase() ?? "")) {
+    if (BROWSER_BIN_EXT.has(norm.split(".").pop()?.toLowerCase() ?? "") || /(?:^|\/)agent-browser-[^/]+$/u.test(norm)) {
       embeddedBrowserBin[key] = Buffer.from(await file.arrayBuffer()).toString("base64")
     } else {
       embeddedBrowser[key] = await file.text()
@@ -464,10 +523,49 @@ const bakeBrowserTree = async (root: string, prefix: string) => {
   }
 }
 await bakeBrowserTree(path.resolve(dir, "../mcps/browser"), "browser")
-await bakeBrowserTree(path.resolve(dir, "../mcps/node_modules/patchright-core"), "node_modules/patchright-core")
+await bakeBrowserTree(path.resolve(dir, "../mcps/node_modules/agent-browser"), "node_modules/agent-browser")
 console.log(
   `Embedding browser MCP: ${Object.keys(embeddedBrowser).length} text + ${Object.keys(embeddedBrowserBin).length} binary files`,
 )
+
+function agentBrowserBinaryForTarget(item: (typeof targets)[number]): string {
+  if (item.os === "darwin")
+    return item.arch === "arm64" ? "agent-browser-darwin-arm64" : "agent-browser-darwin-x64"
+  if (item.os === "win32") return "agent-browser-win32-x64.exe"
+  const libc = item.abi === "musl" ? "linux-musl" : "linux"
+  return item.arch === "arm64" ? `agent-browser-${libc}-arm64` : `agent-browser-${libc}-x64`
+}
+
+function embeddedBrowserBinariesForTarget(item: (typeof targets)[number]): Record<string, string> {
+  const selected = agentBrowserBinaryForTarget(item)
+  return Object.fromEntries(
+    Object.entries(embeddedBrowserBin).filter(
+      ([key]) => !key.includes("node_modules/agent-browser/bin/agent-browser-") || key.endsWith(`/${selected}`),
+    ),
+  )
+}
+
+async function embeddedCaptchaPluginForTarget(item: (typeof targets)[number], name: string) {
+  const extension = item.os === "win32" ? ".exe" : ""
+  const output = path.join(dir, "dist", name, "bin", `agent-browser-plugin-captcha${extension}`)
+  const build = await Bun.build({
+    entrypoints: [path.resolve(dir, "../mcps/browser/plugin-captcha/agent-browser-plugin-captcha.mjs")],
+    minify: true,
+    compile: {
+      autoloadBunfig: false,
+      autoloadDotenv: false,
+      target: compileTarget(item),
+      outfile: output,
+    },
+  })
+  if (!build.success) {
+    throw new Error(`Bun failed to build CAPTCHA plugin for ${name}:\n${build.logs.map((entry) => String(entry)).join("\n")}`)
+  }
+  return {
+    key: `browser/bin/agent-browser-plugin-captcha${extension}`,
+    base64: fs.readFileSync(output).toString("base64"),
+  }
+}
 
 for (const item of targets) {
   const name = targetName(item)
@@ -487,7 +585,11 @@ for (const item of targets) {
   // main binary whose required expert-gateway MCP can never start.
   // ────────────────────────────────────────────────────────────────
   const gatewayPath = "./src/subsystem/gateway/server.ts"
+  const mitreAttackPath = "./src/subsystem/mitre-attack/server.ts"
   const embeddedOnnx = embeddedOnnxRuntime(item)
+  const embeddedAgentBrowserBin = embeddedBrowserBinariesForTarget(item)
+  const captchaPlugin = await embeddedCaptchaPluginForTarget(item, name)
+  embeddedAgentBrowserBin[captchaPlugin.key] = captchaPlugin.base64
   console.log(`Embedding ${Object.keys(embeddedOnnx).length} ONNX Runtime libraries for ${item.os}/${item.arch}`)
 
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
@@ -512,7 +614,14 @@ for (const item of targets) {
       execArgv: [`--user-agent=cyberful/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
-    entrypoints: ["./src/index.ts", parserWorker, workerPath, gatewayPath, cveDictionaryIntegrityWorkerPath],
+    entrypoints: [
+      "./src/index.ts",
+      parserWorker,
+      workerPath,
+      gatewayPath,
+      mitreAttackPath,
+      cveDictionaryIntegrityWorkerPath,
+    ],
     define: {
       CYBERFUL_VERSION: `'${Script.version}'`,
       CYBERFUL_BUILD_ID: JSON.stringify(buildID),
@@ -535,8 +644,9 @@ for (const item of targets) {
       CYBERFUL_EMBEDDED_CYBERFUL_OS: JSON.stringify(embeddedCyberfulOs),
       CYBERFUL_RUNTIME_FINGERPRINT: JSON.stringify(runtimeFingerprint),
       CYBERFUL_EMBEDDED_BROWSER: JSON.stringify(embeddedBrowser),
-      CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedBrowserBin),
+      CYBERFUL_EMBEDDED_BROWSER_BIN: JSON.stringify(embeddedAgentBrowserBin),
       CYBERFUL_EMBEDDED_ONNX_RUNTIME: JSON.stringify(embeddedOnnx),
+      CYBERFUL_EMBEDDED_MITRE_ATTACK: JSON.stringify(embeddedAttack),
     },
   })
   if (!build.success) {

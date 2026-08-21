@@ -1520,7 +1520,7 @@ function ExpertPhaseRow(props: {
         </Match>
         <Match when={props.entry.kind === "tool"}>
           {/* The Expert's tool through the SAME GenericTool the Agent gets for a cyberful-os/browser tool
-              (nuclei/httpx/browser_*): a terminal-style card with bounded output that expands on click.
+              (nuclei/httpx/agent_browser_*): a terminal-style card with bounded output that expands on click.
               Identical card = identical read across an Expert phase and an Agent turn. */}
           <box paddingLeft={3} flexDirection="column" flexShrink={0}>
             <Show when={actorLabel()}>

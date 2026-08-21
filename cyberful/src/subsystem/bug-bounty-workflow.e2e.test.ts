@@ -46,7 +46,7 @@ function phasePrompt(phase: string) {
   })
 }
 
-function browserResult(action: string, family: string, route: string, profile = 1) {
+function browserResult(family: string, profile = 1) {
   return {
     content: [{ type: "text" as const, text: "ok" }],
     _meta: {
@@ -54,12 +54,8 @@ function browserResult(action: string, family: string, route: string, profile = 
         profile,
         page_id: `page-${profile}`,
         origin: "https://target.test",
-        path_family: route,
-        action,
         action_family: family,
-        page_transition: "same_origin",
         outcome: "ok",
-        status: 200,
       },
     },
   }
@@ -126,9 +122,14 @@ test("local Bug Bounty path combines broad navigation, causal pivots, child usag
       }),
     )
     const coverage = new SurfaceCoverage(workarea, "recon")
-    await coverage.observe(browserResult("browser_navigate", "navigation", "/dashboard"))
-    await coverage.observe(browserResult("browser_click", "ui_interaction", "/settings/security"))
-    await coverage.observe(browserResult("browser_type", "ui_input", "/trade/order", 2))
+    await coverage.observe(browserResult("navigation"))
+    await coverage.observe(browserResult("ui_interaction"))
+    await coverage.observe(browserResult("ui_input", 2))
+    await coverage.observeHttpSurface([
+      { zapID: "1", origin: "https://target.test", pathFamily: "/dashboard", method: "GET", status: 200, hasResponse: true, inScope: true },
+      { zapID: "2", origin: "https://target.test", pathFamily: "/settings/security", method: "GET", status: 200, hasResponse: true, inScope: true },
+      { zapID: "3", origin: "https://target.test", pathFamily: "/trade/order", method: "POST", status: 200, hasResponse: true, inScope: true },
+    ])
     await coverage.close()
 
     const pivots = [

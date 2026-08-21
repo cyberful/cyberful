@@ -5,7 +5,12 @@
 // ────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { normalizedHttpRequest, recordedRequestTarget, recordedResponseStatus } from "./zap_http_request.mjs"
+import {
+  normalizedHttpRequest,
+  recordedRequestTarget,
+  recordedResponseStatus,
+  ZapRequestRecordingError,
+} from "./zap_http_request.mjs"
 
 describe("ZAP raw HTTP request destination", () => {
   test("preserves an unambiguous absolute HTTPS request", () => {
@@ -69,6 +74,24 @@ describe("ZAP raw HTTP request destination", () => {
     expect(() =>
       recordedRequestTarget({ sendRequest: [{ requestHeader: "GET /a HTTP/1.1\r\nHost: example.com" }] }),
     ).toThrow("ambiguous")
+  })
+
+  test("returns a typed shape-only error when ZAP did not persist the request", () => {
+    const error = (() => {
+      try {
+        recordedRequestTarget({ sendRequest: [] })
+      } catch (candidate) {
+        return candidate
+      }
+    })()
+    expect(error).toBeInstanceOf(ZapRequestRecordingError)
+    expect(error.toolError()).toEqual({
+      code: "ZAP_REQUEST_NOT_RECORDED",
+      retryable: true,
+      recorded: false,
+      response_shape: { type: "object", keys: ["sendRequest"], send_request_items: 0 },
+      hint: "ZAP accepted the action but returned no recorded request header",
+    })
   })
 
   test("separates a recorded HTTP denial from bridge health", () => {

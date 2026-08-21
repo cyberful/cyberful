@@ -6,6 +6,35 @@
 // → mcps/zap/zap_bridge.mjs — exposes this normalized convenience operation.
 // ────────────────────────────────────────────────────────────────────
 
+export class ZapRequestRecordingError extends Error {
+  constructor(message, result) {
+    super(message)
+    this.name = "ZapRequestRecordingError"
+    this.code = "ZAP_REQUEST_NOT_RECORDED"
+    this.responseShape = responseShape(result)
+  }
+
+  toolError() {
+    return {
+      code: this.code,
+      retryable: true,
+      recorded: false,
+      response_shape: this.responseShape,
+      hint: this.message,
+    }
+  }
+}
+
+function responseShape(value) {
+  if (Array.isArray(value)) return { type: "array", length: value.length }
+  if (!value || typeof value !== "object") return { type: value === null ? "null" : typeof value }
+  return {
+    type: "object",
+    keys: Object.keys(value).sort().slice(0, 30),
+    send_request_items: Array.isArray(value.sendRequest) ? value.sendRequest.length : undefined,
+  }
+}
+
 export function normalizedHttpRequest(request, targetUrl) {
   if (typeof request !== "string" || !request.trim()) throw new Error("zap_http_request requires a raw request")
 
@@ -56,10 +85,11 @@ export function normalizedHttpRequest(request, targetUrl) {
 
 export function recordedRequestTarget(result) {
   const header = result?.sendRequest?.[0]?.requestHeader
-  if (typeof header !== "string") throw new Error("ZAP sendRequest returned no recorded request header")
+  if (typeof header !== "string")
+    throw new ZapRequestRecordingError("ZAP accepted the action but returned no recorded request header", result)
   const target = header.split(/\r?\n/, 1)[0]?.match(/^\S+\s+(\S+)\s+HTTP\/1\.[01]$/)?.[1]
   if (!target || !/^https?:\/\//i.test(target))
-    throw new Error("ZAP sendRequest returned an ambiguous recorded request target")
+    throw new ZapRequestRecordingError("ZAP returned an ambiguous recorded request target", result)
   return canonicalUrl(absoluteHttpUrl(target, "recorded request target"))
 }
 

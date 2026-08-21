@@ -34,3 +34,13 @@ The offline credential and content-discovery wordlists under `mcps/cyberful-os/w
 ## OWASP ZAP
 
 The isolated ZAP runtime is based on OWASP ZAP and its official container artifacts. Its Apache License 2.0 attribution is recorded in `mcps/zap/THIRD_PARTY_NOTICES.md`. ZAP is distributed inside the unified cyberful-os OCI image; it is not embedded in the Cyberful executable.
+
+## agent-browser
+
+Cyberful embeds the [Cyberful agent-browser fork](https://github.com/cyberful/agent-browser) `0.34.0-cyberful.3`, derived from Vercel's agent-browser and distributed under the Apache License 2.0. Release browser payloads retain the exact `LICENSE` file alongside package metadata, native executable, and versioned skill data.
+
+## MITRE ATT&CK
+
+Each Cyberful release embeds a build-resolved snapshot of the official MITRE ATT&CK Enterprise, Mobile, and ICS STIX 2.1 data. The release manifest records the exact versions, source URLs, sizes, and SHA-256 digests; the platform-neutral ATT&CK archive retains the original source bundles, derived SQLite database, SPDX metadata, checksum manifest, and complete upstream license.
+
+“© 2026 The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE Corporation.” ATT&CK® is a registered trademark of The MITRE Corporation. MITRE grants a non-exclusive, royalty-free license for research, development, and commercial use provided its copyright designation and license are reproduced. The complete build-acquired terms are distributed as `LICENSE.txt` inside every ATT&CK snapshot archive and materialized runtime snapshot.

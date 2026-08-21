@@ -31,6 +31,7 @@ export type WorkflowCapability =
   | "fuzz-campaign"
   | "protocol-campaign"
   | "cve-dictionary"
+  | "mitre-attack"
 
 // ── Phase Deliverable And Persona Contracts ─────────────────────
 // Each workflow phase names the one structured artifact it must leave in the
@@ -106,7 +107,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "pentest",
     sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
+    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
@@ -139,7 +140,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "bug-bounty",
     sourcePolicy: "read",
-    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
+    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "engagement",
     completionTitle: "Bug bounty assessment completed",
     nextWorkflow: "ask",
@@ -179,7 +180,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "code-audit",
     sourcePolicy: "read",
-    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "cve-dictionary"],
+    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
@@ -219,7 +220,7 @@ const FOLLOW_UP: InteractiveWorkflow = {
   kind: "interactive",
   personas: "ask",
   sourcePolicy: "none",
-  capabilities: ["isolated-exec", "browser", "zap", "cve-dictionary"],
+  capabilities: ["isolated-exec", "browser", "zap", "cve-dictionary", "mitre-attack"],
   zapLifecycle: "disabled",
   completionTitle: "Answer completed",
   persona: "ask",

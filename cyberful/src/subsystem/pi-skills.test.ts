@@ -445,7 +445,7 @@ describe("PiSkills", () => {
     await expect(registry.read({ skill: "missing" })).rejects.toThrow("use skill_search")
   })
 
-  test("keeps all 106 built-in skills reachable through the complete progressive search index", async () => {
+  test("keeps all 107 built-in skills reachable through the complete progressive search index", async () => {
     const registry = await PiSkills.discover({ roots: [path.join(Builtin.DIR, "skills")] })
     type SearchItem = {
       readonly name: string
@@ -481,8 +481,8 @@ describe("PiSkills", () => {
     }
     const names = registry.catalog.map((skill) => skill.name)
 
-    expect(names).toHaveLength(106)
-    expect(new Set(names).size).toBe(106)
+    expect(names).toHaveLength(107)
+    expect(new Set(names).size).toBe(107)
     for (const skill of registry.catalog) {
       expect((await page(skill.name)).results[0]?.name).toBe(skill.name)
 
@@ -540,6 +540,6 @@ describe("PiSkills", () => {
 
     const wildcard = await allResults("*")
     expect(wildcard.map((result) => result.name)).toEqual(names)
-    expect(new Set(wildcard.map((result) => result.name)).size).toBe(106)
+    expect(new Set(wildcard.map((result) => result.name)).size).toBe(107)
   })
 })

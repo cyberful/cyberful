@@ -18,7 +18,7 @@
     "cyberful-os-build": "./cyberful-os/bin/cyberful-os-build",
     "cyberful-os-container": "./cyberful-os/bin/cyberful-os-container",
     "cyber-browser": "./browser/bin/cyber-browser",
-    "cyber-browser-install": "./browser/bin/cyber-browser-install"
+    "agent-browser-plugin-captcha": "./browser/bin/agent-browser-plugin-captcha"
   },
   "scripts": {
     "mcp": "cyberful-os/bin/cyberful-os",
@@ -26,10 +26,10 @@
     "runtime:build": "cyberful-os/bin/cyberful-os-build",
     "container": "cyberful-os/bin/cyberful-os-container",
     "browser": "browser/bin/cyber-browser",
-    "browser:install": "browser/bin/cyber-browser-install",
-    "test:browser": "bun test browser"
+    "browser:install": "browser/bin/cyber-browser install",
+    "test:browser": "bun test browser/plugin-captcha/agent-browser-plugin-captcha.test.mjs && browser/bin/cyber-browser --version && browser/bin/agent-browser-plugin-captcha --version"
   },
   "dependencies": {
-    "patchright-core": "1.61.1"
+    "agent-browser": "https://github.com/cyberful/agent-browser/releases/download/v0.34.0-cyberful.3/agent-browser-0.34.0-cyberful.3.tgz"
   }
 }

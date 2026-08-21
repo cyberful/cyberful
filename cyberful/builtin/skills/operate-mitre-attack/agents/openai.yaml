@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operate MITRE ATT&CK"
+  short_description: "Threat-informed ATT&CK reasoning without blind spots"
+  default_prompt: "Use $operate-mitre-attack to organize adversary behavior while preserving open-ended zero-day and novel-path discovery."

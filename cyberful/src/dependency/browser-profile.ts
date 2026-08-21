@@ -16,6 +16,12 @@ export const BROWSER_PROFILE_IDS = [...TARGET_BROWSER_PROFILE_IDS, SEARCH_BROWSE
 export type TargetBrowserProfileId = (typeof TARGET_BROWSER_PROFILE_IDS)[number]
 export type BrowserProfileId = TargetBrowserProfileId | typeof SEARCH_BROWSER_PROFILE_ID
 
+// ── Forked agent-browser Owns Chrome Compatibility ─────────────────
+// Profile paths are stable host-owned state. The Cyberful agent-browser fork
+// launches Chrome directly and applies its hardened CDP behavior internally.
+// Manual and phase launchers supply this identity through host-owned environment;
+// browser tools cannot replace the directory or its lifecycle owner.
+// ─────────────────────────────────────────────────────────────────────
 export function browserHome(homeDirectory = os.homedir()): string {
   return path.join(homeDirectory, ".cyberful", "browser")
 }
@@ -80,8 +86,11 @@ export function browserArtifactsDir(
 // Profile seeding is a headed, human-owned launch rather than a phase attachment.
 // Host-private CDP and shared-attestation modes must not leak from a surrounding
 // environment or the command could connect to another process and seed the wrong
-// identity. Other documented browser policy remains inherited, while cache,
-// profile identity, eager lifetime, and headed mode are fixed for this boundary.
+// identity. The persistent Chrome directory is the sole authentication store;
+// agent-browser restore state is scrubbed because its periodic storage capture
+// creates visible temporary tabs while a human is using the headed browser. The
+// host fixes Chrome's native last-session restoration so session cookies survive
+// the next clean startup without introducing a second credential store.
 // ─────────────────────────────────────────────────────────────────────
 export function manualBrowserProfileEnv(
   profile: TargetBrowserProfileId,
@@ -89,21 +98,52 @@ export function manualBrowserProfileEnv(
   homeDirectory = os.homedir(),
 ): Record<string, string> {
   const inherited = Object.fromEntries(
-    Object.entries(env).filter(
-      (entry): entry is [string, string] =>
-        entry[1] !== undefined &&
-        !["CYBER_BROWSER_CDP_ENDPOINT", "CYBER_BROWSER_OWN_TAB", "CYBER_BROWSER_SHARED_ATTESTATION"].includes(entry[0]),
-    ),
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   )
+  for (const key of [
+    "CYBER_BROWSER_CDP_ENDPOINT",
+    "CYBER_BROWSER_OWN_TAB",
+    "CYBER_BROWSER_SHARED_ATTESTATION",
+    "AGENT_BROWSER_CDP",
+    "AGENT_BROWSER_AUTO_CONNECT",
+    "AGENT_BROWSER_ARGS",
+    "AGENT_BROWSER_CONFIG",
+    "AGENT_BROWSER_ENGINE",
+    "AGENT_BROWSER_EXECUTABLE_PATH",
+    "AGENT_BROWSER_EXTENSIONS",
+    "AGENT_BROWSER_INIT_SCRIPTS",
+    "AGENT_BROWSER_PLUGINS",
+    "AGENT_BROWSER_PASSIVE",
+    "AGENT_BROWSER_PROVIDER",
+    "AGENT_BROWSER_PROXY",
+    "AGENT_BROWSER_PROXY_BYPASS",
+    "AGENT_BROWSER_AUTOSAVE_INTERVAL_MS",
+    "AGENT_BROWSER_RESTORE",
+    "AGENT_BROWSER_RESTORE_SAVE",
+    "AGENT_BROWSER_SESSION_NAME",
+    "AGENT_BROWSER_SOCKET_DIR",
+    "AGENT_BROWSER_STATE",
+  ])
+    delete inherited[key]
+  const artifacts = browserArtifactsDir(profile, env, homeDirectory)
+  const executable = configuredPath(env, "CYBER_BROWSER_CHROME_EXECUTABLE")
   return {
     ...inherited,
-    CYBER_BROWSER_BROWSERS_PATH:
-      configuredPath(env, "CYBER_BROWSER_BROWSERS_PATH") ?? path.join(browserHome(homeDirectory), ".browsers"),
     CYBER_BROWSER_USER_DATA_DIR: browserProfileDir(profile, env, homeDirectory),
-    CYBER_BROWSER_ARTIFACTS_DIR: browserArtifactsDir(profile, env, homeDirectory),
+    CYBER_BROWSER_ARTIFACTS_DIR: artifacts,
     CYBER_BROWSER_PROFILE_ID: String(profile),
-    CYBER_BROWSER_EAGER: "1",
     CYBER_BROWSER_HEADLESS: "false",
+    AGENT_BROWSER_PROFILE: browserProfileDir(profile, env, homeDirectory),
+    ...(executable ? { AGENT_BROWSER_EXECUTABLE_PATH: executable } : {}),
+    AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
+    AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
+    AGENT_BROWSER_SESSION: `cyberful-manual-${profile}`,
+    AGENT_BROWSER_NAMESPACE: `cyberful-manual-${profile}`,
+    AGENT_BROWSER_HEADED: "1",
+    AGENT_BROWSER_PASSIVE: "1",
+    AGENT_BROWSER_ARGS: "--restore-last-session",
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: "0",
+    AGENT_BROWSER_SOCKET_DIR: path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", `cyb-ab-manual-${profile}`),
   }
 }
 

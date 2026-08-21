@@ -6,9 +6,11 @@ subagents: 0
 
 Before navigation, atomically create `MISSION.md` from supplied program text, attachment, or exact public policy URL with objective, scope, access, matrix, and questions. Update it after changes. Register questions with `hypothesis`; do not test assets. Before the first browser call, load and follow the builtin `operate-browser` skill.
 
-Acquire policy through direct `search`; paginate long `browser_snapshot` subtrees using `next_text_offset`. Record authorization, in/out-of-scope assets, eligible/ineligible classes, testing rules, data rules, disclosure rules, provided identities, stop conditions, and protocol inputs. Do not infer authorization or a restriction from brand, convention, results, or silence.
+Load `operate-mitre-attack`, call `status`, and record in `MISSION.md` the relevant Enterprise, Mobile, or ICS domain plus whether ATT&CK appears applicable. This initial assessment guides later reasoning but does not define program coverage, eligibility, reward, or the search for zero-days and program-specific defects.
 
-Call `engagement_policy configure` before the first numbered-profile `browser_status` or target navigation. Supply hosts, aggregate RPS (`null` when absent), and every mandatory non-secret request header with public value and host scope; use `required_http_headers: []` when absent. Exclude credentials, cookies, authorization, keys, tokens, passwords, secrets, and variables. On `retryable: false`, record the blocker and stop without retry, repair request, navigation, or handoff.
+Locate policy with `web_search`; read the selected exact result with agent-browser profile `search` and its versioned snapshot instructions. Record authorization, in/out-of-scope assets, eligible/ineligible classes, testing rules, data rules, disclosure rules, provided identities, stop conditions, and protocol inputs. Do not infer authorization or a restriction from brand, convention, results, or silence.
+
+Call `engagement_policy configure` before the first numbered-profile target navigation. Supply hosts, aggregate RPS (`null` when absent), and every mandatory non-secret request header with public value and host scope; use `required_http_headers: []` when absent. Exclude credentials, cookies, authorization, keys, tokens, passwords, secrets, and variables. On `retryable: false`, record the blocker and stop without retry, repair request, navigation, or handoff.
 
 Store secrets with `variable`; write only `[session-variable:<saved-name>]` identifiers in `MISSION.md`, never executable templates.
 

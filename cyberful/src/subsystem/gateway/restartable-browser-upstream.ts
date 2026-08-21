@@ -2,7 +2,6 @@
 // A cancelled or disconnected stateful MCP process may need replacement. The
 // gateway never retries the interrupted action, but it probes before the next
 // action and opens one single-flight generation when the transport is dead.
-// → mcps/browser/browser_mcp.mjs — performs bounded cancellation teardown.
 // → cyberful/src/subsystem/gateway/server.ts — owns process creation and tools.
 // @docs/runtimes/browser.md
 // ────────────────────────────────────────────────────────────────
@@ -172,6 +171,16 @@ export class ManagedMcpUpstream<T> {
       active.closed = true
       await active.close()
     }
+  }
+
+  async reset() {
+    const connecting = this.connecting
+    if (connecting) await connecting.catch(() => undefined)
+    const recovering = this.recovering
+    if (recovering) await recovering.catch(() => undefined)
+    const active = this.active
+    if (active) await this.invalidate(active)
+    this.quarantinedUntil = 0
   }
 
   private async connection(signal?: AbortSignal): Promise<ManagedGeneration<T>> {

@@ -14,6 +14,12 @@ import { nodeErrorCode } from "@/util/error"
 import { Flock } from "@/util/flock"
 import { isRecord } from "@/util/record"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
+import {
+  ATTACK_APPLICABILITY,
+  ATTACK_REVIEW,
+  parseAttackAssessment,
+  UNASSESSED_ATTACK,
+} from "@/mitre-attack/assessment"
 
 export const REGISTRY_PATH = "raw/findings/registry.json"
 
@@ -151,6 +157,34 @@ const ObservationBase = {
   summary: Schema.String,
   evidencePaths: Schema.Array(Schema.String),
   maturation: Schema.optional(Maturation),
+  attackAssessment: Schema.Struct({
+    applicability: Schema.Literals(ATTACK_APPLICABILITY),
+    rationale: Schema.optional(Schema.String),
+    mappings: Schema.Array(
+      Schema.Struct({
+        attack_id: Schema.String,
+        stix_id: Schema.optional(Schema.String),
+        domain: Schema.optional(Schema.Literals(["enterprise", "mobile", "ics"])),
+        rationale: Schema.String,
+        evidence_refs: Schema.Array(Schema.String),
+      }),
+    ),
+    snapshot: Schema.optional(
+      Schema.Struct({
+        snapshot_id: Schema.String,
+        database_sha256: Schema.String,
+        domains: Schema.Array(
+          Schema.Struct({
+            domain: Schema.Literals(["enterprise", "mobile", "ics"]),
+            version: Schema.String,
+            source_sha256: Schema.String,
+          }),
+        ),
+      }),
+    ),
+    review: Schema.Literals(ATTACK_REVIEW),
+    review_rationale: Schema.optional(Schema.String),
+  }),
 }
 
 export const InReviewObservation = Schema.Struct({
@@ -194,7 +228,7 @@ export const Run = Schema.Struct({
 export type Run = typeof Run.Type
 
 export const Registry = Schema.Struct({
-  schema_version: Schema.Literal(1),
+  schema_version: Schema.Literal(2),
   revision: Schema.Number,
   runs: Schema.Array(Run),
   findings: Schema.Array(Finding),
@@ -239,6 +273,26 @@ type Mutation<T> = {
 }
 
 const decodeRegistry = Schema.decodeUnknownSync(Registry)
+
+function migrateRegistry(value: unknown): unknown {
+  if (!isRecord(value) || value.schema_version !== 1 || !Array.isArray(value.findings)) return value
+  return {
+    ...value,
+    schema_version: 2,
+    findings: value.findings.map((candidate) => {
+      if (!isRecord(candidate) || !Array.isArray(candidate.observations)) {
+        throw new Error("finding registry v1 contains an invalid finding")
+      }
+      return {
+        ...candidate,
+        observations: candidate.observations.map((observation) => {
+          if (!isRecord(observation)) throw new Error("finding registry v1 contains an invalid observation")
+          return { ...observation, attackAssessment: UNASSESSED_ATTACK }
+        }),
+      }
+    }),
+  }
+}
 const workflows = ["pentest", "bug-bounty", "code-audit"] as const
 const technicalStates = ["SUSPECTED", "INCONCLUSIVE", "UNTESTABLE", "CONFIRMED", "DISPROVED"] as const
 const verificationResults = ["NOT_REVIEWED", "SURVIVES", "REVISE", "DEMOTE"] as const
@@ -324,7 +378,7 @@ function invalidFindingTransition(input: {
 }
 
 function emptyRegistry(): Registry {
-  return { schema_version: 1, revision: 0, runs: [], findings: [] }
+  return { schema_version: 2, revision: 0, runs: [], findings: [] }
 }
 
 function boundedText(value: unknown, label: string, maximum: number) {
@@ -409,6 +463,7 @@ function observationCore(observation: Observation) {
     submission: observation.submission,
     summary: observation.summary,
     maturation: observation.maturation,
+    attackAssessment: observation.attackAssessment,
   }
   return observation.review === "ASSESSED"
     ? { ...common, disposition: observation.disposition }
@@ -618,7 +673,7 @@ export class Store {
       if (error instanceof SyntaxError) throw new Error("finding registry contains invalid JSON", { cause: error })
       throw error
     }
-    const decoded = decodeRegistry(parsed)
+    const decoded = decodeRegistry(migrateRegistry(parsed))
     if (!Number.isSafeInteger(decoded.revision) || decoded.revision < 0)
       throw new Error("finding registry revision must be a non-negative safe integer")
     return decoded
@@ -695,8 +750,9 @@ export class Store {
     if (action === "record") return this.record(input, active, signal)
     if (action === "revisit") return this.revisit(input, active, signal)
     if (action === "update") return this.update(input, active, signal)
+    if (action === "set_attack_assessment") return this.setAttackAssessment(input, active, signal)
     if (action === "alias") return this.alias(input, signal)
-    throw new Error("finding action must be record, revisit, update, alias, list, or get")
+    throw new Error("finding action must be record, revisit, update, set_attack_assessment, alias, list, or get")
   }
 
   async list(runID: string) {
@@ -738,6 +794,10 @@ export class Store {
     const timestamp = this.#now().toISOString()
     const decisionsValue = decisions(input, runContext.workflow, technical)
     const maturationValue = maturation(input)
+    const attackAssessment =
+      input.attack_assessment === undefined
+        ? UNASSESSED_ATTACK
+        : parseAttackAssessment(input.attack_assessment, { phase: runContext.phase })
     const observation = {
       id: Identifier.create("obs", "ascending"),
       runID: runContext.runID,
@@ -749,6 +809,7 @@ export class Store {
       ...decisionsValue,
       summary,
       evidencePaths: paths,
+      attackAssessment,
       ...(maturationValue ? { maturation: maturationValue } : {}),
     } satisfies Observation
 
@@ -819,6 +880,7 @@ export class Store {
         submission: { result: "NOT_ASSESSED" },
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
+        attackAssessment: previous?.attackAssessment ?? UNASSESSED_ATTACK,
       } satisfies Observation
       const repeated = mergeObservationEvidence(found, observation, timestamp)
       if (repeated) {
@@ -850,6 +912,10 @@ export class Store {
     const timestamp = this.#now().toISOString()
     const decisionsValue = decisions(input, runContext.workflow, nextDisposition)
     const maturationValue = maturation(input)
+    const requestedAttackAssessment =
+      input.attack_assessment === undefined
+        ? undefined
+        : parseAttackAssessment(input.attack_assessment, { phase: runContext.phase })
 
     return this.#mutate((current) => {
       const found = findFinding(current, id)
@@ -887,6 +953,7 @@ export class Store {
         ...decisionsValue,
         summary,
         evidencePaths: evidencePaths(input.evidence_paths),
+        attackAssessment: requestedAttackAssessment ?? previous?.attackAssessment ?? UNASSESSED_ATTACK,
         ...(currentMaturation ? { maturation: currentMaturation } : {}),
       } satisfies Observation
       const repeated = mergeObservationEvidence(found, observation, timestamp)
@@ -902,6 +969,39 @@ export class Store {
       const updated = {
         ...found,
         ...(input.title === undefined ? {} : { title: requestedTitle }),
+        updatedAt: timestamp,
+        observations: [...found.observations, observation],
+      } satisfies Finding
+      return {
+        next: { ...current, findings: current.findings.map((item) => (item.id === found.id ? updated : item)) },
+        value: updated,
+        changed: true,
+      }
+    }, signal)
+  }
+
+  async setAttackAssessment(input: Record<string, unknown>, runContext: RunContext, signal?: AbortSignal) {
+    const id = reference(input.id, "finding id or alias")
+    const assessment = parseAttackAssessment(input.assessment, { phase: runContext.phase })
+    const timestamp = this.#now().toISOString()
+    return this.#mutate((current) => {
+      const found = findFinding(current, id)
+      if (!found) throw missingFinding(current, id)
+      const previous = latestAssessed(found)
+      if (!previous) throw new Error(`finding '${id}' has no assessed observation`)
+      if (JSON.stringify(previous.attackAssessment) === JSON.stringify(assessment)) {
+        return { next: current, value: found, changed: false }
+      }
+      const observation = {
+        ...previous,
+        id: Identifier.create("obs", "ascending"),
+        runID: runContext.runID,
+        phase: runContext.phase,
+        timestamp,
+        attackAssessment: assessment,
+      } satisfies Observation
+      const updated = {
+        ...found,
         updatedAt: timestamp,
         observations: [...found.observations, observation],
       } satisfies Finding
@@ -1022,6 +1122,7 @@ export class Store {
             4_000,
           ),
           evidencePaths: ["raw/code-graph/index.sqlite"],
+          attackAssessment: UNASSESSED_ATTACK,
         } satisfies Observation
 
         if (found) {

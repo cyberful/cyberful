@@ -66,14 +66,16 @@ function hostPattern(value: unknown, index: number) {
   return host
 }
 
-function hostIsAuthorized(host: string, authorizedHosts: readonly string[]) {
-  if (authorizedHosts.includes(host)) return true
-  if (host.startsWith("*.")) return false
-  return authorizedHosts.some(
+export function httpHostIsAuthorized(host: string, authorizedHosts: readonly string[]) {
+  const normalized = host.trim().toLowerCase()
+  const patterns = authorizedHosts.map((authorized) => authorized.trim().toLowerCase())
+  if (patterns.includes(normalized)) return true
+  if (normalized.startsWith("*.")) return false
+  return patterns.some(
     (authorized) =>
       authorized.startsWith("*.") &&
-      host.endsWith(`.${authorized.slice(2)}`) &&
-      host !== authorized.slice(2),
+      normalized.endsWith(`.${authorized.slice(2)}`) &&
+      normalized !== authorized.slice(2),
   )
 }
 
@@ -105,7 +107,7 @@ function requiredHttpHeader(
   if (!Array.isArray(value.hosts) || value.hosts.length === 0 || value.hosts.length > 64)
     throw new Error(`required_http_headers[${index}].hosts must contain 1..64 authorized host patterns`)
   const hosts = [...new Set(value.hosts.map((host, hostIndex) => hostPattern(host, hostIndex)))]
-  if (hosts.some((host) => !hostIsAuthorized(host, authorizedHosts)))
+  if (hosts.some((host) => !httpHostIsAuthorized(host, authorizedHosts)))
     throw new Error(`required_http_headers[${index}].hosts must be covered by authorized_http_hosts`)
   return { name, value: headerValue, hosts }
 }

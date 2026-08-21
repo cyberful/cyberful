@@ -12,7 +12,7 @@ The same engagement root is mounted at `/zap/wrk` in both containers. Both the o
 
 `zap_http_request` never guesses a destination scheme. Absolute-form requests are accepted directly; origin-form requests require the exact `target_url` and are normalized before sending. The result reports both the requested and recorded URL. The equivalent raw `core/action/sendRequest` operation also remains available through the generic API catalog.
 
-`zap_history_search` and `zap_history_get` return metadata by default. Complete headers and bodies require `include_bodies: true`. Large or binary results are content-addressed under `.cyberful-zap/objects/`, so repeated pages and message reads reuse one on-disk value instead of emitting timestamp-named duplicates. The generic `core/view/message` and `core/view/messages` operations remain available when an agent needs the native ZAP response.
+`zap_history_search` and `zap_history_get` return metadata by default. Complete headers and bodies require `include_bodies: true`. Large or binary results are content-addressed under `raw/zap/history/objects/`, so repeated pages and message reads reuse one on-disk value instead of emitting timestamp-named duplicates. Read those returned workarea-relative paths with `workarea_read`; they are evidence artifacts, not imported source. The generic `core/view/message` and `core/view/messages` operations remain available when an agent needs the native ZAP response.
 
 For local development, build and test the unified image from the repository root:
 

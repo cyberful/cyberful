@@ -6,6 +6,8 @@ subagents: 0
 
 Open a deep, read-only security audit. Fix the source snapshot and choose one audit lens from the objective: `full` for the complete repository or `diff` for an explicitly requested branch, commit range, pull-request equivalent, or current local changes. Full audit is the default. This phase inventories and models; it does not execute project code or declare vulnerabilities.
 
+Load `operate-mitre-attack`, call `status`, and record in `CODE_SCOPE.md` the relevant Enterprise, Mobile, or ICS domain plus whether ATT&CK appears applicable. This initial assessment guides later threat-informed analysis but never defines audit coverage or excludes novel and unmapped root causes.
+
 ## Method
 
 - Load `audit-application-code`, `assess-application-threat-model`, and `audit-software-supply-chain`. Use contained source tools rather than assuming that your process working directory is the repository.

@@ -34,6 +34,15 @@ session_directory="${CYBER_ZAP_SESSION_ROOT:-/var/lib/cyberful/zap/session}"
 session_path="${session_directory}/engagement-${generation}"
 mkdir -p "${session_directory}"
 if [ -f "${session_path}.session" ]; then
+  session_script="${session_path}.script"
+  if [ -f "${session_script}" ] && grep -q '^SET FILES CACHE SIZE [0-9][0-9]*$' "${session_script}"; then
+    session_script_next="${session_script}.cache.$$"
+    trap 'rm -f "${session_script_next}"' EXIT
+    sed 's/^SET FILES CACHE SIZE [0-9][0-9]*$/SET FILES CACHE SIZE 262144/' "${session_script}" > "${session_script_next}"
+    grep -qx 'SET FILES CACHE SIZE 262144' "${session_script_next}"
+    mv "${session_script_next}" "${session_script}"
+    trap - EXIT
+  fi
   session_option="-session"
 else
   session_option="-newsession"

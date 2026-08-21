@@ -39,6 +39,7 @@ describe("built-in Code Audit workflow", () => {
       "native-debug",
       "fuzz-campaign",
       "cve-dictionary",
+      "mitre-attack",
     ])
     expect(workflow.completionTitle).toBe("Code audit completed")
     expect([workflow.report.source, workflow.report.path]).toEqual([

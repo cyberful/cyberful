@@ -3,12 +3,6 @@
   "checked_at": "2026-08-18",
   "update_policy": "manual",
   "frameworks": {
-    "mitre_attack": {
-      "name": "MITRE ATT&CK",
-      "version": "19.1",
-      "source": "https://github.com/mitre-attack/attack-stix-data/archive/refs/tags/v19.1.tar.gz",
-      "sha256": "e9d5b5a54f5cf329e484165b723eaefb7894275c37887eb9ee57f7f9bec06ae8"
-    },
     "nist_csf": {
       "name": "NIST CSF",
       "version": "2.0",

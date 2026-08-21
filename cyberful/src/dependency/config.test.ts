@@ -27,6 +27,7 @@ import {
 } from "./config"
 
 const ENV_KEYS = [
+  "CYBER_AGENT_BROWSER_BINARY",
   "CYBER_BROWSER_MCP_COMMAND",
   "CYBER_BROWSER_MCP",
   "CYBER_BROWSER_MCP_ENABLED",
@@ -126,6 +127,13 @@ describe("unified cyberful-os launcher", () => {
 })
 
 describe("browser MCP dependency config", () => {
+  test("launches the native agent-browser binary in MCP mode", async () => {
+    await withEnv({ CYBER_AGENT_BROWSER_BINARY: "/opt/agent-browser" }, () => {
+      expect(cyberBrowserMcpCommand()).toEqual(["/opt/agent-browser", "mcp", "--tools", "all"])
+      expect(shouldEnableCyberBrowserMcp()).toBe(true)
+    })
+  })
+
   test("re-enters a packaged binary as Bun instead of requiring host Node", async () => {
     await withEnv(
       {

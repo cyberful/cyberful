@@ -13,6 +13,7 @@ import {
   HYPOTHESIS_TOOL_DEF,
   HypothesisRegistry,
   HypothesisRegistryError,
+  hypothesisToolDefinition,
   readHypothesisRegistryView,
 } from "./hypothesis-registry"
 
@@ -281,6 +282,87 @@ describe("hypothesis registry", () => {
     }
   })
 
+  test("keeps ATT&CK assessment neutral and grants final review only to Verify", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const exploit = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "exploit" })
+      const recorded = await exploit.handle({
+        action: "record",
+        id: "H-ATTACK-1",
+        owner: "exploit-root",
+        description: "A novel authorization primitive may cross a tenant boundary",
+        root_cause: "an ownership invariant may be absent",
+        surface: "object API",
+        discriminator: "owner and foreign-object differential",
+        oracle: oracle(),
+      })
+      expect(recorded).toMatchObject({
+        attack_assessment: { applicability: "UNASSESSED", mappings: [], review: "NOT_REVIEWED" },
+      })
+      const assessment = {
+        applicability: "APPLICABLE",
+        mappings: [
+          {
+            attack_id: "T0000",
+            rationale: "Agent-declared behavior mapping retained without runtime ID validation.",
+            evidence_refs: ["raw/hypotheses/H-ATTACK-1.json"],
+          },
+        ],
+      }
+      await exploit.handle({ action: "set_attack_assessment", id: "H-ATTACK-1", assessment })
+      await expect(
+        (async (): Promise<void> => {
+          await exploit.handle({
+            action: "set_attack_assessment",
+            id: "H-ATTACK-1",
+            assessment: { ...assessment, review: "ACCEPTED", review_rationale: "Reviewed." },
+          })
+        })(),
+      ).rejects.toThrow("only Verify")
+      const verify = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "verify" })
+      expect(
+        await verify.handle({
+          action: "set_attack_assessment",
+          id: "H-ATTACK-1",
+          assessment: {
+            ...assessment,
+            review: "ACCEPTED",
+            review_rationale: "The mapping is supported by the preserved behavior evidence.",
+          },
+        }),
+      ).toMatchObject({ attack_assessment: { mappings: [{ attack_id: "T0000" }], review: "ACCEPTED" } })
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
+  test("migrates legacy hypotheses to an UNASSESSED ATT&CK state", async () => {
+    const workarea = await temporaryWorkarea()
+    try {
+      const registry = new HypothesisRegistry({ workarea, workflow: "pentest", phase: "recon" })
+      await registry.handle({
+        action: "record",
+        id: "H-LEGACY-ATTACK",
+        owner: "recon-root",
+        description: "A legacy hypothesis predates ATT&CK assessment storage",
+        root_cause: "the old registry had no mapping field",
+        surface: "legacy API",
+        discriminator: "legacy controlled differential",
+        oracle: oracle(),
+      })
+      const registryPath = path.join(workarea, HYPOTHESIS_REGISTRY_PATH)
+      const legacy = JSON.parse(await Bun.file(registryPath).text())
+      legacy.version = 1
+      for (const hypothesis of legacy.hypotheses) delete hypothesis.attack_assessment
+      await Bun.write(registryPath, JSON.stringify(legacy))
+      expect(await registry.handle({ action: "get", id: "H-LEGACY-ATTACK" })).toMatchObject({
+        attack_assessment: { applicability: "UNASSESSED", mappings: [], review: "NOT_REVIEWED" },
+      })
+    } finally {
+      await rm(workarea, { recursive: true, force: true })
+    }
+  })
+
   test("makes exact record and same-state updates idempotent while merging new evidence", async () => {
     const workarea = await temporaryWorkarea()
     try {
@@ -412,9 +494,7 @@ describe("hypothesis registry", () => {
       delete persisted.hypotheses[0]!.oracle
       await Bun.write(registryPath, `${JSON.stringify(persisted, null, 2)}\n`)
 
-      await expect(registry.handle({ action: "claim", id: "H-LEGACY-ORACLE" })).rejects.toThrow(
-        "requires oracle",
-      )
+      await expect(registry.handle({ action: "claim", id: "H-LEGACY-ORACLE" })).rejects.toThrow("requires oracle")
       await expect(
         registry.handle({ action: "claim", id: "H-LEGACY-ORACLE", oracle: oracle() }),
       ).resolves.toMatchObject({ state: "TESTING", oracle: oracle() })
@@ -677,10 +757,26 @@ describe("hypothesis registry", () => {
         _cyberful_actor: firstActor,
       })
 
-      await registry.handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: firstActor })
+      const refinedOracle = { ...oracle(), primary_observation: "A refined controlled parser differential" }
+      expect(
+        await registry.handle({
+          action: "claim",
+          id: "H-CLAIM-1",
+          oracle: refinedOracle,
+          _cyberful_actor: firstActor,
+        }),
+      ).toMatchObject({ oracle: refinedOracle })
       const claimedRevision = (await registry.list()).revision
       await registry.handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: firstActor })
       expect((await registry.list()).revision).toBe(claimedRevision)
+      await expect(
+        registry.handle({
+          action: "claim",
+          id: "H-CLAIM-1",
+          oracle: { ...refinedOracle, negative_condition: "A different negative condition" },
+          _cyberful_actor: firstActor,
+        }),
+      ).rejects.toThrow("oracle is immutable once testing starts")
 
       const owned = await registry
         .handle({ action: "claim", id: "H-CLAIM-1", _cyberful_actor: secondActor })
@@ -723,7 +819,7 @@ describe("hypothesis registry", () => {
     }
   })
 
-  test("requires host-validated reward context on every Bug Bounty portfolio hypothesis", async () => {
+  test("requires reward context for new portfolio hypotheses without trapping legacy hypotheses", async () => {
     const workarea = await temporaryWorkarea()
     try {
       await configureRewardPolicy(workarea)
@@ -757,7 +853,9 @@ describe("hypothesis registry", () => {
           oracle: oracle(),
         }),
       ).rejects.toThrow("bounty_context")
-      await expect(registry.handle({ action: "claim", id: "BB-LEGACY" })).rejects.toThrow("set_bounty_context")
+      const legacyClaim = await registry.handle({ action: "claim", id: "BB-LEGACY" })
+      expect(legacyClaim).toMatchObject({ state: "TESTING" })
+      expect("bounty_context" in legacyClaim).toBe(false)
       await expect(
         registry.handle({
           ...bountyHypothesis("BB-BAD-GROUP", {
@@ -1095,7 +1193,8 @@ describe("hypothesis registry", () => {
         outcome: "exhausted",
         summary: "The token-binding cluster is exhausted.",
         evidence: ["Both target-specific token-binding controls held under independent discriminators."],
-        opportunity_closeout: "All authorized token-binding oracles are terminal; stronger tests require new authority.",
+        opportunity_closeout:
+          "All authorized token-binding oracles are terminal; stronger tests require new authority.",
         evidence_refs: ["raw/evidence/BB-EXH-1.json", "raw/evidence/BB-EXH-2.json"],
         exhausted_hypothesis_ids: ["BB-EXH-1", "BB-EXH-2"],
         exhaustion_rationale: "The two available enforcement paths share no remaining distinct authorized oracle.",
@@ -1203,6 +1302,57 @@ describe("hypothesis registry", () => {
       readonly properties?: { readonly state?: { readonly enum?: readonly string[] } }
     }>
     expect(alternatives.some((schema) => schema.properties?.state?.enum?.includes("TESTING"))).toBeTrue()
+  })
+
+  test("advertises only the executable phase contract", () => {
+    type ActionSchema = {
+      readonly properties?: Readonly<
+        Record<string, { readonly enum?: readonly string[]; readonly description?: string }>
+      >
+      readonly required?: readonly string[]
+    }
+    const actions = (definition: ReturnType<typeof hypothesisToolDefinition>) =>
+      definition.inputSchema.oneOf as readonly ActionSchema[]
+    const action = (schemas: readonly ActionSchema[], name: string) =>
+      schemas.filter((schema) => schema.properties?.action?.enum?.includes(name))
+
+    const standard = hypothesisToolDefinition()
+    const standardActions = actions(standard)
+    const standardRecord = action(standardActions, "record")[0]!
+    expect(standard.description).toContain("standard research contract")
+    expect(standardRecord.properties).not.toHaveProperty("bounty_context")
+    expect(action(standardActions, "set_bounty_context")).toHaveLength(0)
+    expect(standardRecord.properties?.omitted_tools?.description).toContain("tool_failure")
+    const omissionReasons = standardRecord.properties?.omitted_tools as unknown as {
+      readonly items: { readonly properties: { readonly reason: { readonly enum: readonly string[] } } }
+    }
+    expect(omissionReasons.items.properties.reason.enum).toContain("tool_failure")
+    expect(omissionReasons.items.properties.reason.enum).not.toContain("tool_unavailable")
+    const standardAttackAssessment = action(standardActions, "set_attack_assessment")[0]?.properties
+      ?.assessment as unknown as { readonly properties: { readonly review: { readonly enum: readonly string[] } } }
+    expect(standardAttackAssessment.properties.review.enum).toEqual(["NOT_REVIEWED"])
+
+    const verify = hypothesisToolDefinition({ allowAttackReview: true })
+    const verifyAttackAssessment = action(actions(verify), "set_attack_assessment")[0]?.properties
+      ?.assessment as unknown as {
+      readonly properties: { readonly review: { readonly enum: readonly string[] } }
+    }
+    expect(verifyAttackAssessment.properties.review.enum).toEqual(["NOT_REVIEWED", "ACCEPTED", "REVISED", "REJECTED"])
+
+    const portfolio = hypothesisToolDefinition({
+      noveltyContract: { required: true, mode: "bounty-portfolio" },
+    })
+    const portfolioActions = actions(portfolio)
+    const portfolioRecord = action(portfolioActions, "record")[0]!
+    expect(portfolio.description).toContain("Bug Bounty portfolio contract")
+    expect(portfolioRecord.properties).toHaveProperty("bounty_context")
+    expect(portfolioRecord.required).toContain("bounty_context")
+    expect(action(portfolioActions, "set_bounty_context")).toHaveLength(1)
+    expect(action(portfolioActions, "synthesize")).toHaveLength(2)
+
+    const readOnly = hypothesisToolDefinition({ readOnly: true })
+    expect(readOnly.description).toContain("read-only")
+    expect(actions(readOnly).flatMap((schema) => schema.properties?.action?.enum ?? [])).toEqual(["get", "list"])
   })
 
   test("returns typed missing-id and invalid-transition reconciliation context", async () => {

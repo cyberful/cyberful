@@ -102,14 +102,14 @@ describe("Pi system wire capture", () => {
 
   test("accepts deferred tools emitted by Pi after tool search", () => {
     const codex = model("openai-codex-responses")
-    const browserStatus: Tool = {
-      name: "browser_status",
-      description: "Return the isolated browser status.",
+    const browserSnapshot: Tool = {
+      name: "agent_browser_snapshot",
+      description: "Return the current browser accessibility snapshot.",
       parameters: Type.Object({}),
     }
     const context: Context = {
       systemPrompt: SYSTEM,
-      tools: [browserStatus],
+      tools: [browserSnapshot],
       messages: [
         { role: "user", content: "Load the browser status tool.", timestamp: 1 },
         {
@@ -133,8 +133,8 @@ describe("Pi system wire capture", () => {
           role: "toolResult",
           toolCallId: "call_1|item_1",
           toolName: "tool_search",
-          content: [{ type: "text", text: "Loaded browser_status." }],
-          addedToolNames: ["browser_status"],
+          content: [{ type: "text", text: "Loaded agent_browser_snapshot." }],
+          addedToolNames: ["agent_browser_snapshot"],
           isError: false,
           timestamp: 3,
         },
@@ -142,7 +142,7 @@ describe("Pi system wire capture", () => {
     }
     const input = convertResponsesMessages(codex, context, new Set(["capture-provider"]), {
       includeSystemPrompt: false,
-      deferredTools: new Map([[browserStatus.name, browserStatus]]),
+      deferredTools: new Map([[browserSnapshot.name, browserSnapshot]]),
       deferredToolsMode: "additional-tools",
       toolOptions: { strict: null },
     })
@@ -156,8 +156,8 @@ describe("Pi system wire capture", () => {
           tools: [
             expect.objectContaining({
               type: "function",
-              name: "browser_status",
-              description: "Return the isolated browser status.",
+              name: "agent_browser_snapshot",
+              description: "Return the current browser accessibility snapshot.",
             }),
           ],
         }),

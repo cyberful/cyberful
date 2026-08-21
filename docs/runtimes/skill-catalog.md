@@ -1,6 +1,8 @@
 # Built-in skill catalog
 
-Cyberful ships exactly 106 first-party skill packages for authorized Pentest, Bug Bounty, and Code Audit work. They are original Cyberful procedures rather than imported copies of an external skill collection. Broad packages route to narrow specialists; each specialist owns one operational intent, evidence contract, and completion boundary.
+Cyberful ships exactly 107 first-party skill packages for authorized Pentest, Bug Bounty, and Code Audit work. They are original Cyberful procedures rather than imported copies of an external skill collection. Broad packages route to narrow specialists; each specialist owns one operational intent, evidence contract, and completion boundary.
+
+Versioned runtime instructions supplied by pinned dependencies are not counted as first-party Cyberful skills. In particular, agent-browser's `core-mcp-managed` bundle is fetched only when `tool_search` first loads an operational browser tool in an AgentRun; it is never inserted into the initial skill catalog or system prompt.
 
 ## Operational taxonomy
 
@@ -43,11 +45,11 @@ Offline analyzers are deterministic and bounded. Harnesses remain loopback-only 
 
 ## Framework snapshots
 
-Mappings are manually maintained against eight pinned official sources. Runtime never downloads or updates a framework, and a skill name alone never justifies a mapping.
+Mappings are manually maintained against official sources. Seven framework snapshots remain statically pinned in the repository. MITRE ATT&CK is resolved from the official STIX index once per Cyberful build, validated, and embedded; runtime never downloads or updates a framework, and a skill name alone never justifies a mapping.
 
 | Namespace | Pinned snapshot | Purpose |
 | --- | --- | --- |
-| MITRE ATT&CK | [19.1](https://attack.mitre.org/resources/versions/) | Adversary behavior and TTPs. |
+| MITRE ATT&CK | Build-resolved release snapshot | Adversary behavior and TTPs; non-exhaustive reasoning lens, never a discovery boundary. |
 | NIST CSF | [2.0](https://www.nist.gov/cyberframework) | Organizational cybersecurity outcomes. |
 | MITRE ATLAS | [2026.06](https://github.com/mitre-atlas/atlas-data/releases/tag/v2026.06) | AI and machine-learning adversarial techniques. |
 | MITRE D3FEND | [1.5.0](https://d3fend.mitre.org/resources/ontology/) | Defensive countermeasure techniques. |
@@ -56,7 +58,7 @@ Mappings are manually maintained against eight pinned official sources. Runtime 
 | PCI DSS | [4.0.1](https://docs-prv.pcisecuritystandards.org/PCI%20DSS/Standard/PCI-DSS-v4_0_1.pdf) | Payment-card environment scope, penetration testing, segmentation, and evidence readiness. |
 | GDPR | [Regulation (EU) 2016/679](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | Data-protection accountability, records, security, impact assessment, and evidence reporting. |
 
-The repository records the official URL, version, and source SHA-256 in `cyberful/builtin/skills/framework-sources.json`. The reviewed, sorted set of identifiers actually used by the catalog is bound to those digests in `cyberful/builtin/skills/framework-identifiers.json`. CI validates metadata syntax, exact mapping membership, package resources, script manifests, schema/example compatibility, and the exact 106-package inventory documented below.
+The repository records the official URL, version, and source SHA-256 of the seven static snapshots in `cyberful/builtin/skills/framework-sources.json`. The reviewed, sorted set of identifiers actually used by the catalog lives in `cyberful/builtin/skills/framework-identifiers.json`: static framework identifiers are bound to their source digest, while ATT&CK routing identifiers are verified against the database produced by the current build. CI validates metadata syntax, exact mapping membership, package resources, script manifests, schema/example compatibility, and the exact 107-package inventory documented below.
 
 ## Complete inventory
 
@@ -130,7 +132,7 @@ The inventory below is generated from the same validated package set used by the
 - `analyze-release-security-diff` — `release-security-diff`
 - `analyze-scan-findings` — `scan-correlation`
 
-### `operate-` (21)
+### `operate-` (22)
 
 - `operate-active-directory-toolchain` — `active-directory`
 - `operate-binary-analysis-toolchain` — `binary-analysis`
@@ -143,6 +145,7 @@ The inventory below is generated from the same validated package set used by the
 - `operate-firmware-laboratory` — `firmware-tooling`
 - `operate-kubernetes-toolchain` — `kubernetes`
 - `operate-metasploit` — `exploit-validation`
+- `operate-mitre-attack` — `threat-informed-analysis`
 - `operate-mobile-instrumentation` — `mobile-instrumentation`
 - `operate-native-debugging` — `native-debugging`
 - `operate-native-fuzzing` — `coverage-guided-fuzzing`

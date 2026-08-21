@@ -82,7 +82,8 @@ export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
 function preExecutionToolRoute(tool: string) {
   if (tool === "shell") return { component: "cyberful-os" as const, route: "cyberful-os/shell" }
-  if (tool.startsWith("browser_")) return { component: "browser" as const, route: `browser/${tool}` }
+  if (tool === "web_search" || tool.startsWith("agent_browser_"))
+    return { component: "browser" as const, route: `browser/${tool}` }
   if (tool.startsWith("zap_")) return { component: "zap" as const, route: `zap/${tool}` }
   if (tool.startsWith("ghidra_")) return { component: "ghidra" as const, route: `ghidra/${tool}` }
   return { component: "agent" as const, route: `host/${tool}` }

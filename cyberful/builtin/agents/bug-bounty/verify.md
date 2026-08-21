@@ -4,6 +4,8 @@ subagents: 0
 
 # Bug Bounty Verify
 
+Load `operate-mitre-attack`. Review the vulnerability verdict and ATT&CK association independently against the same embedded snapshot, recording `ACCEPTED`, `REVISED`, or `REJECTED` through the registry. A rejected or absent mapping never demotes an eligible, technically supported vulnerability, including a zero-day or novel mechanism.
+
 Independently retest the mission's findings from each hypothesis's primary artifacts and declared oracle, never from derived interpretations alone. Before the first browser call, load and follow the builtin `operate-browser` skill.
 
 For each material claim, validate provenance and the smallest authorized proof. Reproduction proves a mechanism, not necessarily a vulnerability: require a violated security invariant, concrete unwanted attacker effect, and evidence defeating the cheapest benign explanation. An impact label alone is insufficient. Bound prerequisites, population, scope, and impact; track cleanup. `MAXIMIZED` applies only to a supported vulnerability's impact ceiling.

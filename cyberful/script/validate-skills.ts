@@ -16,6 +16,7 @@ import matter from "gray-matter"
 const skillRoot = path.resolve(import.meta.dir, "../builtin/skills")
 const intentPattern = /^(?:test|audit|trace|analyze|operate|assess|plan|report)-[a-z0-9]+(?:-[a-z0-9]+)*$/
 const frameworkKeys = ["mitre_attack", "nist_csf", "mitre_atlas", "mitre_d3fend", "nist_ai_rmf", "mitre_f3", "pci_dss", "gdpr"] as const
+const pinnedFrameworkKeys = ["nist_csf", "mitre_atlas", "mitre_d3fend", "nist_ai_rmf", "mitre_f3", "pci_dss", "gdpr"] as const
 const workflows = new Set(["pentest", "bug-bounty", "code-audit"])
 const phases = new Set(["brief", "recon", "exploit", "hacker", "verify", "report", "scope", "index", "trace", "hunt", "attack"])
 const modelSelectedTransportFields = new Set([
@@ -39,7 +40,8 @@ const modelSelectedTransportFields = new Set([
 const runtimeTransportEnvironment = /(?:^|_)(?:PROXY|CA_BUNDLE|CA_FILE|SSL_CERT_FILE|SSL_CERT_DIR)$/
 
 type FrameworkKey = (typeof frameworkKeys)[number]
-type FrameworkSourceDigests = Readonly<Record<FrameworkKey, string>>
+type PinnedFrameworkKey = (typeof pinnedFrameworkKeys)[number]
+type FrameworkSourceDigests = Readonly<Record<PinnedFrameworkKey, string>>
 type FrameworkIdentifierIndex = Readonly<Record<FrameworkKey, ReadonlySet<string>>>
 
 export const NEW_SKILL_NAMES = [
@@ -103,6 +105,7 @@ export const NEW_SKILL_NAMES = [
   "audit-pci-dss-penetration-test-evidence",
   "assess-pci-dss-readiness",
   "report-of-compliance",
+  "operate-mitre-attack",
 ] as const
 
 const EXISTING_SKILL_NAMES = [
@@ -282,10 +285,10 @@ async function validateFrameworkSources(root = skillRoot): Promise<FrameworkSour
   if (source.schema_version !== 1 || source.update_policy !== "manual")
     throw new Error("framework source manifest must be schema version 1 with manual updates")
   const frameworks = record(source.frameworks, "framework source manifest frameworks")
-  if (Object.keys(frameworks).toSorted().join("\0") !== [...frameworkKeys].toSorted().join("\0"))
-    throw new Error(`framework source manifest must define exactly the ${frameworkKeys.length} supported frameworks`)
-  const digests = {} as Record<FrameworkKey, string>
-  for (const key of frameworkKeys) {
+  if (Object.keys(frameworks).toSorted().join("\0") !== [...pinnedFrameworkKeys].toSorted().join("\0"))
+    throw new Error(`framework source manifest must define exactly the ${pinnedFrameworkKeys.length} statically pinned frameworks`)
+  const digests = {} as Record<PinnedFrameworkKey, string>
+  for (const key of pinnedFrameworkKeys) {
     const entry = record(frameworks[key], `framework source '${key}'`)
     stringValue(entry.name, `framework source '${key}' name`)
     stringValue(entry.version, `framework source '${key}' version`)
@@ -312,9 +315,14 @@ async function validateFrameworkIdentifiers(
   const index = {} as Record<FrameworkKey, ReadonlySet<string>>
   for (const key of frameworkKeys) {
     const entry = record(frameworks[key], `framework identifier '${key}'`)
-    const digest = stringValue(entry.source_sha256, `framework identifier '${key}' source SHA-256`)
-    if (digest !== sourceDigests[key])
-      throw new Error(`framework identifier '${key}' source SHA-256 does not match framework-sources.json`)
+    if (key === "mitre_attack") {
+      if (entry.source_sha256 !== undefined)
+        throw new Error("MITRE ATT&CK identifiers must be verified against the build snapshot instead of a static source digest")
+    } else {
+      const digest = stringValue(entry.source_sha256, `framework identifier '${key}' source SHA-256`)
+      if (digest !== sourceDigests[key])
+        throw new Error(`framework identifier '${key}' source SHA-256 does not match framework-sources.json`)
+    }
     const identifiers = stringList(entry.identifiers, `framework identifier '${key}' values`, 1, 512)
     if (identifiers.join("\0") !== identifiers.toSorted().join("\0"))
       throw new Error(`framework identifier '${key}' values must be sorted deterministically`)

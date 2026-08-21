@@ -48,6 +48,7 @@ describe("built-in Bug Bounty Program workflow", () => {
       "fuzz-campaign",
       "protocol-campaign",
       "cve-dictionary",
+      "mitre-attack",
     ])
     expect(workflow.zapLifecycle).toBe("engagement")
     expect(workflow.completionTitle).toBe("Bug bounty assessment completed")
@@ -127,10 +128,11 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(exploit).toMatch(/advisory and artifact-only/i)
     expect(exploit).toContain("`UNTESTABLE`")
     expect(exploit).toContain('`display_name: "finding-breaker"`')
-    expect(exploit).toContain("raw/strategy/exploit-finding-breaker.md")
+    expect(exploit).toContain('`output_artifact: "raw/strategy/exploit-finding-breaker.md"`')
+    expect(exploit).toMatch(/never Verify-only `SURVIVES`, `REVISE`, or `DEMOTE`/i)
     expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-portfolio-critic.md"`')
     expect(hacker).toContain('`display_name: "finding-breaker"`')
-    expect(hacker).toContain("raw/strategy/hacker-finding-breaker.md")
+    expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-finding-breaker.md"`')
     expect(hacker).toMatch(/after two negatives converge[\s\S]*change impact, boundary, or enforcement owner/i)
     for (const persona of [recon, exploit, hacker]) {
       expect(persona).toMatch(/narrowest useful skill/i)
@@ -138,11 +140,9 @@ describe("built-in Bug Bounty Program workflow", () => {
       expect(persona).toMatch(/hypothesis/i)
       expect(persona).toMatch(/not a score|never score|without scores/i)
     }
-    expect(browserSkill).toMatch(/Preserve a profile whose authenticated state, challenge, or rate limit/i)
-    expect(browserSkill).toMatch(/use another assigned profile for independent work/i)
-    expect(browserSkill).toMatch(
-      /before handoff because tabs and in-memory browser state do not cross phase ownership/i,
-    )
+    expect(browserSkill).toMatch(/one phase-shared agent-browser session/i)
+    expect(browserSkill).toMatch(/avoid disrupting unrelated work/i)
+    expect(browserSkill).toMatch(/Save required screenshots, downloads, ZAP facts, and durable artifacts before handoff/i)
   })
 
   test("brief records program policy without inventing missing rules", () => {
@@ -183,10 +183,10 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
     for (const preflightInstruction of [
       "Account, proxy, and application preflight",
-      "`browser_status`",
-      "`proxy.mode=zap`",
-      "`browser_network_log`",
-      "`OK, retry`",
+      "`agent_browser_open`",
+      "routed through ZAP",
+      "Use ZAP for durable HTTP evidence",
+      "`web_search`",
       "Prerequisite matrix",
       "`READY`",
       "`BLOCKED`",
@@ -201,11 +201,9 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("[session-variable:<saved-name>]")
     expect(browserContract).not.toContain("{{var:name}}")
     expect(browserSkill).toMatch(/numbered profiles `1` through `5`/i)
-    expect(browserSkill).toMatch(
-      /`search` is intentionally direct with `proxy\.configured=false` and `proxy\.mode=direct`/i,
-    )
-    expect(browserSkill).toMatch(/not a target identity, readiness prerequisite, engagement-policy profile/i)
-    expect(browserSkill).toMatch(/Never ask the human to restore ZAP for `search`/i)
+    expect(browserSkill).toMatch(/always uses the temporary direct `search` profile/i)
+    expect(browserSkill).toMatch(/profile: "search"[^.]*only DuckDuckGo or Google/i)
+    expect(browserSkill).toMatch(/do not open a result host on `search`/i)
     expect(browserSkill).toMatch(/Ask the human only when a human factor/i)
     expect(browserContract).not.toMatch(/Never enter credentials/i)
     expect(brief).toMatch(/not an exhaustive vulnerability checklist/i)
@@ -235,7 +233,7 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(report).toMatch(/to `complete`/i)
   })
 
-  test("keeps the permanent Bug Bounty instruction corpus within 2,500 words", () => {
+  test("keeps the permanent Bug Bounty instruction corpus within 2,800 words", () => {
     const personas = PHASES.map(([phase]) =>
       fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
     )
@@ -261,6 +259,6 @@ describe("built-in Bug Bounty Program workflow", () => {
     const runner = runners.toSorted((left, right) => right.split(/\s+/).length - left.split(/\s+/).length)[0] ?? ""
     const permanentWords = [runner, ...personas, ...skills].join("\n").trim().split(/\s+/).length
 
-    expect(permanentWords).toBeLessThanOrEqual(2_500)
+    expect(permanentWords).toBeLessThanOrEqual(2_800)
   })
 })

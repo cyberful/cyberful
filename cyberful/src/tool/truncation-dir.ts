@@ -12,10 +12,15 @@ import * as Log from "@/util/log"
 export const TRUNCATION_DIR = path.join(Global.Path.data, "tool-output")
 const log = Log.create({ service: "tool.truncation-dir" })
 
+export function emptyDirectorySync(directory: string) {
+  fs.mkdirSync(directory, { recursive: true })
+  for (const entry of fs.readdirSync(directory))
+    fs.rmSync(path.join(directory, entry), { recursive: true, force: true })
+}
+
 export function emptyTruncationDirSync() {
   try {
-    fs.rmSync(TRUNCATION_DIR, { recursive: true, force: true })
-    fs.mkdirSync(TRUNCATION_DIR, { recursive: true })
+    emptyDirectorySync(TRUNCATION_DIR)
   } catch (error) {
     log.warn("failed to reset tool output directory", { error, directory: TRUNCATION_DIR })
   }

@@ -30,9 +30,14 @@ import {
   ZapApiContractError,
   zapApiResponseError,
 } from "./zap_policy.mjs"
-import { normalizedHttpRequest, recordedRequestTarget, recordedResponseStatus } from "./zap_http_request.mjs"
+import {
+  normalizedHttpRequest,
+  recordedRequestTarget,
+  recordedResponseStatus,
+  ZapRequestRecordingError,
+} from "./zap_http_request.mjs"
 import { replayRequest } from "./zap_history_replay.mjs"
-import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
+import { engagementReportPath, normalizedReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
 import { messageMetadata, projectHistory, storeContentAddressed } from "./zap_history.mjs"
 import { completedOastCall, oastCapabilities, oastToolDefinition, resolveOastOperation } from "./zap_oast.mjs"
 import { ZAP_BRIDGE_TOOLS } from "./zap_tool_catalog.mjs"
@@ -319,6 +324,7 @@ async function nativeTool(name, args) {
   }
   if (name === "zap_generate_workarea_report") {
     const reportPath = engagementReportPath(args.file_path, WORKAREA)
+    const sites = normalizedReportSites(args.sites)
     await mkdir(path.dirname(reportPath.containerPath), { recursive: true })
     return withEngagementReportPath(
       text({
@@ -328,6 +334,7 @@ async function nativeTool(name, args) {
           reportFileName: path.basename(reportPath.containerPath),
           reportDir: path.dirname(reportPath.containerPath),
           display: false,
+          ...(sites ? { sites: sites.join("|") } : {}),
         }),
       }),
       reportPath,
@@ -444,16 +451,30 @@ const officialTools = discoveredOfficialTools.map((tool) =>
 )
 const officialToolNames = new Set(officialTools.map((item) => item.name))
 
+// ── Cyberful Wrappers Own Deliberate Name Collisions ────────────────
+// The Reports add-on can expose a similarly named upstream tool across ZAP
+// versions. Cyberful's wrapper must retain the workarea confinement and origin
+// normalization contract, so only explicit names in this set override upstream.
+// All other discovered tools continue to pass through unchanged.
+// ────────────────────────────────────────────────────────────────────
+
+const bridgeOverrideToolNames = new Set(["zap_generate_workarea_report"])
+
 const server = new Server(
   { name: "cyberful-zap", version: "0.1.0" },
   { capabilities: { tools: {}, resources: {}, prompts: {} } },
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [...officialTools, ...nativeTools.filter((item) => !officialToolNames.has(item.name))],
+  tools: [
+    ...officialTools.filter((item) => !bridgeOverrideToolNames.has(item.name)),
+    ...nativeTools.filter((item) => !officialToolNames.has(item.name) || bridgeOverrideToolNames.has(item.name)),
+  ],
 }))
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
+    if (bridgeOverrideToolNames.has(request.params.name))
+      return await nativeTool(request.params.name, request.params.arguments || {})
     if (officialToolNames.has(request.params.name)) {
       const reportPath =
         request.params.name === "zap_generate_report"
@@ -474,6 +495,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments || {}
     return await nativeTool(request.params.name, args)
   } catch (error) {
+    if (error instanceof ZapRequestRecordingError) return text({ error: error.toolError() }, true)
     if (error instanceof ZapApiContractError)
       return text(
         {

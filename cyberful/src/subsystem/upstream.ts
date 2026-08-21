@@ -18,6 +18,7 @@ import {
   shouldEnableCyberfulOsMcp,
   shouldEnableCyberZap,
 } from "@/dependency/config"
+import { mitreAttackMcpCommand } from "@/subsystem/mitre-attack/config"
 
 export function builtin() {
   const root = cyberfulOsDir()
@@ -37,14 +38,13 @@ export function builtin() {
         CYBERFUL_OS_IMAGE: image,
       },
     },
-    // ── Browser Defaults Preserve Isolation And Human Handoff ─────────
-    // The browser upstream runs a dedicated Chromium rather than the user's
-    // browser, with stealth enabled to preserve ordinary target behavior during
-    // authorized testing. Headed mode remains the default because CAPTCHA
-    // handoff must surface that exact runtime to the human. An explicit channel
-    // override may reuse an authenticated profile, while the default bundled
-    // channel avoids driving or locking a personal browser profile.
-    // ───────────────────────────────────────────────────────────────
+    // ── Browser Defaults Preserve Isolation And Visible Verification ────
+    // The browser upstream runs the pinned agent-browser fork against a dedicated
+    // profile rather than the user's daily browser. Headed mode remains the
+    // default so autonomous CAPTCHA work and any last-resort human fallback share
+    // the exact runtime. The gateway separately fixes profile, session, namespace,
+    // ZAP route, plugin registry, and lifecycle before the process starts.
+    // ────────────────────────────────────────────────────────────────────
     browser: {
       type: "local" as const,
       command: cyberBrowserMcpCommand(),
@@ -53,9 +53,7 @@ export function builtin() {
       environment: {
         ...(root ? { CYBERFUL_OS_DIR: root } : {}),
         CYBER_BROWSER_HEADLESS: process.env.CYBER_BROWSER_HEADLESS ?? "false",
-        CYBER_BROWSER_STEALTH: "true",
         CYBER_BROWSER_CHANNEL: process.env.CYBER_BROWSER_CHANNEL ?? "chromium",
-        ...(process.env.CYBER_BROWSER_BUN_REENTRY === "1" ? { BUN_BE_BUN: "1" } : {}),
         ...(shouldChainBrowserThroughZap() ? cyberBrowserZapChainEnv() : {}),
       },
     },
@@ -78,6 +76,13 @@ export function builtin() {
       command: ghidraReady ? cyberGhidraBridgeCommand() : [],
       enabled: ghidraReady,
       timeout: 305_000,
+      environment: {},
+    },
+    "mitre-attack": {
+      type: "local" as const,
+      command: mitreAttackMcpCommand(),
+      enabled: true,
+      timeout: 60_000,
       environment: {},
     },
   }

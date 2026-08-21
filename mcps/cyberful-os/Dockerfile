@@ -68,6 +68,8 @@ ADD --checksum=sha256:f2c3035976531130494b5b9dfc02ca0ebd7e0388f740f68b6d4e775098
 # allowing every validated runtime identity to load the exact pinned catalog.
 # ───────────────────────────────────────────────────────────────────────────
 RUN test -s "/zap/zap-${ZAP_VERSION}.jar" \
+  && sed -i 's/^SET FILES CACHE SIZE 32000$/SET FILES CACHE SIZE 262144/' /zap/db/zapdb.script \
+  && grep -qx 'SET FILES CACHE SIZE 262144' /zap/db/zapdb.script \
   && chmod 0444 /zap/plugin/*.zap \
   && chown -R zap:zap /zap/plugin
 

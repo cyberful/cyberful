@@ -203,6 +203,8 @@ export class RunStateArtifact {
         updated_at: now,
       })
       this.#lastProgressAt = now
+    } else if (event.type === "phase_research_continuation") {
+      this.#lastProgressAt = now
     } else if (event.type === "phase_closeout") {
       this.#mode = "closeout"
       this.#lastProgressAt = now

@@ -214,6 +214,19 @@ describe("Pi phase registry", () => {
     for (const phase of ["scope", "report"])
       expect(SubsystemPhase.phaseHasCapability("code-audit", phase, "ghidra")).toBe(false)
   })
+
+  test("publishes the embedded MITRE ATT&CK capability in every workflow phase", () => {
+    const workflows = {
+      pentest: ["brief", "recon", "exploit", "hacker", "verify", "report"],
+      "bug-bounty": ["brief", "recon", "exploit", "hacker", "verify", "report"],
+      "code-audit": ["scope", "index", "trace", "hunt", "attack", "verify", "report"],
+      ask: ["ask"],
+    } as const
+    for (const [workflow, phases] of Object.entries(workflows)) {
+      expect(SubsystemPhase.hasCapability(workflow, "mitre-attack")).toBe(true)
+      for (const phase of phases) expect(SubsystemPhase.phaseHasCapability(workflow, phase, "mitre-attack")).toBe(true)
+    }
+  })
 })
 
 // The runner's invocation is the security-relevant contract: autonomous under the phase policy, with

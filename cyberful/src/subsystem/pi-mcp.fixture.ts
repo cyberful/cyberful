@@ -88,9 +88,10 @@ server.setRequestHandler(ListToolsRequestSchema, (request) => {
         inputSchema: objectSchema,
       },
       {
-        name: "browser_close",
-        description: "Close a browser profile.",
+        name: "agent_browser_close",
+        description: "Close an agent-browser profile.",
         inputSchema: { type: "object" as const, additionalProperties: false, properties: {} },
+        _meta: { "cyberful.dev/eager": true },
       },
     ],
     nextCursor: "second-page",
@@ -108,7 +109,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
     return {
       content: [{ type: "text" as const, text: `handoff: ${value}` }],
     }
-  if (request.params.name === "browser_close")
+  if (request.params.name === "agent_browser_close")
     return { content: [{ type: "text" as const, text: "browser closed" }] }
   if (request.params.name === "_cyberful_browser_owner_release")
     return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }] }
@@ -205,4 +206,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
 
 const stderrLine = process.env.CYBERFUL_TEST_STDERR_LINE
 if (stderrLine) process.stderr.write(`${stderrLine}\n`)
+const startupDelayText = process.env.CYBERFUL_TEST_STARTUP_DELAY_MS
+if (startupDelayText !== undefined) {
+  if (!/^(?:0|[1-9]\d{0,3})$/u.test(startupDelayText))
+    throw new Error("CYBERFUL_TEST_STARTUP_DELAY_MS must be an integer from 0 through 9999")
+  await Bun.sleep(Number(startupDelayText))
+}
 await server.connect(new StdioServerTransport())

@@ -295,6 +295,16 @@ export type AgentEvent =
       readonly failure?: Failure
     }
   | {
+      readonly type: "phase_research_continuation"
+      readonly runID: AgentRunID
+      readonly cause: "active_subagents" | "recon_breadth" | "coverage_candidates"
+      readonly ordinal: 1
+      readonly unusedProfileCount: number
+      readonly coverageCandidateCount: number
+      readonly collectorDegraded: boolean
+      readonly activeSubagents: number
+    }
+  | {
       readonly type: "phase_closeout"
       readonly runID: AgentRunID
       readonly state: "entered"

@@ -6,6 +6,8 @@ subagents: 0
 
 Independently challenge every Hunt candidate and every runtime claim in `CODE_ATTACK.md`. Start from the evidence, not the prior verdict. Distinguish exploitable, controlled, unreachable, context-dependent, and disproved paths, and leave a validated finding ledger for reporting.
 
+Load `operate-mitre-attack`. Review the technical finding and ATT&CK association independently against the same embedded snapshot, recording `ACCEPTED`, `REVISED`, or `REJECTED`. A rejected or absent mapping never dismisses or reduces a supported finding, including a zero-day or novel mechanism.
+
 ## Method
 
 - Read every prior Code Audit artifact, including `CODE_ATTACK.md`, and list the structured findings. For each tested hypothesis, inspect its declared oracle and primary source, graph, or runtime evidence before derived scanner or classifier output. Do not inherit a candidate's verdict, severity, or interpretation.

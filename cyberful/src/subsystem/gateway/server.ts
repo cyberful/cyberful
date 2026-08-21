@@ -10,9 +10,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import path from "node:path"
 import os from "node:os"
 import { createHash } from "node:crypto"
-import { lstat, readFile, writeFile } from "node:fs/promises"
+import { appendFile, lstat, readFile, writeFile } from "node:fs/promises"
 import { SubsystemPhase } from "../phase"
-import { SubsystemBrowserCdp } from "../browser-cdp"
 import { BrowserProfile, type BrowserProfileId } from "@/dependency/browser-profile"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -38,8 +37,19 @@ import { SessionID } from "../../session/schema"
 import { ToolUsageRecorder, type ToolUsageEvent } from "./tool-usage"
 import { ownedProcessTree, processSnapshot, reapCapturedProcessTree } from "./mcp-process-owner"
 import { EgressObservation, EGRESS_OBSERVATION_TOOL_DEF } from "./egress-observation"
-import { SurfaceCoverage, browserAction } from "./surface-coverage"
-import { HYPOTHESIS_TOOL_DEF, HypothesisRegistry, HypothesisRegistryError } from "./hypothesis-registry"
+import {
+  browserActivity,
+  type BrowserActionFamily,
+  type ResearchCloseoutAssessment,
+  SurfaceCoverage,
+} from "./surface-coverage"
+import { ZapHistoryCollector } from "./zap-history-collector"
+import {
+  HYPOTHESIS_TOOL_DEF,
+  HypothesisRegistry,
+  HypothesisRegistryError,
+  hypothesisToolDefinition,
+} from "./hypothesis-registry"
 import {
   applyEngagementTrafficPolicy,
   ENGAGEMENT_POLICY_TOOL_DEF,
@@ -75,15 +85,6 @@ import {
   isCodeGraphTool,
 } from "./code-graph-tools"
 import {
-  acknowledgeCircuitBreaker,
-  activateCircuitBreaker,
-  circuitBreakerError,
-  clearCircuitBreaker,
-  dismissCircuitBreaker,
-  readActorCircuitBreaker,
-  type CircuitBreakerState,
-} from "./circuit-breaker"
-import {
   approvalElicitationMetadata,
   approvalElicitationSchema,
   hasHumanDecisionMetadata,
@@ -98,19 +99,25 @@ import { createHandoffSnapshot, HandoffSnapshotError, type HandoffSnapshotV2 } f
 import { CVE_DICTIONARY_TOOL_DEF, CveDictionaryTool } from "./cve-dictionary-tool"
 import { TARGET_COOLDOWN_TOOL_DEF, TARGET_COOLDOWN_TOOL_NAME, TargetCooldownController } from "./target-cooldown"
 import { ManagedMcpUpstream, type ManagedMcpUpstreamStatus } from "./restartable-browser-upstream"
-import { browserToolCatalog, createBrowserProfileProcess } from "./browser-profile-process"
-import type { BrowserProfileHub } from "./browser-profile-hub"
+import {
+  AgentBrowserProfileProcess,
+  createBrowserProfileProcess,
+  PhaseBrowserToolCatalog,
+  webSearchWithAgentBrowser,
+} from "./browser-profile-process"
+import { cyberCaptchaPluginCommand } from "@/dependency/config"
+import { ensureWorkareaDirectory } from "@/workarea"
 
 export { runtimeCapabilityAllowed, runtimeNetworkAllowed } from "./phase-policy"
 
 const log = Log.create({ service: "phase-gateway" })
-const BROWSER_CANCELLATION_SETTLE_MS = 2_250
 const HUMAN_WAIT_HEARTBEAT_MS = 30_000
 const HUMAN_WAIT_REQUEST_TIMEOUT_MS = 60_000
 const HUMAN_WAIT_TOOL_NAMES = new Set(["question", SOURCE_IMPORT_TOOL_DEF.name])
 const TOOL_ACTOR_META_KEY = "io.cyberful/tool-actor"
 const BROWSER_OWNER_RELEASE_TOOL_NAME = "_cyberful_browser_owner_release"
 const BROWSER_OWNER_RELEASE_META_KEY = "io.cyberful/browser-owner-release"
+const AGENT_BROWSER_UNIX_SOCKET_MAX_BYTES = 103
 
 const RUNTIME_STATUS_TOOL_DEF = {
   name: "runtime_status",
@@ -274,9 +281,13 @@ function deleteVar(sessionID: SessionID, name: string) {
   })
 }
 
-function text(value: unknown, isError = false) {
+function text(value: unknown, isError = false, meta?: Record<string, unknown>) {
   const body = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  return { content: [{ type: "text" as const, text: body }], ...(isError ? { isError: true } : {}) }
+  return {
+    content: [{ type: "text" as const, text: body }],
+    ...(isError ? { isError: true } : {}),
+    ...(meta ? { _meta: meta } : {}),
+  }
 }
 
 function contractError(input: {
@@ -313,7 +324,7 @@ function contractError(input: {
 function liveTargetToolDefinitions(input: {
   testObjects: boolean
   egress: boolean
-  hypothesis: boolean
+  hypothesis: false | ReturnType<typeof hypothesisToolDefinition>
   engagementPolicy: boolean
   rewardPolicy: false | "readonly" | "readwrite"
   targetCooldown: boolean
@@ -321,7 +332,7 @@ function liveTargetToolDefinitions(input: {
   return [
     ...(input.testObjects ? [TEST_OBJECT_TOOL_DEF] : []),
     ...(input.egress ? [EGRESS_OBSERVATION_TOOL_DEF] : []),
-    ...(input.hypothesis ? [HYPOTHESIS_TOOL_DEF] : []),
+    ...(input.hypothesis ? [input.hypothesis] : []),
     ...(input.engagementPolicy ? [ENGAGEMENT_POLICY_TOOL_DEF] : []),
     ...(input.rewardPolicy === "readwrite"
       ? [REWARD_POLICY_TOOL_DEF]
@@ -337,7 +348,7 @@ function localToolDefinitions(
   input: {
     testObjects: boolean
     egress: boolean
-    hypothesis: boolean
+    hypothesis: false | ReturnType<typeof hypothesisToolDefinition>
     engagementPolicy: boolean
     rewardPolicy: false | "readonly" | "readwrite"
     targetCooldown: boolean
@@ -555,23 +566,11 @@ const VARIABLE_TOOL_DEF = {
   },
 }
 
-interface CircuitBreakerConfig {
-  filePath: string
-  phase: string
-}
-
 function questionEnabled(): boolean {
   const enabled = process.env.CYBERFUL_SUBSYSTEM_QUESTION_ENABLED?.trim()
   if (!enabled) return false
   if (enabled !== "1") throw new Error("expert-gateway question flag must be 1")
   return true
-}
-
-function circuitBreakerConfig(): CircuitBreakerConfig | undefined {
-  const filePath = process.env.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH?.trim()
-  if (!filePath) return undefined
-  if (!path.isAbsolute(filePath)) throw new Error("expert-gateway circuit breaker path must be absolute")
-  return { filePath, phase: process.env.CYBERFUL_SUBSYSTEM_PHASE?.trim() || "unknown" }
 }
 
 const QUESTION_TOOL_DEF = {
@@ -582,8 +581,7 @@ const QUESTION_TOOL_DEF = {
     "Never combine authorities that differ by host, method, identity, credential, effect, risk, or traffic bound; " +
     "each independent authority requires a separate call that states those fields. " +
     "The host suspends the phase execution and budget while the TUI or external approval selector " +
-    "returns the selected labels or a custom answer. For a CAPTCHA, " +
-    "first make the normal action that displays it, call browser_captcha_handoff, then use kind=captcha.",
+    "returns the selected labels or a custom answer. Use kind=captcha only after a visible challenge could not be completed through autonomous browser actions and Cyberful's captcha.solve plugin.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -591,7 +589,7 @@ const QUESTION_TOOL_DEF = {
         type: "string",
         enum: ["question", "captcha"],
         default: "question",
-        description: "captcha is accepted only after the browser has attested a visible challenge.",
+        description: "captcha presents a bounded human fallback after autonomous solving was unavailable or failed.",
       },
       questions: {
         type: "array",
@@ -624,33 +622,16 @@ const QUESTION_TOOL_DEF = {
   },
 }
 
-async function handleQuestion(
-  server: Server,
-  circuit: CircuitBreakerConfig | undefined,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-  actor?: GatewayToolActor,
-) {
+async function handleQuestion(server: Server, args: Record<string, unknown>, signal?: AbortSignal) {
   const questions = parseHumanQuestions(args.questions)
   if (!questions) return text({ error: "question requires one to three valid questions" })
   const captcha = args.kind === "captcha"
-  let captchaState: CircuitBreakerState | undefined
-  if (captcha) {
-    captchaState = circuit && actor ? await readActorCircuitBreaker(circuit.filePath, actor.runID) : undefined
-    if (!captchaState || captchaState.status === "cleared" || !captchaState.surfacedAt)
-      return text(
-        {
-          error:
-            "A CAPTCHA question requires an already visible, host-attested challenge. Trigger it through the normal page action and call browser_captcha_handoff first.",
-        },
-        true,
-      )
-  }
   const presentedQuestions: HumanQuestion[] = captcha
     ? [
         {
           header: "CAPTCHA",
-          question: "Resolve the visible CAPTCHA in the browser Cyberful brought to the front, then confirm here.",
+          question:
+            "Autonomous CAPTCHA solving could not complete this challenge. Resolve it in the active Cyberful browser, then confirm here.",
           options: [
             { label: "Resolved", description: "I completed the visible challenge in that browser." },
             {
@@ -694,11 +675,6 @@ async function handleQuestion(
   const answers = parseApprovalElicitationContent(presentedQuestions, response.content)
   if (!answers) return text({ error: "native elicitation returned invalid answers" }, true)
   const captchaAnswer = captcha ? answers[0]?.[0] : undefined
-  let captchaDecisionApplied: boolean | undefined
-  if (captcha && circuit && captchaState && captchaAnswer === "Resolved")
-    captchaDecisionApplied = await acknowledgeCircuitBreaker(circuit.filePath, captchaState)
-  if (captcha && circuit && captchaState && captchaAnswer === "No challenge visible")
-    captchaDecisionApplied = await dismissCircuitBreaker(circuit.filePath, captchaState)
   return text({
     ok: true,
     answers: presentedQuestions.map((question, index) => ({
@@ -706,13 +682,11 @@ async function handleQuestion(
       answers: answers[index] ?? [],
     })),
     output: captcha
-      ? captchaDecisionApplied === false
-        ? "The CAPTCHA state changed before this answer arrived, so the decision was not applied. Inspect and answer the current request."
-        : captchaAnswer === "Resolved"
-          ? "The human resolved the challenge. Call browser_captcha_status on the original page; only that profile and origin remain paused until clearance."
-          : captchaAnswer === "No challenge visible"
-            ? "The human confirmed that no challenge is visible. The false-positive pause is cleared; continue without treating passive provider signals as a CAPTCHA."
-            : "The human could not resolve the challenge. Keep this browser profile and origin paused."
+      ? captchaAnswer === "Resolved"
+        ? "The human resolved the challenge. Take a fresh agent-browser snapshot before continuing."
+        : captchaAnswer === "No challenge visible"
+          ? "The human confirmed that no challenge is visible. Continue from a fresh agent-browser snapshot."
+          : "The human could not resolve the challenge. Preserve the browser state and stop this path."
       : "The human answered. Continue the current phase using these answers.",
   })
 }
@@ -720,7 +694,6 @@ async function handleQuestion(
 async function confirmSourceImport(
   server: Server,
   question: boolean,
-  circuit: CircuitBreakerConfig | undefined,
   request: SourceImportRequest,
   signal?: AbortSignal,
 ) {
@@ -728,7 +701,6 @@ async function confirmSourceImport(
   const refs = [request.checkoutRef, ...request.additionalRefs].filter(Boolean).join(", ") || "default HEAD"
   const result = await handleQuestion(
     server,
-    circuit,
     {
       questions: [
         {
@@ -1141,6 +1113,263 @@ export interface UpstreamTool {
   call(args: Record<string, unknown>, signal?: AbortSignal, actor?: GatewayToolActor): Promise<CallToolResult>
 }
 
+const HOST_OWNED_AGENT_BROWSER_ARGUMENTS = new Set([
+  "allowedDomains",
+  "session",
+  "namespace",
+  "restore",
+  "restoreSave",
+  "restoreCheckUrl",
+  "restoreCheckText",
+  "restoreCheckFn",
+  "idleTimeout",
+  "extraArgs",
+  "cdp",
+  "cdpUrl",
+  "autoConnect",
+  "provider",
+  "engine",
+  "executablePath",
+  "userDataDir",
+  "proxy",
+  "proxyBypass",
+  "config",
+  "extensions",
+  "initScripts",
+  "plugins",
+])
+
+const TARGET_EXTERNAL_BROWSER_TOOLS = new Set(["agent_browser_connect", "agent_browser_chat", "agent_browser_doctor"])
+
+export const AGENT_BROWSER_MANAGED_INSTRUCTION_BUNDLE = "agent-browser/core-mcp-managed"
+const AGENT_BROWSER_INSTRUCTION_BUNDLE_META = "cyberful.dev/instruction-bundle"
+const AGENT_BROWSER_SKILL_RESULT_META = "io.cyberful/agent-browser-skills"
+const AGENT_BROWSER_NON_OPERATIONAL_TOOLS = new Set([
+  "agent_browser_tools_profiles",
+  "agent_browser_skills_list",
+  "agent_browser_skills_get",
+  "agent_browser_skills_path",
+])
+const HIDDEN_AGENT_BROWSER_TOOLS = new Set([
+  "agent_browser_auth_delete",
+  "agent_browser_auth_list",
+  "agent_browser_auth_login",
+  "agent_browser_auth_save",
+  "agent_browser_auth_show",
+  "agent_browser_batch",
+  "agent_browser_chat",
+  "agent_browser_close",
+  "agent_browser_connect",
+  "agent_browser_dashboard_start",
+  "agent_browser_dashboard_stop",
+  "agent_browser_doctor",
+  "agent_browser_get_cdp_url",
+  "agent_browser_install",
+  "agent_browser_plugin_add",
+  "agent_browser_profiles",
+  "agent_browser_remove_init_script",
+  "agent_browser_set_headers",
+  "agent_browser_session",
+  "agent_browser_session_id",
+  "agent_browser_session_info",
+  "agent_browser_session_list",
+  "agent_browser_skills_path",
+  "agent_browser_state_clean",
+  "agent_browser_state_clear",
+  "agent_browser_state_list",
+  "agent_browser_state_load",
+  "agent_browser_state_rename",
+  "agent_browser_state_save",
+  "agent_browser_state_show",
+  "agent_browser_stream_disable",
+  "agent_browser_stream_enable",
+  "agent_browser_stream_status",
+  "agent_browser_tools_profiles",
+  "agent_browser_upgrade",
+])
+
+const BRIEF_AGENT_BROWSER_TOOLS = new Set([
+  "agent_browser_back",
+  "agent_browser_check",
+  "agent_browser_click",
+  "agent_browser_dialog_accept",
+  "agent_browser_dialog_dismiss",
+  "agent_browser_dialog_status",
+  "agent_browser_dblclick",
+  "agent_browser_download",
+  "agent_browser_drag",
+  "agent_browser_fill",
+  "agent_browser_find",
+  "agent_browser_focus",
+  "agent_browser_forward",
+  "agent_browser_frame_main",
+  "agent_browser_frame_switch",
+  "agent_browser_get_attr",
+  "agent_browser_get_box",
+  "agent_browser_get_count",
+  "agent_browser_get_html",
+  "agent_browser_get_styles",
+  "agent_browser_get_text",
+  "agent_browser_get_title",
+  "agent_browser_get_url",
+  "agent_browser_get_value",
+  "agent_browser_hover",
+  "agent_browser_is_checked",
+  "agent_browser_is_enabled",
+  "agent_browser_is_visible",
+  "agent_browser_keydown",
+  "agent_browser_keyboard_insert_text",
+  "agent_browser_keyboard_type",
+  "agent_browser_keyup",
+  "agent_browser_open",
+  "agent_browser_pdf",
+  "agent_browser_plugin_run",
+  "agent_browser_plugin_show",
+  "agent_browser_press",
+  "agent_browser_read",
+  "agent_browser_reload",
+  "agent_browser_screenshot",
+  "agent_browser_scroll",
+  "agent_browser_scroll_into_view",
+  "agent_browser_select",
+  "agent_browser_skills_get",
+  "agent_browser_skills_list",
+  "agent_browser_snapshot",
+  "agent_browser_tab_close",
+  "agent_browser_tab_list",
+  "agent_browser_tab_new",
+  "agent_browser_tab_switch",
+  "agent_browser_type",
+  "agent_browser_uncheck",
+  "agent_browser_upload",
+  "agent_browser_wait_for_download",
+  "agent_browser_wait_for_load",
+  "agent_browser_wait_for_selector",
+  "agent_browser_wait_for_text",
+  "agent_browser_wait_for_url",
+  "agent_browser_wait_ms",
+  "agent_browser_window_new",
+])
+
+export function agentBrowserToolPublished(name: string): boolean {
+  return !name.startsWith("agent_browser_") || !HIDDEN_AGENT_BROWSER_TOOLS.has(name)
+}
+
+// ── Versioned Skills Cross The Gateway Once ──────────────────────
+// agent-browser's generic MCP wrapper repeats CLI JSON in text, stdout, and
+// structured output. Skills are instruction payloads, so forwarding every copy
+// wastes context and makes it unclear which representation is authoritative.
+// The gateway validates the successful CLI envelope and emits one Markdown
+// block per skill plus non-model metadata that binds each block to its name.
+// ─────────────────────────────────────────────────────────────────
+export function projectAgentBrowserSkillsResult(result: CallToolResult): CallToolResult {
+  if (result.isError || !isRecord(result.structuredContent)) return result
+  const response = isRecord(result.structuredContent.response) ? result.structuredContent.response : undefined
+  if (response?.success !== true || !Array.isArray(response.data)) return result
+  const skills = response.data.flatMap((item) =>
+    isRecord(item) && typeof item.name === "string" && typeof item.content === "string"
+      ? [{ name: item.name, content: item.content }]
+      : [],
+  )
+  if (skills.length === 0 || skills.length !== response.data.length) return result
+  return {
+    content: skills.map((skill) => ({ type: "text" as const, text: skill.content })),
+    isError: false,
+    _meta: {
+      ...(isRecord(result._meta) ? result._meta : {}),
+      [AGENT_BROWSER_SKILL_RESULT_META]: skills.map((skill) => ({
+        name: skill.name,
+        bytes: Buffer.byteLength(skill.content),
+        sha256: createHash("sha256").update(skill.content).digest("hex"),
+      })),
+    },
+  }
+}
+
+const HOST_RESET_AGENT_BROWSER_ENVIRONMENT = [
+  "AGENT_BROWSER_ALLOWED_DOMAINS",
+  "AGENT_BROWSER_ARGS",
+  "AGENT_BROWSER_AUTO_CONNECT",
+  "AGENT_BROWSER_CDP",
+  "AGENT_BROWSER_CONFIG",
+  "AGENT_BROWSER_ENABLE",
+  "AGENT_BROWSER_ENGINE",
+  "AGENT_BROWSER_EXECUTABLE_PATH",
+  "AGENT_BROWSER_EXTENSIONS",
+  "AGENT_BROWSER_INIT_SCRIPTS",
+  "AGENT_BROWSER_PLUGINS",
+  "AGENT_BROWSER_PASSIVE",
+  "AGENT_BROWSER_PROVIDER",
+  "AGENT_BROWSER_AUTOSAVE_INTERVAL_MS",
+  "AGENT_BROWSER_RESTORE",
+  "AGENT_BROWSER_RESTORE_SAVE",
+  "AGENT_BROWSER_SESSION_NAME",
+  "AGENT_BROWSER_SKILLS_DIR",
+  "AGENT_BROWSER_STATE",
+] as const
+
+export const SEARCH_BROWSER_ALLOWED_DOMAINS = ["*.duckduckgo.com", "*.google.com"] as const
+
+// ── Cyberful Owns Session And Egress Fields ─────────────────────────
+// agent-browser publishes complete CLI parity through common fields. Cyberful
+// removes only fields that can select another daemon/profile or append global
+// CLI flags, leaving every upstream tool name and ordinary operation intact.
+// Profile itself is reintroduced by the gateway and is therefore the only
+// model-selectable routing coordinate in an otherwise upstream-owned schema.
+// ─────────────────────────────────────────────────────────────────────
+export function agentBrowserToolDefinition(definition: UpstreamTool["def"]): UpstreamTool["def"] {
+  if (!definition.name.startsWith("agent_browser_") || !isRecord(definition.inputSchema)) return definition
+  const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
+  const required = Array.isArray(definition.inputSchema.required)
+    ? definition.inputSchema.required.filter(
+        (name): name is string => typeof name === "string" && !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name),
+      )
+    : undefined
+  const sanitizedProperties = Object.fromEntries(
+    Object.entries(properties).filter(([name]) => !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name)),
+  )
+  if (definition.name === "agent_browser_plugin_run") {
+    sanitizedProperties.name = {
+      type: "string",
+      enum: ["captcha"],
+      description: "Cyberful's first-party CAPTCHA solver plugin.",
+    }
+    sanitizedProperties.requestType = {
+      type: "string",
+      enum: ["captcha.solve"],
+      description: "Solve the detected CAPTCHA before considering a human fallback.",
+    }
+    sanitizedProperties.payload = {
+      type: "object",
+      additionalProperties: true,
+      description:
+        "Solver request. Prefer kind, url, and siteKey; optional action, cdata, pageData, invisible, provider, timeoutMs, and provider-native task are supported. Never include an API key.",
+    }
+  }
+  return {
+    ...definition,
+    ...(!AGENT_BROWSER_NON_OPERATIONAL_TOOLS.has(definition.name)
+      ? {
+          _meta: {
+            ...(isRecord(definition._meta) ? definition._meta : {}),
+            [AGENT_BROWSER_INSTRUCTION_BUNDLE_META]: AGENT_BROWSER_MANAGED_INSTRUCTION_BUNDLE,
+          },
+        }
+      : {}),
+    ...(definition.name === "agent_browser_plugin_run"
+      ? {
+          description:
+            "Run Cyberful's first-party CAPTCHA solver. Attempt this before question kind=captcha; a structured plugin failure is the condition for human fallback.",
+        }
+      : {}),
+    inputSchema: {
+      ...definition.inputSchema,
+      properties: sanitizedProperties,
+      ...(required && required.length > 0 ? { required } : { required: undefined }),
+    },
+  }
+}
+
 // ── One Browser Surface Selects Target Or Research Identity ────────
 // Repeating every browser tool per identity would obscure the useful tool
 // surface. The gateway instead adds one bounded selector to ordinary browser
@@ -1153,16 +1382,26 @@ export function browserProfileToolDefinition(
   definition: UpstreamTool["def"],
   profiles: readonly BrowserProfileId[],
 ): UpstreamTool["def"] {
-  if (definition.name === "web_search") return definition
-  if (!isRecord(definition.inputSchema)) return definition
-  const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
+  if (definition.name === "web_search")
+    return {
+      ...definition,
+      _meta: {
+        ...(isRecord(definition._meta) ? definition._meta : {}),
+        "cyberful.dev/eager": true,
+      },
+    }
+  const sanitized = agentBrowserToolDefinition(definition)
+  if (!isRecord(sanitized.inputSchema)) return sanitized
+  const properties = isRecord(sanitized.inputSchema.properties) ? sanitized.inputSchema.properties : {}
   const availableTargets = profiles.filter(BrowserProfile.isTargetBrowserProfileId)
   const searchAvailable = profiles.includes(BrowserProfile.SEARCH_BROWSER_PROFILE_ID)
+  const defaultProfile = availableTargets.toSorted((left, right) => left - right)[0] ??
+    (searchAvailable ? BrowserProfile.SEARCH_BROWSER_PROFILE_ID : undefined)
   return {
-    ...definition,
-    description: `${definition.description ?? "Use the isolated browser."} Select target profile 1-5 or the credential-free search profile; profile 1 is the default.`,
+    ...sanitized,
+    description: `${sanitized.description ?? "Use agent-browser."} Select an available target profile or the direct, credential-free search profile.${defaultProfile === undefined ? "" : ` Omission selects ${defaultProfile}.`}`,
     inputSchema: {
-      ...definition.inputSchema,
+      ...sanitized.inputSchema,
       properties: {
         ...properties,
         profile: {
@@ -1170,7 +1409,7 @@ export function browserProfileToolDefinition(
             ...(availableTargets.length > 0 ? [{ type: "integer", enum: availableTargets }] : []),
             ...(searchAvailable ? [{ type: "string", enum: [BrowserProfile.SEARCH_BROWSER_PROFILE_ID] }] : []),
           ],
-          default: 1,
+          ...(defaultProfile === undefined ? {} : { default: defaultProfile }),
           description: "Isolated browser identity: target account 1-5, or search for unauthenticated web research.",
         },
       },
@@ -1199,7 +1438,16 @@ export function selectBrowserProfileUpstream(
     return { upstream, args }
   }
 
-  const requested = args.profile ?? 1
+  const availableTargets = profiled
+    .map((candidate) => candidate.browserProfile)
+    .filter(BrowserProfile.isTargetBrowserProfileId)
+    .toSorted((left, right) => left - right)
+  const requested =
+    args.profile ??
+    availableTargets[0] ??
+    (profiled.some((candidate) => candidate.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID)
+      ? BrowserProfile.SEARCH_BROWSER_PROFILE_ID
+      : undefined)
   if (!BrowserProfile.isBrowserProfileId(requested)) {
     throw new Error("browser profile must be an integer from 1 through 5 or search")
   }
@@ -1209,6 +1457,68 @@ export function selectBrowserProfileUpstream(
     upstream,
     args: Object.fromEntries(Object.entries(args).filter(([name]) => name !== "profile")),
   }
+}
+
+const HOST_OWNED_AGENT_BROWSER_FLAGS = [
+  "--allowed-domains",
+  "--session",
+  "--namespace",
+  "--profile",
+  "--restore",
+  "--idle-timeout",
+  "--proxy",
+  "--proxy-bypass",
+  "--args",
+]
+
+const TARGET_EXTERNAL_AGENT_BROWSER_FLAGS = ["--cdp", "--auto-connect", "--provider", "--engine"]
+
+function reservedBatchArgument(value: unknown, profile: BrowserProfileId | undefined): string | undefined {
+  if (!Array.isArray(value)) return
+  for (const command of value) {
+    if (!Array.isArray(command)) continue
+    for (const item of command) {
+      if (typeof item !== "string") continue
+      const reservedFlags = BrowserProfile.isTargetBrowserProfileId(profile)
+        ? [...HOST_OWNED_AGENT_BROWSER_FLAGS, ...TARGET_EXTERNAL_AGENT_BROWSER_FLAGS]
+        : HOST_OWNED_AGENT_BROWSER_FLAGS
+      const flag = reservedFlags.find((candidate) => item === candidate || item.startsWith(`${candidate}=`))
+      if (flag) return flag
+    }
+    const action = typeof command[0] === "string" ? command[0].toLowerCase() : ""
+    if (["close", "install", "upgrade", "dashboard", "batch", "plugin"].includes(action)) return action
+    if (BrowserProfile.isTargetBrowserProfileId(profile) && ["connect", "chat", "doctor"].includes(action))
+      return action
+  }
+}
+
+export function agentBrowserPolicyError(
+  tool: string,
+  args: Record<string, unknown>,
+  profile: BrowserProfileId | undefined,
+): string | undefined {
+  if (!tool.startsWith("agent_browser_")) return
+  if (tool === "agent_browser_set_headers")
+    return "request headers are owned by Cyberful and enforced from engagement_policy through ZAP"
+  const reserved = Object.keys(args).find((name) => HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name))
+  if (reserved) return `agent-browser argument '${reserved}' is owned by Cyberful`
+  if (
+    [
+      "agent_browser_close",
+      "agent_browser_install",
+      "agent_browser_upgrade",
+      "agent_browser_dashboard_start",
+      "agent_browser_dashboard_stop",
+    ].includes(tool)
+  )
+    return "agent-browser lifecycle is owned by Cyberful"
+  if (tool === "agent_browser_plugin_add") return "agent-browser plugin registration is owned by Cyberful"
+  if (tool === "agent_browser_plugin_run" && (args.name !== "captcha" || args.requestType !== "captcha.solve"))
+    return "only Cyberful's captcha/captcha.solve plugin request is available"
+  const batchEscape = tool === "agent_browser_batch" ? reservedBatchArgument(args.commands, profile) : undefined
+  if (batchEscape) return `agent-browser batch cannot override Cyberful routing with '${batchEscape}'`
+  if (BrowserProfile.isTargetBrowserProfileId(profile) && TARGET_EXTERNAL_BROWSER_TOOLS.has(tool))
+    return `${tool} cannot attach or delegate outside the ZAP-pinned target browser; use profile search`
 }
 
 interface ToolArgumentAdjustment {
@@ -1269,6 +1579,145 @@ function annotateBrowserProfile(result: CallToolResult, profile: BrowserProfileI
       cyberful: {
         ...existingCyberful,
         browserProfile: profile,
+      },
+    },
+  }
+}
+
+interface AgentBrowserActivityScope {
+  readonly tabID: string
+  readonly origin?: string
+}
+
+const AGENT_BROWSER_NAVIGATION_ACTIONS = new Set(["open", "read", "tab_new", "back", "forward", "reload", "pushstate"])
+const AGENT_BROWSER_INTERACTION_ACTIONS = new Set([
+  "click",
+  "double_click",
+  "dblclick",
+  "select",
+  "check",
+  "uncheck",
+  "drag",
+  "hover",
+  "focus",
+  "tap",
+  "touch",
+  "swipe",
+  "dialog_accept",
+  "dialog_dismiss",
+  "confirm",
+  "deny",
+])
+const AGENT_BROWSER_INPUT_ACTIONS = new Set([
+  "fill",
+  "type",
+  "press",
+  "upload",
+  "keydown",
+  "keyup",
+  "keyboard_type",
+  "keyboard_insert_text",
+])
+
+function commandActionFamily(action: string, args: Record<string, unknown>): BrowserActionFamily {
+  if (action === "find") {
+    const nested = typeof args.action === "string" ? args.action.toLowerCase().replaceAll("-", "_") : ""
+    return commandActionFamily(nested, {})
+  }
+  if (AGENT_BROWSER_NAVIGATION_ACTIONS.has(action)) return "navigation"
+  if (AGENT_BROWSER_INTERACTION_ACTIONS.has(action) || action.startsWith("dialog_") || action.startsWith("mouse_"))
+    return "ui_interaction"
+  if (AGENT_BROWSER_INPUT_ACTIONS.has(action) || action.startsWith("keyboard_")) return "ui_input"
+  if (action === "eval") return "script"
+  return "observation"
+}
+
+export function agentBrowserActionFamily(tool: string, args: Record<string, unknown>): BrowserActionFamily {
+  const action = tool
+    .replace(/^agent_browser_/, "")
+    .toLowerCase()
+    .replaceAll("-", "_")
+  if (action !== "batch") return commandActionFamily(action, args)
+  if (!Array.isArray(args.commands)) return "observation"
+  const families = args.commands.flatMap((command) => {
+    if (!Array.isArray(command) || typeof command[0] !== "string") return []
+    return [commandActionFamily(command[0].toLowerCase().replaceAll("-", "_"), {})]
+  })
+  for (const family of ["ui_input", "ui_interaction", "navigation", "script"] as const) {
+    if (families.includes(family)) return family
+  }
+  return "observation"
+}
+
+function resultRecord(result: CallToolResult): Record<string, unknown> | undefined {
+  for (const content of result.content) {
+    if (content.type !== "text") continue
+    try {
+      const value: unknown = JSON.parse(content.text)
+      if (isRecord(value)) return value
+    } catch {
+      continue
+    }
+  }
+}
+
+function reliableString(value: unknown, fields: readonly string[]): string | undefined {
+  if (!isRecord(value)) return
+  for (const field of fields) {
+    if (typeof value[field] === "string" && value[field]) return value[field] as string
+  }
+  for (const container of ["data", "result", "tab"]) {
+    const nested = value[container]
+    if (!isRecord(nested)) continue
+    for (const field of fields) {
+      if (typeof nested[field] === "string" && nested[field]) return nested[field] as string
+    }
+  }
+}
+
+function reliableOrigin(args: Record<string, unknown>, result: CallToolResult): string | undefined {
+  const candidate =
+    (typeof args.url === "string" ? args.url : undefined) ??
+    reliableString(resultRecord(result), ["url", "currentUrl", "current_url", "location"])
+  if (!candidate) return
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return
+    return url.origin
+  } catch {
+    return
+  }
+}
+
+function opaqueBrowserTabID(value: string, profile: BrowserProfileId) {
+  return createHash("sha256").update(`${profile}\0${value}`).digest("hex").slice(0, 24)
+}
+
+export function annotateAgentBrowserActivity(
+  result: CallToolResult,
+  tool: string,
+  args: Record<string, unknown>,
+  profile: BrowserProfileId | undefined,
+  previous?: AgentBrowserActivityScope,
+): CallToolResult {
+  if (profile === undefined || !tool.startsWith("agent_browser_")) return result
+  const parsed = resultRecord(result)
+  const reportedTabID = reliableString(parsed, ["tabId", "tab_id", "pageId", "page_id"])
+  const tabID = reportedTabID
+    ? opaqueBrowserTabID(reportedTabID, profile)
+    : (previous?.tabID ?? opaqueBrowserTabID("unknown", profile))
+  const origin = reliableOrigin(args, result) ?? previous?.origin
+  const meta = isRecord(result._meta) ? result._meta : {}
+  return {
+    ...result,
+    _meta: {
+      ...meta,
+      "cyberful.dev/browser-action": {
+        profile,
+        tab_id: tabID,
+        ...(origin ? { origin } : {}),
+        action_family: agentBrowserActionFamily(tool, args),
+        outcome: result.isError ? "error" : "ok",
       },
     },
   }
@@ -1359,64 +1808,6 @@ function transportFailureMetadata(error: unknown): Pick<ToolUsageEvent, "error_c
   }
 }
 
-async function observeCaptchaCircuit(
-  config: CircuitBreakerConfig,
-  tool: string,
-  result: CallToolResult,
-  actor: GatewayToolActor | undefined,
-) {
-  if (tool !== "browser_captcha_status" && tool !== "browser_captcha_handoff") return
-  if (!actor) return
-  const action = browserAction(result)
-  if (!action) return
-  const scope = { ownerRunID: actor.runID, profile: action.profile, origin: action.origin, pageID: action.pageID }
-  const value = result.content
-    ?.flatMap((content) => {
-      if (content.type !== "text") return []
-      const parsed = jsonRecord(content.text)
-      return parsed ? [parsed] : []
-    })
-    .find((item) => typeof item.detected === "boolean")
-  if (!value) return
-  if (value.detected === true) {
-    await activateCircuitBreaker(
-      config.filePath,
-      config.phase,
-      scope,
-      tool === "browser_captcha_handoff" && !result.isError,
-    )
-    return
-  }
-  if (tool === "browser_captcha_status") await clearCircuitBreaker(config.filePath, scope)
-}
-
-function browserScope(
-  tool: string,
-  args: Record<string, unknown>,
-  profile: BrowserProfileId | undefined,
-  scopes: ReadonlyMap<string, { readonly profile: BrowserProfileId; readonly origin: string; readonly pageID: string }>,
-  actor: GatewayToolActor | undefined,
-) {
-  if (!actor || profile === undefined || (!tool.startsWith("browser_") && tool !== "web_search")) return
-  const current = scopes.get(`${actor.runID}\u0000${profile}`)
-  const currentScope = current ? { ownerRunID: actor.runID, ...current } : undefined
-  if (tool === "web_search") {
-    return {
-      ownerRunID: actor.runID,
-      profile,
-      origin: "https://html.duckduckgo.com",
-      pageID: currentScope?.pageID ?? "pending",
-    }
-  }
-  if (tool !== "browser_navigate" || typeof args.url !== "string") return currentScope
-  try {
-    const url = new URL(args.url.includes("://") ? args.url : `http://${args.url}`)
-    return { ownerRunID: actor.runID, profile, origin: url.origin, pageID: currentScope?.pageID ?? "pending" }
-  } catch {
-    return currentScope
-  }
-}
-
 function browserProfileEgress(
   tool: string,
   args: Record<string, unknown>,
@@ -1468,48 +1859,62 @@ function proxyEnabled(): boolean {
   return v === "1" || v === "true" || v === "yes"
 }
 
-// ── Profile Choice Avoids Browser Lock Contention ────────────────
-// A persistent browser context locks its user-data directory, so another process
-// must not launch against a profile with a live CDP holder. The caller performs
-// the port probe against Chromium's DevToolsActivePort and allocates the fallback
-// before this pure decision. An unlocked pinned profile preserves the human
-// login; every other state falls back to a per-run profile whose lock cannot
-// collide with another phase or an orphaned browser.
+// ── Profile Choice Is Explicit And Fail-Closed ───────────────────
+// Target profiles keep stable user-data directories and fail on lock conflicts;
+// their phase restore protects daemon recreation without periodic storage tabs.
+// Native Chrome restoration also retains session cookies across clean startups.
+// Search must use a fresh context because native domain containment rejects Chrome
+// profiles. Two host-owned wildcards cover the search engines and block every
+// other navigation and page-initiated network path. Inherited target routing,
+// restoration, and profile state are removed from that context.
 // ─────────────────────────────────────────────────────────────────
 export function resolveBrowserUpstreamEnv(input: {
   dedicated?: string
   artifactsDir: string
   direct?: boolean
-  livePort?: number
+  restoreKey?: string
   tempProfileDir: string
 }): {
   set: Record<string, string>
   unset: string[]
 } {
-  const resolved =
-    input.dedicated && !input.livePort
-      ? {
-          set: {
-            CYBER_BROWSER_USER_DATA_DIR: input.dedicated,
-            CYBER_BROWSER_ARTIFACTS_DIR: input.artifactsDir,
-          },
-        }
-      : {
-          set: {
-            CYBER_BROWSER_USER_DATA_DIR: input.tempProfileDir,
-            CYBER_BROWSER_ARTIFACTS_DIR: path.join(input.tempProfileDir, "artifacts"),
-          },
-        }
+  const profile = input.dedicated
+  if (!input.direct && !profile) throw new Error("target agent-browser profile path is missing")
+  const restoreKey = input.direct ? undefined : input.restoreKey?.trim()
+  if (!input.direct && !restoreKey) throw new Error("target agent-browser restore key is missing")
+  const artifacts = input.direct ? path.join(input.tempProfileDir, "artifacts") : input.artifactsDir
   return {
-    ...resolved,
+    set: {
+      ...(input.direct
+        ? { AGENT_BROWSER_ALLOWED_DOMAINS: SEARCH_BROWSER_ALLOWED_DOMAINS.join(",") }
+        : { AGENT_BROWSER_PROFILE: profile! }),
+      AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
+      AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
+      ...(restoreKey
+        ? {
+            AGENT_BROWSER_ARGS: "--restore-last-session",
+            AGENT_BROWSER_RESTORE: restoreKey,
+            AGENT_BROWSER_RESTORE_SAVE: "always",
+            AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
+          }
+        : {}),
+    },
     unset: input.direct
       ? [
           "CYBER_BROWSER_PROXY",
           "CYBER_BROWSER_PROXY_CA_SPKI",
           "CYBER_BROWSER_PROXY_WARNING",
-          "CYBER_BROWSER_CDP_ENDPOINT",
-          "CYBER_BROWSER_OWN_TAB",
-          "CYBER_BROWSER_SHARED_ATTESTATION",
+          "AGENT_BROWSER_PROFILE",
+          "AGENT_BROWSER_PROXY",
+          "AGENT_BROWSER_PROXY_BYPASS",
+          "HTTP_PROXY",
+          "HTTPS_PROXY",
+          "ALL_PROXY",
+          "NO_PROXY",
+          "http_proxy",
+          "https_proxy",
+          "all_proxy",
+          "no_proxy",
         ]
       : [],
   }
@@ -1572,30 +1977,6 @@ export function cyberfulOsProxyTrustEnv(
 // execution boundary and fails startup when unavailable; optional browser or
 // ZAP and Ghidra failures degrade visibly without inventing a capability that cannot run.
 // ──────────────────────────────────────────────────────────────
-const BRIEF_BROWSER_TOOLS = new Set([
-  "web_search",
-  "browser_status",
-  "browser_tabs",
-  "browser_navigate",
-  "browser_snapshot",
-  "browser_captcha_status",
-  "browser_captcha_handoff",
-  "browser_click",
-  "browser_fill",
-  "browser_type",
-  "browser_select",
-  "browser_set_input_files",
-  "browser_scroll",
-  "browser_check",
-  "browser_press",
-  "browser_wait",
-  "browser_screenshot",
-  "browser_artifact_list",
-  "browser_artifact_read",
-  "browser_network_log",
-  "browser_close",
-])
-
 const SPECIALIST_TOOL_CAPABILITIES: Readonly<Record<string, SubsystemPhase.WorkflowCapability>> = {
   firmware_lab: "firmware-lab",
   appliance_fingerprint: "firmware-lab",
@@ -1661,13 +2042,14 @@ function phaseUpstreamToolAllowed(
   const specialistCapability = SPECIALIST_TOOL_CAPABILITIES[name]
   if (specialistCapability) return policy.allows(specialistCapability)
   if (policy.phase !== "brief") return true
+  if (capability === "mitre-attack") return name === "mitre_attack"
   if (capability === "isolated-exec") return name === "shell"
-  if (capability === "browser") return BRIEF_BROWSER_TOOLS.has(name)
+  if (capability === "browser") return name === "web_search" || BRIEF_AGENT_BROWSER_TOOLS.has(name)
   return false
 }
 
 export function upstreamFailureIsBlocking(
-  key: "cyberful-os" | "browser" | "zap" | "ghidra",
+  key: "cyberful-os" | "browser" | "zap" | "ghidra" | "mitre-attack",
   env: Readonly<NodeJS.ProcessEnv> = process.env,
 ) {
   return (
@@ -1677,6 +2059,44 @@ export function upstreamFailureIsBlocking(
         env.CYBER_ZAP_REQUIRED_BY_POLICY === "1" ||
         env.CYBER_ZAP_REQUIRED_BY_RATE_LIMIT === "1"))
   )
+}
+
+// ── Fixed-Length Identity Keeps Unix Endpoints Addressable ─────────
+// agent-browser nests both namespace and session beneath its configured socket
+// directory, so embedding the full Cyberful session ID twice exceeds macOS'
+// Unix-domain socket limit before the daemon can start. A phase-, process-, and
+// profile-specific digest preserves isolation while bounding both nested names.
+// The explicit endpoint guard makes a future layout change fail at configuration
+// time instead of surfacing later as an opaque browser transport failure.
+// ─────────────────────────────────────────────────────────────────────
+export function agentBrowserRuntimeIdentity(input: {
+  readonly sessionID: SessionID
+  readonly pid: number
+  readonly profile: BrowserProfileId
+  readonly platform?: NodeJS.Platform
+}) {
+  if (!Number.isSafeInteger(input.pid) || input.pid <= 0)
+    throw new RangeError("agent-browser runtime process ID must be a positive safe integer")
+  const platform = input.platform ?? process.platform
+  const runtimeRoot = platform === "win32" ? os.tmpdir() : "/tmp"
+  const runtimeID = createHash("sha256")
+    .update(`${input.sessionID}\0${input.pid}\0${input.profile}`)
+    .digest("hex")
+    .slice(0, 16)
+  const temporaryProfileDir = path.join(runtimeRoot, `cyb-ab-${runtimeID}`)
+  const session = `s-${runtimeID}`
+  const namespace = `n-${runtimeID}`
+  const socketDirectory = path.join(temporaryProfileDir, "sockets")
+  const socketPath = path.join(
+    socketDirectory,
+    "namespaces",
+    namespace,
+    "run",
+    `${session}.${platform === "win32" ? "port" : "sock"}`,
+  )
+  if (platform !== "win32" && Buffer.byteLength(socketPath, "utf8") > AGENT_BROWSER_UNIX_SOCKET_MAX_BYTES)
+    throw new Error(`agent-browser Unix socket path exceeds ${AGENT_BROWSER_UNIX_SOCKET_MAX_BYTES} bytes`)
+  return { namespace, session, socketDirectory, socketPath, temporaryProfileDir }
 }
 
 async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) => void): Promise<{
@@ -1695,21 +2115,27 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
   const clients: Client[] = []
   const ordinaryClients = new Set<Client>()
   const managedUpstreams = new Map<string, ManagedMcpUpstream<Client>>()
-  const browserHubs = new Map<BrowserProfileId, BrowserProfileHub<Client>>()
+  const browserHubs = new Map<BrowserProfileId, AgentBrowserProfileProcess>()
+  const browserCatalog = new PhaseBrowserToolCatalog()
   const ownedProcessRoots = new Set<number>()
+  const browserStartupProfiles = [
+    BrowserProfile.SEARCH_BROWSER_PROFILE_ID,
+    ...BrowserProfile.TARGET_BROWSER_PROFILE_IDS,
+  ] as const
   const upstreamCapabilities: readonly {
-    readonly key: "cyberful-os" | "browser" | "zap" | "ghidra"
+    readonly key: "cyberful-os" | "browser" | "zap" | "ghidra" | "mitre-attack"
     readonly capability: SubsystemPhase.WorkflowCapability
     readonly browserProfile?: BrowserProfileId
   }[] = [
     { key: "cyberful-os", capability: "isolated-exec" },
-    ...BrowserProfile.BROWSER_PROFILE_IDS.map((browserProfile) => ({
+    ...browserStartupProfiles.map((browserProfile) => ({
       key: "browser" as const,
       capability: "browser" as const,
       browserProfile,
     })),
     { key: "zap", capability: "zap" },
     { key: "ghidra", capability: "ghidra" },
+    { key: "mitre-attack", capability: "mitre-attack" },
   ]
   const policy = gatewayPhasePolicy()
   const workareaPolicy = await readEngagementPolicy(
@@ -1728,72 +2154,144 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     if (!def || def.enabled === false || !Array.isArray(def.command) || def.command.length === 0) continue
     let pendingClient: Client | undefined
     let pendingTransport: StdioClientTransport | undefined
+    let pendingBrowserRuntime: AgentBrowserProfileProcess | undefined
     try {
       const [cmd, ...args] = def.command
       const env = upstreamProcessEnv(key, process.env, def.environment)
       if (key === "browser" && browserProfile !== undefined) {
         const dedicated = BrowserProfile.browserProfileDir(browserProfile)
-        const livePort = await SubsystemBrowserCdp.readCdpPort(dedicated)
+        const direct = browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID
+        const runtimeIdentity = agentBrowserRuntimeIdentity({
+          sessionID: boundSession(),
+          pid: process.pid,
+          profile: browserProfile,
+        })
+        const temporaryProfileDir = runtimeIdentity.temporaryProfileDir
         const { set, unset } = resolveBrowserUpstreamEnv({
           dedicated,
           artifactsDir: BrowserProfile.browserArtifactsDir(browserProfile),
-          direct: browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID,
-          livePort,
-          tempProfileDir: path.join(
-            os.tmpdir(),
-            `expert-browser-${boundSession()}-${process.pid}-profile-${browserProfile}`,
-          ),
+          direct,
+          restoreKey: direct ? undefined : `cyberful-profile-${browserProfile}`,
+          tempProfileDir: temporaryProfileDir,
         })
+        for (const key of HOST_RESET_AGENT_BROWSER_ENVIRONMENT) delete env[key]
         for (const [k, v] of Object.entries(set)) env[k] = v
         for (const k of unset) delete env[k]
         env.CYBER_BROWSER_PROFILE_ID = String(browserProfile)
+        env.AGENT_BROWSER_SESSION = runtimeIdentity.session
+        env.AGENT_BROWSER_NAMESPACE = runtimeIdentity.namespace
+        env.AGENT_BROWSER_SOCKET_DIR = runtimeIdentity.socketDirectory
+        env.AGENT_BROWSER_IDLE_TIMEOUT_MS = "0"
+        env.AGENT_BROWSER_HEADED = env.CYBER_BROWSER_HEADLESS === "true" ? "0" : "1"
+        const chromeExecutable = env.CYBER_BROWSER_CHROME_EXECUTABLE?.trim()
+        if (chromeExecutable) env.AGENT_BROWSER_EXECUTABLE_PATH = chromeExecutable
+        const captchaPlugin = cyberCaptchaPluginCommand()
+        if (!captchaPlugin) throw new Error("first-party agent-browser CAPTCHA plugin is unavailable")
+        env.AGENT_BROWSER_PLUGINS = JSON.stringify([
+          {
+            name: "captcha",
+            command: captchaPlugin,
+            capabilities: ["command.run", "captcha.solve"],
+          },
+        ])
 
-        // ── One Hub Per Profile, One Controller Per AgentRun ─────────
-        // Catalog discovery does not launch Chromium. The first actor action
-        // starts one profile-owning hub and one CDP controller keyed by runID.
-        // Controller teardown closes only that actor's tabs; browser_close is
-        // intercepted below and can terminate the hub only for the phase root.
+        if (!direct) {
+          const proxy = env.CYBER_BROWSER_PROXY?.trim()
+          const spki = env.CYBER_BROWSER_PROXY_CA_SPKI?.trim()
+          if (!proxy || !spki) throw new Error(`browser profile ${browserProfile} requires a ready ZAP proxy and CA`)
+          new URL(proxy)
+          env.AGENT_BROWSER_PROXY = proxy
+          env.AGENT_BROWSER_PROXY_BYPASS = "cyberful.invalid;<-loopback>"
+          env.AGENT_BROWSER_ARGS = [
+            env.AGENT_BROWSER_ARGS,
+            `--ignore-certificate-errors-spki-list=${spki}`,
+            "--disable-quic",
+          ].join(",")
+          env.HTTP_PROXY = proxy
+          env.HTTPS_PROXY = proxy
+          env.ALL_PROXY = proxy
+          env.NO_PROXY = "cyberful.invalid"
+          env.http_proxy = proxy
+          env.https_proxy = proxy
+          env.all_proxy = proxy
+          env.no_proxy = "cyberful.invalid"
+        }
+
+        // ── One Shared agent-browser Session Per Profile ─────────────
+        // Catalog discovery starts no browser. The first call starts the daemon
+        // bound to Cyberful's immutable session, namespace, profile and route;
+        // every AgentRun in this phase deliberately shares that state.
+        // The managed transport serializes calls and tears down the native MCP
+        // process tree before a later request is allowed to create a generation.
         // ──────────────────────────────────────────────────────────────
-        const profileDir = env.CYBER_BROWSER_USER_DATA_DIR
-        if (!profileDir) throw new Error(`browser profile ${browserProfile} has no user-data directory`)
         const command = [cmd, ...args] as [string, ...string[]]
         const processOptions = {
           label: `browser-${browserProfile}`,
           command,
           environment: env,
-          profileDir,
+          cleanupDirectory: temporaryProfileDir,
           ...(upstreamDiagnosticSink ? { diagnosticSink: upstreamDiagnosticSink } : {}),
           ownProcess: (pid: number) => ownedProcessRoots.add(pid),
         }
         const runtime = createBrowserProfileProcess(processOptions)
-        const tools = await browserToolCatalog(processOptions)
+        pendingBrowserRuntime = runtime
+        const tools = await browserCatalog.load(processOptions)
         browserHubs.set(browserProfile, runtime)
+        pendingBrowserRuntime = undefined
         for (const tool of tools) {
+          if (!agentBrowserToolPublished(tool.name)) continue
           if (!phaseUpstreamToolAllowed(policy, capability, tool.name)) continue
           out.push({
-            def: tool,
+            def: agentBrowserToolDefinition(tool),
             capability,
             browserProfile,
             managedRuntime: `browser-${browserProfile}`,
             call: async (toolArgs, signal, actor) => {
               if (!actor) throw new Error("browser calls require a valid host-owned AgentRun identity")
-              if (tool.name === "browser_close") {
-                if (actor.role !== "root") throw new Error("only the phase root may close a browser profile")
-                await runtime.closeProfile()
-                return text("browser closed\n")
-              }
               return runtime.call(
                 actor.runID,
                 async (client) => {
-                  const result = await client.callTool(
-                    { name: tool.name, arguments: toolArgs },
-                    CallToolResultSchema,
-                    { signal, timeout: 600_000, maxTotalTimeout: 600_000 },
-                  )
+                  const result = await client.callTool({ name: tool.name, arguments: toolArgs }, CallToolResultSchema, {
+                    signal,
+                    timeout: 600_000,
+                    maxTotalTimeout: 600_000,
+                  })
                   return CallToolResultSchema.parse(result)
                 },
                 signal,
               )
+            },
+          })
+        }
+        if (direct) {
+          out.push({
+            def: {
+              name: "web_search",
+              description:
+                "Search the public web through DuckDuckGo using the direct agent-browser search profile. The profile is host-confined to DuckDuckGo and Google; use a numbered ZAP-routed profile for an authorized target.",
+              inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  query: { type: "string", minLength: 1, maxLength: 500 },
+                  max_results: { type: "integer", minimum: 1, maximum: 20, default: 10 },
+                  safe_search: {
+                    type: "string",
+                    enum: ["strict", "moderate", "off"],
+                    default: "moderate",
+                  },
+                  timeout_ms: { type: "integer", minimum: 1, maximum: 120_000, default: 30_000 },
+                },
+                required: ["query"],
+              },
+              _meta: { "cyberful.dev/eager": true },
+            },
+            capability,
+            browserProfile,
+            managedRuntime: `browser-${browserProfile}`,
+            call: async (toolArgs, signal, actor) => {
+              if (!actor) throw new Error("web_search requires a valid host-owned AgentRun identity")
+              return runtime.call(actor.runID, (client) => webSearchWithAgentBrowser(client, toolArgs, signal), signal)
             },
           })
         }
@@ -1902,6 +2400,10 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
           throw error
         }
         if (transport.pid !== null) ownedProcessRoots.add(transport.pid)
+        if (transport.pid !== null) {
+          const signalPath = process.env.CYBERFUL_SUBSYSTEM_GATEWAY_PID_PATH?.trim()
+          if (signalPath) await registerGatewayOwnedProcess(signalPath, process.pid, transport.pid)
+        }
         clients.push(client)
         if (managedRuntime) {
           managedGeneration += 1
@@ -1920,7 +2422,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
       const managedUpstream = managedRuntime
         ? new ManagedMcpUpstream<Client>({
             label: managedRuntime,
-            cancellationGraceMs: key === "browser" ? BROWSER_CANCELLATION_SETTLE_MS : 0,
+            cancellationGraceMs: 0,
             connect: connectClient,
             probe: async (client, signal) => {
               const names = (await client.listTools(undefined, { signal })).tools.map((tool) => tool.name).sort()
@@ -1982,6 +2484,13 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
             })
         : []
       const cleanupFailures: unknown[] = []
+      await pendingBrowserRuntime?.close().catch((cleanupError) => {
+        cleanupFailures.push(cleanupError)
+        log.warn("failed to close partially initialized browser runtime", {
+          upstream: browserProfile === undefined ? key : `${key}-${browserProfile}`,
+          error: cleanupError,
+        })
+      })
       await pendingClient?.close().catch((cleanupError) => {
         cleanupFailures.push(cleanupError)
         log.warn("failed to close partially initialized MCP upstream", {
@@ -2035,9 +2544,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
     },
     releaseBrowserOwner: async (runID) => {
       const outcomes = await Promise.allSettled([...browserHubs.values()].map((hub) => hub.releaseOwner(runID)))
-      const failures = outcomes.flatMap((outcome) =>
-        outcome.status === "rejected" ? [outcome.reason as unknown] : [],
-      )
+      const failures = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason as unknown] : []))
       if (failures.length > 0) throw new AggregateError(failures, `browser owner ${runID} cleanup failed`)
     },
     close: async () => {
@@ -2120,6 +2627,7 @@ export async function createGatewayServer(opts?: {
   const policy = gatewayPhasePolicy()
   const upstreams = connected.tools.filter(
     (upstream) =>
+      agentBrowserToolPublished(upstream.def.name) &&
       phaseUpstreamToolAllowed(policy, upstream.capability, upstream.def.name) &&
       (upstream.def.name !== "web_search" || upstream.browserProfile === BrowserProfile.SEARCH_BROWSER_PROFILE_ID),
   )
@@ -2141,10 +2649,18 @@ export async function createGatewayServer(opts?: {
   const liveTargetResearch = policy.liveTargetResearch
   const workareaRoot = process.env.CYBERFUL_SUBSYSTEM_WORKAREA_ROOT?.trim()
   const testObjects = liveTargetResearch ? testObjectLifecycleFromEnvironment() : undefined
+  const hypothesisEnabled = Boolean(workareaRoot && phase && (policy.hypothesisResearch || policy.hypothesisReadOnly))
+  const noveltyContract = hypothesisEnabled ? SubsystemNovelty.parseEnvironment() : undefined
   const liveTargetTools = {
     testObjects: testObjects !== undefined,
     egress: liveTargetResearch,
-    hypothesis: Boolean(workareaRoot && phase && (policy.hypothesisResearch || policy.hypothesisReadOnly)),
+    hypothesis: hypothesisEnabled
+      ? hypothesisToolDefinition({
+          readOnly: policy.hypothesisReadOnly,
+          noveltyContract,
+          allowAttackReview: phase === "verify",
+        })
+      : false,
     engagementPolicy: Boolean(
       workareaRoot && phase === "brief" && (policy.workflow === "pentest" || policy.workflow === "bug-bounty"),
     ),
@@ -2160,13 +2676,25 @@ export async function createGatewayServer(opts?: {
   const codeGraph = localTools.some((tool) => isCodeGraphTool(tool.name)) ? createCodeGraphToolHandler() : undefined
   const handoff = handoffConfig()
   const question = questionEnabled()
-  const circuit = circuitBreakerConfig()
   const usage = new ToolUsageRecorder()
   const coverage = workareaRoot && phase ? new SurfaceCoverage(workareaRoot, phase) : undefined
-  const browserScopes = new Map<
-    string,
-    { readonly profile: BrowserProfileId; readonly origin: string; readonly pageID: string }
-  >()
+  const browserActivityScopes = new Map<BrowserProfileId, AgentBrowserActivityScope>()
+  const zapHistoryUpstream = connected.tools.find((upstream) => upstream.def.name === "zap_history_search")
+  const zapHistoryCollector =
+    workareaRoot && coverage && zapHistoryUpstream
+      ? new ZapHistoryCollector(
+          workareaRoot,
+          coverage,
+          (args, signal) => zapHistoryUpstream.call(args, signal),
+          async (_error, signal) => {
+            if (signal?.aborted || !upstreamFailureIsBlocking("zap")) return
+            await recordRequiredUpstreamFailure({
+              code: "zap_transport_failed",
+              detail: "Required ZAP MCP upstream failed during passive history collection.",
+            })
+          },
+        )
+      : undefined
   let enforcedEngagementPolicy = workareaRoot ? await readEngagementPolicy(workareaRoot) : undefined
   const hypotheses =
     workareaRoot && phase && policy.workflow && (policy.hypothesisResearch || policy.hypothesisReadOnly)
@@ -2175,7 +2703,7 @@ export async function createGatewayServer(opts?: {
           workflow: policy.workflow,
           phase,
           readOnly: policy.hypothesisReadOnly,
-          noveltyContract: SubsystemNovelty.parseEnvironment(),
+          noveltyContract,
         })
       : undefined
   const findings =
@@ -2205,6 +2733,33 @@ export async function createGatewayServer(opts?: {
   )
   let closing: Promise<void> | undefined
 
+  const syncZapHistory = async (signal?: AbortSignal) => {
+    await zapHistoryCollector?.sync(enforcedEngagementPolicy, signal)
+  }
+
+  const researchCloseoutAssessment = async (): Promise<ResearchCloseoutAssessment | undefined> => {
+    if (!coverage) return
+    await syncZapHistory()
+    try {
+      return await coverage.researchCloseoutAssessment(enforcedEngagementPolicy)
+    } catch (error) {
+      log.warn("could not assess research closeout coverage", { error })
+      await coverage.setCollectorState("degraded")
+      return {
+        version: 1,
+        webTarget: Boolean(
+          enforcedEngagementPolicy?.profiles.some(
+            (profile) => profile.readiness === "READY" && profile.scope === "IN_SCOPE" && profile.origin,
+          ),
+        ),
+        unusedProfiles: [],
+        coverageCandidateCount: 0,
+        coverageCandidateSamples: [],
+        collectorDegraded: true,
+      }
+    }
+  }
+
   // ── Gateway Close Owns Every Upstream Resource ────────────────
   // Upstream MCP processes are not guaranteed to share the owning Cyberful
   // process group, so the CLI reaper cannot prove their shutdown. The gateway closes
@@ -2216,6 +2771,12 @@ export async function createGatewayServer(opts?: {
     (closing ??= settleOperations("one or more phase gateway resources failed to close", [
       async () => {
         const failures: unknown[] = []
+        try {
+          await zapHistoryCollector?.close(enforcedEngagementPolicy)
+          await coverage?.close()
+        } catch (error) {
+          failures.push(error)
+        }
         try {
           await connected.close()
         } catch (error) {
@@ -2229,7 +2790,6 @@ export async function createGatewayServer(opts?: {
         if (failures.length > 0) throw new AggregateError(failures, "phase runtime and audit lab cleanup failed")
       },
       () => usage.close(),
-      ...(coverage ? [() => coverage.close()] : []),
       ...(hypotheses ? [() => hypotheses.close()] : []),
       ...(ghidraEvidence ? [() => ghidraEvidence.close()] : []),
       ...(codeGraph ? [() => codeGraph.close()] : []),
@@ -2242,14 +2802,10 @@ export async function createGatewayServer(opts?: {
 
   const tools = new GatewayToolRegistry()
   tools.register(VARIABLE_TOOL_DEF, (args, { sessionID }) => handleVariable(sessionID, args))
-  if (question)
-    tools.register(QUESTION_TOOL_DEF, (args, context) =>
-      handleQuestion(server, circuit, args, context.signal, context.actor),
-    )
+  if (question) tools.register(QUESTION_TOOL_DEF, (args, context) => handleQuestion(server, args, context.signal))
   if (handoff)
     tools.register(handoffToolDef(handoff), async (args) => {
-      const breakerError = circuit ? await circuitBreakerError(circuit.filePath, "handoff") : undefined
-      if (breakerError) return text({ error: breakerError }, true)
+      await syncZapHistory()
       if (!handoff.successor && codeGraph) {
         try {
           // Terminal SARIF and evidence are rendered from the validated ledger,
@@ -2346,7 +2902,7 @@ export async function createGatewayServer(opts?: {
         try {
           return text(
             await handleSourceImport(args, {
-              confirm: (request) => confirmSourceImport(server, question, circuit, request, context.signal),
+              confirm: (request) => confirmSourceImport(server, question, request, context.signal),
             }),
           )
         } catch (error) {
@@ -2528,6 +3084,7 @@ export async function createGatewayServer(opts?: {
             if (!isRecord(args.test_result) || args.test_result.match !== "POSITIVE")
               return text({ error: "hypothesis promotion requires a POSITIVE test_result" }, true)
             const hypothesisID = typeof args.id === "string" ? args.id.trim() : ""
+            const sourceHypothesis = await hypotheses.get(hypothesisID)
             const findingKey =
               typeof args.finding_key === "string" && args.finding_key.trim() ? args.finding_key.trim() : hypothesisID
             const actor = isRecord(args._cyberful_actor) ? args._cyberful_actor : undefined
@@ -2573,6 +3130,10 @@ export async function createGatewayServer(opts?: {
                 },
                 run,
               )
+            finding = await findings.setAttackAssessment(
+              { id: finding.id, assessment: sourceHypothesis.attack_assessment },
+              run,
+            )
             const evidence = Array.isArray(args.positive_evidence) ? args.positive_evidence : [args.positive_evidence]
             const hypothesis = await hypotheses.handle({
               action: "update",
@@ -2592,7 +3153,12 @@ export async function createGatewayServer(opts?: {
               hypothesis,
             })
           }
-          return text(await hypotheses.handle(args))
+          const response = await hypotheses.handle(args)
+          if (args.action === "synthesize" && args.outcome === "exhausted") {
+            const assessment = await researchCloseoutAssessment()
+            return text(response, false, assessment ? { "cyberful.dev/research-closeout": assessment } : undefined)
+          }
+          return text(response)
         } catch (error) {
           if (error instanceof HypothesisRegistryError) return text({ error: error.toolError(args) }, true)
           return text(
@@ -2768,7 +3334,7 @@ export async function createGatewayServer(opts?: {
       }
     }
     const candidates = byName.get(name)
-    if (!candidates) return text({ error: `unknown tool ${name}` })
+    if (!candidates) return text({ error: `unknown tool ${name}` }, true)
     const resolvedArgs = resolveArgs(sessionID, name, args)
     let selected: ReturnType<typeof selectBrowserProfileUpstream>
     try {
@@ -2776,34 +3342,36 @@ export async function createGatewayServer(opts?: {
     } catch (error) {
       return text({ error: error instanceof Error ? error.message : String(error) }, true)
     }
-    const breakerError = circuit
-      ? await circuitBreakerError(
-          circuit.filePath,
-          name,
-          browserScope(name, selected.args, selected.upstream.browserProfile, browserScopes, actor),
-        )
-      : undefined
-    if (breakerError) return text({ error: breakerError }, true)
     const upstream = selected.upstream
     if (upstream.browserProfile !== undefined && !actor)
       return text({ error: "browser calls require a valid host-owned AgentRun identity" }, true)
-    if (name === "browser_close" && actor?.role !== "root")
-      return text({ error: "only the phase root may close a browser profile" }, true)
+    const browserPolicyError = agentBrowserPolicyError(name, selected.args, upstream.browserProfile)
+    if (browserPolicyError) return text({ error: browserPolicyError }, true)
     const adjusted = adjustUpstreamArguments(upstream.def, selected.args)
     try {
+      const screenshotPath = name === "agent_browser_screenshot" ? adjusted.args.path : undefined
+      if (workareaRoot && typeof screenshotPath === "string" && !path.isAbsolute(screenshotPath)) {
+        const parent = path.dirname(screenshotPath)
+        if (parent !== ".") await ensureWorkareaDirectory(workareaRoot, parent)
+      }
+      const rawResult = await upstream.call(adjusted.args, context.signal, actor)
+      const projectedResult = name === "agent_browser_skills_get" ? projectAgentBrowserSkillsResult(rawResult) : rawResult
       const result = annotateBrowserProfile(
-        annotateAdjustments(await upstream.call(adjusted.args, context.signal, actor), adjusted.adjustments),
+        annotateAgentBrowserActivity(
+          annotateAdjustments(projectedResult, adjusted.adjustments),
+          name,
+          adjusted.args,
+          upstream.browserProfile,
+          upstream.browserProfile === undefined ? undefined : browserActivityScopes.get(upstream.browserProfile),
+        ),
         upstream.browserProfile,
       )
-      const observedBrowserAction = browserAction(result)
-      if (actor && observedBrowserAction) {
-        browserScopes.set(`${actor.runID}\u0000${observedBrowserAction.profile}`, {
-          profile: observedBrowserAction.profile,
-          origin: observedBrowserAction.origin,
-          pageID: observedBrowserAction.pageID,
+      const activity = browserActivity(result)
+      if (activity)
+        browserActivityScopes.set(activity.profile, {
+          tabID: activity.tabID,
+          ...(activity.origin ? { origin: activity.origin } : {}),
         })
-      }
-      if (circuit) await observeCaptchaCircuit(circuit, name, result, actor)
       let redacted = redactResult(sessionID, result)
       if (upstream.capability === "ghidra" && ghidraEvidence) {
         try {
@@ -2827,11 +3395,14 @@ export async function createGatewayServer(opts?: {
         }
       }
       const observedEgress = browserProfileEgress(name, resolvedArgs, result, upstream.browserProfile)
-      const browserStatus = browserAction(result)?.status
-      const egress =
-        observedEgress && observedEgress.egress_http_status === undefined && browserStatus !== undefined
-          ? { ...observedEgress, egress_http_status: browserStatus }
-          : observedEgress
+      const egress = observedEgress
+      if (
+        BrowserProfile.isTargetBrowserProfileId(upstream.browserProfile) ||
+        name === "zap_http_request" ||
+        name === "zap_history_replay" ||
+        name === "zap_api_call"
+      )
+        await syncZapHistory()
       await coverage?.observe(result, egress, actor?.runID)
       await usage
         .record({
@@ -2850,6 +3421,13 @@ export async function createGatewayServer(opts?: {
         .catch((error) => log.warn("could not record completed phase tool call", { tool: name, error }))
       return redacted
     } catch (error) {
+      if (
+        BrowserProfile.isTargetBrowserProfileId(upstream.browserProfile) ||
+        name === "zap_http_request" ||
+        name === "zap_history_replay" ||
+        name === "zap_api_call"
+      )
+        await syncZapHistory()
       const requiredUpstream =
         upstream.capability === "zap"
           ? ("zap" as const)
@@ -3021,26 +3599,51 @@ export async function createGatewayServer(opts?: {
 export async function writeGatewayPidSignal(signalPath: string, pid = process.pid): Promise<void> {
   if (!path.isAbsolute(signalPath)) throw new Error("expert-gateway PID signal path must be absolute")
   if (!Number.isInteger(pid) || pid <= 1) throw new Error("expert-gateway PID must identify a real process")
-  await writeFile(signalPath, JSON.stringify({ pid }), { flag: "wx" })
+  const identity = (await processSnapshot()).find((candidate) => candidate.pid === pid)
+  if (!identity) throw new Error("expert-gateway PID identity is unavailable")
+  await writeFile(signalPath, `${JSON.stringify({ version: 2, pid, processes: [identity] })}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  })
+}
+
+async function registerGatewayOwnedProcess(signalPath: string, gatewayPID: number, upstreamPID: number) {
+  const captured = ownedProcessTree(await processSnapshot(), [upstreamPID])
+  if (captured.length === 0) throw new Error(`could not capture MCP upstream process ${upstreamPID}`)
+  await appendFile(signalPath, `${JSON.stringify({ owner: gatewayPID, processes: captured })}\n`, { mode: 0o600 })
 }
 
 export async function claimGatewayPidSignal(
   signalPath: string,
   pid = process.pid,
 ): Promise<{ owner: boolean; pid: number }> {
-  try {
-    await writeGatewayPidSignal(signalPath, pid)
-    return { owner: true, pid }
-  } catch (error) {
-    if (nodeErrorCode(error) !== "EEXIST") throw error
+  if (!path.isAbsolute(signalPath)) throw new Error("expert-gateway PID signal path must be absolute")
+  const existing = await readFile(signalPath, "utf8").catch((error) => {
+    if (nodeErrorCode(error) === "ENOENT") return undefined
+    throw error
+  })
+  if (existing === undefined) {
+    try {
+      await writeGatewayPidSignal(signalPath, pid)
+      return { owner: true, pid }
+    } catch (error) {
+      if (nodeErrorCode(error) !== "EEXIST") throw error
+    }
   }
   let owner: unknown
   try {
-    owner = JSON.parse(await readFile(signalPath, "utf8"))
+    const header = (existing ?? (await readFile(signalPath, "utf8"))).split("\n", 1)[0]
+    owner = JSON.parse(header ?? "")
   } catch (error) {
     throw new Error("expert-gateway PID signal is unreadable", { cause: error })
   }
-  if (!isRecord(owner) || !Number.isInteger(owner.pid) || Number(owner.pid) <= 1)
+  if (
+    !isRecord(owner) ||
+    owner.version !== 2 ||
+    !Number.isInteger(owner.pid) ||
+    Number(owner.pid) <= 1 ||
+    !Array.isArray(owner.processes)
+  )
     throw new Error("expert-gateway PID signal does not identify its root owner")
   const ownerPID = Number(owner.pid)
   return { owner: false, pid: ownerPID }

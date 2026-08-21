@@ -1,220 +1,521 @@
-// ── Browser Hub And Controller Processes ────────────────────────────
-// Launches the profile-owning Chromium hub, validates its readiness record and
-// loopback CDP endpoint, then connects AgentRun-scoped MCP controllers with the
-// hub's immutable proxy attestation. No controller can terminate the hub.
-// → cyberful/src/subsystem/gateway/browser-profile-hub.ts — owns lifecycle policy.
-// → mcps/browser/browser_mcp.mjs — implements EAGER and OWN_TAB modes.
+// ── Shared agent-browser Profile Process ───────────────────────────
+// Owns one restartable agent-browser MCP transport and daemon session per
+// Cyberful profile, plus complete paginated catalog discovery and web search.
+// → cyberful/src/subsystem/gateway/server.ts — binds profile and ZAP policy.
 // @docs/runtimes/browser.md
-// ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
 
+import net from "node:net"
+import fs from "node:fs"
+import path from "node:path"
+import { rm } from "node:fs/promises"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import type { Tool } from "@modelcontextprotocol/sdk/types.js"
-import { cdpPortListening, readCdpPort } from "../browser-cdp"
-import { BrowserProfileHub } from "./browser-profile-hub"
+import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { CallToolResultSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js"
+import { Process } from "@/util/process"
+import { ManagedMcpUpstream, type ManagedMcpUpstreamStatus } from "./restartable-browser-upstream"
 
-const HUB_READY_TIMEOUT_MS = 30_000
-const HUB_EXIT_GRACE_MS = 2_000
-const MAX_READY_LINE_BYTES = 64 * 1024
+const LIST_TIMEOUT_MS = 20_000
+const TOOL_TIMEOUT_MS = 600_000
+const ZAP_PROBE_TIMEOUT_MS = 5_000
+const CANCELLATION_SETTLE_MS = 2_250
+const DAEMON_CLOSE_TIMEOUT_MS = 10_000
+const DAEMON_RELEASE_TIMEOUT_MS = 2_000
+const PROCESS_DIAGNOSTIC_BYTES = 8 * 1024
 
-interface BrowserProfileProcessOptions {
+export interface BrowserProfileProcessOptions {
   readonly label: string
   readonly command: readonly [string, ...string[]]
   readonly environment: Readonly<Record<string, string>>
-  readonly profileDir: string
+  readonly cleanupDirectory?: string
   readonly diagnosticSink?: (text: string) => void
   readonly ownProcess: (pid: number) => void
 }
 
-interface BrowserHubReady {
-  readonly type: "cyberful-browser-ready"
-  readonly version: 1
-  readonly proxy: {
-    readonly configured: boolean
-    readonly mode: "direct" | "zap" | "direct-fallback"
-    readonly warning: string | null
+interface BrowserClientConnection {
+  readonly client: Client
+  readonly diagnostics: BrowserProcessDiagnostics
+  readonly pid?: number
+}
+
+class BrowserProcessDiagnostics {
+  #text = ""
+
+  append(chunk: string) {
+    this.#text += chunk
+    while (Buffer.byteLength(this.#text, "utf8") > PROCESS_DIAGNOSTIC_BYTES)
+      this.#text = this.#text.slice(Math.max(1, Math.floor(this.#text.length / 8)))
   }
-  readonly runtime: {
-    readonly requested_channel: string | null
-    readonly resolved_channel: string | null
-    readonly executable_path: string | null
-    readonly version: string | null
-    readonly driver: string | null
+
+  summary() {
+    return this.#text.replace(/\s+/g, " ").trim()
   }
+}
+
+function browserProcessError(
+  options: BrowserProfileProcessOptions,
+  connection: Pick<BrowserClientConnection, "diagnostics" | "pid">,
+  cause: unknown,
+) {
+  if (cause instanceof BrowserProfileProcessError) return cause
+  const detail = cause instanceof Error ? cause.message : String(cause)
+  const diagnostics = connection.diagnostics.summary()
+  const command = options.command.map((part) => JSON.stringify(part)).join(" ")
+  return new BrowserProfileProcessError(
+    `${options.label} agent-browser MCP failed${connection.pid === undefined ? "" : ` (pid ${connection.pid})`}: ${detail}; command=${command}${diagnostics ? `; stderr=${diagnostics}` : "; stderr=<empty>"}`,
+    { cause },
+  )
+}
+
+export class BrowserProfileProcessError extends Error {
+  readonly code = "BROWSER_MCP_PROCESS_FAILED"
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "BrowserProfileProcessError"
+  }
+}
+
+class OwnedStdioClientTransport extends StdioClientTransport {
+  #ownedPID?: number
+
+  constructor(
+    parameters: StdioServerParameters,
+    private readonly ownProcess: (pid: number) => void,
+  ) {
+    super(parameters)
+  }
+
+  override async start() {
+    await super.start()
+    const pid = this.pid
+    if (pid === null) throw new Error("agent-browser MCP transport started without a process id")
+    this.#ownedPID = pid
+    this.ownProcess(pid)
+  }
+
+  ownedPID() {
+    return this.#ownedPID
+  }
+}
+
+async function waitForDaemonRelease(environment: Readonly<Record<string, string>>): Promise<void> {
+  const root = environment.AGENT_BROWSER_SOCKET_DIR?.trim()
+  const session = environment.AGENT_BROWSER_SESSION?.trim()
+  if (!root || !session) {
+    await Bun.sleep(100)
+    return
+  }
+  const namespace = environment.AGENT_BROWSER_NAMESPACE?.trim()
+  const directory = namespace ? path.join(root, "namespaces", namespace, "run") : root
+  const endpoint = path.join(directory, `${session}.${process.platform === "win32" ? "port" : "sock"}`)
+  const deadline = Date.now() + DAEMON_RELEASE_TIMEOUT_MS
+  while (fs.existsSync(endpoint) && Date.now() < deadline) await Bun.sleep(25)
+  // The daemon removes its endpoint just before process exit. One quiet
+  // interval prevents a replacement MCP from observing that dying daemon
+  // as ready and then losing the socket on its first browser command.
+  await Bun.sleep(100)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function parseHubReady(line: string): BrowserHubReady {
-  const value: unknown = JSON.parse(line)
-  if (!isRecord(value) || value.type !== "cyberful-browser-ready" || value.version !== 1)
-    throw new Error("browser hub emitted an invalid readiness envelope")
-  const proxy = value.proxy
-  const runtime = value.runtime
-  if (!isRecord(proxy) || !isRecord(runtime)) throw new Error("browser hub readiness is incomplete")
-  if (typeof proxy.configured !== "boolean" || !["direct", "zap", "direct-fallback"].includes(String(proxy.mode)))
-    throw new Error("browser hub readiness has an invalid proxy attestation")
-  if (proxy.warning !== null && typeof proxy.warning !== "string")
-    throw new Error("browser hub readiness has an invalid proxy warning")
-  for (const key of ["requested_channel", "resolved_channel", "executable_path", "version", "driver"] as const) {
-    if (runtime[key] !== null && typeof runtime[key] !== "string")
-      throw new Error(`browser hub readiness has invalid runtime.${key}`)
-  }
-  return value as unknown as BrowserHubReady
+function resultData(result: CallToolResult): Record<string, unknown> | undefined {
+  const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined
+  const response = isRecord(structured?.response) ? structured.response : undefined
+  return isRecord(response?.data) ? response.data : undefined
 }
 
-async function firstLine(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
-  let body = ""
-  const deadline = AbortSignal.timeout(HUB_READY_TIMEOUT_MS)
-  const aborted = new Promise<never>((_resolve, reject) => {
-    deadline.addEventListener(
-      "abort",
-      () => reject(new DOMException("browser hub readiness timed out", "TimeoutError")),
-      { once: true },
-    )
+async function assertZapProxyReachable(environment: Readonly<Record<string, string>>): Promise<void> {
+  const proxy = environment.AGENT_BROWSER_PROXY?.trim()
+  if (!proxy) return
+  const spki = environment.CYBER_BROWSER_PROXY_CA_SPKI?.trim()
+  if (!spki) throw new Error("target browser requires the engagement-owned ZAP CA SPKI")
+  const url = new URL(proxy)
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new Error("target browser ZAP proxy must use http or https")
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80))
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.createConnection({ host: url.hostname, port })
+    let settled = false
+    const timeout = setTimeout(() => {
+      finish(new Error(`target browser ZAP proxy did not accept a connection within ${ZAP_PROBE_TIMEOUT_MS}ms`))
+    }, ZAP_PROBE_TIMEOUT_MS)
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+    socket.once("connect", () => finish())
+    socket.once("error", (error) => finish(new Error(`target browser ZAP proxy is unreachable: ${error.message}`)))
   })
-  try {
-    while (true) {
-      const result = await Promise.race([reader.read(), aborted])
-      if (result.done) throw new Error("browser hub exited before readiness")
-      body += decoder.decode(result.value, { stream: true })
-      if (Buffer.byteLength(body) > MAX_READY_LINE_BYTES) throw new Error("browser hub readiness line is oversized")
-      const newline = body.indexOf("\n")
-      if (newline >= 0) return body.slice(0, newline).trim()
-    }
-  } finally {
-    reader.releaseLock()
-  }
 }
 
-async function drainDiagnostics(stream: ReadableStream<Uint8Array>, sink?: (text: string) => void) {
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) return
-      const text = decoder.decode(value, { stream: true })
-      if (!text) continue
-      if (sink) sink(text)
-      else process.stderr.write(text)
-    }
-  } catch {
-    // Process shutdown can close the pipe while a diagnostic read is pending.
-  } finally {
-    reader.releaseLock()
-  }
-}
-
-async function stopProcess(processHandle: ReturnType<typeof Bun.spawn>): Promise<void> {
-  if (processHandle.exitCode !== null) return
-  processHandle.kill("SIGTERM")
-  let exited = false
-  await Promise.race([
-    processHandle.exited.then(() => {
-      exited = true
-    }),
-    new Promise<void>((resolve) => setTimeout(resolve, HUB_EXIT_GRACE_MS)),
-  ])
-  if (!exited && processHandle.exitCode === null) {
-    processHandle.kill("SIGKILL")
-    await processHandle.exited
-  }
-}
-
-function controllerEnvironment(base: Readonly<Record<string, string>>, endpoint: string, attestation: string) {
-  const environment = { ...base }
-  delete environment.CYBER_BROWSER_EAGER
-  environment.CYBER_BROWSER_CDP_ENDPOINT = endpoint
-  environment.CYBER_BROWSER_OWN_TAB = "1"
-  environment.CYBER_BROWSER_SHARED_ATTESTATION = attestation
-  return environment
-}
-
-async function connectClient(
-  options: BrowserProfileProcessOptions,
-  environment: Readonly<Record<string, string>>,
-  onClose: () => void = () => undefined,
-) {
+async function connectClient(options: BrowserProfileProcessOptions, onClose: () => void = () => undefined) {
+  await assertZapProxyReachable(options.environment)
   const [command, ...args] = options.command
-  const transport = new StdioClientTransport({ command, args, env: { ...environment }, stderr: "pipe" })
-  if (options.diagnosticSink) {
-    transport.stderr?.on("data", (chunk: Buffer) => options.diagnosticSink?.(chunk.toString("utf8")))
-  }
-  const client = new Client({ name: "expert-gateway", version: "0.1.0" })
+  const diagnostics = new BrowserProcessDiagnostics()
+  const transport = new OwnedStdioClientTransport(
+    {
+      command,
+      args,
+      env: { ...options.environment },
+      stderr: "pipe",
+    },
+    options.ownProcess,
+  )
+  transport.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf8")
+    diagnostics.append(text)
+    options.diagnosticSink?.(text)
+  })
+  const client = new Client({ name: "cyberful-browser-gateway", version: "0.1.0" })
   client.onclose = onClose
-  await client.connect(transport)
-  if (transport.pid !== null) options.ownProcess(transport.pid)
-  return { client, close: () => client.close() }
+  try {
+    await client.connect(transport)
+    const ownedPID = transport.ownedPID()
+    return {
+      value: { client, diagnostics, ...(ownedPID === undefined ? {} : { pid: ownedPID }) },
+      close: () => client.close(),
+    }
+  } catch (error) {
+    const ownedPID = transport.ownedPID()
+    await client.close().catch(() => undefined)
+    await Bun.sleep(0)
+    throw browserProcessError(options, { diagnostics, ...(ownedPID === undefined ? {} : { pid: ownedPID }) }, error)
+  }
+}
+
+export async function listAllBrowserTools(client: Client): Promise<readonly Tool[]> {
+  const tools: Tool[] = []
+  const names = new Set<string>()
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+  let pages = 0
+  do {
+    pages += 1
+    if (pages > 256) throw new Error("agent-browser tool pagination exceeded 256 pages")
+    const page = await client.listTools(cursor ? { cursor } : undefined, {
+      timeout: LIST_TIMEOUT_MS,
+      maxTotalTimeout: LIST_TIMEOUT_MS,
+    })
+    if (!Array.isArray(page.tools)) throw new Error("agent-browser returned a malformed tool page")
+    for (const tool of page.tools) {
+      if (typeof tool.name !== "string" || tool.name.length === 0 || !isRecord(tool.inputSchema))
+        throw new Error("agent-browser returned a malformed tool definition")
+      if (names.has(tool.name)) throw new Error(`agent-browser returned duplicate tool '${tool.name}'`)
+      names.add(tool.name)
+      tools.push(tool)
+      if (tools.length > 10_000) throw new Error("agent-browser tool catalog exceeded 10000 definitions")
+    }
+    cursor = page.nextCursor
+    if (cursor && cursors.has(cursor)) throw new Error("agent-browser tool pagination returned a repeated cursor")
+    if (cursor) cursors.add(cursor)
+  } while (cursor)
+  if (!tools.some((tool) => tool.name === "agent_browser_tools_profiles"))
+    throw new Error("agent-browser full catalog is missing agent_browser_tools_profiles")
+  return tools
 }
 
 export async function browserToolCatalog(options: BrowserProfileProcessOptions): Promise<readonly Tool[]> {
-  const environment = { ...options.environment }
-  delete environment.CYBER_BROWSER_EAGER
-  delete environment.CYBER_BROWSER_CDP_ENDPOINT
-  delete environment.CYBER_BROWSER_OWN_TAB
-  delete environment.CYBER_BROWSER_SHARED_ATTESTATION
-  const connection = await connectClient(options, environment)
+  const connection = await connectClient(options)
   try {
-    return (await connection.client.listTools()).tools
+    return await listAllBrowserTools(connection.value.client)
+  } catch (error) {
+    throw browserProcessError(options, connection.value, error)
   } finally {
     await connection.close()
   }
 }
 
-export function createBrowserProfileProcess(options: BrowserProfileProcessOptions): BrowserProfileHub<Client> {
-  return new BrowserProfileHub<Client>({
-    label: options.label,
-    cancellationGraceMs: 2_250,
-    probeTimeoutMs: 5_000,
-    connectHub: async () => {
-      const [command, ...args] = options.command
-      const environment: Record<string, string> = { ...options.environment, CYBER_BROWSER_EAGER: "1" }
-      delete environment.CYBER_BROWSER_CDP_ENDPOINT
-      delete environment.CYBER_BROWSER_OWN_TAB
-      delete environment.CYBER_BROWSER_SHARED_ATTESTATION
-      const processHandle = Bun.spawn([command, ...args], {
-        env: environment,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      options.ownProcess(processHandle.pid)
-      void drainDiagnostics(processHandle.stderr, options.diagnosticSink)
+// ── One Catalog Defines Every Phase Browser Profile ─────────────
+// agent-browser schemas are a property of the pinned binary and plugin set,
+// not of a profile's cookies, proxy, or daemon identity. One phase owner keeps
+// the first discovery promise, including a bounded failure, so startup never
+// creates six short-lived MCP processes for the same immutable definitions.
+// The direct search profile is supplied first by the gateway so catalog reads
+// cannot be blocked by target ZAP readiness.
+//
+// @docs/runtimes/browser.md
+// ─────────────────────────────────────────────────────────────────
+export class PhaseBrowserToolCatalog {
+  #catalog?: Promise<readonly Tool[]>
+
+  load(options: BrowserProfileProcessOptions) {
+    if (!this.#catalog) this.#catalog = browserToolCatalog(options)
+    return this.#catalog
+  }
+}
+
+async function callAgentBrowser(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<CallToolResult> {
+  const result = await client.callTool({ name, arguments: args }, CallToolResultSchema, {
+    signal,
+    timeout: TOOL_TIMEOUT_MS,
+    maxTotalTimeout: TOOL_TIMEOUT_MS,
+  })
+  return CallToolResultSchema.parse(result)
+}
+
+function activeTab(result: CallToolResult): string | undefined {
+  const tabs = resultData(result)?.tabs
+  if (!Array.isArray(tabs)) return
+  const active = tabs.find((tab) => isRecord(tab) && tab.active === true)
+  return isRecord(active) && typeof active.tabId === "string" ? active.tabId : undefined
+}
+
+function duckDuckGoUrl(query: string, safeSearch: string, attempt: number): string {
+  if (query.length < 1 || query.length > 500) throw new Error("web_search query must contain 1-500 characters")
+  const parameter = { strict: "1", moderate: "-1", off: "-2" }[safeSearch]
+  if (parameter === undefined) throw new Error("web_search safe_search must be strict, moderate, or off")
+  const url = new URL(attempt === 0 ? "https://html.duckduckgo.com/html/" : "https://lite.duckduckgo.com/lite/")
+  url.searchParams.set("q", query)
+  url.searchParams.set("kp", parameter)
+  return url.toString()
+}
+
+const SEARCH_EXTRACTOR = String.raw`(() => {
+  const compact = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+  const destination = (href) => {
+    if (!href) return null;
+    try {
+      let url = new URL(href, location.href);
+      if ((url.hostname === "duckduckgo.com" || url.hostname.endsWith(".duckduckgo.com")) && url.pathname === "/l/") {
+        const wrapped = url.searchParams.get("uddg");
+        if (wrapped) url = new URL(wrapped);
+      }
+      return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+    } catch { return null; }
+  };
+  const nodes = [...document.querySelectorAll(".result, article[data-testid='result'], .web-result")];
+  const results = nodes.flatMap((node) => {
+    const link = node.querySelector("a.result__a, a.result-link, h2 a, a[data-testid='result-title-a']");
+    const url = destination(link?.getAttribute("href"));
+    const title = compact(link?.textContent);
+    if (!url || !title) return [];
+    const badge = compact(node.querySelector(".badge--ad, .result__badge, [data-testid='ad-badge']")?.textContent).toLowerCase();
+    return [{
+      kind: String(node.className).toLowerCase().includes("result--ad") || badge === "ad" ? "sponsored" : "organic",
+      title,
+      url,
+      display_url: compact(node.querySelector(".result__url, .result__extras__url, [data-testid='result-extras-url-link']")?.textContent) || new URL(url).host,
+      snippet: compact(node.querySelector(".result__snippet, .result-snippet, [data-result='snippet'], [data-testid='result-snippet']")?.textContent),
+    }];
+  });
+  const text = compact(document.body?.innerText);
+  if (!results.length && /verify (?:you are|that you are) human|human verification|automated requests|unusual traffic|captcha/i.test(text)) throw new Error("DuckDuckGo presented a visible human challenge");
+  if (!results.length && !/no results|no more results|did not match any documents/i.test(text)) throw new Error("DuckDuckGo result layout was not recognized");
+  return results;
+})()`
+
+function toolFailure(result: CallToolResult): Error {
+  const content = result.content.find((entry) => entry.type === "text")
+  const detail = content?.type === "text" ? content.text.replace(/\s+/g, " ").trim() : "agent-browser call failed"
+  return new Error(detail.slice(0, 512))
+}
+
+function searchError(error: unknown): CallToolResult {
+  const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 512)
+  return {
+    content: [
+      { type: "text", text: `web_search failed after bounded internal attempts: ${detail || "unknown error"}` },
+    ],
+    structuredContent: { error: detail || "unknown error", retryable: false },
+    isError: true,
+  }
+}
+
+function searchResults(value: unknown, maxResults: number): readonly Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw new Error("web_search received an invalid extraction result")
+  return value.slice(0, maxResults).map((item, index) => {
+    if (!isRecord(item) || typeof item.title !== "string" || typeof item.url !== "string")
+      throw new Error("web_search received a malformed result record")
+    return { rank: index + 1, ...item }
+  })
+}
+
+export async function webSearchWithAgentBrowser(
+  client: Client,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<CallToolResult> {
+  const query = typeof args.query === "string" ? args.query.trim() : ""
+  const maxResults = args.max_results === undefined ? 10 : Number(args.max_results)
+  if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 20)
+    throw new Error("web_search max_results must be an integer from 1 through 20")
+  const safeSearch = typeof args.safe_search === "string" ? args.safe_search : "moderate"
+  const timeoutMs = args.timeout_ms === undefined ? 30_000 : Number(args.timeout_ms)
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
+    throw new Error("web_search timeout_ms must be an integer from 1 through 120000")
+
+  const listed = await callAgentBrowser(client, "agent_browser_tab_list", { timeoutMs }, signal).catch(() => undefined)
+  const previousTab = listed ? activeTab(listed) : undefined
+  const label = `cyberful-search-${crypto.randomUUID()}`
+  let temporaryTab: string | undefined
+  try {
+    const opened = await callAgentBrowser(
+      client,
+      "agent_browser_tab_new",
+      { url: duckDuckGoUrl(query, safeSearch, 0), label, timeoutMs },
+      signal,
+    )
+    if (opened.isError) throw toolFailure(opened)
+    const openedData = resultData(opened)
+    temporaryTab = typeof openedData?.tabId === "string" ? openedData.tabId : label
+    let failure: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const ready = parseHubReady(await firstLine(processHandle.stdout))
-        const port = await readCdpPort(options.profileDir)
-        if (!port) throw new Error(`${options.label} hub did not publish a live loopback CDP port`)
-        let closed = false
+        if (attempt > 0) {
+          const navigated = await callAgentBrowser(
+            client,
+            "agent_browser_open",
+            { url: duckDuckGoUrl(query, safeSearch, attempt), timeoutMs },
+            signal,
+          )
+          if (navigated.isError) throw toolFailure(navigated)
+        }
+        const evaluated = await callAgentBrowser(
+          client,
+          "agent_browser_eval",
+          { script: SEARCH_EXTRACTOR, timeoutMs },
+          signal,
+        )
+        if (evaluated.isError) throw toolFailure(evaluated)
+        const extracted = resultData(evaluated)?.result
+        const results = searchResults(extracted, maxResults)
+        const response = {
+          engine: "duckduckgo",
+          profile: "search",
+          query,
+          count: results.length,
+          truncated: Array.isArray(extracted) && extracted.length > maxResults,
+          results,
+        }
         return {
-          endpoint: `http://127.0.0.1:${port}`,
-          attestation: JSON.stringify(ready),
-          alive: async () => !closed && processHandle.exitCode === null && cdpPortListening(port),
-          close: async () => {
-            if (closed) return
-            closed = true
-            await stopProcess(processHandle)
-          },
+          content: [{ type: "text", text: `${JSON.stringify(response, null, 2)}\n` }],
+          structuredContent: response,
+          isError: false,
         }
       } catch (error) {
-        await stopProcess(processHandle).catch(() => undefined)
+        failure = error
+      }
+    }
+    return searchError(failure)
+  } catch (error) {
+    return searchError(error)
+  } finally {
+    if (temporaryTab)
+      await callAgentBrowser(client, "agent_browser_tab_close", { tab: temporaryTab, timeoutMs }, undefined).catch(
+        () => undefined,
+      )
+    if (previousTab)
+      await callAgentBrowser(client, "agent_browser_tab_switch", { tab: previousTab, timeoutMs }, undefined).catch(
+        () => undefined,
+      )
+  }
+}
+
+export class AgentBrowserProfileProcess {
+  private readonly upstream: ManagedMcpUpstream<BrowserClientConnection>
+  private queue: Promise<void> = Promise.resolve()
+
+  constructor(private readonly options: BrowserProfileProcessOptions) {
+    this.upstream = new ManagedMcpUpstream<BrowserClientConnection>({
+      label: options.label,
+      cancellationGraceMs: CANCELLATION_SETTLE_MS,
+      connect: (onClose) => connectClient(options, onClose),
+      probe: async (connection, signal) => {
+        try {
+          await connection.client.listTools(undefined, {
+            signal,
+            timeout: LIST_TIMEOUT_MS,
+            maxTotalTimeout: LIST_TIMEOUT_MS,
+          })
+        } catch (error) {
+          throw browserProcessError(options, connection, error)
+        }
+      },
+      probeTimeoutMs: ZAP_PROBE_TIMEOUT_MS,
+    })
+  }
+
+  status(): ManagedMcpUpstreamStatus {
+    return this.upstream.status()
+  }
+
+  health(signal?: AbortSignal): Promise<ManagedMcpUpstreamStatus> {
+    return this.upstream.health(signal)
+  }
+
+  call<R>(_runID: string, operation: (client: Client) => Promise<R>, signal?: AbortSignal): Promise<R> {
+    const queued = this.queue.then(async () => {
+      signal?.throwIfAborted()
+      try {
+        return await this.upstream.call(async (connection) => {
+          try {
+            return await operation(connection.client)
+          } catch (error) {
+            throw browserProcessError(this.options, connection, error)
+          }
+        }, signal)
+      } catch (error) {
+        if (signal?.aborted) {
+          await this.upstream.reset()
+          await this.closeDaemon()
+        }
         throw error
       }
-    },
-    connectController: async (hub, onClose) => {
-      const connection = await connectClient(
-        options,
-        controllerEnvironment(options.environment, hub.endpoint, hub.attestation),
-        onClose,
-      )
-      return { value: connection.client, close: connection.close }
-    },
-    probeController: async (client, signal) => {
-      await client.listTools(undefined, { signal })
-    },
-  })
+    })
+    this.queue = queued.then(
+      () => undefined,
+      () => undefined,
+    )
+    return queued
+  }
+
+  releaseOwner(_runID: string): Promise<void> {
+    return Promise.resolve()
+  }
+
+  async closeProfile(): Promise<void> {
+    await this.queue
+    await this.upstream.reset()
+    await this.closeDaemon()
+  }
+
+  async close(): Promise<void> {
+    await this.queue
+    await this.upstream.reset()
+    await this.closeDaemon()
+    await this.upstream.close()
+    if (this.options.cleanupDirectory)
+      await rm(this.options.cleanupDirectory, { recursive: true, force: true }).catch(() => undefined)
+  }
+
+  private async closeDaemon(): Promise<void> {
+    if (this.upstream.status().generation === 0) return
+    const [command, ...mcpArgs] = this.options.command
+    const mcpIndex = mcpArgs.indexOf("mcp")
+    const args = mcpIndex >= 0 ? [...mcpArgs.slice(0, mcpIndex), "close"] : ["close"]
+    await Process.run([command, ...args], {
+      abort: AbortSignal.timeout(DAEMON_CLOSE_TIMEOUT_MS),
+      env: { ...this.options.environment },
+      maxOutputBytes: 64 * 1024,
+      nothrow: true,
+      timeout: 1_000,
+    }).catch(() => undefined)
+    await waitForDaemonRelease(this.options.environment)
+  }
+}
+
+export function createBrowserProfileProcess(options: BrowserProfileProcessOptions): AgentBrowserProfileProcess {
+  return new AgentBrowserProfileProcess(options)
 }
