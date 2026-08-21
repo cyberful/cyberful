@@ -12,6 +12,7 @@ ARG BUN_VERSION=1.3.14
 ARG ZAP_BASE_IMAGE=ghcr.io/zaproxy/zaproxy:stable@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
 ARG BUN_BASE_IMAGE=oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0
 ARG KALI_BASE_IMAGE=kalilinux/kali-rolling@sha256:82c8e267c5b46031c6671f7dc8a30b240dabdc7d129e07ac9290ec06dac9b93c
+ARG PROWLER_PYTHON_BASE_IMAGE=python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
 FROM ${ZAP_BASE_IMAGE} AS zap-runtime
 
 ARG ZAP_VERSION
@@ -67,6 +68,8 @@ ADD --checksum=sha256:f2c3035976531130494b5b9dfc02ca0ebd7e0388f740f68b6d4e775098
 # allowing every validated runtime identity to load the exact pinned catalog.
 # ───────────────────────────────────────────────────────────────────────────
 RUN test -s "/zap/zap-${ZAP_VERSION}.jar" \
+  && sed -i 's/^SET FILES CACHE SIZE 32000$/SET FILES CACHE SIZE 262144/' /zap/db/zapdb.script \
+  && grep -qx 'SET FILES CACHE SIZE 262144' /zap/db/zapdb.script \
   && chmod 0444 /zap/plugin/*.zap \
   && chown -R zap:zap /zap/plugin
 
@@ -80,6 +83,8 @@ COPY zap/zap_bridge.mjs zap/zap_history.mjs zap/zap_history_replay.mjs zap/zap_h
   zap/zap_oast.mjs zap/zap_policy.mjs zap/zap_report_path.mjs zap/zap_tool_catalog.mjs ./
 RUN bun build --target=node --format=esm --outfile=/out/zap_bridge.mjs ./zap_bridge.mjs
 
+FROM ${PROWLER_PYTHON_BASE_IMAGE} AS prowler-python
+
 FROM ${KALI_BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -92,6 +97,7 @@ ENV PATH="${CYBERFUL_OS_PYTHON_VENV}/bin:${PATH}"
 ARG JEB_INSTALLER_URL=""
 ARG JEB_SHA256=""
 ARG GHIDRA_VERSION=12.1.2+ds-0kali1
+ARG YARA_PYTHON_DEX_REVISION=84ad7d2d25552ae91d8a3e89657d0723b4f86da9
 ARG CYBERFUL_RUNTIME_FINGERPRINT=source-unbundled
 
 LABEL org.cyberful.managed-runtime="true" \
@@ -266,12 +272,33 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # ───────────────────────────────────────────────────────────────────────────
 # 8. Mobile dynamic analysis / mobile app security Python tools
 # ───────────────────────────────────────────────────────────────────────────
+# ── MobSF's DEX YARA Dependency Must Come From Complete Source ─────────────
+# Kali rolling supplies CPython 3.14, for which PyPI has no compatible
+# yara-python-dex wheel. Pip otherwise falls back to the incomplete 1.0.5
+# source archive, whose missing yara-python submodule prevents any build.
+# Installing the immutable upstream commit first fetches its pinned submodule,
+# and the resolved mobile graph must remain internally consistent afterward.
+#
+# @docs/runtimes/cyberful-os.md
+# ───────────────────────────────────────────────────────────────────────────
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-dev
+
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
+    "yara-python-dex @ git+https://github.com/MobSF/yara-python-dex.git@${YARA_PYTHON_DEX_REVISION}" \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c \
+    "from importlib.metadata import version; assert version('yara-python-dex') == '1.0.9'" \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" install \
     drozer \
     frida-tools \
     mobsf \
-    objection
+    objection \
+  && "${CYBERFUL_OS_PYTHON_VENV}/bin/pip" check
 
 # JEB is commercial software. To include it in a private build, provide an
 # authenticated installer URL and optional SHA256 at build time.
@@ -446,7 +473,7 @@ ENV DO_NOT_TRACK=1 \
 
 ARG SEMGREP_VERSION=1.170.0
 ARG CLOUDSPLAINING_VERSION=0.9.1
-ARG PROWLER_VERSION=5.33.2
+ARG PROWLER_VERSION=5.39.1
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python3 -m venv /opt/semgrep-venv \
   && /opt/semgrep-venv/bin/pip install --upgrade pip setuptools wheel \
@@ -463,16 +490,24 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
   && ln -sf /opt/cloudsplaining-venv/bin/cloudsplaining /usr/local/bin/cloudsplaining \
   && cloudsplaining --version
 
+# ── Prowler Must Not Inherit Kali's Unsupported Python ────────────────────
+# Prowler excludes Python 3.14 while Kali rolling already ships it. Relocate
+# the digest-pinned official Python 3.12 runtime under /opt so Prowler gets a
+# supported interpreter without masking the system Python used by other tools.
+# ───────────────────────────────────────────────────────────────────────────
+COPY --from=prowler-python /usr/local /opt/prowler-python
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
-  && apt-get install -y --no-install-recommends build-essential python3-dev \
-  && python3 -m venv /opt/prowler-venv \
+  && apt-get install -y --no-install-recommends build-essential \
+  && /opt/prowler-python/bin/python3 --version | grep -F "Python 3.12.13" \
+  && /opt/prowler-python/bin/python3 -m venv /opt/prowler-venv \
   && /opt/prowler-venv/bin/pip install --upgrade pip setuptools wheel \
   && /opt/prowler-venv/bin/pip install "prowler==${PROWLER_VERSION}" \
   && /opt/prowler-venv/bin/pip check \
-  && /opt/prowler-venv/bin/python -c "from importlib.metadata import version; assert version('prowler') == '${PROWLER_VERSION}'"
+  && /opt/prowler-venv/bin/python -c \
+    "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12); assert version('prowler') == '${PROWLER_VERSION}'"
 
 ARG SYFT_VERSION=1.44.0
 ARG GRYPE_VERSION=0.112.0
@@ -699,12 +734,14 @@ RUN mkdir -p /etc/kali-motd \
 # registry implementation shipped beside this image and fail the build if any
 # required command or Python module is absent. The smoke probes also catch
 # installations that leave a binary on PATH but cannot actually initialize.
+COPY --chmod=0755 cyberful-os/scripts/impacket-GetUserSPNs /usr/local/bin/impacket-GetUserSPNs
 COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py
 COPY cyberful-os/mcp_framing.py /opt/cyberful-os/mcp_framing.py
 COPY cyberful-os/native_security.py /opt/cyberful-os/native_security.py
 COPY cyberful-os/prowler_offline.py /usr/local/bin/prowler
 RUN chmod 0755 /usr/local/bin/prowler \
   && python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities \
+  && impacket-GetUserSPNs -h >/dev/null \
   && rg --version \
   && "${CYBERFUL_OS_PYTHON_VENV}/bin/python" -c 'import websocket; print(websocket.__version__)' \
   && nuclei -version \

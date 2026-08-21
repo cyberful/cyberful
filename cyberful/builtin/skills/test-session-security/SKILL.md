@@ -1,6 +1,30 @@
 ---
 name: test-session-security
 description: Test and audit authenticated session state across cookies, opaque tokens, bearer tokens, refresh tokens, devices, browsers, APIs, and privilege transitions. Use for session fixation, hijacking, rotation, logout, expiry, revocation, concurrent sessions, remember-me, CSRF interaction, token storage, impersonation, and stale-session analysis.
+metadata:
+  domain: identity-security
+  subdomain: session-security
+  triggers:
+    - session fixation
+    - session rotation
+    - token revocation
+    - stale session
+    - logout invalidation
+    - refresh token reuse
+  tags:
+    - session
+    - cookies
+    - bearer-token
+    - refresh-token
+    - revocation
+    - fixation
+  frameworks:
+    mitre_attack:
+      - T1078
+      - T1539
+    nist_csf:
+      - PR.AA-03
+      - PR.AA-04
 ---
 
 # Test Session Security

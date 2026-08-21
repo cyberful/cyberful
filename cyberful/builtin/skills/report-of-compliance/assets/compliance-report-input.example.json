@@ -1,0 +1,38 @@
+{
+  "$schema": "assets/compliance-report-input.schema.json",
+  "report_id": "pci-roc-draft-2026",
+  "profile_id": "pci-dss-4.0.1-roc-evidence",
+  "report_title": "Example PCI DSS Report on Compliance Evidence Draft",
+  "entity": {"legal_name": "Example Merchant", "roles": ["merchant"], "jurisdiction": "Example jurisdiction"},
+  "assessment": {
+    "scope": "Synthetic CDE scope used only to validate the packaged reporting contract.",
+    "period": {"start": "2026-01-01", "end": "2026-12-31"},
+    "evidence_cutoff": "2026-12-31",
+    "assessor_name": "Example reviewer",
+    "assessor_organization": "Example organization",
+    "declared_qualification": "Unverified example qualification",
+    "review_authority": "Example internal review owner"
+  },
+  "records": [
+    {
+      "need_id": "pci.scope-and-entity",
+      "status": "supported",
+      "summary": "The synthetic scope record identifies the example CDE boundary.",
+      "evidence_refs": ["raw/example/scope.json"],
+      "finding_refs": [],
+      "rationale": "A sealed synthetic evidence reference is present for contract validation.",
+      "owner": "Example scope owner",
+      "target_date": null
+    },
+    {
+      "need_id": "pci.requirement-11",
+      "status": "partially-supported",
+      "summary": "Synthetic penetration-test evidence is present while scan evidence remains unobserved.",
+      "evidence_refs": ["raw/example/penetration-test.json"],
+      "finding_refs": ["F-EXAMPLE-001"],
+      "rationale": "The example deliberately preserves incomplete coverage.",
+      "owner": "Example testing owner",
+      "target_date": "2027-01-31"
+    }
+  ]
+}

@@ -10,7 +10,14 @@ import type { AgentTool } from "@earendil-works/pi-agent-core"
 import { createHash, randomUUID } from "node:crypto"
 import { Unsafe } from "typebox"
 import { Settings } from "@/config/settings"
-import type { AgentEvent, AgentRunResult, AgentRunSpec, AgentTaskCapsule, ChildPromptInput } from "./agent-subsystem"
+import type {
+  AgentEvent,
+  AgentRunBudget,
+  AgentRunResult,
+  AgentRunSpec,
+  AgentTaskCapsule,
+  ChildPromptInput,
+} from "./agent-subsystem"
 import type { DynamicTool, SubsystemFailure, SubsystemMcpServer } from "./subsystem"
 import type { CompiledAgentPrompt } from "./prompt-compiler"
 import type { SkillRegistry } from "./pi-skills"
@@ -80,9 +87,29 @@ export interface RunInput {
 const activeWorkers = new Set<PiAgentSubsystem>()
 export const TUI_TOOL_OUTPUT_BYTES = 12 * 1024
 
+// ── Model Response Capacity Is Not An AgentRun Budget ────────────
+// The model's maxTokens value bounds one provider response, while a phase may
+// require hundreds of successful provider turns before closeout. A phase root
+// therefore carries only its active-execution deadline and reserve; it must not
+// reinterpret per-response capacity as a cumulative output ceiling. Explicitly
+// bounded callers may still use the separately named AgentRun contract field.
+//
+// @docs/concepts/execution-model.md
+// ─────────────────────────────────────────────────────────────────
+export function phaseRootBudget(
+  input: Pick<RunInput, "deadlineAt" | "budgetClock" | "closeoutReserveMs">,
+): AgentRunBudget {
+  return {
+    deadlineAt: input.deadlineAt,
+    ...(input.budgetClock ? { clock: input.budgetClock } : {}),
+    ...(input.closeoutReserveMs ? { closeoutReserveMs: input.closeoutReserveMs } : {}),
+  }
+}
+
 function preExecutionToolRoute(tool: string) {
   if (tool === "shell") return { component: "cyberful-os" as const, route: "cyberful-os/shell" }
-  if (tool.startsWith("browser_")) return { component: "browser" as const, route: `browser/${tool}` }
+  if (tool === "web_search" || tool.startsWith("agent_browser_"))
+    return { component: "browser" as const, route: `browser/${tool}` }
   if (tool.startsWith("zap_")) return { component: "zap" as const, route: `zap/${tool}` }
   if (tool.startsWith("ghidra_")) return { component: "ghidra" as const, route: `ghidra/${tool}` }
   return { component: "agent" as const, route: `host/${tool}` }
@@ -254,6 +281,10 @@ function dynamicAgentTool(tool: DynamicTool): AgentTool & { readonly deferLoadin
       }
     },
   }
+}
+
+export function eagerSkillTools(skills: SkillRegistry): readonly AgentTool[] {
+  return [skills.searchTool, skills.tool, skills.stageTool]
 }
 
 function failureOf(result: AgentRunResult): SubsystemFailure | undefined {
@@ -476,7 +507,7 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
       task: input.task,
       workarea: input.workarea,
       gateway: input.gateway,
-      tools: [input.skills.tool, ...(input.dynamicTools ?? []).map(dynamicAgentTool)],
+      tools: [...eagerSkillTools(input.skills), ...(input.dynamicTools ?? []).map(dynamicAgentTool)],
       gatewayTools: (run) =>
         bridge!.toolsFor({
           handoffAuthorized: run.handoffOwner,
@@ -495,13 +526,15 @@ export async function run(input: RunInput, onEvent?: (event: AgentEvent) => void
           reason: request.reason,
         }),
       recoverTestObjects: (request) => bridge!.recoverTestObjects(request),
+      releaseBrowserOwner: (request) =>
+        bridge!.releaseBrowserOwner({
+          runID: request.runID,
+          displayName: request.role,
+          kind: request.role,
+          ...(request.parentID ? { parentID: request.parentID } : {}),
+        }),
       skills: input.skills.catalog,
-      budget: {
-        deadlineAt: input.deadlineAt,
-        maxOutputTokens: model.maxTokens,
-        ...(input.budgetClock ? { clock: input.budgetClock } : {}),
-        ...(input.closeoutReserveMs ? { closeoutReserveMs: input.closeoutReserveMs } : {}),
-      },
+      budget: phaseRootBudget(input),
       abort: input.abort,
       delegation: {
         enabled: input.settings.agent.subagents.enabled,

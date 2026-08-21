@@ -1,6 +1,30 @@
 ---
 name: test-exposed-services
 description: Assess externally or internally reachable services, administrative planes, debug interfaces, data stores, search clusters, object storage, orphaned DNS, and deployment exposure during authorized penetration tests or code audits. Use for unintended service exposure, subdomain takeover, Elasticsearch or database access, admin consoles, debug endpoints, default deployments, cloud buckets, management APIs, and network-boundary validation.
+metadata:
+  domain: attack-surface-management
+  subdomain: exposed-services
+  triggers:
+    - exposed service
+    - administrative interface exposure
+    - debug endpoint
+    - public datastore
+    - subdomain takeover
+    - object storage exposure
+  tags:
+    - attack-surface
+    - admin-plane
+    - datastore
+    - debug-interface
+    - subdomain-takeover
+    - service-exposure
+  frameworks:
+    mitre_attack:
+      - T1133
+      - T1190
+    nist_csf:
+      - ID.AM-02
+      - ID.RA-01
 ---
 
 # Test Exposed Services

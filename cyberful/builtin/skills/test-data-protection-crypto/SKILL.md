@@ -1,6 +1,28 @@
 ---
 name: test-data-protection-crypto
 description: Assess sensitive-data lifecycle, secret handling, cryptographic design and implementation, key management, password storage, randomness, signing, encryption, transport protection, and side channels during authorized penetration tests or code audits. Use for data exposure, hardcoded secrets, weak cryptography, token forgery, nonce misuse, key rotation, TLS, backup, log, export, deletion, and privacy-boundary review.
+metadata:
+  domain: application-security
+  subdomain: data-protection-cryptography
+  triggers:
+    - cryptographic design review
+    - sensitive data lifecycle
+    - key management
+    - secret handling
+    - password storage
+    - encryption misuse
+  tags:
+    - cryptography
+    - key-management
+    - secrets
+    - encryption
+    - signing
+    - sensitive-data
+  frameworks:
+    nist_csf:
+      - PR.AA-04
+      - PR.DS-01
+      - PR.DS-02
 ---
 
 # Test Data Protection and Cryptography

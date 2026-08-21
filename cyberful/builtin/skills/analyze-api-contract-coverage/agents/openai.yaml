@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze API Contract Coverage"
+  short_description: "Reconcile OpenAPI and operation evidence"
+  default_prompt: "Use $analyze-api-contract-coverage to build an offline coverage ledger from these API contracts and inventories."

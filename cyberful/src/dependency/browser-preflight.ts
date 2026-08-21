@@ -1,27 +1,34 @@
-// ── Browser Runtime Preflight ────────────────────────────────────
-// Prepares the isolated browser profile and installs Chromium with bounded
-// process ownership before the TUI takes the terminal; failures stay degraded.
-// → cyberful/src/bootstrap-browser.ts — embeds the browser driver but not Chromium itself.
-// → mcps/browser/bin/cyber-browser — launches the prepared isolated browser.
-// ─────────────────────────────────────────────────────────────────
-import { access, mkdir, readdir } from "node:fs/promises"
+// ── agent-browser Runtime Preflight ───────────────────────────────────
+// Verifies the pinned native executable and provisions Chrome for Testing with
+// bounded process ownership before the TUI starts; failures remain degraded.
+// → cyberful/src/bootstrap-browser.ts — embeds the platform-native package.
+// @docs/runtimes/browser.md
+// ────────────────────────────────────────────────────────────────────
+
+import { mkdir, readdir } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import * as Log from "@/util/log"
 import { errorMessage } from "@/util/error"
 import { Process } from "@/util/process"
-import { cyberBrowserMcpCommand, shouldEnableCyberBrowserMcp } from "./config"
+import {
+  cyberAgentBrowserCommand,
+  cyberCaptchaPluginCommand,
+  shouldEnableCyberBrowserMcp,
+} from "./config"
 
 const log = Log.create({ service: "browser-preflight" })
+const AGENT_BROWSER_VERSION = "0.34.0-cyberful.3"
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1_000
 const INSTALL_KILL_GRACE_MS = 1_000
 const MAX_INSTALL_OUTPUT_BYTES = 256 * 1024
 
 const useColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR
 const paint = (code: string, text: string) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text)
-const dim = (t: string) => paint("2", t)
-const green = (t: string) => paint("32", t)
-const yellow = (t: string) => paint("33", t)
-const red = (t: string) => paint("31", t)
+const dim = (text: string) => paint("2", text)
+const green = (text: string) => paint("32", text)
+const red = (text: string) => paint("31", text)
+const yellow = (text: string) => paint("33", text)
 
 function line(text = "") {
   process.stderr.write(text + "\n")
@@ -31,23 +38,29 @@ function isNodeErrorCode(error: unknown, code: string) {
   return typeof error === "object" && error !== null && "code" in error && error.code === code
 }
 
-async function chromiumInstalled(browsersPath: string): Promise<boolean> {
+async function managedChromeInstalled(): Promise<boolean> {
+  const directory = path.join(os.homedir(), ".agent-browser", "browsers")
   try {
-    return (await readdir(browsersPath)).some((entry) => entry.startsWith("chromium"))
+    return (await readdir(directory)).some((entry) => entry.startsWith("chrome-"))
   } catch (cause) {
     if (isNodeErrorCode(cause, "ENOENT")) return false
-    throw new Error(`Could not inspect browser installation directory: ${browsersPath}`, { cause })
+    throw new Error(`Could not inspect agent-browser Chrome directory: ${directory}`, { cause })
   }
 }
 
-async function fileExists(file: string) {
-  try {
-    await access(file)
-    return true
-  } catch (cause) {
-    if (isNodeErrorCode(cause, "ENOENT")) return false
-    throw new Error(`Could not inspect browser dependency: ${file}`, { cause })
-  }
+function systemChromeInstalled(): boolean {
+  if (process.platform === "darwin")
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ].some((candidate) => Bun.file(candidate).size > 0)
+  if (process.platform === "win32")
+    return [
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Google/Chrome/Application/chrome.exe") : "",
+      "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    ].some((candidate) => Boolean(candidate) && Bun.file(candidate).size > 0)
+  return ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"].some((name) => Bun.which(name))
 }
 
 export function shouldSkipBrowserPreflight(env: Readonly<NodeJS.ProcessEnv> = process.env) {
@@ -63,22 +76,20 @@ export interface ChromiumInstallOptions {
   readonly maxOutputBytes?: number
 }
 
-// ── Provisioning Owns Its Child Until Reaped ────────────────────
-// Chromium installation can hang on network or package-manager failures before
-// the TUI exists. The preflight captures only a fixed diagnostic budget and
-// cancels at a fixed deadline; cancellation escalates to KILL and still waits
-// for child exit and pipe closure. The caller may then degrade browser support
-// without leaving a hidden installer or unbounded terminal output behind.
-// ─────────────────────────────────────────────────────────────────
+// ── Provisioning Owns Its Child Until Reaped ────────────────────────
+// Chrome installation is bounded by time and retained output. Abort escalates
+// through the shared Process helper and still reaps the child before returning.
+// The command is the pinned agent-browser executable, never a package-manager
+// shim, so preflight cannot silently resolve a different runtime release.
+// ─────────────────────────────────────────────────────────────────────
 export async function installChromium(
   command: readonly string[],
   env: NodeJS.ProcessEnv,
   options?: ChromiumInstallOptions,
 ) {
   const timeoutMs = options?.timeoutMs ?? INSTALL_TIMEOUT_MS
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
     throw new RangeError("Chromium install timeout must be a positive safe integer")
-  }
   const controller = new AbortController()
   const timeout = setTimeout(
     () => controller.abort(new Error(`Chromium install timed out after ${timeoutMs}ms`)),
@@ -100,9 +111,8 @@ export async function installChromium(
       const reason = controller.signal.reason
       throw new Error(reason instanceof Error ? reason.message : "Chromium install timed out", { cause })
     }
-    if (cause instanceof Process.RunFailedError) {
+    if (cause instanceof Process.RunFailedError)
       return { code: cause.code, stdout: cause.stdout, stderr: cause.stderr }
-    }
     throw new Error("Could not execute Chromium installer", { cause })
   } finally {
     clearTimeout(timeout)
@@ -110,102 +120,83 @@ export async function installChromium(
 }
 
 export async function runBrowserPreflight(): Promise<void> {
-  if (shouldSkipBrowserPreflight()) return
-  if (!shouldEnableCyberBrowserMcp()) return
+  if (shouldSkipBrowserPreflight() || !shouldEnableCyberBrowserMcp()) return
 
   line()
-  line(dim("Cyberful preflight — browser"))
-
-  // The launcher is <root>/browser/bin/cyber-browser; patchright-core lives at <root>/node_modules.
-  const browserCommand = cyberBrowserMcpCommand()
-  const launcher = browserCommand[0]
-  const pkgRoot = process.env.CYBER_BROWSER_PACKAGE_ROOT || path.resolve(path.dirname(launcher), "..", "..")
-  const browsersPath = process.env.CYBER_BROWSER_BROWSERS_PATH || path.join(pkgRoot, "browser", ".browsers")
-
-  // Dedicated persistent profile for cyberful's browser (kept out of any personal Chrome profile).
+  line(dim("Cyberful preflight — agent-browser"))
+  const command = cyberAgentBrowserCommand()
   const profile = process.env.CYBER_BROWSER_USER_DATA_DIR
-  if (profile) {
-    try {
-      await mkdir(profile, { recursive: true })
-    } catch (cause) {
-      log.warn("preflight: could not create browser profile dir", { profile, error: errorMessage(cause), cause })
-    }
-  }
+  if (profile)
+    await mkdir(profile, { recursive: true }).catch((cause) =>
+      log.warn("preflight: could not create browser profile dir", { profile, error: errorMessage(cause), cause }),
+    )
 
-  // Real Google Chrome uses the system install — no Chromium to fetch. (chromium/auto need the bundled one.)
-  if ((process.env.CYBER_BROWSER_CHANNEL ?? "chromium") === "chrome") {
-    line(`  ${green("✓")} using system Google Chrome ${dim("(CYBER_BROWSER_CHANNEL=chrome)")}`)
-    line()
-    return
-  }
-
-  let installed
-  try {
-    installed = await chromiumInstalled(browsersPath)
-  } catch (cause) {
-    line(`  ${red("✗")} Chromium cache could not be inspected`)
-    log.warn("preflight: chromium cache inspection failed", { error: errorMessage(cause), cause })
-    line()
-    return
-  }
-  if (installed) {
-    line(`  ${green("✓")} Chromium ready ${dim(`(${browsersPath})`)}`)
+  const version = await Process.run([...command, "--version"], {
+    abort: AbortSignal.timeout(10_000),
+    timeout: 1_000,
+    nothrow: true,
+    maxOutputBytes: 64 * 1024,
+  }).catch((cause) => {
+    log.warn("preflight: agent-browser version probe failed", { error: errorMessage(cause), cause })
+    return undefined
+  })
+  if (!version || version.code !== 0 || version.stdout.toString("utf8").trim() !== `agent-browser ${AGENT_BROWSER_VERSION}`) {
+    line(`  ${red("✗")} agent-browser ${AGENT_BROWSER_VERSION} is unavailable`)
+    line(dim("    In dev, run: npm install --prefix mcps"))
     line()
     return
   }
 
-  // ── Browser Provisioning Is A Degraded Capability ───────────────
-  // The browser driver is embedded, but its large Chromium payload is acquired
-  // on first use and can fail for reasons outside Cyberful's control. Installer
-  // output remains inside a fixed capture budget before the TUI mounts. Failure
-  // is reported with its retained cause and retried on the next launch; it must
-  // not prevent non-browser security workflows from starting.
-  // ─────────────────────────────────────────────────────────────────
-  const cli = path.join(pkgRoot, "node_modules", "patchright-core", "cli.js")
-  let hasInstaller
-  try {
-    hasInstaller = await fileExists(cli)
-  } catch (cause) {
-    line(`  ${red("✗")} browser driver could not be inspected`)
-    log.warn("preflight: browser driver inspection failed", { error: errorMessage(cause), cause })
+  const captchaCommand = cyberCaptchaPluginCommand()
+  const captchaVersion = captchaCommand
+    ? await Process.run([captchaCommand, "--version"], {
+        abort: AbortSignal.timeout(10_000),
+        timeout: 1_000,
+        nothrow: true,
+        maxOutputBytes: 64 * 1024,
+      }).catch((cause) => {
+        log.warn("preflight: CAPTCHA plugin version probe failed", { error: errorMessage(cause), cause })
+        return undefined
+      })
+    : undefined
+  if (
+    !captchaVersion ||
+    captchaVersion.code !== 0 ||
+    !/agent-browser-plugin-captcha\s+0\.1\.0\b/u.test(captchaVersion.stdout.toString("utf8"))
+  ) {
+    line(`  ${red("✗")} first-party agent-browser CAPTCHA plugin 0.1.0 is unavailable`)
+    line(dim("    Browser profiles require the bundled plugin; reinstall Cyberful or restore mcps/browser."))
     line()
     return
   }
-  if (!hasInstaller) {
-    line(`  ${yellow("!")} browser driver not provisioned ${dim(`(${cli})`)}`)
-    line(dim("    In dev, run: cd mcps && npm run browser:install"))
-    line()
-    log.warn("preflight: patchright-core cli not found", { cli })
-    return
-  }
-  line(`  ${yellow("⏳")} Chromium not found — downloading now (first run, ~150 MB)…`)
-  let install
-  try {
-    const embeddedBun = process.env.CYBER_BROWSER_BUN_REENTRY === "1"
-    install = await installChromium([embeddedBun ? launcher : "node", cli, "install", "chromium"], {
-      ...process.env,
-      ...(embeddedBun ? { BUN_BE_BUN: "1" } : {}),
-      PLAYWRIGHT_BROWSERS_PATH: browsersPath,
-      CYBER_BROWSER_BROWSERS_PATH: browsersPath,
-    })
-  } catch (cause) {
-    line(`  ${red("✗")} Chromium download failed`)
-    line(dim("    The browser_* tools will be unavailable until it succeeds. Relaunch to retry."))
-    log.warn("preflight: chromium install failed", { error: errorMessage(cause), cause })
+
+  const chromeReady = await managedChromeInstalled().catch((cause) => {
+    log.warn("preflight: Chrome cache inspection failed", { error: errorMessage(cause), cause })
+    return false
+  })
+  if (chromeReady || systemChromeInstalled()) {
+    line(`  ${green("✓")} agent-browser ${AGENT_BROWSER_VERSION}, CAPTCHA plugin 0.1.0, and Chrome ready`)
     line()
     return
   }
-  if (install.code !== 0) {
-    line(`  ${red("✗")} Chromium download failed ${dim(`(exit ${install.code})`)}`)
-    line(dim("    The browser_* tools will be unavailable until it succeeds. Relaunch to retry."))
-    log.warn("preflight: chromium install failed", {
-      code: install.code,
-      stderr: install.stderr.toString("utf8").trim(),
-    })
+
+  line(`  ${yellow("⏳")} Chrome not found — installing Chrome for Testing…`)
+  const install = await installChromium([...command, "install"], { ...process.env }).catch((cause) => {
+    log.warn("preflight: agent-browser install failed", { error: errorMessage(cause), cause })
+    return undefined
+  })
+  if (!install || install.code !== 0) {
+    line(`  ${red("✗")} Chrome download failed${install ? dim(` (exit ${install.code})`) : ""}`)
+    line(dim("    The agent_browser_* tools will be unavailable until it succeeds. Relaunch to retry."))
+    if (install)
+      log.warn("preflight: agent-browser install failed", {
+        code: install.code,
+        stderr: install.stderr.toString("utf8").trim(),
+      })
     line()
     return
   }
-  line(`  ${green("✓")} Chromium ready ${dim(`(${browsersPath})`)}`)
+  line(`  ${green("✓")} agent-browser ${AGENT_BROWSER_VERSION}, CAPTCHA plugin 0.1.0, and Chrome ready`)
   line()
 }
 

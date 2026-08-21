@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/fraud-abuse-model.v1.json",
+  "title": "Cyberful fraud abuse model",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "model_id", "authorization_reference", "protected_values", "actors", "paths"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "protected_values": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "object", "additionalProperties": false, "required": ["value_id", "owner", "authoritative_evidence"], "properties": {"value_id": {"type": "string", "minLength": 1, "maxLength": 256}, "owner": {"type": "string", "minLength": 1, "maxLength": 256}, "authoritative_evidence": {"type": "string", "minLength": 1, "maxLength": 2048}}}},
+    "actors": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "object", "additionalProperties": false, "required": ["actor_id", "starting_state", "capabilities"], "properties": {"actor_id": {"type": "string", "minLength": 1, "maxLength": 256}, "starting_state": {"type": "string", "minLength": 1, "maxLength": 512}, "capabilities": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}}}},
+    "paths": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["path_id", "preconditions", "actions", "invariant", "controls", "expected_evidence", "benefit_or_harm", "stop_condition"], "properties": {"path_id": {"type": "string", "minLength": 1, "maxLength": 256}, "preconditions": {"$ref": "#/$defs/text_list"}, "actions": {"$ref": "#/$defs/text_list"}, "invariant": {"type": "string", "minLength": 1, "maxLength": 2048}, "controls": {"$ref": "#/$defs/text_list"}, "expected_evidence": {"$ref": "#/$defs/text_list"}, "benefit_or_harm": {"type": "string", "minLength": 1, "maxLength": 2048}, "stop_condition": {"type": "string", "minLength": 1, "maxLength": 2048}}}}
+  },
+  "$defs": {"text_list": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 2048}}}
+}

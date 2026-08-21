@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/identity-propagation.v1.json",
+  "title": "Cyberful identity propagation trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "trace_id", "events"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "trace_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "order", "component", "artifact_kind", "evidence_sha256", "identity"],
+        "properties": {
+          "event_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "order": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "component": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "artifact_kind": { "enum": ["request", "response", "token", "log", "message", "job", "policy-input", "storage-effect", "configuration"] },
+          "evidence_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["issuer", "subject", "actor", "client_id", "tenant", "audiences", "scopes", "assurance", "credential_id_hash"],
+            "properties": {
+              "issuer": { "type": ["string", "null"], "maxLength": 512 },
+              "subject": { "type": ["string", "null"], "maxLength": 512 },
+              "actor": { "type": ["string", "null"], "maxLength": 512 },
+              "client_id": { "type": ["string", "null"], "maxLength": 512 },
+              "tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "audiences": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+              "scopes": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+              "assurance": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+              "credential_id_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

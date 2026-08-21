@@ -1,0 +1,26 @@
+{
+  "format": "cyberful.pci-penetration-test-plan.v1",
+  "engagement_id": "pci-test-synthetic",
+  "standard_version": "PCI DSS 4.0.1",
+  "authorization_reference": "approved-engagement-scope",
+  "entity_type": "merchant",
+  "assessment_period": {"start": "2026-08-01", "end": "2026-08-31"},
+  "scope_evidence": ["raw/pci/cde-boundary-ledger.json"],
+  "coverage": [
+    {
+      "coverage_id": "external-application",
+      "layer": "application",
+      "vantage": "external",
+      "targets": ["tester-owned synthetic payment application"],
+      "reason": "Public application path into the documented CDE boundary",
+      "procedure": "Route authorized application tests to the narrowest Cyberful specialists",
+      "expected_evidence": ["raw/pci/external-application-evidence.json"],
+      "completion": "Every approved role and exposed payment flow has a supported result or typed blocker"
+    }
+  ],
+  "tester": {"resource": "independent-testing-team", "qualification_evidence": ["engagement-specific experience record"], "independence_evidence": ["organizational reporting-line review"]},
+  "rules_of_engagement": {"windows": ["approved maintenance window"], "allowed_effects": ["tester-owned synthetic transactions"], "forbidden_effects": ["access to unrelated customer account data"], "limits": ["mission request and concurrency ceilings"], "stop_conditions": ["unexpected account data exposure"], "incident_contacts": ["payment-security-on-call"], "account_data_handling": "Do not introduce real cardholder data; minimize and protect any unexpectedly encountered account data.", "cleanup": ["remove tester-owned synthetic records"]},
+  "remediation_and_retest": {"risk_owner": "payment-security-owner", "correction_evidence": ["change record and affected control evidence"], "retest_completion": ["original mechanism no longer reproduces under the same authorized conditions"]},
+  "retention": {"minimum_months": 12, "location": "approved restricted evidence store", "access_owner": "payment-security-owner"},
+  "open_dependencies": []
+}

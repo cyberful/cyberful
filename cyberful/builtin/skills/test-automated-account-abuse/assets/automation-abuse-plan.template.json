@@ -1,0 +1,20 @@
+{
+  "$schema": "./automation-abuse-plan.schema.json",
+  "experiment_id": "synthetic-account-automation",
+  "authorization_reference": "engagement-scope-automation",
+  "limits": {"requests": 8, "accounts": 2, "messages": 2, "concurrency": 1, "duration_seconds": 60},
+  "controlled_identities": ["test-account-a", "test-account-b"],
+  "cases": [
+    {
+      "case_id": "synthetic-signup-cadence",
+      "surface": "test-signup-api",
+      "invariant": "one controlled identity cannot allocate duplicate account benefits",
+      "automation_dimension": "bounded repeated cadence",
+      "action": "compare one manual control with two bounded automated attempts",
+      "expected_control": "duplicate allocation denied",
+      "authoritative_evidence": ["account-state", "allocation-ledger", "control-decision"],
+      "cleanup": "delete synthetic accounts and release allocations",
+      "stop_condition": "stop on any non-test delivery or shared resource effect"
+    }
+  ]
+}

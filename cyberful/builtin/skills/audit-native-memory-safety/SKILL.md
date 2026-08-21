@@ -1,6 +1,27 @@
 ---
 name: audit-native-memory-safety
 description: Audit C, C++, unsafe Rust, native extensions, parsers, codecs, FFI boundaries, and systems code for memory corruption and low-level exploitation risk. Use for buffer overflows, out-of-bounds access, use-after-free, double free, integer overflow, format strings, uninitialized memory, type confusion, race-induced corruption, unsafe deserialization, binary parsing, compiler hardening, sanitizers, and fuzzing strategy.
+metadata:
+  domain: code-security
+  subdomain: native-memory-safety
+  triggers:
+    - native memory safety audit
+    - C or C++ security review
+    - unsafe Rust audit
+    - memory corruption analysis
+    - FFI boundary review
+  tags:
+    - memory-corruption
+    - C
+    - C++
+    - unsafe-rust
+    - sanitizers
+    - fuzzing
+  frameworks:
+    mitre_attack:
+      - T1203
+    nist_csf:
+      - ID.RA
 ---
 
 # Audit Native Memory Safety

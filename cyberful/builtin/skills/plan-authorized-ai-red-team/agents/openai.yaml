@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authorized AI Red Team Planner"
+  short_description: "Scope AI capabilities and safe test coverage"
+  default_prompt: "Use $plan-authorized-ai-red-team to define authorized AI red-team scope, coverage, canaries, and stop conditions."

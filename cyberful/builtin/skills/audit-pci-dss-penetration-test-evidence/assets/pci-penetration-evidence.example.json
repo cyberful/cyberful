@@ -1,0 +1,12 @@
+{
+  "$schema": "assets/pci-penetration-evidence.schema.json",
+  "assessment_id": "pci-evidence-synthetic",
+  "standard_version": "PCI DSS 4.0.1",
+  "entity_type": "merchant",
+  "segmentation_used": true,
+  "assessment_period": {"start": "2026-01-01", "end": "2026-12-31"},
+  "records": [
+    {"record_id": "methodology-scope", "requirement": "11.4.1", "topic": "CDE and critical-system coverage", "status": "supported", "source_type": "methodology", "evidence_date": "2026-08-01", "evidence_refs": ["raw/pci/methodology-v4.json"], "rationale": "The referenced methodology and CDE ledger identify the covered perimeter and critical systems."},
+    {"record_id": "segmentation-retest-gap", "requirement": "11.4.5", "topic": "Testing after segmentation change", "status": "gap", "source_type": "segmentation-report", "evidence_date": "2026-08-10", "evidence_refs": [], "rationale": "A documented segmentation change has no associated repeated test evidence."}
+  ]
+}

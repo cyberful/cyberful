@@ -1,6 +1,26 @@
 ---
 name: operate-native-fuzzing
 description: Operate AFL++, libFuzzer with Clang sanitizers, and Jazzer for advanced coverage-guided native and JVM fuzzing. Use when designing harnesses, constructing and minimizing corpora, diagnosing coverage plateaus, selecting sanitizers or instrumentation modes, fuzzing parsers and state machines, deduplicating crashes, or turning audit hypotheses into deterministic regression cases.
+metadata:
+  domain: native-security
+  subdomain: coverage-guided-fuzzing
+  triggers:
+    - native fuzzing campaign
+    - libfuzzer harness
+    - afl++ campaign
+    - jazzer fuzzing
+    - sanitizer crash triage
+    - corpus minimization
+  tags:
+    - aflplusplus
+    - libfuzzer
+    - jazzer
+    - sanitizers
+    - corpus
+    - crash-triage
+  frameworks:
+    nist_csf:
+      - ID.RA-01
 ---
 
 # Operate Native Fuzzing
@@ -42,6 +62,8 @@ Measure executions, edge/feature growth, corpus growth, reject-stage distributio
 Reproduce outside the fuzzer with the exact build and environment; minimize while preserving the same root cause; symbolize; identify first invalid state rather than final crash; deduplicate by causal frame/data invariant; test sanitizer-independent behavior where relevant; and create a regression case.
 
 Use `crash_triage` for reproduction, symbolization, classification, deduplication, minimization, and evidence export. A campaign crash list is discovery evidence, never a confirmed vulnerability.
+
+Keep transport success, fuzzing runner status, target-process exit, sanitizer observation, and infrastructure failure as distinct facts. Preserve the raw target exit and sanitizer output as primary evidence; runner summaries and ad hoc classifiers are derived evidence and cannot silently override it. Prefer `crash_triage` over a custom classifier when the operation fits its contract, and record any disagreement against the hypothesis oracle explicitly.
 
 ## Deliver
 

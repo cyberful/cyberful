@@ -1,0 +1,42 @@
+{
+  "$schema": "https://cyberful.local/schemas/identity-propagation.v1.json",
+  "trace_id": "synthetic-trace-001",
+  "events": [
+    {
+      "event_id": "gateway-accepted",
+      "order": 10,
+      "component": "edge-gateway",
+      "artifact_kind": "policy-input",
+      "evidence_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity": {
+        "issuer": "https://issuer.test",
+        "subject": "controlled-user-a",
+        "actor": "controlled-user-a",
+        "client_id": "synthetic-client",
+        "tenant": "tenant-a",
+        "audiences": ["gateway"],
+        "scopes": ["records:read"],
+        "assurance": ["mfa"],
+        "credential_id_hash": null
+      }
+    },
+    {
+      "event_id": "worker-received",
+      "order": 20,
+      "component": "records-worker",
+      "artifact_kind": "message",
+      "evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "identity": {
+        "issuer": "https://issuer.test",
+        "subject": "controlled-user-a",
+        "actor": "workload-records",
+        "client_id": "records-worker",
+        "tenant": "tenant-a",
+        "audiences": ["records-worker"],
+        "scopes": ["records:read"],
+        "assurance": ["mfa"],
+        "credential_id_hash": null
+      }
+    }
+  ]
+}

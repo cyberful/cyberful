@@ -280,10 +280,10 @@ test("refuses unsafe evidence paths and does not overwrite invalid or linked reg
 
   const registryPath = path.join(root, FindingRegistry.REGISTRY_PATH)
   const original = await readFile(registryPath, "utf8")
-  const unknownVersion = { ...JSON.parse(original), schema_version: 2 }
+  const unknownVersion = { ...JSON.parse(original), schema_version: 3 }
   await Bun.write(registryPath, JSON.stringify(unknownVersion))
   await expect(store.read()).rejects.toThrow()
-  expect(JSON.parse(await readFile(registryPath, "utf8"))).toMatchObject({ schema_version: 2 })
+  expect(JSON.parse(await readFile(registryPath, "utf8"))).toMatchObject({ schema_version: 3 })
 
   await Bun.write(registryPath, "{")
   await expect(store.read()).rejects.toThrow("invalid JSON")
@@ -348,5 +348,94 @@ test("imports existing Code Graph findings as history and mirrors later Verify d
   expect(finding?.observations.at(-1)).toMatchObject({
     disposition: { state: "DISPROVED" },
     verification: { result: "DEMOTE" },
+  })
+})
+
+test("stores neutral ATT&CK applicability and grants final mapping review only to Verify", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  await store.startRun({ id: "ses_attack", workflow: "pentest" })
+  const finding = await store.execute(
+    {
+      action: "record",
+      key: "ATTACK-1",
+      title: "Novel authorization primitive",
+      positive_evidence: "A cross-boundary effect was observed with a control.",
+      severity: "HIGH",
+    },
+    context("ses_attack"),
+  ) as FindingRegistry.Finding
+  expect(finding.observations.at(-1)?.attackAssessment).toMatchObject({
+    applicability: "UNASSESSED",
+    mappings: [],
+    review: "NOT_REVIEWED",
+  })
+  const assessment = {
+    applicability: "APPLICABLE",
+    mappings: [
+      {
+        attack_id: "T0000",
+        rationale: "Agent-declared contextual mapping; the registry intentionally does not perform lookup validation.",
+        evidence_refs: ["raw/attack/context.json"],
+      },
+    ],
+  }
+  await store.execute(
+    { action: "set_attack_assessment", id: finding.id, assessment },
+    context("ses_attack", "exploit"),
+  )
+  await expect(
+    store.execute(
+      {
+        action: "set_attack_assessment",
+        id: finding.id,
+        assessment: { ...assessment, review: "ACCEPTED", review_rationale: "Reviewed." },
+      },
+      context("ses_attack", "hacker"),
+    ),
+  ).rejects.toThrow("only Verify")
+  const reviewed = await store.execute(
+    {
+      action: "set_attack_assessment",
+      id: finding.id,
+      assessment: {
+        ...assessment,
+        review: "ACCEPTED",
+        review_rationale: "The behavior association is supported by the cited evidence.",
+      },
+    },
+    context("ses_attack", "verify"),
+  ) as FindingRegistry.Finding
+  expect(reviewed.observations.at(-1)?.attackAssessment).toMatchObject({
+    mappings: [{ attack_id: "T0000" }],
+    review: "ACCEPTED",
+  })
+})
+
+test("migrates legacy findings to an UNASSESSED ATT&CK state", async () => {
+  const root = await workarea()
+  const store = new FindingRegistry.Store(root, { workarea: "target" })
+  await store.startRun({ id: "ses_legacy_attack", workflow: "pentest" })
+  await store.execute(
+    {
+      action: "record",
+      key: "LEGACY-ATTACK-1",
+      title: "Legacy finding",
+      positive_evidence: "A positive observation predates ATT&CK assessment storage.",
+      severity: "MEDIUM",
+    },
+    context("ses_legacy_attack"),
+  )
+  const registryPath = path.join(root, FindingRegistry.REGISTRY_PATH)
+  const legacy = JSON.parse(await readFile(registryPath, "utf8"))
+  legacy.schema_version = 1
+  for (const finding of legacy.findings) {
+    for (const observation of finding.observations) delete observation.attackAssessment
+  }
+  await Bun.write(registryPath, JSON.stringify(legacy))
+  expect((await store.read()).findings[0]?.observations[0]?.attackAssessment).toEqual({
+    applicability: "UNASSESSED",
+    mappings: [],
+    review: "NOT_REVIEWED",
   })
 })

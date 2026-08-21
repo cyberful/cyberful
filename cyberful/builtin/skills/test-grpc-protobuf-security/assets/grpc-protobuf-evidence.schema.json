@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "input_sha256", "authorization_reference", "transport", "executions"],
+  "properties": {
+    "format": {"const": "cyberful.grpc-protobuf-probe.raw.v1"},
+    "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authorization_reference": {"type": "string"},
+    "transport": {"type": "object", "additionalProperties": false, "required": ["route", "direct_non_loopback", "proxy_environment", "trust_environment"], "properties": {"route": {"const": "runtime-http-proxy-or-literal-loopback"}, "direct_non_loopback": {"const": false}, "proxy_environment": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"enum": ["HTTP_PROXY", "HTTPS_PROXY"]}}, "trust_environment": {"type": ["string", "null"], "enum": ["SSL_CERT_FILE", "CURL_CA_BUNDLE", null]}}},
+    "executions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["case_id", "origin", "service_method", "effect", "actor_id", "tenant_id", "argv", "environment", "exit_code", "duration_ms", "stdout_base64", "stderr_base64", "stdout_sha256", "stderr_sha256"], "properties": {"case_id": {"type": "string"}, "origin": {"type": "string"}, "service_method": {"type": "string"}, "effect": {"type": "string"}, "actor_id": {"type": "string"}, "tenant_id": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}}, "environment": {"type": "object", "additionalProperties": false, "required": ["proxy", "trust", "authorization"], "properties": {"proxy": {"type": ["string", "null"], "enum": ["HTTP_PROXY", "HTTPS_PROXY", null]}, "trust": {"type": ["string", "null"], "enum": ["SSL_CERT_FILE", "CURL_CA_BUNDLE", null]}, "authorization": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["environment", "sha256"], "properties": {"environment": {"const": "CYBERFUL_GRPC_AUTHORIZATION"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}]}}}, "exit_code": {"type": "integer"}, "duration_ms": {"type": "integer", "minimum": 0}, "stdout_base64": {"type": "string"}, "stderr_base64": {"type": "string"}, "stdout_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "stderr_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}}
+  }
+}

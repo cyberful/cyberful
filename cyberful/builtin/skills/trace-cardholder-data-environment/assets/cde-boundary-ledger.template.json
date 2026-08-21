@@ -1,0 +1,16 @@
+{
+  "format": "cyberful.cde-boundary-ledger.v1",
+  "engagement_id": "pci-scope-synthetic",
+  "standard_version": "PCI DSS 4.0.1",
+  "as_of": "2026-08-18T00:00:00Z",
+  "payment_stages": ["authorization"],
+  "nodes": [
+    {"node_id": "payment-api", "component": "Synthetic payment API", "scope_class": "cde", "account_data_classes": ["cardholder-data"], "capabilities": ["processes synthetic authorization requests"], "owner": "payment-platform", "third_party": false, "evidence_refs": ["raw/pci/payment-api-deployment.json"], "rationale": "The component processes the documented payment flow."},
+    {"node_id": "support-admin", "component": "Synthetic support administration plane", "scope_class": "security-impacting", "account_data_classes": ["none-observed"], "capabilities": ["changes payment account access"], "owner": "support-platform", "third_party": false, "evidence_refs": ["raw/pci/support-policy.json"], "rationale": "Administrative authority can impact CDE security without processing account data."}
+  ],
+  "flows": [
+    {"flow_id": "support-to-payment", "from": "support-admin", "to": "payment-api", "payment_stage": "authorization", "data_class": "administrative control", "protocol": "HTTPS", "principal": "support-workload", "transformation": "authorized administration only", "evidence_refs": ["raw/pci/support-route.json"]}
+  ],
+  "segmentation_claims": [],
+  "scope_gaps": []
+}

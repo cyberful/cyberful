@@ -1,6 +1,25 @@
 ---
 name: operate-mobile-instrumentation
 description: Operate Frida, Objection, JADX, Apktool, Android tooling, and native inspection for advanced authorized mobile application assessment. Use for spawn-time or attach-time instrumentation, Java/Kotlin and Objective-C/Swift/native boundary tracing, storage and transport observation, runtime control validation, anti-instrumentation diagnosis, multi-dex or class-loader problems, and converting static hypotheses into reproducible runtime evidence.
+metadata:
+  domain: security-tooling
+  subdomain: mobile-instrumentation
+  triggers:
+    - mobile runtime instrumentation
+    - Frida security testing
+    - Objection assessment
+    - Android runtime tracing
+    - iOS runtime tracing
+  tags:
+    - Frida
+    - Objection
+    - Android
+    - iOS
+    - runtime-hooks
+    - mobile-security
+  frameworks:
+    mitre_attack:
+      - T1632
 ---
 
 # Operate Mobile Instrumentation

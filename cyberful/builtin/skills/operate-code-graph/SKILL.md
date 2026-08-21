@@ -1,6 +1,25 @@
 ---
 name: operate-code-graph
 description: Index and query Cyberful's local semantic Code Graph for repository-wide audits, incremental secure reviews, assessments, remediation blast-radius analysis, symbol and call exploration, interprocedural taint paths, backward/forward slicing, cross-language boundaries, coverage accounting, variant analysis, and structured security-finding lifecycle operations.
+metadata:
+  domain: security-tooling
+  subdomain: code-graph-analysis
+  triggers:
+    - semantic code graph
+    - interprocedural dataflow
+    - repository security index
+    - backward or forward slice
+    - security variant analysis
+  tags:
+    - code-graph
+    - dataflow
+    - taint-analysis
+    - call-graph
+    - variant-analysis
+    - coverage
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate the Code Graph

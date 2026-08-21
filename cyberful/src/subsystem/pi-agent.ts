@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto"
 import {
   Agent,
   estimateTokens,
+  NOOP_TELEMETRY_CONTEXT,
   type AgentEvent as PiAgentEvent,
   type AgentMessage,
   type AgentTool,
@@ -30,6 +31,7 @@ import {
   WorkareaToolError,
 } from "@/workarea"
 import { SubsystemControl } from "./control"
+import type { PiMcpInstructionBundle, PiMcpInstructionBundleLoader } from "./pi-mcp"
 import type {
   AgentEvent,
   AgentRunCancellationCause,
@@ -248,9 +250,8 @@ const WorkareaListParameters = Type.Object(
   {
     prefix: Type.Optional(
       Type.String({
-        minLength: 1,
         maxLength: 1_024,
-        description: "Existing workarea-relative directory to search; omit for the workarea root.",
+        description: "Existing workarea-relative directory to search; omit or pass an empty string for the workarea root.",
       }),
     ),
     pattern: Type.Optional(
@@ -287,7 +288,10 @@ const DelegationStatusParameters = Type.Object({}, { additionalProperties: false
 const RECOVERY_SUMMARY_BYTES = 4_096
 const WORKAREA_WRITE_BYTES = 262_144
 
-type CatalogAgentTool = AgentTool & { readonly deferLoading?: boolean }
+type CatalogAgentTool = AgentTool & {
+  readonly deferLoading?: boolean
+  readonly instructionBundles?: readonly PiMcpInstructionBundleLoader[]
+}
 
 interface PiAgentSubsystemOptions {
   readonly settings: Settings.Info
@@ -314,6 +318,7 @@ interface RunState {
   readonly childResults: AgentRunResult[]
   readonly skillsRead: Set<string>
   readonly skillsUsed: Set<string>
+  readonly instructionBundlesLoaded: Set<string>
   readonly actor: PhaseActivityActor
   agent?: Agent
   unregisterControl?: () => void
@@ -354,6 +359,8 @@ interface RunState {
   finishProviderRetryAttempt?: () => void
   closeout: boolean
   closeoutRequested: boolean
+  researchContinuationIssued: boolean
+  activeSubagentsContinuationIssued: boolean
   recoverySummary?: AgentRunRecoverySummary
   recoverySummaryWrite?: Promise<void>
   recoverySummaryWriteError?: string
@@ -772,6 +779,59 @@ function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
     : undefined
 }
 
+interface ResearchCloseoutDetails {
+  readonly webTarget: boolean
+  readonly unusedProfiles: readonly number[]
+  readonly coverageCandidateCount: number
+  readonly coverageCandidateSamples: readonly string[]
+  readonly collectorDegraded: boolean
+}
+
+export interface ResearchContinuationDecision {
+  readonly cause: "active_subagents" | "recon_breadth" | "coverage_candidates"
+}
+
+function researchCloseoutDetails(value: unknown): ResearchCloseoutDetails | undefined {
+  const input = record(value)
+  if (!input || typeof input.webTarget !== "boolean") return
+  if (
+    !Array.isArray(input.unusedProfiles) ||
+    !input.unusedProfiles.every(
+      (profile) => typeof profile === "number" && Number.isInteger(profile) && profile >= 1 && profile <= 5,
+    ) ||
+    typeof input.coverageCandidateCount !== "number" ||
+    !Number.isInteger(input.coverageCandidateCount) ||
+    input.coverageCandidateCount < 0 ||
+    !Array.isArray(input.coverageCandidateSamples) ||
+    !input.coverageCandidateSamples.every((route) => typeof route === "string") ||
+    typeof input.collectorDegraded !== "boolean"
+  )
+    return
+  return {
+    webTarget: input.webTarget,
+    unusedProfiles: input.unusedProfiles,
+    coverageCandidateCount: input.coverageCandidateCount,
+    coverageCandidateSamples: input.coverageCandidateSamples.slice(0, 8),
+    collectorDegraded: input.collectorDegraded,
+  }
+}
+
+export function researchContinuationDecision(input: {
+  readonly phase: string
+  readonly assessment?: ResearchCloseoutDetails
+  readonly alreadyIssued: boolean
+  readonly activeSubagents: number
+}): ResearchContinuationDecision | undefined {
+  if (input.activeSubagents > 0) return { cause: "active_subagents" }
+  if (input.alreadyIssued || !input.assessment?.webTarget) return
+  if (input.phase === "recon") return { cause: "recon_breadth" }
+  if (
+    (input.phase === "exploit" || input.phase === "hacker") &&
+    (input.assessment.unusedProfiles.length > 0 || input.assessment.coverageCandidateCount > 0)
+  )
+    return { cause: "coverage_candidates" }
+}
+
 function taskCapsule(input: {
   readonly task: string
   readonly expected_result?: string
@@ -884,7 +944,9 @@ function closeoutToolAllowed(name: string): boolean {
       "engagement_policy",
       "reward_policy",
       "variable",
+      "skill_search",
       "skill_read",
+      "skill_stage",
       "tool_search",
     ].includes(name)
   )
@@ -903,6 +965,11 @@ function validateSpec(spec: AgentRunSpec): void {
   if (spec.prompt.manifest.role !== spec.role) throw new Error("AgentRun prompt role does not match its run role")
   if (spec.prompt.manifest.providerRoute !== spec.providerAffinity)
     throw new Error("AgentRun prompt provider route does not match provider affinity")
+  if (
+    spec.prompt.manifest.skillCatalog.operationalContextWindow !== spec.context.operationalContextWindow ||
+    spec.prompt.manifest.skillCatalog.contextSource !== spec.context.source
+  )
+    throw new Error("AgentRun skill catalog capacity does not match its effective provider route")
   if (spec.prompt.manifest.handoffOwner !== spec.handoffOwner)
     throw new Error("AgentRun prompt handoff ownership does not match host policy")
   if (spec.handoffOwner && spec.role !== "root") throw new Error("Only the original root AgentRun may own handoff")
@@ -915,10 +982,10 @@ function validateSpec(spec: AgentRunSpec): void {
   if (!spec.task.objective.trim()) throw new Error("AgentRun task objective is empty")
   if (!Number.isFinite(spec.budget.deadlineAt)) throw new Error("AgentRun deadline must be finite")
   if (
-    spec.budget.maxOutputTokens !== undefined &&
-    (!Number.isSafeInteger(spec.budget.maxOutputTokens) || spec.budget.maxOutputTokens <= 0)
+    spec.budget.maxCumulativeOutputTokens !== undefined &&
+    (!Number.isSafeInteger(spec.budget.maxCumulativeOutputTokens) || spec.budget.maxCumulativeOutputTokens <= 0)
   )
-    throw new Error("AgentRun maxOutputTokens must be a positive safe integer")
+    throw new Error("AgentRun maxCumulativeOutputTokens must be a positive safe integer")
 }
 
 function terminationFor(state: RunState, failure: Failure | undefined): AgentRunTermination {
@@ -1051,6 +1118,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
       childResults: [],
       skillsRead: new Set(),
       skillsUsed: new Set(),
+      instructionBundlesLoaded: new Set(),
       actor: {
         id,
         label: spec.identity
@@ -1081,6 +1149,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
       providerCallKind: "generation",
       closeout: false,
       closeoutRequested: false,
+      researchContinuationIssued: false,
+      activeSubagentsContinuationIssued: false,
       contextArtifacts: new Map(),
       contextProjections: new Map(),
       contextRecoveryKeys: new Set(),
@@ -1305,6 +1375,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
     return (
       policy.enabled &&
       failure?.retryable === true &&
+      failure.providerCode !== "tool_call_history_mismatch" &&
       !(
         failure.kind === "capacity" &&
         (failure.providerCode === "context_length_exceeded" || failure.providerCode === "context_rotation_failed")
@@ -1566,9 +1637,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
         .digest("hex")
         .slice(0, 24)}`
       const remainingOutputTokens =
-        input.state.spec.budget.maxOutputTokens === undefined
+        input.state.spec.budget.maxCumulativeOutputTokens === undefined
           ? undefined
-          : Math.max(0, input.state.spec.budget.maxOutputTokens - input.state.cumulativeUsage.output)
+          : Math.max(0, input.state.spec.budget.maxCumulativeOutputTokens - input.state.cumulativeUsage.output)
       const recoveryPolicy = Settings.phaseRecoveryPolicy(this.#settings)
       const sourceRoute =
         input.state.spec.providerAffinity === "fallback" || sourceProvider === fallbackProvider ? "fallback" : "main"
@@ -1711,7 +1782,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         messages: checkpointMessages,
         tools: [],
       })
-      const limit = input.state.spec.budget.maxOutputTokens
+      const limit = input.state.spec.budget.maxCumulativeOutputTokens
       const remainingOutput =
         limit === undefined ? MODEL_SUMMARY_MAX_TOKENS : limit - input.state.cumulativeUsage.output
       if (remainingOutput < 512)
@@ -2461,12 +2532,16 @@ export class PiAgentSubsystem implements AgentSubsystem {
       this.#workareaListTool(state),
       this.#evidenceManifestTool(state),
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading !== true),
-      ...eligibleGatewayTools.filter((tool) => tool.name === "handoff"),
+      ...eligibleGatewayTools.filter(
+        (tool) => tool.name === "handoff" || (tool as CatalogAgentTool).deferLoading === false,
+      ),
     ]
     if (state.spec.task.outputArtifact ?? state.spec.task.artifacts?.[0]) immediate.push(this.#workareaWriteTool(state))
     const deferred = [
       ...hostTools.filter((tool) => (tool as CatalogAgentTool).deferLoading === true),
-      ...eligibleGatewayTools.filter((tool) => tool.name !== "handoff"),
+      ...eligibleGatewayTools.filter(
+        (tool) => tool.name !== "handoff" && (tool as CatalogAgentTool).deferLoading !== false,
+      ),
     ].toSorted((left, right) => left.name.localeCompare(right.name))
 
     if (state.spec.delegation.enabled && state.spec.prompt.manifest.delegationEnabled) {
@@ -2655,7 +2730,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
         'Search and load any authorized Cyberful/MCP tool by name or capability. No tool is excluded: use query "*" with the returned cursor to enumerate the full catalog.',
       parameters: ToolSearchParameters,
       executionMode: "sequential",
-      execute: async (_callID, input) => {
+      execute: async (_callID, input, signal) => {
         const offset = input.cursor === undefined ? 0 : Number(input.cursor)
         if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("tool_search cursor is invalid")
         const query = input.query.trim()
@@ -2674,10 +2749,18 @@ export class PiAgentSubsystem implements AgentSubsystem {
         const additions = page.filter((tool) => !loaded.has(tool.name))
         const agent = state.agent
         if (!agent) throw new Error("tool_search requires an active AgentRun")
+        const instructionLoaders = new Map<string, PiMcpInstructionBundleLoader>()
+        for (const tool of additions)
+          for (const bundle of (tool as CatalogAgentTool).instructionBundles ?? [])
+            if (!state.instructionBundlesLoaded.has(bundle.id) && !instructionLoaders.has(bundle.id))
+              instructionLoaders.set(bundle.id, bundle)
+        const instructionBundles: PiMcpInstructionBundle[] = []
+        for (const bundle of instructionLoaders.values()) instructionBundles.push(await bundle.load(signal))
         if (additions.length > 0) {
           const activeNames = new Set(agent.state.tools.map((tool) => tool.name))
           agent.state.tools = [...agent.state.tools, ...additions.filter((tool) => !activeNames.has(tool.name))]
           additions.forEach((tool) => loaded.add(tool.name))
+          instructionBundles.forEach((bundle) => state.instructionBundlesLoaded.add(bundle.id))
         }
         const nextOffset = offset + page.length
         const nextCursor = nextOffset < candidates.length ? String(nextOffset) : undefined
@@ -2694,15 +2777,34 @@ export class PiAgentSubsystem implements AgentSubsystem {
                   description: compactToolDescription(tool.description),
                   loaded: true,
                 })),
+                instruction_bundles: instructionBundles.map((bundle) => ({
+                  id: bundle.id,
+                  source: bundle.source,
+                  source_version: bundle.sourceVersion,
+                  bytes: bundle.bytes,
+                  sha256: bundle.sha256,
+                  loaded: true,
+                })),
                 ...(nextCursor ? { next_cursor: nextCursor } : {}),
               }),
             },
+            ...instructionBundles.map((bundle) => ({
+              type: "text" as const,
+              text: `Versioned instruction bundle ${bundle.id} from ${bundle.source} ${bundle.sourceVersion}:\n\n${bundle.content}`,
+            })),
           ],
           details: {
             query,
             total: candidates.length,
             returned: page.length,
             nextCursor,
+            instructionBundles: instructionBundles.map((bundle) => ({
+              id: bundle.id,
+              source: bundle.source,
+              sourceVersion: bundle.sourceVersion,
+              bytes: bundle.bytes,
+              sha256: bundle.sha256,
+            })),
           },
           addedToolNames: additions.map((tool) => tool.name),
         }
@@ -2755,7 +2857,7 @@ export class PiAgentSubsystem implements AgentSubsystem {
           },
         })
         const initialChildState = this.#states.get(child.id)
-        const initialOutputBudget = initialChildState?.spec.budget.maxOutputTokens
+        const initialOutputBudget = initialChildState?.spec.budget.maxCumulativeOutputTokens
         const initialResult = await child.result
         let result = initialResult
         const recoveryFailure = initialResult.failure
@@ -3284,7 +3386,9 @@ export class PiAgentSubsystem implements AgentSubsystem {
       budget: {
         ...parent.spec.budget,
         deadlineAt,
-        ...(options.recoveryOutputTokens === undefined ? {} : { maxOutputTokens: options.recoveryOutputTokens }),
+        ...(options.recoveryOutputTokens === undefined
+          ? {}
+          : { maxCumulativeOutputTokens: options.recoveryOutputTokens }),
       },
     })
   }
@@ -3394,6 +3498,54 @@ export class PiAgentSubsystem implements AgentSubsystem {
     )
   }
 
+  #steerResearchContinuation(
+    state: RunState,
+    decision: ResearchContinuationDecision,
+    assessment: ResearchCloseoutDetails | undefined,
+    activeSubagents: number,
+  ) {
+    const unusedProfiles = assessment?.unusedProfiles ?? []
+    const samples = assessment?.coverageCandidateSamples ?? []
+    const message =
+      decision.cause === "active_subagents"
+        ? [
+            "HOST-OWNED RESEARCH CONTINUATION",
+            "Active phase subagents are still testing authorized paths. Let them finish, then integrate their returned evidence before deciding that research is exhausted.",
+          ].join("\n")
+        : [
+            "HOST-OWNED LIVE PRODUCT CONTINUATION",
+            "Continue active exploration of the authorized web application before closing this phase. Navigate and interact with real functionality, exercise additional user journeys and state transitions, and use what you observe to form or test useful mechanisms.",
+            ...(unusedProfiles.length > 0
+              ? [`Prioritize READY + IN_SCOPE browser profiles not yet used meaningfully in this phase: ${unusedProfiles.join(", ")}.`]
+              : []),
+            ...(samples.length > 0
+              ? [`ZAP-observed route families that may lead to additional functionality: ${samples.join(", ")}.`]
+              : []),
+            ...(assessment?.collectorDegraded
+              ? ["ZAP coverage is currently degraded, so continue through visible product functionality without assuming the HTTP map is complete."]
+              : []),
+            "Route breadth is coverage rather than causal novelty; keep exploring it while changing mechanisms, boundaries, state, roles, or workflows when forming hypotheses.",
+          ].join("\n")
+    this.#emit(state, {
+      type: "phase_research_continuation",
+      runID: state.id,
+      cause: decision.cause,
+      ordinal: 1,
+      unusedProfileCount: unusedProfiles.length,
+      coverageCandidateCount: assessment?.coverageCandidateCount ?? 0,
+      collectorDegraded: assessment?.collectorDegraded ?? false,
+      activeSubagents,
+    })
+    this.#emitActivity(state, {
+      kind: "status",
+      text:
+        decision.cause === "active_subagents"
+          ? `Phase research continues · waiting for ${activeSubagents} active subagent(s) before exhaustion.`
+          : `Phase research continues · live product breadth requested for ${unusedProfiles.length} unused profile(s) and ${assessment?.coverageCandidateCount ?? 0} ZAP candidate route(s).`,
+    })
+    state.agent?.steer({ role: "user", content: message, timestamp: this.#now() })
+  }
+
   #observePiEvent(state: RunState, event: PiAgentEvent): void {
     if (event.type === "agent_start") {
       this.#emitActivity(state, {
@@ -3455,8 +3607,8 @@ export class PiAgentSubsystem implements AgentSubsystem {
         },
       })
       if (
-        state.spec.budget.maxOutputTokens !== undefined &&
-        state.cumulativeUsage.output >= state.spec.budget.maxOutputTokens &&
+        state.spec.budget.maxCumulativeOutputTokens !== undefined &&
+        state.cumulativeUsage.output >= state.spec.budget.maxCumulativeOutputTokens &&
         event.message.stopReason !== "error" &&
         event.message.stopReason !== "aborted"
       ) {
@@ -3512,36 +3664,67 @@ export class PiAgentSubsystem implements AgentSubsystem {
         !state.closeout &&
         !state.cancellation
       ) {
-        const remaining = this.#remainingBudget(state)
-        state.closeout = true
-        state.closeoutRequested = true
-        this.#supersedePendingSteering(state, "phase entered closeout before steering was applied")
-        this.#emit(state, {
-          type: "phase_closeout",
-          runID: state.id,
-          state: "entered",
-          cause: "hypothesis_exhausted",
-          reserveMs: Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0)),
-          remainingMs: remaining,
-          deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+        const activeSubagents = [...state.children]
+          .map((id) => this.#states.get(id))
+          .filter((child): child is RunState => child !== undefined && !child.finished).length
+        const assessment = researchCloseoutDetails(record(details)?.researchCloseout)
+        const continuation = researchContinuationDecision({
+          phase: state.spec.prompt.manifest.phase,
+          assessment,
+          alreadyIssued: state.researchContinuationIssued,
+          activeSubagents,
         })
-        this.#emitActivity(state, {
-          kind: "status",
-          text: "Phase mode: closeout · hypothesis synthesis is exhausted with no OPEN/TESTING hypotheses · research tools disabled.",
-        })
-        this.#notifyDelegationWaiters({ all: true })
-        state.agent?.abort()
-        void Promise.allSettled(
-          [...state.children]
-            .map((id) => this.#states.get(id))
-            .filter((child): child is RunState => child !== undefined)
-            .map((child) => this.#cancelState(child, "parent_closeout")),
-        )
+        if (continuation?.cause === "active_subagents") {
+          if (!state.activeSubagentsContinuationIssued) {
+            state.activeSubagentsContinuationIssued = true
+            this.#steerResearchContinuation(state, continuation, assessment, activeSubagents)
+          }
+        } else if (continuation) {
+          state.researchContinuationIssued = true
+          this.#steerResearchContinuation(state, continuation, assessment, activeSubagents)
+        } else {
+          const remaining = this.#remainingBudget(state)
+          state.closeout = true
+          state.closeoutRequested = true
+          this.#supersedePendingSteering(state, "phase entered closeout before steering was applied")
+          this.#emit(state, {
+            type: "phase_closeout",
+            runID: state.id,
+            state: "entered",
+            cause: "hypothesis_exhausted",
+            reserveMs: Math.min(remaining, Math.max(0, state.spec.budget.closeoutReserveMs ?? 0)),
+            remainingMs: remaining,
+            deadlineAt: Math.round(state.spec.budget.clock?.deadlineAt() ?? state.spec.budget.deadlineAt),
+          })
+          this.#emitActivity(state, {
+            kind: "status",
+            text: "Phase mode: closeout · hypothesis synthesis is exhausted with no OPEN/TESTING hypotheses · research tools disabled.",
+          })
+          this.#notifyDelegationWaiters({ all: true })
+          state.agent?.abort()
+          void Promise.allSettled(
+            [...state.children]
+              .map((id) => this.#states.get(id))
+              .filter((child): child is RunState => child !== undefined)
+              .map((child) => this.#cancelState(child, "parent_closeout")),
+          )
+        }
       }
       if (event.toolName === "hypothesis" && !event.isError && record(details)?.synthesisOutcome === "diversified")
         this.#emitActivity(state, {
           kind: "status",
           text: "Hypothesis synthesis diversified: continue only with the recorded discriminators; avoid repeating converged work.",
+        })
+      const convergence = record(record(details)?.convergence)
+      if (
+        event.toolName === "hypothesis" &&
+        !event.isError &&
+        typeof convergence?.cluster === "string" &&
+        Array.isArray(convergence.negativeHypothesisIDs)
+      )
+        this.#emitActivity(state, {
+          kind: "status",
+          text: `Hypothesis convergence detected in '${convergence.cluster}' after ${convergence.negativeHypothesisIDs.join(", ")}. Prefer a different impact or enforcement boundary next; handoff will require that structural pivot or evidenced exhaustion.`,
         })
       this.#emitActivity(state, {
         kind: "output",
@@ -3744,12 +3927,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
                 throw new Error("context_rotation_failed: emergency recovery permits one provider generation")
               state.contextRecoveryProviderCallsRemaining--
             }
-            const limit = state.spec.budget.maxOutputTokens
-            if (limit === undefined) return this.#streamFn(model, context, options)
+            const localOnlyOptions = { ...options, telemetryContext: NOOP_TELEMETRY_CONTEXT }
+            const limit = state.spec.budget.maxCumulativeOutputTokens
+            if (limit === undefined) return this.#streamFn(model, context, localOnlyOptions)
             const remaining = Math.max(1, limit - state.cumulativeUsage.output)
             const requested = options?.maxTokens ?? model.maxTokens
             return this.#streamFn(model, context, {
-              ...options,
+              ...localOnlyOptions,
               maxTokens: Math.min(model.maxTokens, requested, remaining),
             })
           },
@@ -3790,6 +3974,13 @@ export class PiAgentSubsystem implements AgentSubsystem {
               const skill = locator ? this.#skillName(state, locator) : undefined
               if (requestedPath && (!skill || !state.skillsRead.has(skill)))
                 return block("Read this skill's complete SKILL.md in this AgentRun before requesting package resources.")
+            }
+            if (toolCall.name === "skill_stage") {
+              const request = record(args)
+              const locator = typeof request?.skill === "string" ? request.skill.trim() : ""
+              const skill = locator ? this.#skillName(state, locator) : undefined
+              if (!skill || !state.skillsRead.has(skill))
+                return block("Read this skill's complete SKILL.md in this AgentRun before staging package resources.")
             }
           },
         })
@@ -4051,6 +4242,22 @@ export class PiAgentSubsystem implements AgentSubsystem {
             ].join(" "),
           })
         }
+      }
+      if (state.spec.releaseBrowserOwner) {
+        await state.spec
+          .releaseBrowserOwner({
+            runID: state.id,
+            role: state.spec.role,
+            ...(state.spec.parentID ? { parentID: state.spec.parentID } : {}),
+          })
+          .catch((error) => {
+            this.#emitActivity(state, {
+              kind: "status",
+              text: `Browser tab cleanup failed: ${boundedFailureDetail(
+                error instanceof Error ? error.message : String(error),
+              )}`,
+            })
+          })
       }
       const result: AgentRunResult = {
         id: state.id,

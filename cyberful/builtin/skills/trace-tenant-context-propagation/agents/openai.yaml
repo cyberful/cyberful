@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tenant Context Propagation Tracer"
+  short_description: "Trace tenant binding through distributed paths"
+  default_prompt: "Use $trace-tenant-context-propagation to reconstruct tenant selection, routing, caching, and resource binding."

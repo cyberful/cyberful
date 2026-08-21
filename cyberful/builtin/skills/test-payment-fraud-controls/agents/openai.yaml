@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Payment Fraud Controls"
+  short_description: "Test payment and value-movement fraud controls"
+  default_prompt: "Use $test-payment-fraud-controls to design a bounded synthetic payment-control test matrix."

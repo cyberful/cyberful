@@ -31,14 +31,15 @@ export type WorkflowCapability =
   | "fuzz-campaign"
   | "protocol-campaign"
   | "cve-dictionary"
+  | "mitre-attack"
 
 // ── Phase Deliverable And Persona Contracts ─────────────────────
 // Each workflow phase names the one structured artifact it must leave in the
 // workarea. The phase runner includes that exact name in the prompt and rejects
 // completion when the file is absent, so a persona cannot substitute an
 // improvised filename that its successor will never read. A phase may also name
-// one first-party persona from another workflow, allowing Bug Bounty to reuse
-// Pentest execution policy without copied prompts that can silently drift.
+// one first-party persona from another workflow when sharing policy is explicit;
+// Bug Bounty research stays dedicated so reward strategy cannot drift to Pentest.
 // Extra evidence remains allowed; the deliverable identifies only the mandatory
 // handoff artifact.
 // ───────────────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "pentest",
     sourcePolicy: "none",
-    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
+    capabilities: ["isolated-exec", "browser", "zap", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "engagement",
     completionTitle: "Pentest completed",
     nextWorkflow: "ask",
@@ -139,15 +140,15 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "bug-bounty",
     sourcePolicy: "read",
-    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary"],
+    capabilities: ["source", "isolated-exec", "browser", "zap", "ghidra", "evm-lab", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "protocol-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "engagement",
     completionTitle: "Bug bounty assessment completed",
     nextWorkflow: "ask",
     phases: [
       { name: "brief", deliverable: "MISSION.md" },
-      { name: "recon", deliverable: "RECON.md", persona: { workflow: "pentest", phase: "recon" } },
-      { name: "exploit", deliverable: "EXPLOIT.md", persona: { workflow: "pentest", phase: "exploit" } },
-      { name: "hacker", deliverable: "HACKER.md", persona: { workflow: "pentest", phase: "hacker" } },
+      { name: "recon", deliverable: "RECON.md" },
+      { name: "exploit", deliverable: "EXPLOIT.md" },
+      { name: "hacker", deliverable: "HACKER.md" },
       { name: "verify", deliverable: "BUG_BOUNTY_VERIFY.md" },
       { name: "report", deliverable: "BUG_BOUNTY_REPORT.md" },
     ],
@@ -179,7 +180,7 @@ const WORKFLOWS: Record<string, SequentialWorkflow> = {
     kind: "workflow",
     personas: "code-audit",
     sourcePolicy: "read",
-    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "cve-dictionary"],
+    capabilities: ["source", "code-graph", "isolated-exec", "audit-diff", "ghidra", "firmware-lab", "native-analysis", "native-debug", "fuzz-campaign", "cve-dictionary", "mitre-attack"],
     zapLifecycle: "disabled",
     completionTitle: "Code audit completed",
     nextWorkflow: "ask",
@@ -219,7 +220,7 @@ const FOLLOW_UP: InteractiveWorkflow = {
   kind: "interactive",
   personas: "ask",
   sourcePolicy: "none",
-  capabilities: ["isolated-exec", "browser", "zap", "cve-dictionary"],
+  capabilities: ["isolated-exec", "browser", "zap", "cve-dictionary", "mitre-attack"],
   zapLifecycle: "disabled",
   completionTitle: "Answer completed",
   persona: "ask",

@@ -1,0 +1,41 @@
+{
+  "$schema": "./transaction-events.schema.json",
+  "engagement_id": "synthetic-transaction-trace",
+  "authorization_reference": "engagement-scope-transaction-evidence",
+  "transactions": [
+    {
+      "transaction_id": "synthetic-transfer-001",
+      "currency": "USD",
+      "expected_terminal_state": "settled",
+      "expected_net_delta_minor": 100,
+      "events": [
+        {
+          "event_id": "authorization-001",
+          "sequence": 1,
+          "component": "authorization-service",
+          "kind": "authorize",
+          "state_before": "created",
+          "state_after": "authorized",
+          "amount_delta_minor": 0,
+          "idempotency_key": "synthetic-transfer-001-authorize",
+          "correlation_ids": ["synthetic-correlation-001"],
+          "durable_effect": "authorization decision recorded",
+          "evidence_ref": "evidence/authorization-001.json"
+        },
+        {
+          "event_id": "ledger-001",
+          "sequence": 2,
+          "component": "ledger-service",
+          "kind": "post",
+          "state_before": "authorized",
+          "state_after": "settled",
+          "amount_delta_minor": 100,
+          "idempotency_key": "synthetic-transfer-001-post",
+          "correlation_ids": ["synthetic-correlation-001"],
+          "durable_effect": "synthetic value posted",
+          "evidence_ref": "evidence/ledger-001.json"
+        }
+      ]
+    }
+  ]
+}

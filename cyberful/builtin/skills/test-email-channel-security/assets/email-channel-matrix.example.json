@@ -1,0 +1,18 @@
+{
+  "authority_reference": "controlled-mailbox-assessment",
+  "controlled_mailboxes": ["actor-a@example.test", "actor-b@example.test"],
+  "flows": [
+    {
+      "id": "password-reset",
+      "direction": "outbound",
+      "trigger": "controlled account requests password reset",
+      "actor": "actor-a",
+      "tenant": "tenant-a",
+      "recipient_rule": "current verified address for actor-a",
+      "template": "password-reset-v2",
+      "links_or_tokens": ["single-use reset link bound to actor-a and canonical host"],
+      "evidence": "workarea/evidence/password-reset-source.eml"
+    }
+  ]
+}
+

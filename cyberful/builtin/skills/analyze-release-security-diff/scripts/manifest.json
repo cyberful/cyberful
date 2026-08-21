@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "analyze_release_security_diff.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["verify", "report", "index", "trace", "hunt"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-two-bounded-confined-release-manifests", "writes-deterministic-raw-diff-evidence"],
+  "timeout_seconds": 15,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 2097152},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/release-security-diff-input.schema.json"},
+  "output": {"format": "json", "schema": "assets/release-security-diff-evidence.schema.json", "raw": true}
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Model Supply Chain Auditor"
+  short_description: "Audit model artifact provenance and loading risk"
+  default_prompt: "Use $audit-ai-model-supply-chain to verify provenance, integrity, formats, and loading controls for these AI artifacts."

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_iac_audit_campaign.py",
+  "class": "orchestrator",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "index", "hunt"],
+  "tools": ["checkov"],
+  "dependencies": {"commands": ["checkov"], "python": [], "bootstrap": null},
+  "effects": ["snapshots-confined-infrastructure-as-code", "blocks-tool-network-syscalls", "writes-bounded-raw-static-analysis-evidence"],
+  "timeout_seconds": 120,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/iac-audit-campaign.schema.json"},
+  "output": {"format": "json", "schema": "assets/iac-audit-evidence.schema.json", "raw": true}
+}

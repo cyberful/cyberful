@@ -10,17 +10,16 @@ cyberful/builtin/
   cyberful.json
   agents/
     pentest/       brief, recon, exploit, hacker, verify, report, budgets
-    bug-bounty/    dedicated brief, verify, report, and shared-phase budgets
+    bug-bounty/    dedicated brief, recon, exploit, hacker, verify, report, and budgets
     code-audit/    scope, index, trace, hunt, attack, verify, report, budgets
     ask/           interactive follow-up persona and budget
   skills/*/SKILL.md
-  skills/{ZAP,NUCLEI}.md
   example/         development-only attachment fixtures
 ```
 
 ## Persona contract
 
-Each Markdown filename below a workflow or follow-up namespace is a phase or persona identifier used by the orchestrator. The host renders `baseInstructions.md` once for each phase, replacing its workflow authorization, hacker-profile, delegation, and workarea placeholders with the current runtime values. Workarea rules include the attested cyberful-os Linux architecture so agents can reject incompatible dynamic execution plans before invoking the lab. The authorization remains tied to the selected workflow even when Bug Bounty reuses a Pentest persona. The invariant target-content trust boundary lives directly in the template. Cyberful compiles the rendered document, host-owned phase rules, skill catalog, and run overlay into one immutable system message. Pi defaults, personal instructions, and ambient project configuration are not added.
+Each Markdown filename below a workflow or follow-up namespace is a phase or persona identifier used by the orchestrator. The host renders `baseInstructions.md` once for each phase, replacing its workflow authorization, hacker-profile, delegation, and workarea placeholders with the current runtime values. Workarea rules include the attested cyberful-os Linux architecture so agents can reject incompatible dynamic execution plans before invoking the lab. The invariant target-content trust boundary lives directly in the template. Cyberful compiles the rendered document, host-owned phase rules, skill catalog, and run overlay into one immutable system message. Pi defaults, personal instructions, and ambient project configuration are not added.
 
 Persona frontmatter declares a non-negative integer `subagents`. The host removes it from model-visible prose and combines it with the delegation limits in `settings.yaml`. Children remain inside the owning phase's workarea, private gateway, traffic policy, active-execution budget, and transcript boundary. Model, provider, tools, handoff, and context-sharing fields are not valid persona metadata.
 
@@ -38,7 +37,7 @@ The Bug Bounty Program chain is:
 brief → recon → exploit → hacker → verify → report → complete
 ```
 
-Its dedicated Brief writes the Pentest-compatible `MISSION.md`; Recon, Exploit, and Hacker resolve directly to the Pentest personas, including Recon's calibrated candidate and retained-coverage contract. Dedicated Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
+Its dedicated Brief writes the Pentest-compatible `MISSION.md`. Dedicated Recon, Exploit, and Hacker personas apply a qualitative reward lens, host-validated bounty context, structurally checked portfolio convergence, and one explicit closeout of remaining authorized reward opportunities while retaining the standard `RECON.md`, `EXPLOIT.md`, and `HACKER.md` artifacts. Exploit and Hacker roots request one independent artifact-only `portfolio-critic` in the first half and one advisory `finding-breaker` after their first positive finding; neither review is a host gate. Dedicated Verify separates mechanism reproduction from evidence of a violated security invariant and concrete unwanted attacker effect. Verify and Report write `BUG_BOUNTY_VERIFY.md`, portable submissions under `reports/bug-bounty/BBP-###.md`, and the terminal `BUG_BOUNTY_REPORT.md` index.
 
 The Code Audit chain is:
 
@@ -64,4 +63,17 @@ Messages from the TUI steer the active root `AgentRun`. Blocking questions use t
 
 ## Skills
 
-Structured playbooks, including the canonical ZAP and Nuclei packages plus the first-party firmware laboratory, native debugging, binary analysis, native fuzzing, binary-protocol, and SAST workflows, live under `skills/*/SKILL.md` and are exposed through one compact catalog. Every root, subagent, and fallback run must read a selected `SKILL.md` in full before using it; packages retain their relevant `references/`, `agents/`, scripts, and assets. Repository-provided skills or prompts are never discovered automatically. Additional persona and skill roots must be explicitly trusted in `settings.yaml`.
+Structured playbooks, including isolated-browser operation, the canonical ZAP and Nuclei packages, and the first-party firmware laboratory, native debugging, binary analysis, native fuzzing, binary-protocol, and SAST workflows, live under `skills/*/SKILL.md`. Every root, subagent, and fallback run receives all names grouped by category plus a route-sized deterministic metadata selection: first-party descriptions first, then category-round-robin extension excerpts within the configurable 2% budget. Host paths never enter the prompt, and `skill_search` always queries the complete index even when an entry is name-only there. `skill_read` must read the selected `SKILL.md` in full before use. If the procedure needs a packaged script or asset, `skill_stage` then materializes that regular file byte-for-byte under a content-addressed owner-only workarea path. Packages retain their relevant `references/`, `agents/`, scripts, and assets. Repository-provided skills or prompts are never discovered automatically. Additional persona and skill roots must be explicitly trusted in `settings.yaml`.
+
+Every first-party package name is lowercase kebab-case and begins with one closed operational-intent prefix:
+
+- `test-` discovers and demonstrates vulnerabilities or invariant violations.
+- `audit-` examines source, configuration, or architecture.
+- `trace-` reconstructs causal paths or dataflows.
+- `analyze-` transforms supplied artifacts into evidence, normally offline.
+- `operate-` uses a concrete tool or toolchain.
+- `assess-` coordinates multiple analysis modes in a broad evaluation.
+- `plan-` prepares scope, strategy, and coverage.
+- `report-` assembles reviewed evidence into a draft deliverable without granting attestation authority.
+
+The registry rejects a nonconforming first-party name but preserves arbitrary extension names for compatibility. The compiler inserts the same vocabulary immediately before the catalog and states that a prefix grants neither authorization nor tool access. Richer packages keep concise entrypoints and progressively disclose focused references, copyable JSON contracts, synthetic examples, and reviewed scripts. Each script package declares whether it is an offline analysis, loopback harness, authorized probe, or orchestrator, together with its workflow, phase, dependencies, effects, deadline, request/concurrency/output bounds, environment-secret names, and schemas. Active campaigns can use the existing authorized target route in Pentest and Bug Bounty; Code Audit remains offline and loopback-only. Scripts preserve bounded raw evidence and leave vulnerability verdicts to the evidence workflow.

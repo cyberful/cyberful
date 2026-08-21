@@ -1,0 +1,15 @@
+{
+  "$schema": "assets/serverless-event-probe.schema.json",
+  "attribution": {
+    "authorization_reference": "mission://serverless-event",
+    "expires_at": "2099-01-01T00:00:00Z",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "actor_id": "tester-a",
+    "tenant_id": "tenant-a",
+    "source_id": "synthetic-webhook-a"
+  },
+  "limits": {"max_requests": 2, "requests_per_second": 1},
+  "cases": [
+    {"id": "delivery-control", "endpoint": "http://127.0.0.1:8080/events", "event_id": "event-a", "event_type": "profile.updated", "schema_version": "1", "payload": {"profile_id": "tester-owned"}, "actor_id": "tester-a", "tenant_id": "tenant-a", "source_id": "synthetic-webhook-a", "expected_effect": "record tester-owned update"}
+  ]
+}

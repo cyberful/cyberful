@@ -6,6 +6,8 @@
 // ─────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
+import os from "node:os"
+import path from "node:path"
 import { BrowserProfile } from "./browser-profile"
 
 describe("browser profile identity", () => {
@@ -76,24 +78,45 @@ describe("browser profile identity", () => {
         PATH: "/usr/bin",
         CYBER_BROWSER_HEADLESS: "true",
         CYBER_BROWSER_USER_DATA_DIR_2: "/profiles/two",
+        CYBER_BROWSER_CHROME_EXECUTABLE: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         CYBER_BROWSER_CDP_ENDPOINT: "http://127.0.0.1:9222",
         CYBER_BROWSER_OWN_TAB: "1",
         CYBER_BROWSER_SHARED_ATTESTATION: "must-not-cross",
+        AGENT_BROWSER_ARGS: "--proxy-server=http://untrusted.test",
+        AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "30000",
+        AGENT_BROWSER_RESTORE: "inherited-restore",
+        AGENT_BROWSER_RESTORE_SAVE: "always",
       },
       "/home/tester",
     )
 
     expect(env).toMatchObject({
       PATH: "/usr/bin",
-      CYBER_BROWSER_BROWSERS_PATH: "/home/tester/.cyberful/browser/.browsers",
       CYBER_BROWSER_USER_DATA_DIR: "/profiles/two",
       CYBER_BROWSER_ARTIFACTS_DIR: "/home/tester/.cyberful/browser/artifacts/profile-2",
       CYBER_BROWSER_PROFILE_ID: "2",
-      CYBER_BROWSER_EAGER: "1",
       CYBER_BROWSER_HEADLESS: "false",
+      AGENT_BROWSER_PROFILE: "/profiles/two",
+      AGENT_BROWSER_EXECUTABLE_PATH: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      AGENT_BROWSER_DOWNLOAD_PATH: "/home/tester/.cyberful/browser/artifacts/profile-2",
+      AGENT_BROWSER_SCREENSHOT_DIR: "/home/tester/.cyberful/browser/artifacts/profile-2",
+      AGENT_BROWSER_SESSION: "cyberful-manual-2",
+      AGENT_BROWSER_NAMESPACE: "cyberful-manual-2",
+      AGENT_BROWSER_HEADED: "1",
+      AGENT_BROWSER_ARGS: "--restore-last-session",
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: "0",
+      AGENT_BROWSER_SOCKET_DIR: process.platform === "win32" ? path.join(os.tmpdir(), "cyb-ab-manual-2") : "/tmp/cyb-ab-manual-2",
     })
     expect(env.CYBER_BROWSER_CDP_ENDPOINT).toBeUndefined()
     expect(env.CYBER_BROWSER_OWN_TAB).toBeUndefined()
     expect(env.CYBER_BROWSER_SHARED_ATTESTATION).toBeUndefined()
+    expect(env.AGENT_BROWSER_CDP).toBeUndefined()
+    expect(env.AGENT_BROWSER_AUTO_CONNECT).toBeUndefined()
+    expect(env.AGENT_BROWSER_PROVIDER).toBeUndefined()
+    expect(env.AGENT_BROWSER_PASSIVE).toBe("1")
+    expect(env.AGENT_BROWSER_ARGS).toBe("--restore-last-session")
+    expect(env.AGENT_BROWSER_AUTOSAVE_INTERVAL_MS).toBeUndefined()
+    expect(env.AGENT_BROWSER_RESTORE).toBeUndefined()
+    expect(env.AGENT_BROWSER_RESTORE_SAVE).toBeUndefined()
   })
 })

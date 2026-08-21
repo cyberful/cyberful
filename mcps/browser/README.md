@@ -1,100 +1,41 @@
-# browser MCP
+# Browser runtime
 
-Standalone stdio MCP server for browser-use style automation with an isolated Playwright Chromium on macOS.
+Cyberful uses its [agent-browser fork](https://github.com/cyberful/agent-browser) `0.34.0-cyberful.3` as its only browser automation runtime. The `bin/cyber-browser` compatibility launcher resolves the package's platform-native executable and always starts MCP mode with the complete typed catalog (`mcp --tools all`).
 
-Cyberful starts one instance per numbered target identity plus one named `search` identity and adds the gateway-only `profile` selector to ordinary browser tools. A standalone MCP process still owns exactly one `CYBER_BROWSER_USER_DATA_DIR`. The `search` instance alone publishes `web_search`, which never accepts a profile argument.
+Cyberful, rather than the launcher, owns profile selection, session and namespace names, daemon sockets, lifecycle, and target egress. The gateway creates one shared agent-browser session per profile and phase, registers the detached daemon and its Chrome descendants as phase-owned processes, and verifies daemon endpoint release during shutdown. Persistent profiles `1` through `5` retain authenticated Chrome state and fail closed unless ZAP and its CA are available; the ephemeral `search` context is direct, carries no Cyberful proxy environment, and is natively confined to `*.duckduckgo.com` and `*.google.com`.
 
-## Install
+`web_search` is a Cyberful gateway wrapper over agent-browser on `search`. It is the canonical public-search operation. Authorized `agent_browser_*` tools remain available through deferred tool discovery; calls on `search` can interact only with DuckDuckGo or Google, while authorized target browsing uses a numbered ZAP-routed profile. The first operational browser result from `tool_search` automatically includes agent-browser's version-matched `core-mcp-managed` instructions; narrower specialized skills remain available through `agent_browser_skills_list` and `agent_browser_skills_get`.
 
-From the repository root:
-
-```sh
-npm --prefix mcps install
-npm --prefix mcps run browser:install
-```
-
-`browser:install` downloads Chromium into `browser/.browsers/`.
-
-## Run
+Install dependencies and Chrome from the repository root:
 
 ```sh
-npm --prefix mcps run browser
+npm install --prefix mcps
+npm run --prefix mcps browser:install
 ```
 
-Or directly:
+The pinned package supplies native executables, skill data, and its Apache-2.0 license. Release builds embed only the native executable matching the target platform together with the package data required at runtime and the first-party CAPTCHA plugin.
+
+## Hardened fork
+
+The fork owns Chrome launch and CDP hardening directly. It never enables the detectable CDP Runtime domain, suppresses the AutomationControlled Blink feature, and provides `AGENT_BROWSER_PASSIVE=1` for headed human login without page attachment. Cyberful uses that passive mode for `cyberful browser-1` through `browser-5`, fixes `--restore-last-session` for every numbered-profile launch so clean restarts retain session cookies, and leaves the temporary `search` profile unrestored. Existing tabs remain untouched and no temporary tab is opened for login-state collection. Closing Chrome also exits the passive daemon, and the Cyberful command waits until the profile lock has been released.
+
+Target proxy, bypass, CA SPKI, and QUIC policy remain host-owned environment. Nested batch, provider, or model arguments cannot replace ZAP routing or the search allowlist, while `search` receives no proxy values or persistent Chrome profile. Browser-global header mutation is hidden and rejected because mandatory public program headers belong to the host-owned ZAP route. `CYBER_BROWSER_CHROME_EXECUTABLE` remains the optional operator override.
+
+## First-party CAPTCHA plugin
+
+`bin/agent-browser-plugin-captcha` implements `agent-browser.plugin.v1` and publishes `command.run` plus `captcha.solve`. Cyberful fixes this plugin in every profile registry, blocks `plugin add`, and permits plugin execution only for `captcha/captcha.solve`. The plugin maps bounded Turnstile, reCAPTCHA v2/v3, hCaptcha, image-to-text, or provider-native tasks onto the documented CapSolver and 2Captcha create/result APIs.
+
+Configure it through Cyberful's private gateway environment:
+
+```dotenv
+CYBER_BROWSER_CAPTCHA_PROVIDER=capsolver
+CYBER_BROWSER_CAPTCHA_API_KEY=replace-with-provider-key
+```
+
+The provider accepts `auto`, `capsolver`, or `2captcha`. Without credentials the installed plugin returns a structured failure and the agent may use Cyberful's human CAPTCHA question as a last resort. API keys are never accepted in the plugin request payload or returned in its output.
+
+Run the browser package checks with:
 
 ```sh
-mcps/browser/bin/cyber-browser
+npm run --prefix mcps test:browser
 ```
-
-## Tools
-
-- `browser_status`
-- `web_search` (only when `CYBER_BROWSER_PROFILE_ID=search`)
-- `browser_navigate`
-- `browser_snapshot`
-- `browser_captcha_status`
-- `browser_captcha_handoff`
-- `browser_click`
-- `browser_fill`
-- `browser_type`
-- `browser_select`
-- `browser_set_input_files`
-- `browser_scroll`
-- `browser_check`
-- `browser_press`
-- `browser_wait`
-- `browser_artifact_list`
-- `browser_artifact_read`
-- `browser_network_log`
-- `browser_network_response_body`
-- `browser_evaluate`
-- `browser_cookies`
-- `browser_close`
-
-## DOM snapshots
-
-`browser_snapshot` returns at most 12,000 text characters and 80 actionable elements by default. For a long document, narrow the result with a CSS `selector`; text and refs then come only from the first matching subtree. Follow `next_text_offset` with `text_offset` to read subsequent character ranges without overlap or gaps. The result always reports scope, selector match count, `start-end/total`, truncation, and interactive-element counts.
-
-Prefer the defaults plus selector/pagination before raising `max_text_chars` or `max_elements`. Their hard limits remain 100,000 and 500. Invalid selectors and selectors with no matches return explicit errors.
-
-## Navigation waits
-
-Use the default `wait_until="domcontentloaded"` for ordinary page opens. `browser_navigate` and post-click waits intentionally do not expose `networkidle`; modern retail, analytics-heavy, streaming, polling, or chat-widget pages may keep background requests open indefinitely. When you need readiness beyond DOM load, wait for a specific selector or text with `browser_wait`.
-
-Use `browser_wait state="networkidle"` only when you explicitly need network quietness and are prepared for it to time out.
-
-If a navigation commits but the requested load state times out, the tool returns the current page URL/title with a warning so the agent can continue with `browser_snapshot`, `browser_wait`, or `browser_captcha_status`.
-
-Ordinary requests for one profile remain serialized. MCP cancellation bypasses that queue: a gateway timeout or caller abort immediately invalidates the active browser context, waits at most two seconds for Playwright cleanup, suppresses the stale response, and frees later requests from the blocked operation. A cleanup that still cannot settle terminates only that profile's MCP process; it cannot leave the profile queue waiting for the original operation indefinitely. The owning gateway then probes the quarantined generation and recreates that one profile in single-flight if its transport died. The cancelled target action is never replayed automatically.
-
-## DuckDuckGo search
-
-`web_search` uses Chromium to load DuckDuckGo's official HTML surface, extracts one bounded page of organic and sponsored results, unwraps DuckDuckGo redirect URLs, and fails explicitly on an unknown layout or visible challenge. It performs no automatic retry. Cyberful forces the tool to the direct, persistent `search` profile; ordinary browser tools may also select that identity with `profile: "search"`.
-
-## CAPTCHA/challenge handling
-
-`browser_captcha_status` detects common CAPTCHA and anti-bot challenge signals such as reCAPTCHA, hCaptcha, Cloudflare Turnstile, Cloudflare challenge pages, Arkose/FunCaptcha, Geetest, and generic CAPTCHA markers. Provider SDK requests, response fields, and a lone generic CAPTCHA mention remain visible in its diagnostics, but do not count as an active challenge without stronger visible page evidence.
-
-The agent first performs the ordinary page action that makes the challenge visible. `browser_captcha_handoff` then refuses unless detection attests that active challenge and brings the same Chromium window to the front. It returns immediately so the agent can call the gateway `question` tool with `kind: "captcha"`; that TUI question, not a short browser timeout, owns the human pause. After the answer, `browser_captcha_status` must attest that the challenge cleared. The scoped gateway circuit breaker denies further actions only for that browser profile and origin until that observation. Other profiles, origins, tabs, and non-browser tools continue. It never solves, bypasses, injects tokens, or automates CAPTCHA challenges. If the foregrounded browser has no visible challenge, the human can choose `No challenge visible` to clear that false-positive pause explicitly.
-
-## Isolation
-
-- Browser cache: `mcps/browser/.browsers`
-- Profile: `~/.local/state/cyberful-os/mcp/browser/profile`
-- Artifacts: `~/.local/state/cyberful-os/mcp/browser/artifacts`
-
-Useful environment overrides:
-
-- `CYBER_BROWSER_BROWSERS_PATH`
-- `CYBER_BROWSER_USER_DATA_DIR`
-- `CYBER_BROWSER_PROFILE_ID` as an integer from `1` through `5` or `search`, reported by `browser_status`
-- `CYBER_BROWSER_CLEAR_COOKIES_ON_START=true` to intentionally clear the persistent target login (default: preserve it)
-- `CYBER_BROWSER_ARTIFACTS_DIR`
-- `CYBER_BROWSER_HEADLESS=true`
-- `CYBER_BROWSER_EXECUTABLE`
-- `CYBER_BROWSER_PROXY`
-
-`browser_status` reports the configured and resolved browser channel, actual browser version/driver, connection mode, and proxy state. In Recon, the host-owned EAGER browser attests these values after launch and each CDP-attached scout receives the same record before its first navigation.
-
-For a sequential phase with a configured proxy, the first `browser_status` launches only the blank dedicated context and probes ZAP so it can return `zap` or `direct-fallback` before target traffic. An unattested CDP attachment stays `pending` because that process does not own the browser launch.

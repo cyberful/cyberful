@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Serverless Event Security"
+  short_description: "Probe serverless event authority and replay"
+  default_prompt: "Use $test-serverless-event-security to design a bounded synthetic-event test for this function endpoint."

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Analyze Network Packet Captures"
+  short_description: "Summarize bounded classic PCAP evidence offline"
+  default_prompt: "Use $analyze-network-packet-captures to validate and summarize classic PCAP evidence offline."
+policy:
+  allow_implicit_invocation: true

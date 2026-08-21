@@ -1,6 +1,29 @@
 ---
 name: test-graphql-security
 description: Test and audit GraphQL schemas, resolvers, subscriptions, federation, batching, authorization, data exposure, input coercion, introspection, persisted operations, complexity, and denial-of-wallet risks. Use for GraphQL endpoints, gateways, subgraphs, schema registries, Apollo-style federation, Relay connections, and GraphQL-over-WebSocket assessments.
+metadata:
+  domain: application-security
+  subdomain: graphql-security
+  triggers:
+    - graphql security assessment
+    - graphql resolver authorization
+    - graphql federation
+    - graphql introspection
+    - graphql complexity
+    - persisted query review
+  tags:
+    - graphql
+    - resolvers
+    - federation
+    - batching
+    - complexity
+    - subscriptions
+  frameworks:
+    mitre_attack:
+      - T1190
+    nist_csf:
+      - ID.RA-01
+      - PR.AA-05
 ---
 
 # Test GraphQL Security

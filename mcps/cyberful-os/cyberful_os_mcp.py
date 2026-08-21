@@ -72,6 +72,13 @@ DEFAULT_IMAGE = "cyberful-os:latest"
 PROGRESS_INTERVAL_SECONDS = 0.25
 PROGRESS_PREVIEW_BYTES = 64 * 1024
 PASSTHROUGH_ENV_KEYS = ("CYBERFUL_OS_HTTP_PROXY", "CYBERFUL_OS_CA_BUNDLE")
+HOST_OWNED_TRANSPORT_ENV_KEYS = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+    "GIT_SSL_CAINFO", "GIT_SSL_NO_VERIFY", "PIP_CERT", "NODE_EXTRA_CA_CERTS",
+    "NODE_USE_ENV_PROXY", "BUNDLE_SSL_CA_CERT", "BUNDLE_SSL_VERIFY_MODE",
+})
 CORE_PROXY_TRUST_DIRECTORY = "/run/cyberful/proxy-trust"
 MAX_CA_BUNDLE_BYTES = 2 * 1024 * 1024
 NO_TELEMETRY_ENV = {
@@ -361,9 +368,11 @@ def docker_environment() -> dict[str, str]:
 
 # ── Host-Owned Exec Environment Wins Over Caller Input ──────────────────────
 # Docker exec overrides the image environment, so caller configuration is
-# normalized before proxy trust, EVM compiler homes, and no-telemetry policy are
-# applied. An EVM engagement therefore cannot redirect its compiler into `/root`,
-# while every dedicated tool and the shell share the same fixed policy boundary.
+# normalized before host policy is applied. Transport variables are removed even
+# when an engagement has no proxy, preventing a caller from inventing a route or
+# trust root; an admitted host-owned proxy/CA pair is then mapped to standard
+# variables after that boundary. EVM homes and no-telemetry policy follow the
+# same host-wins rule for every dedicated tool and the general shell.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def validated_ca_bundle(value: str) -> str:
@@ -389,6 +398,8 @@ def validated_ca_bundle(value: str) -> str:
 
 def inherited_container_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     next_env = normalize_extra_env(extra_env) or {}
+    for key in HOST_OWNED_TRANSPORT_ENV_KEYS:
+        next_env.pop(key, None)
     host_env = {key: os.environ[key] for key in PASSTHROUGH_ENV_KEYS if os.environ.get(key)}
     proxy = host_env.get("CYBERFUL_OS_HTTP_PROXY")
     ca_bundle = host_env.get("CYBERFUL_OS_CA_BUNDLE")
@@ -1458,6 +1469,7 @@ CLI_TOOL_SPECS: tuple[CliToolSpec, ...] = (
     _cli("msf_virustotal", "msf-virustotal", "malware-analysis", "Metasploit VirusTotal lookup helper; requires an API key where applicable.", "Pass file/hash/API flags in args.", examples=("--help",)),
     _cli("nikto", "nikto", "web", "Web server vulnerability and misconfiguration scanner.", "Pass nikto flags in args, such as -h, -p, -Tuning, and output options.", examples=("-h https://example.com",)),
     _cli("nmap", "nmap", "network", "Network scanner for host discovery, port scanning, service detection, OS fingerprinting, and NSE scripts.", "Pass nmap flags and targets in args. For polite rate limiting use --max-rate <N> or --max-rate=<N>; do not use non-Nmap flags such as --rate-rate.", examples=("-sV -sC --max-rate 10 -p 22,80,443 10.0.0.5",)),
+    _cli("impacket_getuserspns", "impacket-GetUserSPNs", "active-directory", "Impacket GetUserSPNs client for enumerating service-principal-name accounts and requesting Kerberos service tickets during authorized Kerberoasting assessments.", "Pass the domain target and authentication or ticket-request flags in args. Use -request only when ticket acquisition is authorized, write reusable output beneath /workspace, and preserve the domain controller, principal, encryption type, and collection time with the evidence.", examples=("example.local/user:password -dc-ip 10.0.0.5", "example.local/user:password -dc-ip 10.0.0.5 -request -outputfile /workspace/kerberoast.hashes"), aliases=("GetUserSPNs.py",), expected_paths=("/usr/local/bin/impacket-GetUserSPNs",)),
     _cli("impacket_netview", "impacket-netview", "windows", "Impacket netview helper for enumerating Windows domain hosts and shares.", "Pass impacket-netview target and authentication flags in args.", examples=("--help",)),
     _cli("impacket_rpcdump", "impacket-rpcdump", "windows", "Impacket RPC endpoint mapper dumping utility.", "Pass target binding and authentication flags in args.", examples=("ncacn_ip_tcp:10.0.0.5",)),
     _cli("impacket_samrdump", "impacket-samrdump", "windows", "Impacket SAMR enumeration utility for Windows account and group data.", "Pass target and authentication flags in args.", examples=("domain/user:pass@10.0.0.5",)),
@@ -2557,9 +2569,14 @@ for _native_name, _native_operations in native_security.OPERATIONS.items():
     def _native_handler(args: dict[str, Any], name: str = _native_name) -> dict[str, Any]:
         return tool_result(json.dumps(native_security.invoke(name, args), indent=2, sort_keys=True) + "\n")
 
+    _native_detail = (
+        " Formats are detected by signature; archive_extract supports ZIP, TAR and compressed TAR variants, gzip/bzip2/xz streams, 7z, RAR, CAB, and ar with bounded atomic publication."
+        if _native_name == "archive_extract"
+        else ""
+    )
     register_tool(
         _native_name,
-        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.",
+        f"Operate the complete { _native_name.replace('_', ' ') } workflow. Operations: {', '.join(_native_operations)}. State is bounded to /workspace and background processes are reaped when this phase bridge closes.{_native_detail}",
         native_security.SCHEMAS[_native_name],
     )(_native_handler)
 register_tool(

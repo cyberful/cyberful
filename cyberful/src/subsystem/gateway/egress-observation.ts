@@ -124,7 +124,7 @@ function fromMetadata(result: CallToolResult): Observation | undefined {
 
 function inferredRoute(tool: string): string | undefined {
   if (tool === "shell" || tool.startsWith("nmap") || tool.startsWith("nuclei")) return "cyberful-os/docker-direct"
-  if (tool.startsWith("browser_")) return "browser/zap"
+  if (tool.startsWith("agent_browser_")) return "browser/zap"
   if (tool.startsWith("zap_")) return "zap"
   return undefined
 }
@@ -145,7 +145,9 @@ export function observe(tool: string, args: Record<string, unknown>, result: Cal
   const timeoutSeconds = boundedInteger(args.timeout_seconds)
   return {
     ...endpoint,
-    egress_method: safeMethod(args.method) ?? (tool === "browser_navigate" ? "GET" : undefined),
+    egress_method:
+      safeMethod(args.method) ??
+      (["agent_browser_open", "agent_browser_read", "agent_browser_tab_new"].includes(tool) ? "GET" : undefined),
     egress_deadline_ms:
       boundedInteger(args.timeout_ms) ?? (timeoutSeconds === undefined ? undefined : timeoutSeconds * 1_000),
     egress_route: route,

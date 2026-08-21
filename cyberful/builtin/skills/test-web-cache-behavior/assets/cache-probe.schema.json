@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/cache-probe.v1.json",
+  "title": "Cyberful isolated web cache probe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "authority", "pairs"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmed", "authorization_reference", "allowed_origins", "isolation_token", "max_requests", "requests_per_second", "request_timeout_seconds"],
+      "properties": {
+        "confirmed": {"const": true},
+        "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "allowed_origins": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "format": "uri"}},
+        "isolation_token": {"type": "string", "pattern": "^[A-Za-z0-9_-]{12,64}$"},
+        "max_requests": {"type": "integer", "minimum": 2, "maximum": 12},
+        "requests_per_second": {"type": "number", "minimum": 0.1, "maximum": 2},
+        "request_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 20}
+      }
+    },
+    "pairs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pair_id", "dimension", "prime", "observe"],
+        "properties": {
+          "pair_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "dimension": {"type": "string", "minLength": 1, "maxLength": 256},
+          "prime": {"$ref": "#/$defs/request"},
+          "observe": {"$ref": "#/$defs/request"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url", "headers", "secret_headers", "body_base64"],
+      "properties": {
+        "method": {"enum": ["GET", "HEAD", "POST"]},
+        "url": {"type": "string", "format": "uri", "maxLength": 2048},
+        "headers": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "maxLength": 2048}},
+        "secret_headers": {"type": "object", "maxProperties": 2, "additionalProperties": {"enum": ["CYBERFUL_PROBE_AUTHORIZATION", "CYBERFUL_PROBE_COOKIE"]}},
+        "body_base64": {"type": "string", "contentEncoding": "base64", "maxLength": 87384}
+      }
+    }
+  }
+}

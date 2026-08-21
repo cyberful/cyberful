@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "input_sha256", "baseline", "candidate", "changes", "counts"],
+  "properties": {
+    "format": {"const": "cyberful.release-security-diff.raw.v1"},
+    "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "baseline": {"$ref": "#/$defs/release"},
+    "candidate": {"$ref": "#/$defs/release"},
+    "changes": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "change", "fields"],
+        "properties": {
+          "path": {"type": "string"}, "change": {"enum": ["added", "removed", "changed"]},
+          "fields": {"type": "array", "maxItems": 6, "uniqueItems": true, "items": {"enum": ["sha256", "provenance_sha256", "signer", "permissions", "dependencies"]}}
+        }
+      }
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false, "required": ["added", "removed", "changed"],
+      "properties": {"added": {"type": "integer", "minimum": 0}, "removed": {"type": "integer", "minimum": 0}, "changed": {"type": "integer", "minimum": 0}}
+    }
+  },
+  "$defs": {
+    "release": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256", "release_id", "source_revision", "artifacts"],
+      "properties": {
+        "path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "release_id": {"type": "string"}, "source_revision": {"type": "string"}, "artifacts": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

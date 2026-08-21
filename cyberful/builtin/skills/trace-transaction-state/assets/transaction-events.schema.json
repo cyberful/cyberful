@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/transaction-events.v1.json",
+  "title": "Cyberful transaction event ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "engagement_id", "authorization_reference", "transactions"],
+  "properties": {
+    "$schema": {"const": "./transaction-events.schema.json"},
+    "engagement_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "transactions": {"type": "array", "minItems": 1, "maxItems": 512, "items": {"$ref": "#/$defs/transaction"}}
+  },
+  "$defs": {
+    "transaction": {"type": "object", "additionalProperties": false, "required": ["transaction_id", "currency", "expected_terminal_state", "expected_net_delta_minor", "events"], "properties": {"transaction_id": {"type": "string", "minLength": 1, "maxLength": 256}, "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "expected_terminal_state": {"type": "string", "minLength": 1, "maxLength": 256}, "expected_net_delta_minor": {"type": "integer", "minimum": -1000000000000000, "maximum": 1000000000000000}, "events": {"type": "array", "minItems": 1, "maxItems": 2048, "items": {"$ref": "#/$defs/event"}}}},
+    "event": {"type": "object", "additionalProperties": false, "required": ["event_id", "sequence", "component", "kind", "state_before", "state_after", "amount_delta_minor", "idempotency_key", "correlation_ids", "durable_effect", "evidence_ref"], "properties": {"event_id": {"type": "string", "minLength": 1, "maxLength": 256}, "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000000}, "component": {"type": "string", "minLength": 1, "maxLength": 256}, "kind": {"type": "string", "minLength": 1, "maxLength": 256}, "state_before": {"type": "string", "minLength": 1, "maxLength": 256}, "state_after": {"type": "string", "minLength": 1, "maxLength": 256}, "amount_delta_minor": {"type": "integer", "minimum": -1000000000000000, "maximum": 1000000000000000}, "idempotency_key": {"type": ["string", "null"], "minLength": 1, "maxLength": 256}, "correlation_ids": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}}, "durable_effect": {"type": "string", "minLength": 1, "maxLength": 2048}, "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 2048}}}
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/email-channel-matrix.v1.json",
+  "title": "Cyberful email channel matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authority_reference", "controlled_mailboxes", "flows"],
+  "properties": {
+    "authority_reference": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "controlled_mailboxes": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "format": "email"}},
+    "flows": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "direction", "trigger", "actor", "tenant", "recipient_rule", "template", "links_or_tokens", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "direction": {"enum": ["outbound", "inbound", "reply", "bounce"]},
+          "trigger": {"type": "string", "minLength": 1, "maxLength": 256},
+          "actor": {"type": "string", "minLength": 1, "maxLength": 256},
+          "tenant": {"type": "string", "minLength": 1, "maxLength": 256},
+          "recipient_rule": {"type": "string", "minLength": 1, "maxLength": 512},
+          "template": {"type": "string", "minLength": 1, "maxLength": 256},
+          "links_or_tokens": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 256}},
+          "evidence": {"type": "string", "minLength": 1, "maxLength": 2048}
+        }
+      }
+    }
+  }
+}
+

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Analyze Scan Findings"
+  short_description: "Normalize and correlate bounded scan evidence"
+  default_prompt: "Use $analyze-scan-findings to normalize SARIF and scanner evidence before verification."
+policy:
+  allow_implicit_invocation: true

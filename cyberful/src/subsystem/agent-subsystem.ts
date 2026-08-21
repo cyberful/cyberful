@@ -68,7 +68,7 @@ export interface SubsystemStatus {
 
 export interface AgentRunBudget {
   readonly deadlineAt: number
-  readonly maxOutputTokens?: number
+  readonly maxCumulativeOutputTokens?: number
   readonly clock?: PhaseBudgetClock
   readonly closeoutReserveMs?: number
 }
@@ -183,6 +183,11 @@ export interface AgentRunSpec {
     readonly reason: "phase_recovery" | "child_finished"
   }) => Promise<readonly RecoveredHypothesis[]>
   readonly recoverTestObjects?: (input: { readonly fromRunID: AgentRunID }) => Promise<readonly RecoveredTestObject[]>
+  readonly releaseBrowserOwner?: (input: {
+    readonly runID: AgentRunID
+    readonly role: AgentRunRole
+    readonly parentID?: AgentRunID
+  }) => Promise<void>
   readonly skills: readonly PromptSkill[]
   readonly budget: AgentRunBudget
   readonly abort?: AbortSignal
@@ -288,6 +293,16 @@ export type AgentEvent =
       readonly deadlineAt?: number
       readonly compensationCapReached?: boolean
       readonly failure?: Failure
+    }
+  | {
+      readonly type: "phase_research_continuation"
+      readonly runID: AgentRunID
+      readonly cause: "active_subagents" | "recon_breadth" | "coverage_candidates"
+      readonly ordinal: 1
+      readonly unusedProfileCount: number
+      readonly coverageCandidateCount: number
+      readonly collectorDegraded: boolean
+      readonly activeSubagents: number
     }
   | {
       readonly type: "phase_closeout"

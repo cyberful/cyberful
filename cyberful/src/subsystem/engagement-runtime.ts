@@ -50,6 +50,11 @@ import {
   parsePublishedPort,
   type ProxyCertificateAttestation,
 } from "./zap/runtime"
+import {
+  capturePassiveEvidence,
+  type PassiveEvidenceCapture,
+  type PassiveEvidenceSource,
+} from "./zap/passive-evidence"
 
 const log = Log.create({ service: "engagement-runtime" })
 const DOCKER_COMMAND_TIMEOUT_MS = 60_000
@@ -103,6 +108,11 @@ export interface EngagementRuntime {
     readonly attempt: number
     readonly signal?: AbortSignal
   }) => Promise<{ readonly warnings: readonly string[]; readonly env: Readonly<Record<string, string>> }>
+  readonly capturePassiveEvidence: (input: {
+    readonly phase: string
+    readonly attempt: number
+    readonly signal?: AbortSignal
+  }) => Promise<PassiveEvidenceCapture>
   readonly stop: () => Promise<void>
 }
 
@@ -1011,6 +1021,100 @@ async function probeBridge(input: BridgeProbeInput) {
   }
 }
 
+function parsedToolResult(result: Awaited<ReturnType<Client["callTool"]>>, label: string) {
+  if (!isRecord(result) || result.isError === true || !Array.isArray(result.content))
+    throw new Error(`${label} returned an MCP error`)
+  for (const item of result.content) {
+    if (!isRecord(item) || item.type !== "text" || typeof item.text !== "string") continue
+    try {
+      return JSON.parse(item.text) as unknown
+    } catch {
+      continue
+    }
+  }
+  throw new Error(`${label} returned no JSON result`)
+}
+
+function recordValue(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${label} returned an invalid object`)
+  return value
+}
+
+function stringArray(value: unknown, label: string) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+    throw new Error(`${label} returned an invalid string array`)
+  return value as string[]
+}
+
+// ── Passive Checkpoints Use One Short-Lived Private Bridge ──────
+// The phase gateway is already gone when this source opens. A fresh stdio MCP
+// client retains host ownership while reusing the hardened report-path wrapper
+// and the same persistent ZAP session that observed the accepted phase.
+// Closing the source after every capture prevents bridge ownership from leaking
+// across the phase boundary that the runtime manifest is meant to attest.
+// ─────────────────────────────────────────────────────────────────
+
+async function openPassiveEvidenceSource(input: {
+  readonly command: string[]
+  readonly env: Record<string, string>
+  readonly signal?: AbortSignal
+}): Promise<PassiveEvidenceSource> {
+  const [command, ...args] = input.command
+  if (!command) throw new Error("ZAP bridge command is unavailable")
+  const transport = new StdioClientTransport({ command, args, env: dockerEnv(input.env), stderr: "pipe" })
+  const client = new Client({ name: "cyberful-zap-passive-evidence", version: "0.1.0" })
+  const abort = () => void client.close().catch(() => undefined)
+  input.signal?.addEventListener("abort", abort, { once: true })
+  const close = async () => {
+    input.signal?.removeEventListener("abort", abort)
+    await client.close().catch(() => undefined)
+  }
+  const call = async (name: string, arguments_: Record<string, unknown>) => {
+    const result = await client.callTool(
+      { name, arguments: arguments_ },
+      CallToolResultSchema,
+      { timeout: 20_000, maxTotalTimeout: 20_000 },
+    )
+    if (result.isError) throw new Error(`${name} returned an MCP error`)
+    return result
+  }
+  try {
+    await client.connect(transport)
+    input.signal?.throwIfAborted()
+    return {
+      sites: async () => {
+        const result = parsedToolResult(
+          await call("zap_api_call", { component: "core", type: "view", operation: "sites" }),
+          "ZAP core sites",
+        )
+        return stringArray(recordValue(result, "ZAP core sites").sites, "ZAP core sites")
+      },
+      queueDepth: async () => {
+        const result = parsedToolResult(
+          await call("zap_api_call", { component: "pscan", type: "view", operation: "recordsToScan" }),
+          "ZAP passive queue",
+        )
+        const depth = recordValue(result, "ZAP passive queue").recordsToScan
+        if ((typeof depth !== "string" && typeof depth !== "number") || !/^\d+$/.test(String(depth)))
+          throw new Error("ZAP passive queue returned an invalid depth")
+        return Number(depth)
+      },
+      generateReport: async ({ filePath, sites, title }) => {
+        await call("zap_generate_workarea_report", {
+          file_path: filePath,
+          template: "traditional-json",
+          title,
+          sites: [...sites],
+        })
+      },
+      close,
+    }
+  } catch (error) {
+    await close()
+    throw error
+  }
+}
+
 // ── ZAP Is Ready Only After Its MCP Listener Accepts Requests ───
 // ZAP's core API can answer before its MCP add-on begins listening, so an HTTP
 // response alone cannot authorize phase gateways or proxy-dependent policy.
@@ -1670,6 +1774,43 @@ export async function startEngagement(input: {
     return { warnings: phaseWarnings, env: { ...env } }
   }
 
+  const capturePhasePassiveEvidence: EngagementRuntime["capturePassiveEvidence"] = async ({
+    phase,
+    attempt,
+    signal,
+  }) => {
+    const workflow = input.workflow === "pentest" || input.workflow === "bug-bounty" ? input.workflow : undefined
+    if (!workflow) return { state: "not_applicable" }
+    return capturePassiveEvidence(
+      {
+        workarea: input.workarea,
+        workflow,
+        phase,
+        attempt,
+        ...(signal ? { signal } : {}),
+      },
+      {
+        openSource: async () => {
+          if (!zapOperational || !apiKey || !zapMcpKey || !proxyUrl)
+            throw new Error("the engagement ZAP runtime is unavailable")
+          return openPassiveEvidenceSource({
+            command: cyberZapBridgeCommand(zapContainer),
+            env: {
+              ...env,
+              CYBER_ZAP_READY: "1",
+              CYBER_ZAP_API_KEY: apiKey,
+              CYBER_ZAP_MCP_KEY: zapMcpKey,
+              CYBER_ZAP_PROXY_URL: proxyUrl,
+              CYBER_ZAP_WORKAREA: input.workarea,
+              CYBER_ZAP_REQUIRED_UPSTREAM: "1",
+            },
+            ...(signal ? { signal } : {}),
+          })
+        },
+      },
+    )
+  }
+
   if (ghidraEnabled && ghidraMcpKey) {
     reportProgress("Starting headless Ghidra and its MCP bridge", [{ id: "ghidra", state: "active" }])
     try {
@@ -1733,6 +1874,7 @@ export async function startEngagement(input: {
     degraded,
     warnings,
     preparePhase,
+    capturePassiveEvidence: capturePhasePassiveEvidence,
     stop,
   }
 }

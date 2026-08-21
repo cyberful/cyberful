@@ -15,7 +15,8 @@
   "private": true,
   "scripts": {
     "check:code": "bun run script/check-code-principles.ts",
-    "typecheck": "bun run check:code && tsgo --noEmit",
+    "validate:skills": "bun run script/validate-skills.ts",
+    "typecheck": "bun run check:code && bun run validate:skills && tsgo --noEmit",
     "build": "bun run script/build.ts",
     "generate-client": "bun run script/generate-client.ts",
     "cve-dictionary:acquire": "bun run script/cve-dictionary-sources.ts",
@@ -24,7 +25,7 @@
     "cve-dictionary:publish": "bun run script/cve-dictionary-release.ts",
     "test": "bun test --isolate --path-ignore-patterns='**/*.integration.test.ts'",
     "test:cyberful-os": "bun test --isolate --no-orphans --timeout 300000 src/subsystem/cyberful-os.integration.test.ts src/subsystem/evm/runtime.integration.test.ts",
-    "test:network": "CYBERFUL_TEST_LOOPBACK=1 bun test --isolate --timeout 10000 src/subsystem/browser-cdp.integration.test.ts",
+    "test:network": "CYBERFUL_TEST_LOOPBACK=1 bun test --isolate --timeout 70000 src/subsystem/gateway/browser-profile-process.integration.test.ts",
     "test:zap": "bun test --isolate --no-orphans src/subsystem/zap/runtime.integration.test.ts",
     "test:all": "bun run test && bun run test:network && bun run test:zap",
     "dev": "bun run --conditions=browser ./src/index.ts"
@@ -56,12 +57,14 @@
     "@types/yargs": "17.0.35",
     "@types/yauzl": "2.10.3",
     "@typescript/native-preview": "catalog:",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1",
     "prettier": "3.6.2",
     "typescript": "catalog:"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.81.1",
-    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
     "@effect/platform-node": "catalog:",
     "@huggingface/transformers": "3.8.1",
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -108,7 +111,7 @@
     "yauzl": "3.2.0"
   },
   "overrides": {
-    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-ai": "0.84.2",
     "drizzle-orm": "catalog:"
   }
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan PCI DSS Penetration Test"
+  short_description: "Plan authorized PCI DSS 11.4 test coverage"
+  default_prompt: "Use $plan-pci-dss-penetration-test to prepare an authorized PCI DSS 11.4 penetration-test plan."

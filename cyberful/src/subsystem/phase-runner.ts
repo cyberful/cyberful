@@ -29,10 +29,17 @@ import type { DynamicTool, SubsystemFailure } from "./subsystem"
 import { verifyCodeGraphReadiness } from "./gateway/code-graph-tools"
 import { ensureWorkareaDirectory, replaceWorkareaFile } from "@/workarea"
 import { AgentPromptCompiler, type PromptManifest } from "./prompt-compiler"
-import { PiSkills, type SkillRegistry } from "./pi-skills"
+import { PiSkills, type SkillRegistry, type SkillRoot } from "./pi-skills"
+import { resolveModelContextCapacity } from "./pi-models"
 import { SubsystemPiAgent } from "./pi-agent"
 import type { AgentRunResult } from "./agent-subsystem"
 import { RunStateArtifact } from "./run-state-artifact"
+import type { PassiveEvidenceCapture } from "./zap/passive-evidence"
+import {
+  reapCapturedProcessTree,
+  type OwnedProcessCleanup,
+  type OwnedProcessIdentity,
+} from "./gateway/mcp-process-owner"
 
 export interface PhaseSpec {
   phase: string
@@ -132,6 +139,8 @@ export interface PhaseResult {
   artifactManifest?: string
   // Host-owned runtime provenance; unlike the deliverable checksum this is JSON status evidence.
   runtimeManifest?: string
+  // Best-effort scanner evidence captured only after an accepted live-target handoff and gateway close.
+  passiveEvidence?: PassiveEvidenceCapture
   // Tool activity is not progress by itself. These fields count only distinct host-observed contents of
   // the required deliverable, each saved as an atomic last-known-good checkpoint while the phase runs.
   semanticCheckpoints?: number
@@ -197,7 +206,7 @@ export interface PhaseDeps {
   runStreaming: typeof SubsystemCli.runStreaming
   subsystem: Subsystem.Subsystem
   loadSettings: (directory: string) => Promise<Settings.Info>
-  discoverSkills: (roots: readonly string[]) => Promise<SkillRegistry>
+  discoverSkills: (roots: readonly (string | SkillRoot)[], workarea: string) => Promise<SkillRegistry>
   // Reads budgets.json. Injected so budget resolution remains testable.
   readFile: (filePath: string) => Promise<string>
   // Reads the private gateway's first required-upstream failure marker. Kept
@@ -250,6 +259,13 @@ export interface PhaseDeps {
     readonly attempt: number
     readonly signal?: AbortSignal
   }) => Promise<{ readonly warnings?: readonly string[]; readonly env?: Readonly<Record<string, string>> }>
+  // Runs after a valid Pentest or Bug Bounty handoff and a proven gateway exit. Scanner degradation
+  // remains evidence-only and cannot change the accepted phase result.
+  capturePassiveEvidence?: (input: {
+    readonly phase: string
+    readonly attempt: number
+    readonly signal?: AbortSignal
+  }) => Promise<PassiveEvidenceCapture>
 }
 
 function errorDetail(error: unknown) {
@@ -297,7 +313,7 @@ export function defaultDeps(): PhaseDeps {
     runStreaming: SubsystemCli.runStreaming,
     subsystem: Subsystem.pi,
     loadSettings: Settings.load,
-    discoverSkills: (roots) => PiSkills.discover({ roots }),
+    discoverSkills: (roots, workarea) => PiSkills.discover({ roots, stagingRoot: workarea }),
     readFile: (filePath) => readFile(filePath, "utf8"),
     readUpstreamFailureSignal: (filePath) => readFile(filePath, "utf8"),
     ensureDirectory: (directory) =>
@@ -382,7 +398,7 @@ export async function writeArtifactManifest(manifestPath: string, artifactPath: 
 export async function writeRuntimeManifest(manifestPath: string, workarea: string, result: PhaseResult) {
   const relativeManifest = containedArtifactPath(workarea, manifestPath, "phase-manifests", [3, 4])
   const payload = {
-    version: 6,
+    version: 7,
     phase: result.phase,
     termination: result.termination,
     backend: result.backend,
@@ -392,6 +408,7 @@ export async function writeRuntimeManifest(manifestPath: string, workarea: strin
     reasoningObservability: result.reasoningObservability,
     agentRun: result.agentRun,
     noveltyContract: result.noveltyContract,
+    passiveEvidence: result.passiveEvidence,
     budget: {
       limitMs: result.limitMs,
       baseBudgetMs: result.limitMs,
@@ -485,14 +502,6 @@ function artifactPathSegment(value: string, label: string) {
   return value
 }
 
-export function circuitBreakerDirectory(sessionID: string) {
-  return path.join(os.tmpdir(), `expert-circuit-breaker-${sessionID.replace(/[^a-zA-Z0-9_.-]/g, "-")}`)
-}
-
-export function circuitBreakerPath(sessionID: string, owner: string) {
-  return path.join(circuitBreakerDirectory(sessionID), `${owner.replace(/[^a-zA-Z0-9_.-]/g, "-")}.json`)
-}
-
 export interface GatewayReapDeps {
   readSignal: (signalPath: string) => Promise<string>
   now: () => number
@@ -501,6 +510,7 @@ export interface GatewayReapDeps {
   processGroupAlive: (pid: number) => boolean
   signalProcess: (pid: number, signal: NodeJS.Signals) => void
   killTree: (pid: number, signal: NodeJS.Signals) => void
+  reapCaptured: (processes: readonly OwnedProcessIdentity[]) => Promise<OwnedProcessCleanup>
 }
 
 const gatewayReapDeps: GatewayReapDeps = {
@@ -536,6 +546,59 @@ const gatewayReapDeps: GatewayReapDeps = {
     }
   },
   killTree: SubsystemCli.killTree,
+  reapCaptured: (processes) => reapCapturedProcessTree(processes),
+}
+
+interface GatewayProcessSignal {
+  readonly version: 2
+  readonly pid: number
+  readonly processes: readonly OwnedProcessIdentity[]
+}
+
+function gatewayProcessSignal(content: string): GatewayProcessSignal {
+  const records = content
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as unknown)
+  const value = records[0]
+  if (!isRecord(value) || value.version !== 2 || !Number.isInteger(value.pid) || Number(value.pid) <= 1)
+    throw new Error("phase gateway process marker has an unsupported format")
+  const processValues = records.flatMap((record, index) => {
+    if (!isRecord(record) || !Array.isArray(record.processes))
+      throw new Error(`phase gateway process marker record ${index + 1} is invalid`)
+    if (index > 0 && (!Number.isInteger(record.owner) || Number(record.owner) <= 1))
+      throw new Error(`phase gateway process marker record ${index + 1} has no owner`)
+    return record.processes
+  })
+  if (processValues.length === 0)
+    throw new Error("phase gateway process marker has no owned process identities")
+  const processes = processValues.map((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      !Number.isInteger(candidate.pid) ||
+      Number(candidate.pid) <= 1 ||
+      !Number.isInteger(candidate.ppid) ||
+      typeof candidate.started !== "string" ||
+      !candidate.started ||
+      typeof candidate.command !== "string" ||
+      !candidate.command
+    )
+      throw new Error("phase gateway process marker contains an invalid process identity")
+    return {
+      pid: Number(candidate.pid),
+      ppid: Number(candidate.ppid),
+      started: candidate.started,
+      command: candidate.command,
+    }
+  })
+  return {
+    version: 2,
+    pid: Number(value.pid),
+    processes: processes.filter(
+      (candidate, index) =>
+        processes.findIndex((other) => other.pid === candidate.pid && other.started === candidate.started) === index,
+    ),
+  }
 }
 
 async function waitUntilGatewayGone(pid: number, deadline: number, deps: GatewayReapDeps): Promise<boolean> {
@@ -562,14 +625,11 @@ export async function waitForGatewayExit(
   const startedAt = deps.now()
   const deadline = startedAt + Math.max(0, timeoutMs)
   const registrationDeadline = Math.min(deadline, startedAt + 500)
-  let gatewayPID: number | undefined
+  let registration: GatewayProcessSignal | undefined
   while (deps.now() <= registrationDeadline) {
     try {
-      const parsed: unknown = JSON.parse(await deps.readSignal(signalPath))
-      if (isRecord(parsed) && typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 1) {
-        gatewayPID = parsed.pid
-        break
-      }
+      registration = gatewayProcessSignal(await deps.readSignal(signalPath))
+      break
     } catch (error) {
       // Registration is written atomically in production, but injected adapters and a process killed
       // mid-write can expose a missing or incomplete marker while this bounded poll is still active.
@@ -579,16 +639,29 @@ export async function waitForGatewayExit(
   }
   // An optional one-shot run can finish without ever starting its MCP server. Chain phases cannot: their handoff
   // was served by this gateway, so a missing registration means its lifecycle cannot be proven.
-  if (gatewayPID === undefined) return !registrationRequired
-  if (await waitUntilGatewayGone(gatewayPID, Math.min(deadline, deps.now() + 100), deps)) return true
+  if (registration === undefined) return !registrationRequired
+  const gatewayPID = registration.pid
+  let gatewayGone = await waitUntilGatewayGone(gatewayPID, Math.min(deadline, deps.now() + 100), deps)
 
   // SIGTERM lets the gateway close its upstream clients. SIGKILL targets the detached process group only
   // if that bounded close fails, preventing an orphaned browser/cyberful-os child from crossing phases.
-  deps.signalProcess(gatewayPID, "SIGTERM")
-  if (await waitUntilGatewayGone(gatewayPID, Math.min(deadline, deps.now() + 3_000), deps)) return true
-  deps.killTree(gatewayPID, "SIGKILL")
-  deps.signalProcess(gatewayPID, "SIGKILL")
-  return waitUntilGatewayGone(gatewayPID, deadline, deps)
+  if (!gatewayGone) {
+    deps.signalProcess(gatewayPID, "SIGTERM")
+    gatewayGone = await waitUntilGatewayGone(gatewayPID, Math.min(deadline, deps.now() + 3_000), deps)
+  }
+  if (!gatewayGone) {
+    deps.killTree(gatewayPID, "SIGKILL")
+    deps.signalProcess(gatewayPID, "SIGKILL")
+    gatewayGone = await waitUntilGatewayGone(gatewayPID, deadline, deps)
+  }
+  if (!gatewayGone) return false
+
+  const latest = await deps.readSignal(signalPath).then(
+    (content) => gatewayProcessSignal(content),
+    () => registration,
+  )
+  const cleanup = await deps.reapCaptured(latest.processes)
+  return cleanup.remaining.length === 0
 }
 
 // Host-owned phase mechanics belong in the immutable system message. Operator
@@ -653,11 +726,25 @@ export function buildPhasePrompt(
           "",
         ]
       : []),
+    ...((workflow === "pentest" || workflow === "bug-bounty") && ["recon", "exploit", "hacker"].includes(spec.phase)
+      ? [
+          "## Live product research",
+          "For reachable authorized web applications, exercise real functionality, journeys, and state transitions beyond landing pages, dashboards, documentation, source artifacts, and known paths. Route variation is coverage, not causal novelty, and never ends exploration.",
+          "",
+        ]
+      : []),
     ...(novelty
       ? [
           "## Contrarian pass",
-          "Use `hypothesis` for target-specific hypotheses and its `synthesize` action for the contrarian pass. If ideas converge, pivot across a genuinely different mechanism, boundary, protocol, state, capability, or oracle; route variation alone is coverage, not causal novelty.",
-          "Before handoff, synthesize either the semantic pivots you exercised or target-specific evidence that useful diversification is exhausted. There are no numeric quotas.",
+          "Use `hypothesis` for target-specific hypotheses and `synthesize` for the contrarian pass. If ideas converge, pivot across a different mechanism, boundary, protocol, state, capability, or oracle.",
+          ...(novelty.mode === "bounty-portfolio"
+            ? [
+                "Every Bug Bounty research hypothesis requires a reward-aware `bounty_context`. A diversified synthesis references claimed pivot IDs, their comparison IDs, changed impact/boundary dimensions, and distance rationale; exhausted synthesis references terminal hypotheses and target evidence.",
+                "Two tested DISPROVED hypotheses in one declared cluster create convergence. The next strategic move should change impact or enforcement boundary, while the host waits until handoff to require that pivot or evidenced exhaustion.",
+                "Every synthesis must include `opportunity_closeout`: name any untested authorized discriminator that could improve a finding or reward portfolio, then execute it or explain the exact evidence, prerequisite, authority, or dominance reason that makes stopping rational. A first positive finding is not phase completion.",
+              ]
+            : []),
+          "Before handoff, synthesize either the semantic pivots you exercised or target-specific evidence that useful diversification is exhausted. There are no numeric quotas or automatic rankings.",
           "",
         ]
       : []),
@@ -677,16 +764,16 @@ export function buildPhasePrompt(
     "- Every `delegate_task` call must name one workarea-relative `output_artifact`; children update it incrementally.",
     "- Store reusable values and secrets with `variable`; cite evidence and redact secrets or unnecessary sensitive data.",
     "- Track created test state through cleanup. A visible residual is a result, not an automatic approval gate.",
-    "- Browser profiles 1–5 are separate target identities; keep their state and evidence separate.",
+    "- Keep target identities, state, and evidence separate across browser profiles 1–5.",
     ...(workflow !== "code-audit"
       ? [
-          "- Use `web_search` or browser `profile: \"search\"` only for public research, never as target identity, scope authority, or a substitute for retained target evidence.",
+          "- Use `web_search` for public searches; agent-browser `profile: \"search\"` is host-confined to DuckDuckGo and Google search pages, never a selected result, target identity, or authority.",
         ]
       : []),
-    "- Use `question` only for a concrete missing authorization, fact, or human CAPTCHA action.",
+    "- Use `question` only for missing authority or facts, or failed CAPTCHA automation.",
     "- Do not retry a target request that returns HTTP `429`. Cyberful adds no retry rule for other outcomes.",
     "- Check HTTP status/content type and inspect JSON shape before parsing; tolerate optional fields in `jq` and scripts.",
-    "- For a CAPTCHA, preserve and foreground the challenged page, ask with `question kind=captcha`, then confirm resolution with `browser_captcha_status`. Other work continues.",
+    "- Solve CAPTCHA via browser or fixed `captcha.solve` and verify by snapshot; only on failure preserve the tab, use `question kind=captcha`, then snapshot again.",
     ...(spec.phase !== "report"
       ? [
           "- Record hypotheses before testing, update them after each result, and close or queue them to the exact successor before handoff.",
@@ -714,9 +801,11 @@ export function buildPhasePrompt(
       ? [
           "- Answer each finding maturation checkpoint through authorized evidence; maximize supportable impact and prioritize host-derived published monetary upside, then proof proximity and test cost.",
           '- For every positive finding, answer: "What can an attacker actually achieve with this vulnerability?" Reconstruct an evidence-backed end-to-end path from prerequisites and entry point through attacker actions and crossed security boundaries to a concrete outcome; mark every unproven link as a gap and test the cheapest authorized discriminator.',
+          "- `MAXIMIZED` means the evidence-backed ceiling of a supported vulnerability. Reproducing a mechanism, matching an eligible impact label, or lacking authority for a stronger test does not by itself establish that a vulnerability exists.",
           ...(spec.phase === "verify"
             ? [
                 "- Reconcile every remaining PURSUE assessment to MAXIMIZED or DEFERRED with an evidence-backed ceiling or exact resume condition.",
+                "- `SUBMISSION_READY` requires a violated security invariant, a concrete unwanted attacker effect, and evidence that defeats the cheapest benign explanation. Otherwise use NEEDS_MORE_EVIDENCE or NOT_REPORTABLE even when the mechanism reproduces.",
               ]
             : []),
         ]
@@ -1039,6 +1128,7 @@ function statusTranscript(stdout: string, result: PhaseResult): string {
     noveltyContract: result.noveltyContract,
     artifactManifest: result.artifactManifest,
     runtimeManifest: result.runtimeManifest,
+    passiveEvidence: result.passiveEvidence,
   })
   return `${stdout}${stdout && !stdout.endsWith("\n") ? "\n" : ""}${status}\n`
 }
@@ -1208,10 +1298,16 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     const settingsDirectory = spec.settingsDirectory ?? process.cwd()
     const settings = await deps.loadSettings(settingsDirectory)
     const sources = await loadPhasePromptSources(spec, settings, deps.readFile)
-    const configuredSkillRoots = settings.instructions.skill_roots.map((root) =>
-      path.resolve(settingsDirectory, root),
+    const configuredSkillRoots = settings.instructions.skill_roots.map(
+      (root): SkillRoot => ({
+        path: path.resolve(settingsDirectory, root),
+        origin: "extension",
+      }),
     )
-    const skills = await deps.discoverSkills([SubsystemPhase.skillRoot(spec.home), ...configuredSkillRoots])
+    const skills = await deps.discoverSkills(
+      [{ path: SubsystemPhase.skillRoot(spec.home), origin: "first_party" }, ...configuredSkillRoots],
+      spec.workareaCwd,
+    )
     return { settings, sources, skills }
   })().then(
     (value) => ({ ok: true as const, value }),
@@ -1309,7 +1405,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ? (questions, signal) => budgetClock.wait("approval", () => questionHandler(questions, signal))
     : undefined
   const shellTemporaryDirectory = path.join(spec.workareaCwd, ".cyberful-tmp")
-  const engagementCircuitBreakerPath = circuitBreakerPath(spec.sessionID, "engagement")
   // The host exposes one explicit gateway connection while its private environment remains outside
   // AgentRun context. Phase handoff uses a fresh host-owned signal path so a stale
   // request from an interrupted run can never advance a later run.
@@ -1328,7 +1423,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     pidSignalPath: gatewayPidPath,
     upstreamFailureSignalPath: upstreamFailurePath,
     questionEnabled: Boolean(askQuestion),
-    circuitBreakerPath: engagementCircuitBreakerPath,
     ...(handoffPath
       ? {
           handoff: {
@@ -1485,8 +1579,17 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     providerRoute: "main" | "fallback",
     userTask: string,
     handoffOwner: boolean,
-  ) =>
-    AgentPromptCompiler.compile({
+  ) => {
+    const settings = promptSetup.value.settings
+    const provider =
+      providerRoute === "fallback"
+        ? settings.agent.fallback_provider
+        : role === "subagent"
+          ? Settings.subagentPolicy(settings).provider
+          : settings.agent.main_provider
+    if (!provider) throw new Error("fallback prompt compilation requires a configured fallback provider")
+    const capacity = resolveModelContextCapacity(settings.agent, provider)
+    return AgentPromptCompiler.compile({
       templateSource: promptSetup.value.sources.templateSource,
       personaSource: promptSetup.value.sources.personaSource,
       workareaSource: workareaInstructions(phaseEnvironment.CYBERFUL_OS_RUNTIME_PLATFORM),
@@ -1507,7 +1610,14 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       },
       userTask,
       skills: promptSetup.value.skills.catalog,
+      skillCatalogBudget: {
+        operationalContextWindow: capacity.operationalContextWindow,
+        contextSource: capacity.source,
+        descriptionBudgetPercentage:
+          Settings.skillCatalogPolicy(settings).description_budget_percentage,
+      },
     })
+  }
   const rootRoute = spec.providerRoute ?? "main"
   const rootPrompt = compilePrompt("root", rootRoute, spec.objective, Boolean(spec.handoff))
   const runInput: SubsystemCli.RunInput = {
@@ -1771,6 +1881,28 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     ...(gatewayExit.warning && primaryFailure?.class !== "gateway_exit_unverified" ? [gatewayExit.warning] : []),
     ...(budgetAdvanceWarning ? [budgetAdvanceWarning] : []),
   ]
+  let passiveEvidence: PassiveEvidenceCapture | undefined
+  if (
+    ok &&
+    acceptedHandoff &&
+    (spec.workflow === "pentest" || spec.workflow === "bug-bounty") &&
+    deps.capturePassiveEvidence
+  ) {
+    passiveEvidence = await deps
+      .capturePassiveEvidence({
+        phase: spec.phase,
+        attempt: spec.attempt ?? 1,
+        ...(spec.abort ? { signal: spec.abort } : {}),
+      })
+      .catch((error): PassiveEvidenceCapture => ({
+        state: "failed",
+        warning: `OWASP ZAP passive evidence failed after ${spec.phase}; phase advancement is unchanged: ${errorDetail(error)}`,
+      }))
+    if (passiveEvidence.warning) warnings.push(passiveEvidence.warning)
+  }
+  const resultSummary = passiveEvidence?.manifest
+    ? `${summary}\n\nHost-owned ZAP passive checkpoint: ${passiveEvidence.manifest} (${passiveEvidence.state}).`
+    : summary
   const observedUsage = phaseUsage.usage()
   const hasObservedUsage =
     observedUsage.input > 0 ||
@@ -1781,7 +1913,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
   const result: PhaseResult = {
     phase: spec.phase,
     ok,
-    summary,
+    summary: resultSummary,
     exitCode: primaryRun.exitCode,
     timedOut: rawTermination === "budget_exhausted",
     termination: rawTermination === "completed" ? (ok ? "completed" : "subsystem_failed") : rawTermination,
@@ -1801,6 +1933,7 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
     warnings,
     handoff: acceptedHandoff,
     artifactManifest: manifest && !manifestWarning ? path.relative(spec.workareaCwd, manifest.path) : undefined,
+    passiveEvidence,
     semanticCheckpoints: semanticCheckpoints || undefined,
     lastSemanticProgressAt,
     subsystemFailure: primaryRun.failure,
@@ -1868,12 +2001,6 @@ export async function runPhase(spec: PhaseSpec, deps: PhaseDeps = defaultDeps())
       await transcript.close()
     })
     if (transcriptWarning) result.warnings.push(transcriptWarning)
-  }
-  if (result.ok && spec.handoff && !spec.handoff.successor && removeDirectory) {
-    const breakerWarning = await operationWarning("Could not remove the completed engagement circuit breakers", () =>
-      removeDirectory(circuitBreakerDirectory(spec.sessionID)),
-    )
-    if (breakerWarning) result.warnings.push(breakerWarning)
   }
   return result
 }

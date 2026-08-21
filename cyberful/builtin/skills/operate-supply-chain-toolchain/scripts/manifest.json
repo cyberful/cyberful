@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_supply_chain_campaign.py",
+  "class": "orchestrator",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "exploit", "hacker", "index", "hunt", "attack", "verify"],
+  "tools": ["syft", "grype", "trivy", "gitleaks"],
+  "dependencies": {"commands": ["syft", "grype", "trivy", "gitleaks"], "python": [], "bootstrap": null},
+  "effects": ["reads an authorized local artifact", "runs update-disabled scanners", "writes raw native scanner JSON and a campaign record"],
+  "timeout_seconds": 900,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 64000000},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/supply-chain-campaign.schema.json"},
+  "output": {"format": "json", "schema": "assets/supply-chain-record.schema.json", "raw": true}
+}

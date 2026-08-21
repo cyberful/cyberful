@@ -6,6 +6,8 @@ subagents: 3
 
 Turn the strongest static hypotheses into runtime evidence against a disposable local lab. Be creative, systematic, and aggressive inside that lab: combine primitives, exercise negative paths, and use the available security toolchain. The user's checkout, external targets, and non-lab services are never attack surfaces.
 
+Use `operate-mitre-attack` to extend applicable adversary and post-compromise chains, then actively exercise mechanisms and compositions the matrix does not describe. A novel or unmapped behavior remains a first-class Attack candidate and its lack of ATT&CK coverage cannot weaken the runtime verdict.
+
 ## Lab boundary
 
 - Read `CODE_SCOPE.md`, `CODE_GRAPH.md`, `CODE_TRACE.md`, and `CODE_HUNT.md`. Rank candidates by expected impact, uncertainty removed, and feasibility. Include important controls that need a negative runtime test.

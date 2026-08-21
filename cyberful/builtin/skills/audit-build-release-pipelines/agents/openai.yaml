@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Release Pipeline Auditor"
+  short_description: "Audit release integrity and promotion controls"
+  default_prompt: "Use $audit-build-release-pipelines to trace this release from source to protected deployment."

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/database-boundary-ledger.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope_reference", "operations"],
+  "properties": {
+    "$schema": {"const": "https://cyberful.dev/schemas/database-boundary-ledger.v1.json"},
+    "schema_version": {"const": 1},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512},
+    "operations": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "caller", "tenant_source", "selector", "query_boundary", "policy_boundary", "credential", "transaction", "durable_effect", "evidence_refs"],
+        "properties": {
+          "operation": {"type": "string", "minLength": 1, "maxLength": 256},
+          "caller": {"type": "string", "minLength": 1, "maxLength": 256},
+          "tenant_source": {"type": "string", "minLength": 1, "maxLength": 512},
+          "selector": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "query_boundary": {"type": "string", "minLength": 1, "maxLength": 512},
+          "policy_boundary": {"type": "string", "minLength": 1, "maxLength": 512},
+          "credential": {"type": "string", "minLength": 1, "maxLength": 256},
+          "transaction": {"type": "string", "minLength": 1, "maxLength": 512},
+          "durable_effect": {"type": "string", "minLength": 1, "maxLength": 512},
+          "evidence_refs": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}
+        }
+      }
+    }
+  }
+}

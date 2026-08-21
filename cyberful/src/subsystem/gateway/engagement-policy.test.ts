@@ -12,6 +12,7 @@ import {
   applyEngagementTrafficPolicy,
   ENGAGEMENT_POLICY_PATH,
   EngagementPolicyStore,
+  httpHostIsAuthorized,
   readEngagementPolicy,
   ZapEngagementPolicyInstallError,
 } from "./engagement-policy"
@@ -100,6 +101,16 @@ function statefulZap() {
 }
 
 describe("engagement policy", () => {
+  test("matches exact and wildcard HTTP hosts without broadening wildcard apex scope", () => {
+    const authorized = ["app.example.test", "*.api.example.test"]
+    expect(httpHostIsAuthorized("app.example.test", authorized)).toBe(true)
+    expect(httpHostIsAuthorized("APP.EXAMPLE.TEST", authorized)).toBe(true)
+    expect(httpHostIsAuthorized("v1.api.example.test", authorized)).toBe(true)
+    expect(httpHostIsAuthorized("deep.v1.api.example.test", authorized)).toBe(true)
+    expect(httpHostIsAuthorized("api.example.test", authorized)).toBe(false)
+    expect(httpHostIsAuthorized("evilapi.example.test", authorized)).toBe(false)
+  })
+
   test("persists traffic controls before final profile readiness", async () => {
     const workarea = await realpath(await mkdtemp(path.join(os.tmpdir(), "cyberful-policy-")))
     try {

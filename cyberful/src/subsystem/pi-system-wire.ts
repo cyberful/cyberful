@@ -123,11 +123,14 @@ function fail(code: FailureCode, model: Model<Api>, systemSha256: string, detail
 }
 
 // ── Provider Payload Is A Security Boundary ─────────────────────
-// Pi constructs this object after Cyberful has compiled and hashed the prompt,
-// but before provider transport begins. The callback therefore accepts only
-// the three reviewed wire contracts and returns the original object identity.
-// It never serializes payloads or embeds prompt text in failures, preventing
-// the attestation path itself from becoming a transcript or secret sink.
+// Pi constructs this object after Cyberful compiles and hashes the prompt but
+// before transport, so the callback accepts only three reviewed wire contracts
+// and returns the original object identity.
+// It never serializes payloads or embeds prompt text in failures, preventing the attestation path from becoming a transcript or secret sink.
+// Responses input is a tagged protocol union: a role alone does not identify a
+// message because Pi anchors deferred tool definitions with role `developer`.
+// Only the message variant is instruction-bearing; other typed input items stay
+// owned by Pi's provider adapter and remain outside this prompt attestation.
 // ─────────────────────────────────────────────────────────────────
 
 function attestResponses(
@@ -139,17 +142,13 @@ function attestResponses(
   if (payload.instructions !== system)
     fail("invalid_responses_instruction", model, systemSha256, "instructions must equal the compiled system")
 
-  const nestedInstructionMessages = [
-    ...messagesWithRole(payload.input, "system"),
-    ...messagesWithRole(payload.input, "developer"),
-  ]
-  if (nestedInstructionMessages.length > 0)
-    fail(
-      "invalid_responses_instruction",
-      model,
-      systemSha256,
-      "input must not contain an additional instruction message",
-    )
+  const inputItems = Array.isArray(payload.input) ? payload.input : [payload.input]
+  const instructionMessages = inputItems.map(record).filter((item) => {
+    if (item?.role !== "system" && item?.role !== "developer") return false
+    return item.type === undefined || item.type === "message"
+  })
+  if (instructionMessages.length > 0)
+    fail("invalid_responses_instruction", model, systemSha256, "input must not contain an instruction message")
 }
 
 function attestChatCompletions(

@@ -26,6 +26,7 @@ let httpsTarget: ReturnType<typeof Bun.serve>
 let gitRepository = ""
 let upstreamDiagnostics = ""
 const requiredHeaderObservations: string[] = []
+const browserSocketDirectories = new Set<string>()
 let restoreStderr = () => {}
 
 function captureDiagnostic(value: string) {
@@ -89,41 +90,40 @@ async function connect(runtime: EngagementRuntime) {
 
 async function connectBrowser(input: {
   profile: string
-  channel?: "chrome" | "chromium"
-  proxy?: string
-  spki?: string
-  warning?: string
-  cdpEndpoint?: string
-  attestation?: string
+  proxy: string
+  spki: string
 }) {
   const client = new Client({ name: "cyberful-browser-integration", version: "0" })
   const command = path.resolve(import.meta.dir, "../../../../mcps/browser/bin/cyber-browser")
+  const runtimeID = createHash("sha256").update(`${input.profile}\0${process.pid}`).digest("hex").slice(0, 12)
+  const socketDirectory = path.join(process.platform === "win32" ? workarea : "/tmp", `cyb-ab-zap-${runtimeID}`)
+  browserSocketDirectories.add(socketDirectory)
+  const artifacts = path.join(workarea, `${input.profile}-artifacts`)
   await client.connect(
     pipeDiagnostics(
       new StdioClientTransport({
         command,
-        args: [],
+        args: ["mcp"],
         stderr: "pipe",
         env: {
           PATH: process.env.PATH ?? "",
           HOME: os.homedir(),
           TMPDIR: os.tmpdir(),
-          CYBER_BROWSER_BROWSERS_PATH:
-            process.env.CYBER_BROWSER_BROWSERS_PATH ?? path.join(os.homedir(), ".cyberful", "browser", ".browsers"),
-          CYBER_BROWSER_CHANNEL: input.channel ?? "chrome",
-          CYBER_BROWSER_HEADLESS: "true",
-          CYBER_BROWSER_USER_DATA_DIR: path.join(workarea, input.profile),
-          CYBER_BROWSER_ARTIFACTS_DIR: path.join(workarea, `${input.profile}-artifacts`),
-          ...(input.proxy ? { CYBER_BROWSER_PROXY: input.proxy } : {}),
-          ...(input.spki ? { CYBER_BROWSER_PROXY_CA_SPKI: input.spki } : {}),
-          ...(input.warning ? { CYBER_BROWSER_PROXY_WARNING: input.warning } : {}),
-          ...(input.cdpEndpoint
-            ? {
-                CYBER_BROWSER_CDP_ENDPOINT: input.cdpEndpoint,
-                CYBER_BROWSER_OWN_TAB: "1",
-              }
+          ...(process.env.CYBER_AGENT_BROWSER_BINARY
+            ? { CYBER_AGENT_BROWSER_BINARY: process.env.CYBER_AGENT_BROWSER_BINARY }
             : {}),
-          ...(input.attestation ? { CYBER_BROWSER_SHARED_ATTESTATION: input.attestation } : {}),
+          AGENT_BROWSER_PROFILE: path.join(workarea, input.profile),
+          AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
+          AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
+          AGENT_BROWSER_SESSION: `z${runtimeID}`,
+          AGENT_BROWSER_NAMESPACE: `z${runtimeID}`,
+          AGENT_BROWSER_SOCKET_DIR: socketDirectory,
+          AGENT_BROWSER_HEADED: "0",
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "0",
+          AGENT_BROWSER_PROXY: input.proxy,
+          AGENT_BROWSER_PROXY_BYPASS: "cyberful.invalid;<-loopback>",
+          AGENT_BROWSER_ARGS: `--restore-last-session,--ignore-certificate-errors-spki-list=${input.spki},--disable-quic`,
+          CYBER_BROWSER_PROXY_CA_SPKI: input.spki,
         },
       }),
     ),
@@ -245,8 +245,17 @@ async function waitForTool(input: {
   }
 }
 
-async function verifyBrowserHttps(channel: "chrome" | "chromium") {
-  const runtime = await startEngagement({ sessionID: `integration-browser-${channel}`, workarea })
+function browserResultData(result: Awaited<ReturnType<Client["callTool"]>>, label: string) {
+  const text = resultText(result)
+  if ("isError" in result && result.isError) throw new Error(`${label} failed: ${text}`)
+  if (!("structuredContent" in result)) throw new Error(`${label} returned no structured content`)
+  const structured = recordValue(result.structuredContent, `${label}.structuredContent`)
+  const response = recordValue(structured.response, `${label}.response`)
+  return response.data === undefined ? {} : recordValue(response.data, `${label}.data`)
+}
+
+async function verifyBrowserHttps() {
+  const runtime = await startEngagement({ sessionID: "integration-agent-browser", workarea })
   runtimes.push(runtime)
   expect(runtime.degraded).toBe(false)
   expect(runtime.env.CYBER_BROWSER_PROXY_CA_SPKI).toMatch(/^[A-Za-z0-9+/]+={0,2}$/)
@@ -262,22 +271,11 @@ async function verifyBrowserHttps(channel: "chrome" | "chromium") {
     initialMessages.map(() => "http://127.0.0.1:8282/"),
   )
   const browserClient = await connectBrowser({
-    channel,
-    profile: `browser-profile-${channel}`,
-    proxy: runtime.env.CYBER_BROWSER_PROXY,
-    spki: runtime.env.CYBER_BROWSER_PROXY_CA_SPKI,
+    profile: "agent-browser-profile",
+    proxy: stringValue(runtime.env.CYBER_BROWSER_PROXY, "CYBER_BROWSER_PROXY"),
+    spki: stringValue(runtime.env.CYBER_BROWSER_PROXY_CA_SPKI, "CYBER_BROWSER_PROXY_CA_SPKI"),
   })
-  // Sequential phases do not inherit Recon's process-bound shared-browser attestation. Their first
-  // browser_status must launch only the blank dedicated context and attest ZAP before target traffic.
-  const initialBrowserStatus = resultRecord(
-    await browserClient.callTool({ name: "browser_status", arguments: {} }),
-    "browser_status",
-  )
-  expect({
-    proxy: recordValue(initialBrowserStatus.proxy, "browser_status.proxy"),
-    launched: initialBrowserStatus.launched,
-  }).toMatchObject({ proxy: { configured: true, mode: "zap" }, launched: true })
-  await Bun.sleep(1_500)
+  // MCP catalog discovery must not launch Chrome or create unrelated target traffic.
   const startupMessages = optionalArray(
     resultRecord(
       await zapClient.callTool({
@@ -291,17 +289,17 @@ async function verifyBrowserHttps(channel: "chrome" | "chromium") {
   expect(startupMessages.map((message, index) => historyUrl(message, `startupMessages[${index}]`))).toEqual(
     startupMessages.map(() => "http://127.0.0.1:8282/"),
   )
-  const marker = `${channel}-https-${Date.now()}`
+  const marker = `agent-browser-https-${Date.now()}`
   const navigation = await browserClient.callTool({
-    name: "browser_navigate",
+    name: "agent_browser_open",
     arguments: { url: `https://host.docker.internal:${httpsTarget.port}/${marker}` },
   })
   expect("isError" in navigation && navigation.isError).not.toBe(true)
-  const navigatedStatus = resultRecord(
-    await browserClient.callTool({ name: "browser_status", arguments: {} }),
-    "browser_status",
+  const current = browserResultData(
+    await browserClient.callTool({ name: "agent_browser_get_url", arguments: {} }),
+    "agent_browser_get_url",
   )
-  expect(recordValue(navigatedStatus.proxy, "browser_status.proxy").mode).toBe("zap")
+  expect(current.url).toBe(`https://host.docker.internal:${httpsTarget.port}/${marker}`)
   await waitForTool({
     client: zapClient,
     name: "zap_history_search",
@@ -311,6 +309,8 @@ async function verifyBrowserHttps(channel: "chrome" | "chromium") {
         .length > 0,
     deadline: Date.now() + 15_000,
   })
+  const closed = await browserClient.callTool({ name: "agent_browser_close", arguments: {} })
+  expect("isError" in closed && closed.isError).not.toBe(true)
   await releaseRuntimes(runtime)
 }
 
@@ -490,8 +490,9 @@ afterAll(async () => {
     await cleanupOperations("ZAP integration suite cleanup failed", [
       ...clients.splice(0).map((client) => () => client.close()),
       ...runtimes.splice(0).map((runtime) => runtime.stop),
-      () => target.stop(true),
-      () => httpsTarget.stop(true),
+      () => target?.stop(true),
+      () => httpsTarget?.stop(true),
+      ...[...browserSocketDirectories].map((directory) => () => rm(directory, { recursive: true, force: true })),
       () => rm(workarea, { recursive: true, force: true }),
     ])
   } finally {
@@ -1066,100 +1067,140 @@ describe("real headless ZAP containers", () => {
     }
   }, 420_000)
 
-  test("passively and actively scan a local test target and write a report", async () => {
-    const runtime = await startEngagement({ sessionID: "integration-scan", workarea })
-    runtimes.push(runtime)
-    expect(runtime.degraded).toBe(false)
-    const client = await connect(runtime)
-    const targetUrl = `http://host.docker.internal:${target.port}/scan?q=seed`
+  test("publishes a hash-verifiable passive report containing only the authorized local origin", async () => {
+    const scopedWorkarea = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "cyberful-zap-passive-integration-")),
+    )
+    let runtime: EngagementRuntime | undefined
+    try {
+      const store = new EngagementPolicyStore(scopedWorkarea)
+      const traffic = store.prepareTraffic({
+        action: "configure",
+        authorized_http_hosts: ["host.docker.internal"],
+        global_http_rps: null,
+        required_http_headers: [],
+      })
+      await store.commit(store.finalize(traffic, { action: "finalize", profiles: [] }))
+      runtime = await startEngagement({ sessionID: "integration-scan", workarea: scopedWorkarea })
+      runtimes.push(runtime)
+      expect(runtime.degraded).toBe(false)
+      const client = await connect(runtime)
+      const targetUrl = `http://host.docker.internal:${target.port}/scan?q=seed`
 
-    await client.callTool({
-      name: "zap_http_request",
-      arguments: {
-        request:
-          `GET ${targetUrl} HTTP/1.1\r\n` + `Host: host.docker.internal:${target.port}\r\nConnection: close\r\n\r\n`,
-      },
-    })
-    const excludedMarker = `excluded-site-${Date.now()}`
-    await client.callTool({
-      name: "zap_http_request",
-      arguments: {
-        request:
-          `GET /${excludedMarker} HTTP/1.1\r\n` +
-          `Host: host.docker.internal:${httpsTarget.port}\r\nConnection: close\r\n\r\n`,
-        target_url: `https://host.docker.internal:${httpsTarget.port}/${excludedMarker}`,
-      },
-    })
-    await waitForTool({
-      client,
-      name: "zap_get_passive_scan_status",
-      done: (value) => /(?:^|\D)0(?:\D|$)/.test(value),
-      deadline: Date.now() + 30_000,
-    })
+      await client.callTool({
+        name: "zap_http_request",
+        arguments: {
+          request:
+            `GET ${targetUrl} HTTP/1.1\r\n` + `Host: host.docker.internal:${target.port}\r\nConnection: close\r\n\r\n`,
+        },
+      })
+      const gatewayAddress = (
+        await dockerOutput("exec", requiredZapContainer(runtime), "getent", "ahostsv4", "host.docker.internal")
+      ).split(/\s+/, 1)[0]
+      if (!gatewayAddress) throw new Error("Docker host gateway address is unavailable")
+      const excludedMarker = `excluded-site-${Date.now()}`
+      await client.callTool({
+        name: "zap_http_request",
+        arguments: {
+          request:
+            `GET http://${gatewayAddress}:${target.port}/${excludedMarker} HTTP/1.1\r\n` +
+            `Host: ${gatewayAddress}:${target.port}\r\nConnection: close\r\n\r\n`,
+        },
+      })
+      await waitForTool({
+        client,
+        name: "zap_get_passive_scan_status",
+        done: (value) => /(?:^|\D)0(?:\D|$)/.test(value),
+        deadline: Date.now() + 30_000,
+      })
 
-    await client.callTool({
-      name: "zap_api_call",
-      arguments: { component: "ascan", type: "action", operation: "disableAllScanners" },
-    })
-    await client.callTool({
-      name: "zap_api_call",
-      arguments: {
-        component: "ascan",
-        type: "action",
-        operation: "enableScanners",
-        parameters: { ids: "40012" },
-      },
-    })
-    const started = resultRecord(
+      await client.callTool({
+        name: "zap_api_call",
+        arguments: { component: "ascan", type: "action", operation: "disableAllScanners" },
+      })
       await client.callTool({
         name: "zap_api_call",
         arguments: {
           component: "ascan",
           type: "action",
-          operation: "scan",
-          parameters: { url: targetUrl, recurse: false },
+          operation: "enableScanners",
+          parameters: { ids: "40012" },
         },
-      }),
-      "zap_api_call.scan",
-    )
-    const scanID = stringValue(started.scan, "zap_api_call.scan")
-    await waitForTool({
-      client,
-      name: "zap_api_call",
-      arguments: {
-        component: "ascan",
-        type: "view",
-        operation: "status",
-        parameters: { scanId: scanID },
-      },
-      done: (value) => recordValue(jsonValue(value, "zap_api_call.status"), "zap_api_call.status").status === "100",
-      deadline: Date.now() + 90_000,
-    })
+      })
+      const started = resultRecord(
+        await client.callTool({
+          name: "zap_api_call",
+          arguments: {
+            component: "ascan",
+            type: "action",
+            operation: "scan",
+            parameters: { url: targetUrl, recurse: false },
+          },
+        }),
+        "zap_api_call.scan",
+      )
+      const scanID = stringValue(started.scan, "zap_api_call.scan")
+      await waitForTool({
+        client,
+        name: "zap_api_call",
+        arguments: {
+          component: "ascan",
+          type: "view",
+          operation: "status",
+          parameters: { scanId: scanID },
+        },
+        done: (value) => recordValue(jsonValue(value, "zap_api_call.status"), "zap_api_call.status").status === "100",
+        deadline: Date.now() + 90_000,
+      })
 
-    const reportName = `zap-integration-${Date.now()}.json`
-    const report = await client.callTool({
-      name: "zap_generate_workarea_report",
-      arguments: {
-        file_path: reportName,
-        template: "traditional-json",
-        title: "Cyberful ZAP integration",
-      },
-    })
-    expect("isError" in report && report.isError).not.toBe(true)
-    expect(report.content).toContainEqual({
-      type: "text",
-      text: JSON.stringify({
-        engagement_root_relative_path: reportName,
-        container_path: `/zap/wrk/${reportName}`,
-      }),
-    })
-    const reportFile = Bun.file(path.join(workarea, reportName))
-    expect(await reportFile.exists()).toBe(true)
-    const reportJson = await reportFile.json()
-    const serialized = JSON.stringify(reportJson)
-    expect(serialized).toContain(`host.docker.internal:${target.port}`)
-    expect(serialized).toContain(excludedMarker)
-    await releaseRuntimes(runtime)
+      const directReportPath = "raw/zap/passive/direct-filter-check.json"
+      const directReport = await client.callTool({
+        name: "zap_generate_workarea_report",
+        arguments: {
+          file_path: directReportPath,
+          template: "traditional-json",
+          title: "Cyberful direct passive filter integration",
+          sites: [`http://host.docker.internal:${target.port}`],
+        },
+      })
+      expect("isError" in directReport && directReport.isError).not.toBe(true)
+      const directJson = JSON.parse(await Bun.file(path.join(scopedWorkarea, directReportPath)).text())
+      expect(
+        Array.isArray(directJson.site)
+          ? directJson.site.map((site: Record<string, unknown>) => site["@name"])
+          : directJson.site,
+      ).toEqual([`http://host.docker.internal:${target.port}`])
+
+      const capture = await runtime.capturePassiveEvidence({ phase: "verify", attempt: 1 })
+      const captureManifest = JSON.parse(
+        await Bun.file(path.join(scopedWorkarea, capture.manifest as string)).text(),
+      )
+      expect({ capture, captureManifest }).toMatchObject({
+        capture: {
+          state: "complete",
+          manifest: "raw/zap/passive/pentest/verify.json",
+        },
+        captureManifest: {
+          state: "complete",
+          authorized_http_hosts: ["host.docker.internal"],
+          observed_origins: [`http://host.docker.internal:${target.port}`],
+        },
+      })
+      expect(captureManifest.reports).toHaveLength(1)
+      const report = captureManifest.reports[0]
+      const bytes = await Bun.file(path.join(scopedWorkarea, report.path)).arrayBuffer()
+      expect(createHash("sha256").update(new Uint8Array(bytes)).digest("hex")).toBe(report.sha256)
+      const serialized = new TextDecoder().decode(bytes)
+      expect(serialized).toContain(`host.docker.internal:${target.port}`)
+      expect(serialized).not.toContain(excludedMarker)
+      expect(serialized).not.toContain(`${gatewayAddress}:${target.port}`)
+    } finally {
+      const activeRuntime = runtime
+      await cleanupOperations("passive evidence integration cleanup failed", [
+        ...(activeRuntime ? [() => releaseRuntimes(activeRuntime)] : []),
+        () => rm(scopedWorkarea, { recursive: true, force: true }),
+      ])
+    }
   }, 240_000)
 
   test.skipIf(
@@ -1171,12 +1212,8 @@ describe("real headless ZAP containers", () => {
       "/opt/google/chrome/chrome",
       "/usr/bin/chrome",
     ].some((candidate) => fs.existsSync(candidate)),
-  )("captures system Chrome HTTPS through the engagement CA SPKI without external startup traffic", async () => {
-    await verifyBrowserHttps("chrome")
-  }, 180_000)
-
-  test("captures Chromium HTTPS through the engagement CA SPKI without external startup traffic", async () => {
-    await verifyBrowserHttps("chromium")
+  )("captures agent-browser HTTPS through ZAP with the engagement CA SPKI and no startup traffic", async () => {
+    await verifyBrowserHttps()
   }, 180_000)
 
   test("uses docker exec without creating a bridge container", async () => {

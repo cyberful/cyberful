@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Smart Contract Security"
+  short_description: "Audit Solidity and EVM security invariants"
+  default_prompt: "Use $audit-smart-contract-security to audit this contract code for reachable invariant and state-transition failures."

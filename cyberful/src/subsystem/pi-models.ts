@@ -61,6 +61,82 @@ export interface ModelContextCapacity {
   readonly warnings: readonly string[]
 }
 
+// ── Capacity Resolution Is A Pure Route Property ────────────────
+// Prompt compilation happens before a Pi worker and credential store exist,
+// while context rotation happens after the provider registry is materialized.
+// Both boundaries must nevertheless use the same trusted catalog ceiling,
+// configured restriction, and operational clamp. This resolver therefore reads
+// only bundled Pi metadata plus settings and performs no provider refresh or
+// network operation.
+// ─────────────────────────────────────────────────────────────────
+export function resolveModelContextCapacity(
+  settings: AgentProviderSettings,
+  providerID: string,
+): ModelContextCapacity {
+  const configured = settings.providers[providerID]
+  if (!configured) throw new Error(`Provider '${providerID}' is not configured`)
+
+  let catalogContextWindow: number
+  if (configured.adapter === "openai-completions") {
+    if (!configured.context_window)
+      throw new Error(`Custom OpenAI-compatible provider '${providerID}' requires context_window`)
+    catalogContextWindow = configured.context_window
+  } else {
+    const provider = builtinProviders().find((candidate) => candidate.id === configured.adapter)
+    if (!provider) throw new Error(`Unknown Pi provider adapter '${configured.adapter}'`)
+    const direct = provider.getModels().find((candidate) => candidate.id === configured.model)
+    const inherited =
+      configured.adapter === "openai-codex" && configured.model === DAYBREAK_BLUE_MODEL
+        ? provider.getModels().find((candidate) => candidate.id === DAYBREAK_BLUE_CATALOG_BASE)
+        : undefined
+    const catalogModel = direct ?? inherited
+    if (!catalogModel)
+      throw new Error(`Model '${configured.model}' is not present in Pi provider '${providerID}'`)
+    catalogContextWindow = catalogModel.contextWindow
+  }
+
+  const warnings: string[] = []
+  const trustedRouteWindow = Math.min(configured.context_window ?? catalogContextWindow, catalogContextWindow)
+  if (
+    configured.context_window !== undefined &&
+    configured.context_window > catalogContextWindow &&
+    configured.adapter !== "openai-completions"
+  )
+    warnings.push(
+      `context_window ${configured.context_window} exceeds catalog limit ${catalogContextWindow} and was ignored`,
+    )
+  const requestedOperational =
+    configured.operational_context_window ??
+    Math.min(trustedRouteWindow, DEFAULT_OPERATIONAL_CONTEXT_WINDOW)
+  const operationalContextWindow = Math.min(requestedOperational, trustedRouteWindow)
+  if (requestedOperational > trustedRouteWindow)
+    warnings.push(
+      `operational_context_window ${requestedOperational} exceeds trusted route limit ${trustedRouteWindow} and was clamped`,
+    )
+  const source: ModelContextCapacity["source"] =
+    configured.operational_context_window !== undefined
+      ? configured.operational_context_window > trustedRouteWindow
+        ? "configured_operational_clamped"
+        : "configured_operational"
+      : configured.context_window !== undefined && configured.context_window < catalogContextWindow
+        ? "catalog_restricted"
+        : "catalog_default"
+
+  return {
+    catalogContextWindow,
+    ...(configured.context_window === undefined
+      ? {}
+      : { configuredContextWindow: configured.context_window }),
+    trustedRouteWindow,
+    ...(configured.operational_context_window === undefined
+      ? {}
+      : { configuredOperationalContextWindow: configured.operational_context_window }),
+    operationalContextWindow,
+    source,
+    warnings,
+  }
+}
+
 function storedApiKeyAuth(auth: ApiKeyAuth): ApiKeyAuth {
   const login = auth.login
   if (!login) throw new Error(`${auth.name} does not expose an interactive login`)
@@ -260,60 +336,6 @@ export function createPiModels(settings: AgentProviderSettings, credentials: Cre
   for (const [id, providerSettings] of Object.entries(settings.providers))
     models.setProvider(declaredProvider(id, providerSettings))
 
-  const contextCapacity = (providerID: string): ModelContextCapacity => {
-    const configured = settings.providers[providerID]
-    if (!configured) throw new Error(`Provider '${providerID}' is not configured`)
-    const model = models.getModel(providerID, configured.model)
-    if (!model) throw new Error(`Model '${configured.model}' is not available from provider '${providerID}'`)
-    const warnings: string[] = []
-    const catalogModel =
-      configured.adapter === "openai-completions"
-        ? model
-        : builtinProviders()
-            .find((candidate) => candidate.id === configured.adapter)
-            ?.getModels()
-            .find((candidate) => candidate.id === configured.model)
-    const catalogContextWindow = catalogModel?.contextWindow ?? model.contextWindow
-    const trustedRouteWindow = model.contextWindow
-    if (
-      configured.context_window !== undefined &&
-      configured.context_window > catalogContextWindow &&
-      configured.adapter !== "openai-completions"
-    )
-      warnings.push(
-        `context_window ${configured.context_window} exceeds catalog limit ${catalogContextWindow} and was ignored`,
-      )
-    const requestedOperational =
-      configured.operational_context_window ??
-      Math.min(trustedRouteWindow, DEFAULT_OPERATIONAL_CONTEXT_WINDOW)
-    const operationalContextWindow = Math.min(requestedOperational, trustedRouteWindow)
-    if (requestedOperational > trustedRouteWindow)
-      warnings.push(
-        `operational_context_window ${requestedOperational} exceeds trusted route limit ${trustedRouteWindow} and was clamped`,
-      )
-    const source: ModelContextCapacity["source"] =
-      configured.operational_context_window !== undefined
-        ? configured.operational_context_window > trustedRouteWindow
-          ? "configured_operational_clamped"
-          : "configured_operational"
-        : configured.context_window !== undefined && configured.context_window < catalogContextWindow
-          ? "catalog_restricted"
-          : "catalog_default"
-    return {
-      catalogContextWindow,
-      ...(configured.context_window === undefined
-        ? {}
-        : { configuredContextWindow: configured.context_window }),
-      trustedRouteWindow,
-      ...(configured.operational_context_window === undefined
-        ? {}
-        : { configuredOperationalContextWindow: configured.operational_context_window }),
-      operationalContextWindow,
-      source,
-      warnings,
-    }
-  }
-
   return {
     models,
     model(providerID) {
@@ -324,7 +346,9 @@ export function createPiModels(settings: AgentProviderSettings, credentials: Cre
       assertAuthenticSystemChannel(configured.adapter, model)
       return model
     },
-    contextCapacity,
+    contextCapacity(providerID) {
+      return resolveModelContextCapacity(settings, providerID)
+    },
     adapter(providerID) {
       const configured = settings.providers[providerID]
       if (!configured) throw new Error(`Provider '${providerID}' is not configured`)

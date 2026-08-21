@@ -1,0 +1,4 @@
+interface:
+  display_name: "Identity Architecture Assessor"
+  short_description: "Map identity trust and assurance boundaries"
+  default_prompt: "Use $assess-identity-architecture to assess this identity trust topology and route unresolved mechanisms."

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/supply-chain-record.v1.json",
+  "title": "Raw supply-chain campaign record",
+  "type": "object",
+  "required": ["format", "artifact", "runs"],
+  "properties": {
+    "format": {"const": "cyberful.supply-chain-campaign.v1"},
+    "artifact": {"type": "string"},
+    "runs": {"type": "array", "items": {"type": "object", "required": ["tool", "version", "command", "exit_code", "raw_output", "stdout", "stderr"]}}
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://cyberful.dev/schemas/database-boundary-ledger.v1.json",
+  "schema_version": 1,
+  "scope_reference": "code-audit:data-layer-4",
+  "operations": [
+    {
+      "operation": "update project billing contact",
+      "caller": "authenticated organization member",
+      "tenant_source": "verified organization context",
+      "selector": "project_id and organization_id",
+      "query_boundary": "parameterized repository update",
+      "policy_boundary": "service authorization plus database row policy",
+      "credential": "billing-service workload role",
+      "transaction": "authorization version check and update in one transaction",
+      "durable_effect": "billing contact row changed",
+      "evidence_refs": ["trace:billing-update-12", "query:repository-update-4"]
+    }
+  ]
+}

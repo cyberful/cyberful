@@ -1,0 +1,1 @@
+{"authority":{"scope_id":"audit-001","allowed_roots":["src"],"max_invocations":1,"max_jobs":2},"scans":[{"id":"security-baseline","root":"src","config":"rules/security.yaml"}]}

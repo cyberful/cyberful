@@ -1,0 +1,16 @@
+{
+  "authority_reference": "controlled-browser-profile-test",
+  "channels": [
+    {
+      "id": "checkout-embed",
+      "transport": "postMessage",
+      "sender": "https://merchant.example controlled frame",
+      "receiver": "https://payments.example controlled frame",
+      "allowed_origins": ["https://merchant.example"],
+      "message_types": ["checkout.resize", "checkout.complete"],
+      "capabilities": ["resize embedded frame", "return controlled checkout result"],
+      "evidence": "workarea/evidence/browser-message-listeners.json"
+    }
+  ]
+}
+

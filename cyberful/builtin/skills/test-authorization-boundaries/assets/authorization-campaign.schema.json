@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/authorization-campaign.v1.json",
+  "title": "Cyberful authorization campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "authority", "cases"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "campaign_id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization_reference", "allowed_origins", "max_requests", "requests_per_second", "request_timeout_seconds"],
+      "properties": {
+        "authorization_reference": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "format": "uri", "maxLength": 2048 } },
+        "max_requests": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "requests_per_second": { "type": "number", "minimum": 0.1, "maximum": 4 },
+        "request_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 30 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "actor", "tenant", "resource", "action", "expected_policy", "method", "url", "headers", "secret_headers", "body_base64"],
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "actor": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "tenant": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "resource": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "action": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "expected_policy": { "enum": ["allow", "deny"] },
+          "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] },
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "headers": { "type": "object", "maxProperties": 32, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 2048 } },
+          "secret_headers": { "type": "object", "maxProperties": 2, "additionalProperties": { "enum": ["CYBERFUL_PROBE_AUTHORIZATION", "CYBERFUL_PROBE_COOKIE"] } },
+          "body_base64": { "type": "string", "contentEncoding": "base64", "maxLength": 87384 }
+        }
+      }
+    }
+  }
+}

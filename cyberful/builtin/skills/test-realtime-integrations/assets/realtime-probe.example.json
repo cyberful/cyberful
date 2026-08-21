@@ -1,0 +1,37 @@
+{
+  "$schema": "./realtime-probe.schema.json",
+  "campaign_id": "synthetic-channel-boundary",
+  "authority": {
+    "authorization_reference": "engagement-scope-section-realtime",
+    "allowed_origins": ["https://authorized.example.invalid"],
+    "max_requests": 2,
+    "requests_per_second": 1,
+    "request_timeout_seconds": 10
+  },
+  "probes": [
+    {
+      "probe_id": "synthetic-webhook-control",
+      "kind": "webhook",
+      "principal": "controlled-sender",
+      "tenant": "tenant-a",
+      "channel": "order-events",
+      "method": "POST",
+      "url": "https://authorized.example.invalid/hooks/orders",
+      "headers": { "Content-Type": "application/json", "X-Cyberful-Event": "synthetic-control" },
+      "secret_headers": { "X-Signature": "CYBERFUL_WEBHOOK_SIGNATURE" },
+      "body_base64": "eyJldmVudF9pZCI6InN5bnRoZXRpYy0xIn0="
+    },
+    {
+      "probe_id": "synthetic-sse-control",
+      "kind": "sse",
+      "principal": "controlled-subscriber",
+      "tenant": "tenant-a",
+      "channel": "order-events",
+      "method": "GET",
+      "url": "https://authorized.example.invalid/events/orders",
+      "headers": {},
+      "secret_headers": { "Authorization": "CYBERFUL_PROBE_AUTHORIZATION" },
+      "body_base64": ""
+    }
+  ]
+}

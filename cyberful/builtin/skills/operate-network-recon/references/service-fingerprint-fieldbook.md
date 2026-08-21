@@ -1,5 +1,7 @@
 # Service Fingerprint Fieldbook
 
+The active campaign contract is defined by `assets/network-recon-campaign.schema.json`; its raw output replaces the former offline scan-reconciliation report. Reconcile contradictory observations in the engagement evidence ledger after same-vantage validation.
+
 ## Service identity hierarchy
 
 Use the strongest available layer:

@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import { InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai"
 import { Settings } from "@/config/settings"
-import { assertAuthenticSystemChannel, createPiModels } from "./pi-models"
+import { assertAuthenticSystemChannel, createPiModels, resolveModelContextCapacity } from "./pi-models"
 
 const GLM_SETTINGS = Settings.parse(`version: 1
 agent:
@@ -105,6 +105,7 @@ describe("Pi provider registry", () => {
       source: "catalog_default",
       warnings: [],
     })
+    expect(resolveModelContextCapacity(GLM_SETTINGS.agent, "flagship")).toEqual(registry.contextCapacity("flagship"))
   })
 
   test("accepts Daybreak Blue through an OpenAI Codex subscription", () => {
@@ -150,15 +151,14 @@ describe("Pi provider registry", () => {
 
   test("allows builtin limits to restrict but never enlarge the catalog", () => {
     const configured = Settings.parse(
-      Settings.DEFAULT_YAML
-        .replace(
-          "      operational_context_window: 256000",
-          [
-            "      context_window: 900000",
-            "      operational_context_window: 300000",
-            "      max_output_tokens: 64000",
-          ].join("\n"),
-        ),
+      Settings.DEFAULT_YAML.replace(
+        "      operational_context_window: 256000",
+        [
+          "      context_window: 900000",
+          "      operational_context_window: 300000",
+          "      max_output_tokens: 64000",
+        ].join("\n"),
+      ),
     )
     const registry = createPiModels(configured.agent, new InMemoryCredentialStore())
 
@@ -175,13 +175,31 @@ describe("Pi provider registry", () => {
       source: "configured_operational_clamped",
     })
     expect(registry.contextCapacity("openai-codex").warnings).toHaveLength(2)
+    expect(resolveModelContextCapacity(configured.agent, "openai-codex")).toEqual(
+      registry.contextCapacity("openai-codex"),
+    )
+  })
+
+  test("uses a configured builtin context restriction as the operational ceiling", () => {
+    const configured = Settings.parse(
+      Settings.DEFAULT_YAML.replace("      operational_context_window: 256000", "      context_window: 100000"),
+    )
+
+    expect(resolveModelContextCapacity(configured.agent, "openai-codex")).toMatchObject({
+      catalogContextWindow: 272_000,
+      configuredContextWindow: 100_000,
+      trustedRouteWindow: 100_000,
+      operationalContextWindow: 100_000,
+      source: "catalog_restricted",
+      warnings: [],
+    })
   })
 
   test("uses settings keys for Kimi and Z.AI subscription credentials", () => {
     const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, new InMemoryCredentialStore())
 
     expect(registry.adapter("kimi")).toBe("kimi-coding")
-    expect(registry.loginType("kimi")).toBe("api_key")
+    expect(registry.loginType("kimi")).toBe("oauth")
     expect(registry.model("kimi")).toMatchObject({
       provider: "kimi",
       id: "k3",
@@ -199,25 +217,25 @@ describe("Pi provider registry", () => {
     expect(registry.contextCapacity("moonshot").operationalContextWindow).toBe(256_000)
   })
 
-  test("persists subscription login under the configured settings key", async () => {
+  test("persists plan-key subscription login under the configured settings key", async () => {
     const credentials = new InMemoryCredentialStore()
     const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, credentials)
 
-    await registry.models.login("kimi", registry.loginType("kimi"), {
+    await registry.models.login("zai-plan", registry.loginType("zai-plan"), {
       prompt: async () => "subscription-secret",
       notify: () => {},
     })
 
-    expect(await credentials.read("kimi")).toEqual({
+    expect(await credentials.read("zai-plan")).toEqual({
       type: "api_key",
       key: "subscription-secret",
     })
-    expect(await credentials.read("kimi-coding")).toBeUndefined()
+    expect(await credentials.read("zai")).toBeUndefined()
   })
 
   test("does not resolve ambient keys for a subscription-auth provider", async () => {
     const registry = createPiModels(SUBSCRIPTION_SETTINGS.agent, new InMemoryCredentialStore())
-    const auth = registry.models.getProvider("kimi")?.auth.apiKey
+    const auth = registry.models.getProvider("zai-plan")?.auth.apiKey
 
     expect(
       await auth?.resolve({
@@ -225,6 +243,7 @@ describe("Pi provider registry", () => {
           env: async () => "ambient-key-must-not-activate-subscription",
           fileExists: async () => false,
         },
+        signal: new AbortController().signal,
       }),
     ).toBeUndefined()
   })
@@ -289,6 +308,7 @@ instructions:
       operationalContextWindow: 100_000,
       source: "catalog_default",
     })
+    expect(resolveModelContextCapacity(configured.agent, "small")).toEqual(registry.contextCapacity("small"))
   })
 
   test("rejects an adapter that has no reviewed provider-level system channel", () => {

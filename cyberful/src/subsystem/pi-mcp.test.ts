@@ -9,14 +9,14 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { connectPiMcp } from "./pi-mcp"
+import { connectPiMcp, hypothesisDetails } from "./pi-mcp"
 import { SubsystemPhaseBudgetClock, type SuspensionCause } from "./phase-budget-clock"
 import { RUNTIME_DIAGNOSTICS_PATH, RuntimeDiagnosticRecorder } from "./runtime-diagnostics"
 import type { SubsystemMcpServer } from "./subsystem"
 
 const PRIVATE_VALUE = "must-remain-host-owned"
 
-function fixtureServer(stderrLine?: string): SubsystemMcpServer {
+function fixtureServer(options?: { readonly stderrLine?: string; readonly startupDelayMs?: number }): SubsystemMcpServer {
   return {
     name: "pi-mcp-fixture",
     command: process.execPath,
@@ -24,12 +24,63 @@ function fixtureServer(stderrLine?: string): SubsystemMcpServer {
     env: { BUN_BE_BUN: "1" },
     privateEnv: {
       CYBERFUL_TEST_PRIVATE_VALUE: PRIVATE_VALUE,
-      ...(stderrLine ? { CYBERFUL_TEST_STDERR_LINE: stderrLine } : {}),
+      ...(options?.stderrLine ? { CYBERFUL_TEST_STDERR_LINE: options.stderrLine } : {}),
+      ...(options?.startupDelayMs === undefined
+        ? {}
+        : { CYBERFUL_TEST_STARTUP_DELAY_MS: String(options.startupDelayMs) }),
     },
   }
 }
 
 describe("Pi MCP worker bridge", () => {
+  test("uses an explicit bounded gateway initialization timeout", async () => {
+    await expect(
+      connectPiMcp(fixtureServer({ startupDelayMs: 100 }), {
+        cwd: import.meta.dir,
+        initializationTimeoutMs: 25,
+      }),
+    ).rejects.toThrow("Failed to initialize MCP gateway pi-mcp-fixture")
+
+    const bridge = await connectPiMcp(fixtureServer({ startupDelayMs: 100 }), {
+      cwd: import.meta.dir,
+      initializationTimeoutMs: 1_000,
+    })
+    await bridge.close()
+  })
+
+  test("projects typed research closeout metadata without exposing the raw envelope", () => {
+    const details = hypothesisDetails("hypothesis", {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ outcome: "exhausted", activeBlockingHypotheses: 0 }),
+      }],
+      _meta: {
+        "cyberful.dev/research-closeout": {
+          version: 1,
+          webTarget: true,
+          unusedProfiles: [3, 2, 2],
+          coverageCandidateCount: 9,
+          coverageCandidateSamples: Array.from({ length: 10 }, (_, index) => `https://example.test/route-${index}`),
+          collectorDegraded: false,
+        },
+        "private.raw.metadata": "must not be projected",
+      },
+    })
+    expect(details).toEqual({
+      synthesisOutcome: "exhausted",
+      activeBlockingHypotheses: 0,
+      researchCloseout: {
+        version: 1,
+        webTarget: true,
+        unusedProfiles: [2, 3],
+        coverageCandidateCount: 9,
+        coverageCandidateSamples: Array.from({ length: 8 }, (_, index) => `https://example.test/route-${index}`),
+        collectorDegraded: false,
+      },
+    })
+    expect(JSON.stringify(details)).not.toContain("private.raw.metadata")
+  })
+
   test("projects distinct root and child policies over one connection", async () => {
     let childEchoAllowed = true
     const bridge = await connectPiMcp(fixtureServer(), {
@@ -41,6 +92,11 @@ describe("Pi MCP worker bridge", () => {
       const rootTools = bridge.toolsFor({
         handoffAuthorized: true,
         isToolAllowed: () => true,
+        actor: {
+          runID: "root-run-1",
+          displayName: "root",
+          kind: "root",
+        },
       })
       const childTools = bridge.toolsFor({
         handoffAuthorized: false,
@@ -58,6 +114,7 @@ describe("Pi MCP worker bridge", () => {
         "target_cooldown",
         "test_object",
         "question",
+        "agent_browser_close",
         "handoff",
       ])
       expect(childTools.map((tool) => tool.name)).toEqual([
@@ -66,6 +123,7 @@ describe("Pi MCP worker bridge", () => {
         "target_cooldown",
         "test_object",
         "question",
+        "agent_browser_close",
       ])
 
       const rootEcho = rootTools.find((tool) => tool.name === "echo")
@@ -76,6 +134,7 @@ describe("Pi MCP worker bridge", () => {
       expect(rootHandoff).toBeDefined()
       expect(childEcho).toBeDefined()
       expect(childFailure).toBeDefined()
+      expect(rootTools.find((tool) => tool.name === "agent_browser_close")).toMatchObject({ deferLoading: false })
       expect(rootEcho).not.toBe(childEcho)
 
       const result = await childEcho!.execute("call-1", { value: "hello" })
@@ -148,6 +207,14 @@ describe("Pi MCP worker bridge", () => {
           evidenceExists: false,
         },
       ])
+      await expect(
+        bridge.releaseBrowserOwner({
+          runID: "child-7",
+          parentID: "root-1",
+          displayName: "child",
+          kind: "subagent",
+        }),
+      ).resolves.toBeUndefined()
     } finally {
       await bridge.close()
     }
@@ -322,7 +389,7 @@ describe("Pi MCP worker bridge", () => {
         notificationCount: 0,
       },
       {
-        message: "[browser] launching patchright-core chromium with isolated profile",
+        message: "[browser] agent-browser daemon launching Chrome with an isolated profile",
         component: "browser",
         stage: "startup",
         severity: "info",
@@ -374,7 +441,7 @@ describe("Pi MCP worker bridge", () => {
         attempt: 1,
         onFirst: (summary) => notifications.push(summary),
       })
-      const bridge = await connectPiMcp(fixtureServer(observation.message), {
+      const bridge = await connectPiMcp(fixtureServer({ stderrLine: observation.message }), {
         cwd: import.meta.dir,
         diagnostics,
       })

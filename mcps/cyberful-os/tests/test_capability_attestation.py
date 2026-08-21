@@ -40,6 +40,7 @@ class CapabilityReportTest(unittest.TestCase):
             "anvil",
             "gitleaks",
             "grype",
+            "impacket_getuserspns",
             "jazzer",
             "kube_bench",
             "kubectl",
@@ -141,6 +142,7 @@ class CapabilityReportTest(unittest.TestCase):
         self.assertIn("recon", cyberful_os_mcp._fallback_tool_roles("nmap"))
         self.assertNotIn("active", cyberful_os_mcp._fallback_tool_roles("nmap"))
         self.assertIn("active", cyberful_os_mcp._fallback_tool_roles("afl_fuzz"))
+        self.assertEqual(cyberful_os_mcp._fallback_tool_roles("impacket_getuserspns"), ["active"])
         self.assertIn("evidence", cyberful_os_mcp._fallback_tool_roles("tcpdump"))
         self.assertEqual(cyberful_os_mcp._fallback_tool_roles("wordlists"), [])
 
@@ -168,15 +170,20 @@ class CapabilityReportTest(unittest.TestCase):
         copy_at = dockerfile.index(
             "COPY cyberful-os/cyberful_os_mcp.py /opt/cyberful-os/cyberful_os_mcp.py"
         )
+        launcher_copy_at = dockerfile.index(
+            "COPY --chmod=0755 cyberful-os/scripts/impacket-GetUserSPNs /usr/local/bin/impacket-GetUserSPNs"
+        )
         verify_at = dockerfile.index("python3 /opt/cyberful-os/cyberful_os_mcp.py --verify-capabilities")
         workdir_at = dockerfile.index("WORKDIR /workspace")
 
+        self.assertLess(launcher_copy_at, verify_at)
         self.assertLess(copy_at, verify_at)
         self.assertLess(verify_at, workdir_at)
         self.assertIn("msfconsole -q -x 'version; exit'", dockerfile[verify_at:workdir_at])
         self.assertIn("nuclei -version", dockerfile[verify_at:workdir_at])
         for smoke in (
             "rg --version",
+            "impacket-GetUserSPNs -h",
             "import websocket",
             "semgrep --version",
             "syft version",
@@ -194,6 +201,54 @@ class CapabilityReportTest(unittest.TestCase):
             "clang --version",
         ):
             self.assertIn(smoke, dockerfile[verify_at:workdir_at])
+
+    def test_mobile_runtime_avoids_the_python_314_yara_sdist_gap(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        build_tools_at = dockerfile.index("    build-essential \\")
+        source_install_at = dockerfile.index(
+            '"yara-python-dex @ git+https://github.com/MobSF/yara-python-dex.git@${YARA_PYTHON_DEX_REVISION}"'
+        )
+        mobsf_install_at = dockerfile.index("    mobsf \\", source_install_at)
+        consistency_check_at = dockerfile.index(
+            '"${CYBERFUL_OS_PYTHON_VENV}/bin/pip" check', mobsf_install_at
+        )
+
+        self.assertIn(
+            "ARG YARA_PYTHON_DEX_REVISION=84ad7d2d25552ae91d8a3e89657d0723b4f86da9",
+            dockerfile,
+        )
+        self.assertLess(build_tools_at, source_install_at)
+        self.assertLess(source_install_at, mobsf_install_at)
+        self.assertLess(mobsf_install_at, consistency_check_at)
+        self.assertIn("python3-dev", dockerfile[build_tools_at:source_install_at])
+        self.assertIn("version('yara-python-dex') == '1.0.9'", dockerfile)
+
+    def test_prowler_uses_a_supported_pinned_python_runtime(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        python_stage_at = dockerfile.index("FROM ${PROWLER_PYTHON_BASE_IMAGE} AS prowler-python")
+        kali_stage_at = dockerfile.index("FROM ${KALI_BASE_IMAGE}")
+        runtime_copy_at = dockerfile.index(
+            "COPY --from=prowler-python /usr/local /opt/prowler-python"
+        )
+        venv_at = dockerfile.index(
+            "/opt/prowler-python/bin/python3 -m venv /opt/prowler-venv"
+        )
+        install_at = dockerfile.index(
+            '/opt/prowler-venv/bin/pip install "prowler==${PROWLER_VERSION}"'
+        )
+
+        self.assertIn(
+            "ARG PROWLER_PYTHON_BASE_IMAGE=python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
+            dockerfile,
+        )
+        self.assertIn("ARG PROWLER_VERSION=5.39.1", dockerfile)
+        self.assertLess(python_stage_at, kali_stage_at)
+        self.assertLess(kali_stage_at, runtime_copy_at)
+        self.assertLess(runtime_copy_at, venv_at)
+        self.assertLess(venv_at, install_at)
+        self.assertIn('grep -F "Python 3.12.13"', dockerfile[runtime_copy_at:install_at])
+        self.assertIn("sys.version_info[:2] == (3, 12)", dockerfile[install_at:])
+        self.assertNotIn("COPY --from=prowler-python /usr/local /usr/local", dockerfile)
 
     def test_per_build_metadata_cannot_invalidate_runtime_installation_layers(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

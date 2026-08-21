@@ -1,0 +1,39 @@
+{
+  "$schema": "./authorization-campaign.schema.json",
+  "campaign_id": "synthetic-tenant-boundary",
+  "authority": {
+    "authorization_reference": "engagement-scope-section-authorization",
+    "allowed_origins": ["https://authorized.example.invalid"],
+    "max_requests": 2,
+    "requests_per_second": 1,
+    "request_timeout_seconds": 10
+  },
+  "cases": [
+    {
+      "case_id": "synthetic-owner-control",
+      "actor": "controlled-owner",
+      "tenant": "tenant-a",
+      "resource": "tenant-a/project-001",
+      "action": "read",
+      "expected_policy": "allow",
+      "method": "GET",
+      "url": "https://authorized.example.invalid/projects/project-001",
+      "headers": { "Accept": "application/json" },
+      "secret_headers": { "Authorization": "CYBERFUL_PROBE_AUTHORIZATION" },
+      "body_base64": ""
+    },
+    {
+      "case_id": "synthetic-cross-tenant-candidate",
+      "actor": "controlled-non-owner",
+      "tenant": "tenant-b",
+      "resource": "tenant-a/project-001",
+      "action": "read",
+      "expected_policy": "deny",
+      "method": "GET",
+      "url": "https://authorized.example.invalid/projects/project-001",
+      "headers": { "Accept": "application/json" },
+      "secret_headers": { "Authorization": "CYBERFUL_PROBE_AUTHORIZATION" },
+      "body_base64": ""
+    }
+  ]
+}

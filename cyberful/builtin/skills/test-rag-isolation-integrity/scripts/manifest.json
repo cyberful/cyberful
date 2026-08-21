@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_rag_isolation_probe.py",
+  "class": "probe",
+  "network": "target",
+  "transport": {"authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]},
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["exploit", "hacker", "verify"],
+  "tools": ["curl"],
+  "dependencies": {"commands": ["curl"], "python": [], "bootstrap": null},
+  "effects": ["sends-bounded-rag-queries-through-runtime-mission-route", "writes-secret-redacted-raw-response-evidence"],
+  "timeout_seconds": 60,
+  "limits": {"requests": 8, "concurrency": 1, "output_bytes": 1048576},
+  "secrets": {"environment": ["CYBERFUL_RAG_AUTHORIZATION"]},
+  "input": {"format": "json", "schema": "assets/rag-isolation-probe.schema.json"},
+  "output": {"format": "json", "schema": "assets/rag-isolation-evidence.schema.json", "raw": true}
+}

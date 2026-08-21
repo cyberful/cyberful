@@ -42,6 +42,22 @@ test("publishes revisions and keeps the Report finding tool read-only", async ()
   await store.startRun({ id: run.runID, workflow: run.workflow })
 
   const writable = SessionFinding.dynamicTool(store, run, { readonly: false })
+  const assessmentReviewValues = (tool: typeof writable) => {
+    const actions = tool.definition.inputSchema as {
+      readonly oneOf: Array<{
+        readonly properties?: {
+          readonly action?: { readonly enum?: readonly string[] }
+          readonly assessment?: { readonly properties?: { readonly review?: { readonly enum?: readonly string[] } } }
+        }
+      }>
+    }
+    return actions.oneOf.find((schema) => schema.properties?.action?.enum?.includes("set_attack_assessment"))
+      ?.properties?.assessment?.properties?.review?.enum
+  }
+  expect(assessmentReviewValues(writable)).toEqual(["NOT_REVIEWED"])
+  expect(
+    assessmentReviewValues(SessionFinding.dynamicTool(store, { ...run, phase: "verify" }, { readonly: false })),
+  ).toEqual(["NOT_REVIEWED", "ACCEPTED", "REVISED", "REJECTED"])
   expect(
     await writable.execute(
       {

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/realtime-probe-evidence.v1.json",
+  "title": "Cyberful realtime probe raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "authorization_reference", "source_sha256", "limits", "probes", "interpretation"],
+  "properties": {
+    "format": { "const": "cyberful.realtime-probe-evidence.v1" },
+    "campaign_id": { "type": "string" },
+    "authorization_reference": { "type": "string" },
+    "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "limits": { "type": "object" },
+    "probes": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["probe_id", "kind", "principal", "tenant", "channel", "request", "transport", "response"],
+        "properties": {
+          "probe_id": { "type": "string" },
+          "kind": { "enum": ["webhook", "callback", "sse", "websocket-handshake"] },
+          "principal": { "type": "string" },
+          "tenant": { "type": "string" },
+          "channel": { "type": "string" },
+          "request": { "type": "object" },
+          "transport": { "type": "object" },
+          "response": { "type": "object" }
+        }
+      }
+    },
+    "interpretation": { "type": "string" }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "audit_pci_penetration_evidence.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["verify", "report", "hunt"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-bounded-local-pci-evidence-metadata", "writes-bounded-raw-evidence-audit"],
+  "timeout_seconds": 10,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 2097152},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/pci-penetration-evidence.schema.json"},
+  "output": {"format": "json", "schema": "assets/pci-penetration-evidence-audit.schema.json", "raw": true}
+}

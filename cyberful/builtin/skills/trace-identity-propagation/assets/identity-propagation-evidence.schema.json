@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/identity-propagation-evidence.v1.json",
+  "title": "Cyberful identity propagation raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "trace_id", "source_sha256", "limits", "events", "interpretation"],
+  "properties": {
+    "format": { "const": "cyberful.identity-propagation-evidence.v1" },
+    "trace_id": { "type": "string" },
+    "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "limits": { "type": "object" },
+    "events": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "order", "component", "artifact_kind", "evidence_sha256", "identity", "changes"],
+        "properties": {
+          "event_id": { "type": "string" },
+          "order": { "type": "integer" },
+          "component": { "type": "string" },
+          "artifact_kind": { "type": "string" },
+          "evidence_sha256": { "type": "string" },
+          "identity": { "type": "object" },
+          "changes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "interpretation": { "type": "string" }
+  }
+}

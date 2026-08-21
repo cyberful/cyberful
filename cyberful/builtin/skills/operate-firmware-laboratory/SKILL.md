@@ -1,6 +1,26 @@
 ---
 name: operate-firmware-laboratory
 description: Safely extract, inventory, compare, fingerprint, and inspect Linux appliance firmware with managed firmware and user-mode native labs.
+metadata:
+  domain: platform-security
+  subdomain: firmware-tooling
+  triggers:
+    - firmware laboratory
+    - extract firmware image
+    - emulate firmware service
+    - inspect root filesystem
+    - QEMU user emulation
+    - firmware runtime tracing
+  tags:
+    - firmware
+    - embedded
+    - QEMU
+    - binfmt
+    - filesystem-analysis
+  frameworks:
+    nist_csf:
+      - ID.AM
+      - ID.RA
 ---
 
 # Operate Firmware Laboratory
@@ -13,7 +33,7 @@ Record source, acquisition time, product/model claims, size, SHA-256, file ident
 
 ## Extract deterministically
 
-Use `firmware_lab unpack` first. For ZIP-based packages and Mozilla-style optimized archives, use `archive_extract inspect` and `extract`; it retries prepended-byte or Info-ZIP status-2 inputs through native `7zz` in a fresh destination before atomic publication. Confirm every fallback extraction result rather than assuming a successful exit means a coherent root filesystem. Use `unblob`, `binwalk`, `unsquashfs`, `ubireader_extract_files`, `dumpimage`, and `dtc` for targeted validation. Do not follow evidence symlinks outside the lab.
+Use `firmware_lab unpack` first. For ZIP, TAR-family, single-stream gzip/bzip2/xz, 7z, RAR, CAB, or ar packages, use `archive_extract inspect` and `extract`; it detects signatures, rejects unsafe members, handles compressed TAR variants, and retries prepended-byte or Info-ZIP status-2 ZIP inputs through native `7zz` in a fresh destination before atomic publication. Confirm every fallback extraction result rather than assuming a successful exit means a coherent root filesystem. Use `unblob`, `binwalk`, `unsquashfs`, `ubireader_extract_files`, `dumpimage`, and `dtc` for targeted validation. Do not follow evidence symlinks outside the lab.
 
 ## Map attack surface
 

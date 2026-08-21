@@ -1,6 +1,25 @@
 ---
 name: operate-sast-toolchain
 description: Operate Semgrep and source-oriented static analysis as a hypothesis, coverage, and regression system during advanced code audits. Use for repository baselining, custom rule authoring, taint/dataflow searches, framework-specific sink discovery, variant analysis, diff review, scanner reconciliation, SARIF production, or when generic rules miss project-specific security invariants.
+metadata:
+  domain: security-tooling
+  subdomain: static-application-security-testing
+  triggers:
+    - SAST campaign
+    - Semgrep security scan
+    - custom static analysis rule
+    - SARIF source analysis
+    - static analysis coverage
+  tags:
+    - SAST
+    - Semgrep
+    - SARIF
+    - taint-analysis
+    - source-code
+    - variant-analysis
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate SAST Toolchain
@@ -35,6 +54,8 @@ Use the dedicated semgrep tool with:
 - controlled jobs, timeout, max-target-bytes, and error behavior.
 
 Keep broad discovery output separate from release-gating output. Baselines suppress historical results for triage; they do not prove historical code safe.
+
+For repeatable execution, stage [scripts/run_sast_campaign.py](scripts/run_sast_campaign.py), its [manifest](scripts/manifest.json), and the [campaign example](assets/sast-campaign.example.json). The orchestrator accepts only local rules and explicitly authorized workspace roots, forces metrics off, uses bounded jobs and timeouts, and preserves raw JSON and stderr under the [evidence schema](assets/sast-evidence.schema.json). Interpret reachability and exploitability after the campaign; the script deliberately does not normalize findings.
 
 For C/C++, use `native_static_analysis import_compile_db` before compiler-aware checks when a compile database exists. Pass `run_checks` only a C/C++ source file or a directory containing C/C++ sources; ELF and other non-source inputs return a structured `unsupported` result without invoking source analyzers and belong in the binary-analysis workflow. Use `run_checks`, `trace_source_sink`, and `inspect_variadic_calls` as bounded discovery passes, then validate with the actual build flags, Clang-Tidy/scan-build output, and complete source context. Generate a compile database with Bear only inside a mutable lab copy.
 

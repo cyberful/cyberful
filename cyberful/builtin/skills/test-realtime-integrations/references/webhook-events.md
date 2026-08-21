@@ -36,3 +36,7 @@ Trace verification, parsing, deduplication, authorization, state transition, sid
 - Event type is often trusted to select a deserializer or privileged handler.
 - An event may be authentic but not authorized for the local tenant, object, or current lifecycle state.
 - Webhook preview, resend, and troubleshooting tools often use broader network and credential access than normal delivery.
+
+## Runtime boundary
+
+The probe JSON records an authorization reference, exact origins, and conservative limits only. It cannot grant authority or provide proxy, CA, TLS, or routing choices. Cyberful owns transport after the model boundary: literal loopback IP targets run direct with proxies disabled, while every other target requires the runtime-provided HTTP(S) proxy and CA bundle. If that route is absent, the probe refuses before any request or secret resolution.

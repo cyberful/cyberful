@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/pci-penetration-evidence-audit.v1.json",
+  "title": "Cyberful PCI DSS penetration-test raw evidence audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "assessment_id", "standard_version", "entity_type", "segmentation_used", "assessment_period", "input_sha256", "limits", "summary", "coverage", "conflicts", "applicability_warnings", "records", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.pci-penetration-evidence-audit.raw.v1"},
+    "assessment_id": {"$ref": "#/$defs/id"},
+    "standard_version": {"const": "PCI DSS 4.0.1"},
+    "entity_type": {"enum": ["merchant", "service-provider", "multi-tenant-service-provider"]},
+    "segmentation_used": {"type": "boolean"},
+    "assessment_period": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["records", "input_bytes", "output_bytes", "timeout_seconds"], "properties": {"records": {"const": 2048}, "input_bytes": {"const": 1048576}, "output_bytes": {"const": 2097152}, "timeout_seconds": {"const": 10}}},
+    "summary": {"type": "object", "additionalProperties": false, "required": ["record_count", "status_counts"], "properties": {"record_count": {"type": "integer", "minimum": 1, "maximum": 2048}, "status_counts": {"type": "object", "additionalProperties": false, "required": ["supported", "gap", "blocked", "not-applicable"], "properties": {"supported": {"type": "integer", "minimum": 0}, "gap": {"type": "integer", "minimum": 0}, "blocked": {"type": "integer", "minimum": 0}, "not-applicable": {"type": "integer", "minimum": 0}}}}},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["applicable_requirements", "observed_requirements", "unobserved_requirements", "without_supported_evidence"], "properties": {"applicable_requirements": {"$ref": "#/$defs/requirement_list"}, "observed_requirements": {"$ref": "#/$defs/requirement_list"}, "unobserved_requirements": {"$ref": "#/$defs/requirement_list"}, "without_supported_evidence": {"$ref": "#/$defs/requirement_list"}}},
+    "conflicts": {"type": "array", "maxItems": 2048, "items": {"$ref": "#/$defs/conflict"}},
+    "applicability_warnings": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "records": {"type": "array", "minItems": 1, "maxItems": 2048, "items": {"$ref": "#/$defs/record"}},
+    "interpretation": {"$ref": "#/$defs/text"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "requirement": {"enum": ["11.4.1", "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7"]},
+    "requirement_list": {"type": "array", "maxItems": 7, "uniqueItems": true, "items": {"$ref": "#/$defs/requirement"}},
+    "evidence_refs": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "record": {"type": "object", "additionalProperties": false, "required": ["record_id", "requirement", "topic", "status", "source_type", "evidence_date", "evidence_refs", "rationale"], "properties": {"record_id": {"$ref": "#/$defs/id"}, "requirement": {"$ref": "#/$defs/requirement"}, "topic": {"$ref": "#/$defs/text"}, "status": {"enum": ["supported", "gap", "blocked", "not-applicable"]}, "source_type": {"enum": ["methodology", "scope", "internal-report", "external-report", "segmentation-report", "qualification", "independence", "remediation", "retest", "retention", "provider-customer-support", "other"]}, "evidence_date": {"type": "string", "format": "date"}, "evidence_refs": {"$ref": "#/$defs/evidence_refs"}, "rationale": {"$ref": "#/$defs/text"}}},
+    "conflict": {"type": "object", "additionalProperties": false, "required": ["requirement", "topic", "statuses", "record_ids"], "properties": {"requirement": {"$ref": "#/$defs/requirement"}, "topic": {"$ref": "#/$defs/text"}, "statuses": {"type": "array", "minItems": 2, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["supported", "gap", "blocked", "not-applicable"]}}, "record_ids": {"type": "array", "minItems": 2, "maxItems": 2048, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}}}
+  }
+}

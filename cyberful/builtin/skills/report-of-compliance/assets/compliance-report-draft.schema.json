@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/compliance-report-draft.v1.json",
+  "title": "Cyberful raw compliance report draft",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "document_status", "report_id", "report_title", "profile", "entity", "assessment", "digests", "limits", "summary", "requirements", "draft_markdown", "limitations"],
+  "properties": {
+    "format": {"const": "cyberful.compliance-report-draft.raw.v1"},
+    "document_status": {"const": "draft"},
+    "report_id": {"$ref": "#/$defs/id"},
+    "report_title": {"$ref": "#/$defs/text"},
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "framework", "version", "source_url", "source_sha256", "deliverable_title", "draft_label", "official_template_required", "attestation_authority"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "framework": {"$ref": "#/$defs/text"},
+        "version": {"$ref": "#/$defs/text"},
+        "source_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "source_sha256": {"$ref": "#/$defs/digest"},
+        "deliverable_title": {"$ref": "#/$defs/text"},
+        "draft_label": {"$ref": "#/$defs/text"},
+        "official_template_required": {"type": "boolean"},
+        "attestation_authority": {"$ref": "#/$defs/text"}
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legal_name", "roles", "jurisdiction"],
+      "properties": {
+        "legal_name": {"$ref": "#/$defs/text"},
+        "roles": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "jurisdiction": {"$ref": "#/$defs/text"}
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "period", "evidence_cutoff", "assessor_name", "assessor_organization", "declared_qualification", "review_authority"],
+      "properties": {
+        "scope": {"$ref": "#/$defs/text"},
+        "period": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+        "evidence_cutoff": {"type": "string", "format": "date"},
+        "assessor_name": {"$ref": "#/$defs/text"},
+        "assessor_organization": {"$ref": "#/$defs/text"},
+        "declared_qualification": {"$ref": "#/$defs/text"},
+        "review_authority": {"$ref": "#/$defs/text"}
+      }
+    },
+    "digests": {"type": "object", "additionalProperties": false, "required": ["input_sha256", "profile_sha256", "template_sha256"], "properties": {"input_sha256": {"$ref": "#/$defs/digest"}, "profile_sha256": {"$ref": "#/$defs/digest"}, "template_sha256": {"$ref": "#/$defs/digest"}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["records", "needs", "input_bytes", "profile_bytes", "template_bytes", "output_bytes", "timeout_seconds"], "properties": {"records": {"const": 2048}, "needs": {"const": 128}, "input_bytes": {"const": 2097152}, "profile_bytes": {"const": 524288}, "template_bytes": {"const": 262144}, "output_bytes": {"const": 4194304}, "timeout_seconds": {"const": 15}}},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["need_count", "observed_count", "status_counts", "unresolved_need_ids", "not_applicable_need_ids"],
+      "properties": {
+        "need_count": {"type": "integer", "minimum": 1, "maximum": 128},
+        "observed_count": {"type": "integer", "minimum": 0, "maximum": 128},
+        "status_counts": {"type": "object", "additionalProperties": false, "required": ["supported", "partially-supported", "unsupported", "not-applicable-with-rationale", "not-tested", "conflicting-evidence"], "properties": {"supported": {"type": "integer", "minimum": 0}, "partially-supported": {"type": "integer", "minimum": 0}, "unsupported": {"type": "integer", "minimum": 0}, "not-applicable-with-rationale": {"type": "integer", "minimum": 0}, "not-tested": {"type": "integer", "minimum": 0}, "conflicting-evidence": {"type": "integer", "minimum": 0}}},
+        "unresolved_need_ids": {"$ref": "#/$defs/id_list"},
+        "not_applicable_need_ids": {"$ref": "#/$defs/id_list"}
+      }
+    },
+    "requirements": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/requirement"}},
+    "draft_markdown": {"type": "string", "minLength": 1, "maxLength": 2097152},
+    "limitations": {"type": "array", "minItems": 3, "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id_list": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "reference_list": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "source_list": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["need_id", "title", "source_refs", "evidence_expectations", "required", "observed", "status", "summary", "evidence_refs", "finding_refs", "rationale", "owner", "target_date"],
+      "properties": {
+        "need_id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "source_refs": {"$ref": "#/$defs/source_list"},
+        "evidence_expectations": {"$ref": "#/$defs/source_list"},
+        "required": {"type": "boolean"},
+        "observed": {"type": "boolean"},
+        "status": {"enum": ["supported", "partially-supported", "unsupported", "not-applicable-with-rationale", "not-tested", "conflicting-evidence"]},
+        "summary": {"$ref": "#/$defs/text"},
+        "evidence_refs": {"$ref": "#/$defs/reference_list"},
+        "finding_refs": {"$ref": "#/$defs/reference_list"},
+        "rationale": {"$ref": "#/$defs/text"},
+        "owner": {"$ref": "#/$defs/text"},
+        "target_date": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}]}
+      }
+    }
+  }
+}

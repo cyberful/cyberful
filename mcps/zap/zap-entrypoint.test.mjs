@@ -33,4 +33,20 @@ describe("ZAP runtime entrypoint", () => {
     expect(entrypoint).toContain("CYBER_ZAP_MAX_HISTORY_RESPONSE_BYTES must not exceed 2147483647")
     expect(entrypoint).toContain('-config "database.response.bodysize=${history_response_body_bytes}"')
   })
+
+  test("raises the cache of an existing persistent history before ZAP reopens it", async () => {
+    const entrypoint = await Bun.file(new URL("./zap-entrypoint.sh", import.meta.url)).text()
+
+    expect(entrypoint).toContain("SET FILES CACHE SIZE 262144")
+    expect(entrypoint).toContain("grep -q '^SET FILES CACHE SIZE [0-9][0-9]*$'")
+    expect(entrypoint).toContain('mv "${session_script_next}" "${session_script}"')
+    expect(entrypoint.indexOf("SET FILES CACHE SIZE 262144")).toBeLessThan(entrypoint.indexOf("exec /zap/zap-x.sh"))
+  })
+
+  test("raises the bundled template cache used by new persistent histories", async () => {
+    const dockerfile = await Bun.file(new URL("../cyberful-os/Dockerfile", import.meta.url)).text()
+
+    expect(dockerfile).toContain("s/^SET FILES CACHE SIZE 32000$/SET FILES CACHE SIZE 262144/")
+    expect(dockerfile).toContain("grep -qx 'SET FILES CACHE SIZE 262144' /zap/db/zapdb.script")
+  })
 })

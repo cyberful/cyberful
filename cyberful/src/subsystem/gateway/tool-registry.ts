@@ -20,6 +20,11 @@ export type GatewayToolDefinition = {
 export type GatewayToolContext = {
   sessionID: SessionID
   signal: AbortSignal
+  actor?: {
+    readonly runID: string
+    readonly role: "root" | "subagent" | "fallback"
+    readonly parentRunID?: string
+  }
 }
 
 export type GatewayToolHandler = (

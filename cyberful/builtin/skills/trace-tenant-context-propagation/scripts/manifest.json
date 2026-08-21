@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "trace_tenant_context.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "exploit", "verify", "index", "trace", "hunt"],
+  "tools": ["python3"],
+  "dependencies": { "commands": ["python3"], "python": [], "bootstrap": null },
+  "effects": ["reads-bounded-offline-tenant-artifacts", "writes-bounded-raw-context-evidence"],
+  "timeout_seconds": 15,
+  "limits": { "requests": 0, "concurrency": 1, "output_bytes": 1048576 },
+  "secrets": { "environment": [] },
+  "input": { "format": "json", "schema": "assets/tenant-context.schema.json" },
+  "output": { "format": "json", "schema": "assets/tenant-context-evidence.schema.json", "raw": true }
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/http-traffic-evidence.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "analysis_id", "scope_reference", "input_sha256", "sources", "transactions", "summary", "limits", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.http-traffic-evidence.v1"},
+    "analysis_id": {"type": "string"},
+    "scope_reference": {"type": "string"},
+    "input_sha256": {"$ref": "#/$defs/digest"},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+    "transactions": {"type": "array", "items": {"$ref": "#/$defs/transaction"}},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transactions", "methods", "status_classes", "evidence_tags"],
+      "properties": {
+        "transactions": {"type": "integer", "minimum": 0},
+        "methods": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "status_classes": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "evidence_tags": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transactions", "input_bytes", "output_bytes", "timeout_seconds"],
+      "properties": {
+        "transactions": {"type": "integer"},
+        "input_bytes": {"type": "integer"},
+        "output_bytes": {"type": "integer"},
+        "timeout_seconds": {"type": "integer"}
+      }
+    },
+    "interpretation": {"type": "string"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "transactions"],
+      "properties": {"path": {"type": "string"}, "bytes": {"type": "integer"}, "sha256": {"$ref": "#/$defs/digest"}, "transactions": {"type": "integer"}}
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["header_names", "body_bytes"],
+      "properties": {"header_names": {"type": "array", "items": {"type": "string"}}, "body_bytes": {"type": "integer"}}
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "entry_index", "method", "origin", "path", "query_names", "request", "status", "status_class", "mime_type", "response", "redirect_origin", "evidence_tags"],
+      "properties": {
+        "source": {"type": "string"}, "entry_index": {"type": "integer"}, "method": {"type": "string"}, "origin": {"type": "string"}, "path": {"type": "string"},
+        "query_names": {"type": "array", "items": {"type": "string"}}, "request": {"$ref": "#/$defs/message"}, "status": {"type": "integer"}, "status_class": {"type": "string"},
+        "mime_type": {"type": "string"}, "response": {"$ref": "#/$defs/message"}, "redirect_origin": {"type": ["string", "null"]}, "evidence_tags": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

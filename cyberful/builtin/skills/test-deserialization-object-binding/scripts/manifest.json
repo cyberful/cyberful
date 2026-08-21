@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_deserialization_harness.py",
+  "class": "harness",
+  "network": "loopback",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["exploit", "hacker", "attack", "verify"],
+  "tools": ["curl"],
+  "dependencies": {"commands": ["curl"], "python": [], "bootstrap": null},
+  "effects": ["loopback-only-parser-fixtures", "may-trigger-harmless-lab-reconstruction-hooks", "writes-bounded-secret-redacted-raw-evidence"],
+  "timeout_seconds": 120,
+  "limits": {"requests": 8, "concurrency": 1, "output_bytes": 1048576},
+  "secrets": {"environment": ["CYBERFUL_LAB_AUTHORIZATION"]},
+  "input": {"format": "json", "schema": "assets/deserialization-harness.schema.json"},
+  "output": {"format": "json", "schema": "assets/deserialization-evidence.schema.json", "raw": true}
+}
+

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "attribution", "limits", "cases"],
+  "properties": {
+    "$schema": {"const": "assets/rag-isolation-probe.schema.json"},
+    "attribution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authorization_reference", "expires_at", "allowed_origins", "actor_id", "tenant_id"],
+      "properties": {
+        "authorization_reference": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "allowed_origins": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^https?://"}},
+        "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "tenant_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false, "required": ["max_requests", "requests_per_second"],
+      "properties": {
+        "max_requests": {"type": "integer", "minimum": 1, "maximum": 8},
+        "requests_per_second": {"type": "number", "exclusiveMinimum": 0, "maximum": 4}
+      }
+    },
+    "cases": {
+      "type": "array", "minItems": 1, "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "endpoint", "query", "corpus_id", "actor_id", "tenant_id", "marker_ids"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "endpoint": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^https?://"},
+          "query": {"type": "string", "minLength": 1, "maxLength": 16384},
+          "corpus_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "tenant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "marker_ids": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
+        }
+      }
+    }
+  }
+}

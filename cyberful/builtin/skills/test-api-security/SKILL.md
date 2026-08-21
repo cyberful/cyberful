@@ -1,47 +1,45 @@
 ---
 name: test-api-security
-description: Test and audit non-GraphQL APIs across inventory, schemas, identity propagation, object and property authorization, resource governance, versioning, error handling, third-party consumption, and asynchronous effects. Use for REST, JSON, XML, gRPC, protobuf, SOAP, OpenAPI, partner, internal, mobile-backend, batch, and machine-to-machine API assessments.
+description: Route broad non-GraphQL API assessments to focused Cyberful skills for contracts, parsers, identity, authorization, distributed causality, and protocol-specific testing. Use when an authorized REST, RPC, gRPC, protobuf, SOAP, OpenAPI, partner, batch, or machine API review spans multiple concerns.
+metadata:
+  domain: application-security
+  subdomain: api-security-routing
+  triggers:
+    - broad API security assessment
+    - REST API security review
+    - RPC security assessment
+    - machine API audit
+    - API attack surface review
+  tags:
+    - API
+    - REST
+    - RPC
+    - OpenAPI
+    - distributed-systems
+  frameworks:
+    mitre_attack:
+      - T1190
+    nist_csf:
+      - ID.RA
 ---
 
 # Test API Security
 
-Treat every operation and message consumer as a security boundary even when a gateway or trusted client performs earlier checks.
+Use this skill to inventory the API surface and assign each question to one specialist. Treat operations and message consumers as boundaries, but do not duplicate their detailed procedures here.
 
-## Reconcile the API inventory
+## Route the assessment
 
-Combine specifications, gateway routes, server registrations, frontend and mobile traffic, SDKs, client bundles, service discovery, old versions, documentation, message topics, and observed proxy history. Read [references/inventory-contract.md](references/inventory-contract.md).
+- Use `audit-api-contract-implementation` to compare implementation, gateway routes, generated clients, and schema enforcement.
+- Use `analyze-api-contract-coverage` to reconcile OpenAPI or other contract coverage against observed and registered operations.
+- Use `test-grpc-protobuf-security` or `test-soap-xml-services` for protocol-specific parser, metadata, and authorization behavior.
+- Use `test-event-queue-boundaries` for producers, consumers, retries, dead letters, ordering, and message authority.
+- Use `trace-distributed-request-causality` for identity, tenant, state, and evidence propagation across services.
+- Use `test-authorization-boundaries` for object, property, function, relationship, tenant, workflow, or delegated authority.
+- Use `test-concurrency-resource-abuse` for idempotency, race, quota, amplification, and bounded-load questions.
+- Use `trace-request-normalization` when hop-by-hop parsing or canonicalization changes the security decision.
 
-Record method or operation, path or topic, version, media type, schema, authentication, authorization owner, rate and cost limits, side effects, idempotency, upstream and downstream services, and deprecation status.
+Read [references/inventory-contract.md](references/inventory-contract.md) to create the shared operation ledger. Read [references/rest-rpc-patterns.md](references/rest-rpc-patterns.md) only to choose a protocol owner, and [references/field-heuristics.md](references/field-heuristics.md) only for unresolved cross-layer differentials.
 
-## Compare contract with behavior
+## Consolidate evidence
 
-Test undocumented operations, alternate methods and media types, parameter locations, duplicate parameters, null and omitted fields, unknown fields, type coercion, numeric boundaries, nested depth, collections, pagination, filtering, sorting, field selection, compression, and content negotiation. Distinguish tolerant parsing from a security boundary failure.
-
-## Test authority at every level
-
-Apply object, property, function, relationship, tenant, workflow, and service authorization. Include collection, search, export, batch, async job, webhook, administrative, and legacy operations. Route deep authorization work to `test-authorization-boundaries`.
-
-## Test operational abuse
-
-Model CPU, memory, storage, bandwidth, queue, fan-out, email, SMS, payment, biometric, model-token, and third-party cost. Check pagination caps, request and response size, concurrency, expensive filters, batch width, retries, idempotency, timeouts, cancellation, and partial failure without generating uncontrolled load.
-
-## Test identity and message propagation
-
-Verify issuer, audience, client, tenant, subject, token type, delegation, and assurance at each service boundary. Check headers or metadata that gateways overwrite, strip, sign, or trust. Ensure background consumers do not trust attacker-controlled actor or tenant fields and re-evaluate time-sensitive authority where required.
-
-## Test unsafe consumption
-
-Treat upstream APIs, webhooks, feeds, files, schemas, and service responses as untrusted according to their compromise and drift model. Validate data, enforce timeouts and size limits, constrain redirects and outbound destinations, isolate credentials, handle partial or malicious responses, and prevent upstream content from entering interpreters.
-
-Read [references/rest-rpc-patterns.md](references/rest-rpc-patterns.md) for protocol-specific checks. Use [references/field-heuristics.md](references/field-heuristics.md) to pursue cross-layer differentials, hidden operations, and high-yield chain conditions after the baseline inventory is stable.
-
-## Evidence standard
-
-Record exact request or message, actor, tenant, resource, contract expectation, observed response or state, control comparison, and downstream effect. A schema mismatch, verbose error, or permissive method is a finding only when it crosses a security requirement.
-
-## Authoritative anchors
-
-- OWASP API Security Top 10 2023: https://owasp.org/www-project-api-security/
-- OWASP REST Security Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
-- OWASP ASVS 5.0: https://owasp.org/www-project-application-security-verification-standard/
-- RFC 9110 HTTP Semantics: https://www.rfc-editor.org/rfc/rfc9110
+Record operation, contract version, actor, tenant, authorization owner, parser, side effect, idempotency, upstream/downstream services, and assigned specialist. A schema mismatch or permissive response is a finding only when it crosses a security requirement. Deliver coverage gaps, routing decisions, cross-specialist dependencies, and evidence references.

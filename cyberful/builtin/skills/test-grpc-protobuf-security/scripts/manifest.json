@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_grpc_protobuf_probe.py",
+  "class": "probe",
+  "network": "target",
+  "transport": {"authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]},
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["exploit", "hacker", "verify"],
+  "tools": ["grpcurl"],
+  "dependencies": {"commands": ["grpcurl"], "python": [], "bootstrap": null},
+  "effects": ["sends bounded unary gRPC requests through the mission-bound runtime route", "writes secret-redacted raw grpcurl evidence"],
+  "timeout_seconds": 60,
+  "limits": {"requests": 20, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": ["CYBERFUL_GRPC_AUTHORIZATION"]},
+  "input": {"format": "cyberful.grpc-protobuf-probe.v1", "schema": "assets/grpc-protobuf-probe.schema.json"},
+  "output": {"format": "cyberful.grpc-protobuf-probe.raw.v1", "schema": "assets/grpc-protobuf-evidence.schema.json", "raw": true}
+}

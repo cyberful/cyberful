@@ -54,6 +54,25 @@ async function beginTesting(hypotheses: HypothesisRegistry, id: string) {
   await hypotheses.handle({ action: "update", id, state: "TESTING" })
 }
 
+const oracle = {
+  primary_observation: "The target's direct response to the controlled differential.",
+  positive_condition: "The tested effect occurs.",
+  negative_condition: "The expected control remains enforced.",
+  invalid_condition: "The target or fixture does not produce a comparable response.",
+  controls: ["Repeat without the candidate trigger."],
+}
+
+function result(match: "POSITIVE" | "NEGATIVE", observation: string, id: string) {
+  return {
+    match,
+    observation,
+    primary_evidence_paths: [`raw/evidence/${id}.json`],
+    derived_evidence_paths: [],
+    conflicts: [],
+    interpretation: `The direct observation matches the ${match.toLowerCase()} condition.`,
+  }
+}
+
 describe("host-owned handoff snapshots", () => {
   test("keeps a confirmed observation when its narrower bypass hypothesis is disproved", async () => {
     const workarea = await temporaryWorkarea()
@@ -82,6 +101,7 @@ describe("host-owned handoff snapshots", () => {
           root_cause: "missing boundary control",
           surface: `surface-${index + 1}`,
           discriminator: `positive differential ${index + 1}`,
+          oracle,
         })
         await beginTesting(hypotheses, id)
         await hypotheses.handle({
@@ -90,6 +110,7 @@ describe("host-owned handoff snapshots", () => {
           state: "CONFIRMED",
           finding_id: findingID,
           evidence: [`Positive evidence ${index + 1}`],
+          test_result: result("POSITIVE", `Positive evidence ${index + 1}`, id),
           reason: "The mechanism is confirmed.",
         })
       }
@@ -101,6 +122,7 @@ describe("host-owned handoff snapshots", () => {
         root_cause: "possible missing boundary control",
         surface: "provisional surface",
         discriminator: "provisional differential",
+        oracle,
       })
       await beginTesting(hypotheses, "H-SUSPECTED-1")
       await hypotheses.handle({
@@ -109,6 +131,7 @@ describe("host-owned handoff snapshots", () => {
         state: "SUSPECTED",
         finding_id: suspected,
         evidence: ["The provisional differential is positive."],
+        test_result: result("POSITIVE", "The provisional differential is positive.", "H-SUSPECTED-1"),
         reason: "The impact needs independent verification.",
       })
       await hypotheses.handle({
@@ -119,6 +142,7 @@ describe("host-owned handoff snapshots", () => {
         root_cause: "inconsistent entitlement displays",
         surface: "contract creation",
         discriminator: "attempt the first record beyond the enforced quota",
+        oracle,
       })
       await beginTesting(hypotheses, "H-QUOTA-BYPASS")
       await hypotheses.handle({
@@ -126,6 +150,11 @@ describe("host-owned handoff snapshots", () => {
         id: "H-QUOTA-BYPASS",
         state: "DISPROVED",
         evidence: ["The first record beyond the actual entitlement was rejected."],
+        test_result: result(
+          "NEGATIVE",
+          "The first record beyond the actual entitlement was rejected.",
+          "H-QUOTA-BYPASS",
+        ),
         reason: "The inconsistency remains visible but no bypass exists.",
       })
 
@@ -162,6 +191,7 @@ describe("host-owned handoff snapshots", () => {
         root_cause: "missing registry admission",
         surface: "project API",
         discriminator: "positive response differential",
+        oracle,
       })
       await beginTesting(hypotheses, "H-MISSING")
       await hypotheses.handle({
@@ -170,6 +200,7 @@ describe("host-owned handoff snapshots", () => {
         state: "CONFIRMED",
         finding_id: "F-NOT-RECORDED",
         evidence: ["The positive differential was reproduced."],
+        test_result: result("POSITIVE", "The positive differential was reproduced.", "H-MISSING"),
         reason: "The mechanism is confirmed.",
       })
 

@@ -1,0 +1,7 @@
+{
+  "$schema": "assets/cloud-control-plane-input.schema.json",
+  "snapshots": [
+    {"id": "before", "path": "snapshots/aws-before.json", "provider": "aws", "account": "111111111111", "captured_at": "2026-08-18T10:00:00Z"},
+    {"id": "after", "path": "snapshots/aws-after.json", "provider": "aws", "account": "111111111111", "captured_at": "2026-08-18T11:00:00Z"}
+  ]
+}

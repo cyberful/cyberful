@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test SOAP and XML Services"
+  short_description: "Probe SOAP routing, identity, and XML parsing"
+  default_prompt: "Use $test-soap-xml-services to design and run bounded authorized tests for this SOAP endpoint."

@@ -237,7 +237,9 @@ describe("Pi provider preflight", () => {
           },
         },
       ])
-      expect(status.errors).toEqual(["API key auth failed for provider main"])
+      expect(status.errors).toEqual([
+        "API key auth failed for provider main: OAuth auth derivation failed for main",
+      ])
     } finally {
       await subsystem.shutdown()
     }

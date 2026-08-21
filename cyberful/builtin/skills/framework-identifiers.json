@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "frameworks": {
+    "mitre_attack": {
+      "identifiers": [
+        "T1046",
+        "T1059",
+        "T1069.002",
+        "T1078",
+        "T1078.004",
+        "T1087.002",
+        "T1098",
+        "T1110.004",
+        "T1133",
+        "T1190",
+        "T1195",
+        "T1203",
+        "T1210",
+        "T1482",
+        "T1499",
+        "T1528",
+        "T1539",
+        "T1550.001",
+        "T1552",
+        "T1552.005",
+        "T1557",
+        "T1595",
+        "T1610",
+        "T1611",
+        "T1613",
+        "T1632"
+      ]
+    },
+    "nist_csf": {
+      "source_sha256": "3c31f46fee98cac0c4323453e5109291a213b4de7fef8c058af9bf67f717433c",
+      "identifiers": [
+        "DE.AE",
+        "DE.AE-02",
+        "DE.AE-03",
+        "DE.CM-01",
+        "DE.CM-09",
+        "GV.OC",
+        "GV.RM",
+        "GV.SC",
+        "GV.SC-07",
+        "GV.SC-09",
+        "ID.AM",
+        "ID.AM-02",
+        "ID.RA",
+        "ID.RA-01",
+        "ID.RA-03",
+        "PR.AA",
+        "PR.AA-01",
+        "PR.AA-02",
+        "PR.AA-03",
+        "PR.AA-04",
+        "PR.AA-05",
+        "PR.DS",
+        "PR.DS-01",
+        "PR.DS-02",
+        "PR.IR",
+        "PR.IR-01",
+        "PR.PS",
+        "PR.PS-01",
+        "PR.PS-05",
+        "PR.PS-06",
+        "RS.AN"
+      ]
+    },
+    "mitre_atlas": {
+      "source_sha256": "b771de8b1489564b2838a709c7429849a9575dbd94073928817fe1a21661e70a",
+      "identifiers": ["AML.T0051", "AML.T0070"]
+    },
+    "mitre_d3fend": {
+      "source_sha256": "b53b438a11ec5cb7377b98b46091f03a63d233588dcd377a65d6c91890b1a7f9",
+      "identifiers": ["D3-NTA"]
+    },
+    "nist_ai_rmf": {
+      "source_sha256": "7576edb531d9848825814ee88e28b1795d3a84b435b4b797d3670eafdc4a89f1",
+      "identifiers": [
+        "GOVERN",
+        "GOVERN 1.3",
+        "MANAGE 1.1",
+        "MAP",
+        "MAP 1.1",
+        "MAP 4.1",
+        "MEASURE 1.1",
+        "MEASURE 2.7"
+      ]
+    },
+    "mitre_f3": {
+      "source_sha256": "9ecf7fce940328cb5480013bc62a2008510aa83bdaaf8e54cf33c1a8f8d76af4",
+      "identifiers": ["F1002", "F1003", "F1005.001", "F1012", "F1043", "F1046"]
+    },
+    "pci_dss": {
+      "source_sha256": "5e6b9093b84007b973097d20126a3768ea2f0a1d4200255c849b0fb3bf04ebc7",
+      "identifiers": ["11.4.1", "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7", "12.5.2", "12.5.2.1"]
+    },
+    "gdpr": {
+      "source_sha256": "bd84e63f5b622b739a83389afc3b30d240f792bb88d8eb03a816c9a82b0c2499",
+      "identifiers": ["Article 24", "Article 30", "Article 32", "Article 35", "Article 5(2)"]
+    }
+  }
+}

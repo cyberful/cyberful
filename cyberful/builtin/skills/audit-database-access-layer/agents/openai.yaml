@@ -1,0 +1,6 @@
+interface:
+  display_name: "Audit Database Access Layer"
+  short_description: "Trace query authority and committed data effects"
+  default_prompt: "Use $audit-database-access-layer to trace database access from caller authority to durable state."
+policy:
+  allow_implicit_invocation: true

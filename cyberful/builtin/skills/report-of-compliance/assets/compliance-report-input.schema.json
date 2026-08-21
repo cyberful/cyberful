@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/compliance-report-input.v1.json",
+  "title": "Cyberful compliance report draft input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "report_id", "profile_id", "report_title", "entity", "assessment", "records"],
+  "properties": {
+    "$schema": {"const": "assets/compliance-report-input.schema.json"},
+    "report_id": {"$ref": "#/$defs/id"},
+    "profile_id": {"$ref": "#/$defs/id"},
+    "report_title": {"$ref": "#/$defs/text"},
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legal_name", "roles", "jurisdiction"],
+      "properties": {
+        "legal_name": {"$ref": "#/$defs/text"},
+        "roles": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"enum": ["merchant", "service-provider", "controller", "joint-controller", "processor", "representative", "other"]}},
+        "jurisdiction": {"$ref": "#/$defs/text"}
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "period", "evidence_cutoff", "assessor_name", "assessor_organization", "declared_qualification", "review_authority"],
+      "properties": {
+        "scope": {"$ref": "#/$defs/text"},
+        "period": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+        "evidence_cutoff": {"type": "string", "format": "date"},
+        "assessor_name": {"$ref": "#/$defs/text"},
+        "assessor_organization": {"$ref": "#/$defs/text"},
+        "declared_qualification": {"$ref": "#/$defs/text"},
+        "review_authority": {"$ref": "#/$defs/text"}
+      }
+    },
+    "records": {"type": "array", "maxItems": 2048, "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "reference_list": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["need_id", "status", "summary", "evidence_refs", "finding_refs", "rationale", "owner", "target_date"],
+      "properties": {
+        "need_id": {"$ref": "#/$defs/id"},
+        "status": {"enum": ["supported", "partially-supported", "unsupported", "not-applicable-with-rationale", "not-tested", "conflicting-evidence"]},
+        "summary": {"$ref": "#/$defs/text"},
+        "evidence_refs": {"$ref": "#/$defs/reference_list"},
+        "finding_refs": {"$ref": "#/$defs/reference_list"},
+        "rationale": {"$ref": "#/$defs/text"},
+        "owner": {"$ref": "#/$defs/text"},
+        "target_date": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}]}
+      }
+    }
+  }
+}

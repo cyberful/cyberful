@@ -1,4 +1,4 @@
 interface:
   display_name: "Federated Identity Tester"
-  short_description: "OAuth OIDC JWT and SAML confusion testing"
-  default_prompt: "Use $test-federated-identity to test issuer client tenant artifact binding and account linking."
+  short_description: "Route federation and identity specialists"
+  default_prompt: "Use $test-federated-identity to route this federation review across architecture policy propagation workload recovery and linking boundaries."

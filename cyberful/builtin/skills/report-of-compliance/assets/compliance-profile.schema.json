@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/compliance-profile.v1.json",
+  "title": "Cyberful compliance reporting profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "profile_id", "framework", "version", "source", "deliverable", "needs"],
+  "properties": {
+    "$schema": {"const": "assets/compliance-profile.schema.json"},
+    "profile_id": {"$ref": "#/$defs/id"},
+    "framework": {"$ref": "#/$defs/text"},
+    "version": {"$ref": "#/$defs/text"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "sha256"],
+      "properties": {
+        "url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "deliverable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "output_name", "draft_label", "official_template_required", "attestation_authority"],
+      "properties": {
+        "title": {"$ref": "#/$defs/text"},
+        "output_name": {"$ref": "#/$defs/id"},
+        "draft_label": {"$ref": "#/$defs/text"},
+        "official_template_required": {"type": "boolean"},
+        "attestation_authority": {"$ref": "#/$defs/text"}
+      }
+    },
+    "needs": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/need"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "text_list": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "need": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "source_refs", "evidence_expectations", "required"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "source_refs": {"$ref": "#/$defs/text_list"},
+        "evidence_expectations": {"$ref": "#/$defs/text_list"},
+        "required": {"type": "boolean"}
+      }
+    }
+  }
+}

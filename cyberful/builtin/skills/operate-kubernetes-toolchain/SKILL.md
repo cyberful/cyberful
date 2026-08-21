@@ -1,6 +1,28 @@
 ---
 name: operate-kubernetes-toolchain
 description: Operate kubectl, kube-bench, Trivy, Prowler, and manifest/runtime evidence for advanced Kubernetes security assessment. Use for context and RBAC mapping, workload-identity analysis, admission and Pod Security review, node benchmark interpretation, secret and network boundary review, cluster escape-path analysis, or reconciliation of declared manifests with live objects.
+metadata:
+  domain: security-tooling
+  subdomain: kubernetes
+  triggers:
+    - Kubernetes security toolchain
+    - cluster RBAC assessment
+    - Kubernetes workload identity
+    - admission policy review
+    - desired live state comparison
+  tags:
+    - Kubernetes
+    - kubectl
+    - RBAC
+    - admission-control
+    - workload-identity
+    - kube-bench
+  frameworks:
+    mitre_attack:
+      - T1613
+      - T1610
+    nist_csf:
+      - PR.AA
 ---
 
 # Operate Kubernetes Toolchain

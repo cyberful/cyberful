@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kubernetes Policy Auditor"
+  short_description: "Audit admission and policy-as-code enforcement"
+  default_prompt: "Use $audit-kubernetes-policy-enforcement to compare these manifests, policies, and enforcement artifacts."

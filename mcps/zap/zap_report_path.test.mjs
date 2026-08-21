@@ -4,7 +4,7 @@
 // ────────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
-import { engagementReportPath, withEngagementReportPath } from "./zap_report_path.mjs"
+import { engagementReportPath, normalizedReportSites, withEngagementReportPath } from "./zap_report_path.mjs"
 
 describe("ZAP report workarea paths", () => {
   test("maps absolute and relative report names to the engagement root", () => {
@@ -39,5 +39,22 @@ describe("ZAP report workarea paths", () => {
         }),
       },
     ])
+  })
+
+  test("accepts only unique normalized HTTP(S) origins in bounded report batches", () => {
+    expect(normalizedReportSites(["https://app.example.test", "http://api.example.test:8080"])).toEqual([
+      "https://app.example.test",
+      "http://api.example.test:8080",
+    ])
+    expect(normalizedReportSites(undefined)).toBeUndefined()
+    for (const sites of [
+      [],
+      ["ftp://app.example.test"],
+      ["https://app.example.test/path"],
+      ["https://user@app.example.test"],
+      ["https://app.example.test/"],
+      ["https://app.example.test", "https://app.example.test"],
+      Array.from({ length: 101 }, (_, index) => `https://${index}.example.test`),
+    ]) expect(() => normalizedReportSites(sites)).toThrow()
   })
 })

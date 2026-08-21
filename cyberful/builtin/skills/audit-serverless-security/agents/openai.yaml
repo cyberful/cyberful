@@ -1,0 +1,4 @@
+interface:
+  display_name: "Serverless Security Auditor"
+  short_description: "Audit function identity and event boundaries"
+  default_prompt: "Use $audit-serverless-security to trace these serverless event and identity boundaries."

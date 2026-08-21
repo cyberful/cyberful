@@ -1,0 +1,6 @@
+interface:
+  display_name: "Analyze HTTP Traffic Evidence"
+  short_description: "Normalize bounded HAR captures into evidence"
+  default_prompt: "Use $analyze-http-traffic-evidence to normalize and correlate authorized HAR captures offline."
+policy:
+  allow_implicit_invocation: true

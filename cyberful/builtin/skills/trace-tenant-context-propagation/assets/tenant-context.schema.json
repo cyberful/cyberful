@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/tenant-context.v1.json",
+  "title": "Cyberful tenant context trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "trace_id", "events"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "trace_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "order", "component", "boundary", "evidence_sha256", "context"],
+        "properties": {
+          "event_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "order": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "component": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "boundary": { "enum": ["ingress", "gateway", "service", "cache", "queue", "job", "repository", "storage", "response"] },
+          "evidence_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "context": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["authenticated_tenant", "asserted_tenant", "routed_tenant", "resource_tenant", "cache_partition", "job_tenant", "data_partition"],
+            "properties": {
+              "authenticated_tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "asserted_tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "routed_tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "resource_tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "cache_partition": { "type": ["string", "null"], "maxLength": 512 },
+              "job_tenant": { "type": ["string", "null"], "maxLength": 512 },
+              "data_partition": { "type": ["string", "null"], "maxLength": 512 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

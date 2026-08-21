@@ -1,5 +1,7 @@
 # Race, Transaction, and Idempotency Review
 
+Use `assets/concurrency-probe.schema.json` for active trials. Its raw response ledger replaces the former offline trial-classification report; durable state and asynchronous effects remain evidence that must be collected independently after settlement.
+
 ## Race Families
 
 Examine:

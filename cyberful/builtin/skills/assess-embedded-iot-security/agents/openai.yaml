@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assess Embedded and IoT Security"
+  short_description: "Assess connected-device ecosystem risk"
+  default_prompt: "Use $assess-embedded-iot-security to assess this device ecosystem across hardware, firmware, clients, cloud, and lifecycle."

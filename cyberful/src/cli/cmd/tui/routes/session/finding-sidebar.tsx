@@ -467,6 +467,44 @@ export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
         <text fg={theme.text} wrapMode="word">
           {props.hypothesis.discriminator}
         </text>
+        <Show when={props.hypothesis.oracle}>
+          {(oracle) => (
+            <>
+              <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+                ORACLE
+              </text>
+              <text fg={theme.text} wrapMode="word">{`Observe: ${oracle().primary_observation}`}</text>
+              <text fg={theme.text} wrapMode="word">{`Positive: ${oracle().positive_condition}`}</text>
+              <text fg={theme.text} wrapMode="word">{`Negative: ${oracle().negative_condition}`}</text>
+              <text fg={theme.text} wrapMode="word">{`Invalid: ${oracle().invalid_condition}`}</text>
+              <Show when={oracle().controls.length > 0}>
+                <text fg={theme.textMuted} wrapMode="word">{`Controls: ${oracle().controls.join("; ")}`}</text>
+              </Show>
+            </>
+          )}
+        </Show>
+        <Show when={props.hypothesis.latestTestResult}>
+          {(result) => (
+            <>
+              <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+                LATEST TEST RESULT
+              </text>
+              <text fg={theme.text} wrapMode="word">{`${result().match}: ${result().observation}`}</text>
+              <text fg={theme.textMuted} wrapMode="word">{result().interpretation}</text>
+              <text fg={theme.textMuted} wrapMode="word">
+                {`Primary evidence: ${result().primary_evidence_paths.join(", ")}`}
+              </text>
+              <Show when={result().derived_evidence_paths.length > 0}>
+                <text fg={theme.textMuted} wrapMode="word">
+                  {`Derived evidence: ${result().derived_evidence_paths.join(", ")}`}
+                </text>
+              </Show>
+              <For each={result().conflicts}>
+                {(conflict) => <text fg={theme.warning} wrapMode="word">{`Conflict: ${conflict}`}</text>}
+              </For>
+            </>
+          )}
+        </Show>
         <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>
           CANDIDATE TOOLS
         </text>
@@ -540,6 +578,13 @@ export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
                 <For each={transition.evidence}>
                   {(item) => <text fg={theme.textMuted} wrapMode="word">{`• ${item}`}</text>}
                 </For>
+                <Show when={transition.testResult}>
+                  {(result) => (
+                    <text fg={theme.textMuted} wrapMode="word">
+                      {`${result().match} · primary ${result().primary_evidence_paths.join(", ")}`}
+                    </text>
+                  )}
+                </Show>
               </box>
             )}
           </For>

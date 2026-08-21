@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/packet-capture-analysis.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "analysis_id", "scope_reference", "capture_files", "max_packets", "max_total_bytes", "timeout_seconds", "output_limit_bytes"],
+  "properties": {
+    "$schema": {"const": "./packet-capture-analysis.schema.json"},
+    "analysis_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512},
+    "capture_files": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "max_packets": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "max_total_bytes": {"type": "integer", "minimum": 24, "maximum": 268435456},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+    "output_limit_bytes": {"type": "integer", "minimum": 1024, "maximum": 4194304}
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/pci-penetration-evidence.v1.json",
+  "title": "Cyberful PCI DSS penetration-test evidence metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "assessment_id", "standard_version", "entity_type", "segmentation_used", "assessment_period", "records"],
+  "properties": {
+    "$schema": {"const": "assets/pci-penetration-evidence.schema.json"},
+    "assessment_id": {"$ref": "#/$defs/id"},
+    "standard_version": {"const": "PCI DSS 4.0.1"},
+    "entity_type": {"enum": ["merchant", "service-provider", "multi-tenant-service-provider"]},
+    "segmentation_used": {"type": "boolean"},
+    "assessment_period": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+    "records": {"type": "array", "minItems": 1, "maxItems": 2048, "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "evidence_refs": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "record": {"type": "object", "additionalProperties": false, "required": ["record_id", "requirement", "topic", "status", "source_type", "evidence_date", "evidence_refs", "rationale"], "properties": {"record_id": {"$ref": "#/$defs/id"}, "requirement": {"enum": ["11.4.1", "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7"]}, "topic": {"$ref": "#/$defs/text"}, "status": {"enum": ["supported", "gap", "blocked", "not-applicable"]}, "source_type": {"enum": ["methodology", "scope", "internal-report", "external-report", "segmentation-report", "qualification", "independence", "remediation", "retest", "retention", "provider-customer-support", "other"]}, "evidence_date": {"type": "string", "format": "date"}, "evidence_refs": {"$ref": "#/$defs/evidence_refs"}, "rationale": {"$ref": "#/$defs/text"}}}
+  }
+}

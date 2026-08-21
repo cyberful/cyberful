@@ -1,6 +1,26 @@
 ---
 name: operate-binary-analysis-toolchain
 description: Operate Ghidra headless analysis, radare2, platform binary utilities, decompilers, and targeted dynamic evidence for advanced native and bytecode security review. Use for stripped or optimized binary triage, architecture and hardening analysis, call-graph and dataflow reconstruction, patch diffing, parser or trust-boundary review, JNI/native correlation, or resolving disagreements between decompilers and actual machine behavior.
+metadata:
+  domain: security-tooling
+  subdomain: binary-analysis
+  triggers:
+    - reverse engineer binary
+    - inspect executable
+    - analyze disassembly
+    - inspect binary mitigations
+    - decompile native code
+    - assess exploit primitives
+  tags:
+    - Ghidra
+    - radare2
+    - ELF
+    - PE
+    - Mach-O
+    - reverse-engineering
+  frameworks:
+    nist_csf:
+      - ID.RA
 ---
 
 # Operate Binary Analysis Toolchain
@@ -9,7 +29,7 @@ Treat decompiler output as a lossy hypothesis. Anchor conclusions in bytes, relo
 
 ## Establish artifact identity
 
-Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Use bounded `xxd` views when raw bytes resolve format ambiguity, and `archive_extract` for deterministic atomic ZIP/optimized-ZIP publication. Keep universal/fat slices and platform variants separate.
+Record cryptographic hash, source/provenance, format, architecture/subarchitecture, endianness, ABI, load address, sections/segments, imports/exports, relocations, interpreter/runtime, signatures, debug symbols, packing, and hardening. Use bounded `xxd` views when raw bytes resolve format ambiguity, and `archive_extract` for signature-detected, bounded, atomic ZIP, TAR-family, compressed-stream, and native 7-Zip publication. Keep universal/fat slices and platform variants separate.
 
 ## Triage before decompiling
 

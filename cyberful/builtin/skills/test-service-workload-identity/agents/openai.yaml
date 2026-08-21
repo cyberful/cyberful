@@ -1,0 +1,4 @@
+interface:
+  display_name: "Service Workload Identity Tester"
+  short_description: "Test machine identity and token binding"
+  default_prompt: "Use $test-service-workload-identity to test these authorized workload identity and audience boundaries."

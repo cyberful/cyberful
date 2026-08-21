@@ -1,43 +1,46 @@
 ---
 name: test-file-parser-security
-description: Assess file ingestion, archive extraction, path handling, XML and document parsing, media transformation, template rendering, and object deserialization during authorized penetration tests or code audits. Use for upload bypass, path traversal, local or remote file inclusion, Zip Slip, archive bombs, polyglots, XXE, unsafe deserialization, parser differentials, and file-processing sandbox review.
+description: Route file-ingestion security work across processing pipelines, deserialization and object binding, and SOAP or XML services. Use for uploads, archives, path handling, document or media transformation, unsafe reconstruction, XML external entities, parser differentials, or parser-isolation questions before selecting the specialist procedure.
+metadata:
+  domain: application-security
+  subdomain: file-parser-security
+  triggers:
+    - file upload security
+    - archive extraction security
+    - path traversal
+    - unsafe deserialization
+    - xxe testing
+    - parser differential
+  tags:
+    - file-upload
+    - archive
+    - path-traversal
+    - deserialization
+    - xxe
+    - parser-isolation
+  frameworks:
+    mitre_attack:
+      - T1190
+      - T1203
+    nist_csf:
+      - ID.RA-01
+      - PR.PS-01
 ---
 
 # Test File and Parser Security
 
-## Map the Processing Pipeline
+Use this entrypoint only for triage and shared invariants. Read the selected specialist's `SKILL.md` completely before applying its procedure.
 
-Follow the object from acquisition to deletion: upload or fetch, temporary storage, naming, MIME detection, validation, decompression, parsing, transformation, scanning, metadata extraction, rendering, publication, download, backup, and cleanup.
+## Route the artifact
 
-Record every parser and trust transition. A file rejected at the HTTP edge may still be reparsed by a worker; a sanitized image may retain dangerous metadata; a private upload may become public through a derived artifact.
+- Upload, storage, archive extraction, path resolution, scanners, converters, renderers, derived files, or sandbox transitions: `trace-file-processing-pipelines`.
+- Native or language object reconstruction, polymorphic binding, gadget reachability, type selection, or unsafe serializer configuration: `test-deserialization-object-binding`.
+- SOAP envelopes, XML schemas, entity resolution, XInclude, XPath, signatures, namespaces, or XML service policy: `test-soap-xml-services`.
 
-Read [files-archives-paths.md](references/files-archives-paths.md) for storage and extraction. Read [xml-serialization-rendering.md](references/xml-serialization-rendering.md) for active parsers and object reconstruction.
+If one artifact crosses several boundaries, trace the full processing pipeline first, then invoke the deserialization or SOAP/XML specialist only at the relevant stage.
 
-## Derive Parser-Specific Threats
+## Preserve shared invariants
 
-For each stage, identify:
+Record the original bytes and hash, accepting interface, content metadata, storage name, canonical resolved paths, every parser and transformation, execution identity, filesystem and network reach, resource limits, derived artifacts, cleanup, and the final consumer. Extension or MIME acceptance is a primitive; confirm what the downstream component actually reads, writes, resolves, fetches, renders, instantiates, or executes.
 
-- formats and parser versions;
-- size, depth, count, recursion, and time limits;
-- external resource resolution;
-- executable features, macros, templates, scripts, or formulas;
-- path and filename semantics;
-- object types or classes instantiated;
-- sandbox privileges, network access, and filesystem reach;
-- error and derived-output exposure.
-
-Use minimal well-formed probes that isolate one feature. A crash matters when it is reproducible, attributable to a component, and connected to availability or memory-safety impact.
-
-## Separate Acceptance From Impact
-
-Extension or MIME bypass is an input primitive, not the final finding. Prove what the downstream consumer does: execute, render active content, overwrite a path, disclose data, perform a fetch, exhaust resources, or instantiate unsafe code.
-
-A traversal is confirmed when the normalized resolved path crosses the intended root or selects an unintended object-not when a string merely contains dot segments.
-
-## Review Parser Isolation
-
-Verify least-privilege identity, ephemeral or read-only filesystems, absence of ambient secrets, restricted egress, reduced capabilities, resource limits, timeouts, safe temporary-file creation, and cleanup after failure. Treat scanners as additional parsers with their own attack surface and reach.
-
-## Report the Exact Pipeline
-
-Include file structure, accepting stage, parser and version, transformations, resulting capability, privileges, affected artifacts, and deterministic reproduction. Prefer removing dangerous parser features, safe modes, canonical path APIs, and isolation over filename blocklists.
+Use minimal, bounded fixtures and controlled destinations. Stop when a parser becomes unstable, resource ceilings are approached, or the next step would leave authorized storage, filesystem, network, or execution boundaries.

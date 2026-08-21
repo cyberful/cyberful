@@ -1,6 +1,30 @@
 ---
 name: operate-active-directory-toolchain
 description: Operate Impacket, Certipy, BloodHound-compatible collection, Kerberos and LDAP tooling, SMB/RPC probes, and Metasploit modules for advanced Active Directory assessment. Use for identity and trust graph construction, AD CS analysis, delegation and Kerberos review, credential-path validation, collection-gap diagnosis, or converting graph edges into bounded, reproducible authority paths.
+metadata:
+  domain: security-tooling
+  subdomain: active-directory
+  triggers:
+    - Active Directory toolchain
+    - AD trust graph
+    - Kerberos assessment
+    - AD CS analysis
+    - BloodHound collection
+  tags:
+    - Active-Directory
+    - Kerberos
+    - LDAP
+    - AD-CS
+    - BloodHound
+    - Impacket
+  frameworks:
+    mitre_attack:
+      - T1087.002
+      - T1482
+      - T1069.002
+    nist_csf:
+      - ID.AM
+      - PR.AA
 ---
 
 # Operate Active Directory Toolchain

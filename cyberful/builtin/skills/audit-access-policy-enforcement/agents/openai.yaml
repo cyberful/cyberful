@@ -1,0 +1,4 @@
+interface:
+  display_name: "Access Policy Enforcement Auditor"
+  short_description: "Trace policy decisions to protected effects"
+  default_prompt: "Use $audit-access-policy-enforcement to audit this access-policy path from decision inputs to durable effects."

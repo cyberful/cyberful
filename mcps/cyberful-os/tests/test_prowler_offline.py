@@ -32,14 +32,14 @@ class OfflineProwlerLauncherTest(unittest.TestCase):
     def test_version_flags_read_only_installed_metadata(self) -> None:
         for flag in ("-v", "--version"):
             with self.subTest(flag=flag), mock.patch.object(
-                prowler_offline, "package_version", return_value="5.33.2"
+                prowler_offline, "package_version", return_value="5.39.1"
             ) as read_version, mock.patch.object(prowler_offline.os, "execv") as execv:
                 output = io.StringIO()
                 with redirect_stdout(output):
                     exit_code = prowler_offline.main(["prowler", flag])
 
                 self.assertEqual(exit_code, 0)
-                self.assertEqual(output.getvalue(), "Prowler 5.33.2\n")
+                self.assertEqual(output.getvalue(), "Prowler 5.39.1\n")
                 read_version.assert_called_once_with("prowler")
                 execv.assert_not_called()
 

@@ -10,6 +10,7 @@ import { SubsystemGateway } from "./config"
 
 test("phase gateways receive the host browser profile contract and keep per-run precedence", () => {
   const names = [
+    "CYBER_AGENT_BROWSER_BINARY",
     "CYBER_BROWSER_CHANNEL",
     "CYBER_BROWSER_USER_DATA_DIR",
     "CYBER_BROWSER_CLEAR_COOKIES_ON_START",
@@ -20,6 +21,7 @@ test("phase gateways receive the host browser profile contract and keep per-run 
   ] as const
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
   try {
+    process.env.CYBER_AGENT_BROWSER_BINARY = "/opt/agent-browser"
     process.env.CYBER_BROWSER_CHANNEL = "chrome"
     process.env.CYBER_BROWSER_USER_DATA_DIR = "/profiles/authenticated"
     process.env.CYBER_BROWSER_CLEAR_COOKIES_ON_START = "false"
@@ -35,6 +37,7 @@ test("phase gateways receive the host browser profile contract and keep per-run 
       env: { CYBER_BROWSER_HEADLESS: "true" },
     })
 
+    expect(server.privateEnv?.CYBER_AGENT_BROWSER_BINARY).toBe("/opt/agent-browser")
     expect(server.privateEnv?.CYBER_BROWSER_CHANNEL).toBe("chrome")
     expect(server.privateEnv?.CYBER_BROWSER_USER_DATA_DIR).toBe("/profiles/authenticated")
     expect(server.privateEnv?.CYBER_BROWSER_CLEAR_COOKIES_ON_START).toBe("false")

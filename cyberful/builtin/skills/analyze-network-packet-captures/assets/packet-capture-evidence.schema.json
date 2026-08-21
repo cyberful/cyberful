@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/packet-capture-evidence.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "analysis_id", "scope_reference", "input_sha256", "captures", "summary", "limits", "interpretation"],
+  "properties": {
+    "format": {"const": "cyberful.packet-capture-evidence.v1"},
+    "analysis_id": {"type": "string"},
+    "scope_reference": {"type": "string"},
+    "input_sha256": {"$ref": "#/$defs/digest"},
+    "captures": {"type": "array", "items": {"$ref": "#/$defs/capture"}},
+    "summary": {
+      "type": "object", "additionalProperties": false, "required": ["files", "packets", "captured_bytes", "original_bytes", "protocol_counts", "evidence_tags"],
+      "properties": {"files": {"type": "integer"}, "packets": {"type": "integer"}, "captured_bytes": {"type": "integer"}, "original_bytes": {"type": "integer"}, "protocol_counts": {"type": "object", "additionalProperties": {"type": "integer"}}, "evidence_tags": {"type": "object", "additionalProperties": {"type": "integer"}}}
+    },
+    "limits": {"type": "object", "additionalProperties": false, "required": ["packets", "input_bytes", "output_bytes", "timeout_seconds"], "properties": {"packets": {"type": "integer"}, "input_bytes": {"type": "integer"}, "output_bytes": {"type": "integer"}, "timeout_seconds": {"type": "integer"}}},
+    "interpretation": {"type": "string"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "byte_order", "timestamp_precision", "version", "snaplen", "link_type", "packets", "captured_bytes", "original_bytes", "first_timestamp", "last_timestamp", "length_buckets", "protocol_counts", "evidence_tags"],
+      "properties": {
+        "path": {"type": "string"}, "bytes": {"type": "integer"}, "sha256": {"$ref": "#/$defs/digest"}, "byte_order": {"enum": ["little", "big"]}, "timestamp_precision": {"enum": ["microseconds", "nanoseconds"]}, "version": {"type": "string"}, "snaplen": {"type": "integer"}, "link_type": {"type": "integer"}, "packets": {"type": "integer"}, "captured_bytes": {"type": "integer"}, "original_bytes": {"type": "integer"}, "first_timestamp": {"type": ["string", "null"]}, "last_timestamp": {"type": ["string", "null"]}, "length_buckets": {"type": "object", "additionalProperties": {"type": "integer"}}, "protocol_counts": {"type": "object", "additionalProperties": {"type": "integer"}}, "evidence_tags": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

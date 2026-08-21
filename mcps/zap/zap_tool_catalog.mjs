@@ -59,7 +59,7 @@ export const ZAP_BRIDGE_TOOLS = [
   {
     name: "zap_generate_workarea_report",
     description:
-      "Generate a ZAP report inside the engagement workarea from the complete ZAP session without filtering sites.",
+      "Generate a ZAP report inside the engagement workarea, optionally filtered to at most 100 normalized HTTP(S) origins.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -67,6 +67,14 @@ export const ZAP_BRIDGE_TOOLS = [
         file_path: { type: "string", description: "Path relative to the engagement root." },
         template: { type: "string", description: "Installed ZAP report template, for example traditional-json." },
         title: { type: "string" },
+        sites: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          uniqueItems: true,
+          description: "Optional exact HTTP(S) origins passed to the ZAP Reports API as one pipe-separated group.",
+          items: { type: "string" },
+        },
       },
       required: ["file_path", "template", "title"],
     },
@@ -74,7 +82,7 @@ export const ZAP_BRIDGE_TOOLS = [
   {
     name: "zap_history_search",
     description:
-      "Return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Request and response bodies are opt-in.",
+      "Return a bounded metadata-only page of HTTP history, optionally scoped to a base URL and filtered by a case-insensitive text pattern. Metadata reads use adaptive upstream chunks and report scanned plus next_start; request and response bodies are opt-in and remain one adaptive page.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

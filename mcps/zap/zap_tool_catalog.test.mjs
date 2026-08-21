@@ -26,5 +26,12 @@ describe("ZAP bridge tool catalog", () => {
       expect(tool.inputSchema.type).toBe("object")
       expect(tool.inputSchema.additionalProperties).toBe(false)
     }
+    const report = ZAP_BRIDGE_TOOLS.find((tool) => tool.name === "zap_generate_workarea_report")
+    expect(report?.inputSchema.properties.sites).toMatchObject({
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      uniqueItems: true,
+    })
   })
 })

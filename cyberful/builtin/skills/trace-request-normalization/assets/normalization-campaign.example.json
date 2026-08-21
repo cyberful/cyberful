@@ -1,0 +1,34 @@
+{
+  "$schema": "./normalization-campaign.schema.json",
+  "campaign_id": "path-decoding-control",
+  "authority": {
+    "confirmed": true,
+    "authorization_reference": "authorized-normalization-case",
+    "allowed_origins": ["http://127.0.0.1:8080"],
+    "max_requests": 2,
+    "requests_per_second": 2,
+    "request_timeout_seconds": 5
+  },
+  "cases": [
+    {
+      "case_id": "canonical",
+      "dimension": "control",
+      "variant": "canonical path",
+      "method": "GET",
+      "url": "http://127.0.0.1:8080/objects/controlled",
+      "headers": {"X-Cyberful-Variant": "canonical"},
+      "secret_headers": {},
+      "body_base64": ""
+    },
+    {
+      "case_id": "encoded-separator",
+      "dimension": "path",
+      "variant": "single encoded slash retained by client",
+      "method": "GET",
+      "url": "http://127.0.0.1:8080/objects%2Fcontrolled",
+      "headers": {"X-Cyberful-Variant": "encoded-separator"},
+      "secret_headers": {},
+      "body_base64": ""
+    }
+  ]
+}

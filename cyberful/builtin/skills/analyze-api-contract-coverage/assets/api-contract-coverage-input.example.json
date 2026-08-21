@@ -1,0 +1,5 @@
+{
+  "contract_files": ["contracts/public-api.openapi.json"],
+  "implementation_operations": ["GET /accounts/{account_id}", "POST /accounts/{account_id}/transfer"],
+  "observed_operations": ["GET /accounts/{account_id}"]
+}

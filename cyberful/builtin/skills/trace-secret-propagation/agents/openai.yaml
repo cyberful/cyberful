@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trace Secret Propagation"
+  short_description: "Trace credential fingerprints across snapshots"
+  default_prompt: "Use $trace-secret-propagation to build a bounded offline trace of these secret fingerprints."

@@ -124,12 +124,32 @@ export function cyberBrowserMcpDir() {
 
 export function shouldEnableCyberBrowserMcp() {
   return (
-    Boolean(cyberBrowserMcpDir() ?? envValue("CYBER_BROWSER_MCP_COMMAND") ?? envValue("CYBER_BROWSER_MCP")) &&
+    Boolean(
+      cyberBrowserMcpDir() ??
+        envValue("CYBER_AGENT_BROWSER_BINARY") ??
+        envValue("CYBER_BROWSER_MCP_COMMAND") ??
+        envValue("CYBER_BROWSER_MCP"),
+    ) &&
     !disabled("CYBER_BROWSER_MCP_ENABLED")
   )
 }
 
 export function cyberBrowserMcpCommand() {
+  const native = envValue("CYBER_AGENT_BROWSER_BINARY")
+  if (native) return [native, "mcp", "--tools", "all"]
+  const configured = envValue("CYBER_BROWSER_MCP_COMMAND") ?? envValue("CYBER_BROWSER_MCP")
+  if (configured) {
+    const entry = envValue("CYBER_BROWSER_MCP_ENTRY")
+    return entry ? [configured, entry] : [configured]
+  }
+  const dir = cyberBrowserMcpDir()
+  if (dir) return [path.join(dir, "bin/cyber-browser"), "mcp"]
+  return ["agent-browser", "mcp", "--tools", "all"]
+}
+
+export function cyberAgentBrowserCommand() {
+  const native = envValue("CYBER_AGENT_BROWSER_BINARY")
+  if (native) return [native]
   const configured = envValue("CYBER_BROWSER_MCP_COMMAND") ?? envValue("CYBER_BROWSER_MCP")
   if (configured) {
     const entry = envValue("CYBER_BROWSER_MCP_ENTRY")
@@ -137,7 +157,27 @@ export function cyberBrowserMcpCommand() {
   }
   const dir = cyberBrowserMcpDir()
   if (dir) return [path.join(dir, "bin/cyber-browser")]
-  return ["cyber-browser"]
+  return ["agent-browser"]
+}
+
+// ── CAPTCHA Plugin Ships With The Browser Runtime ──────────────────
+// Source runs use the checked-in Bun launcher; release bootstrap points this
+// variable at the embedded native executable. An explicit operator override is
+// retained for diagnostics and downstream packaging, but agent-browser never
+// receives an ambient plugin registry assembled outside Cyberful.
+// @docs/runtimes/browser.md
+// ────────────────────────────────────────────────────────────────────
+export function cyberCaptchaPluginCommand() {
+  const configured = envValue("CYBER_BROWSER_CAPTCHA_PLUGIN_COMMAND")
+  if (configured) return configured
+  const packageRoot = envPath("CYBER_BROWSER_PACKAGE_ROOT")
+  const extension = process.platform === "win32" ? ".exe" : ""
+  const embedded = existingFile(
+    packageRoot ? path.join(packageRoot, "browser", "bin", `agent-browser-plugin-captcha${extension}`) : undefined,
+  )
+  if (embedded) return embedded
+  const dir = cyberBrowserMcpDir()
+  return existingFile(dir ? path.join(dir, "bin", "agent-browser-plugin-captcha") : undefined)
 }
 
 export function shouldEnableCyberZap() {

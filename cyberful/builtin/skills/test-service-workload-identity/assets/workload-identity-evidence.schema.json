@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/workload-identity-evidence.v1.json",
+  "title": "Cyberful workload identity raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "authorization_reference", "source_sha256", "tool", "limits", "cases", "interpretation"],
+  "properties": {
+    "format": { "const": "cyberful.workload-identity-evidence.v1" },
+    "campaign_id": { "type": "string" },
+    "authorization_reference": { "type": "string" },
+    "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "tool": { "type": "object" },
+    "limits": { "type": "object" },
+    "cases": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "workload", "issuer", "subject", "audience", "tenant", "expected_binding", "request", "transport", "response"],
+        "properties": {
+          "case_id": { "type": "string" },
+          "workload": { "type": "string" },
+          "issuer": { "type": "string" },
+          "subject": { "type": "string" },
+          "audience": { "type": "string" },
+          "tenant": { "type": ["string", "null"] },
+          "expected_binding": { "enum": ["accept", "reject"] },
+          "request": { "type": "object" },
+          "transport": { "type": "object" },
+          "response": { "type": "object" }
+        }
+      }
+    },
+    "interpretation": { "type": "string" }
+  }
+}

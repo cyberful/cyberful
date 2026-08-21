@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "build_compliance_report.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["verify", "report"],
+  "tools": [],
+  "dependencies": {"commands": [], "python": [], "bootstrap": null},
+  "effects": ["reads-bounded-compliance-input-profile-and-template", "writes-deterministic-raw-compliance-report-draft"],
+  "timeout_seconds": 15,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/compliance-report-input.schema.json"},
+  "output": {"format": "json", "schema": "assets/compliance-report-draft.schema.json", "raw": true}
+}

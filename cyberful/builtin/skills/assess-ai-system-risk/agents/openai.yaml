@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI System Risk Assessor"
+  short_description: "Assess AI architecture controls and residual risk"
+  default_prompt: "Use $assess-ai-system-risk to build an evidence-backed AI risk register and control assessment."

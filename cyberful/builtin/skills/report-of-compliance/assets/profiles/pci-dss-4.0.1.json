@@ -1,0 +1,37 @@
+{
+  "$schema": "assets/compliance-profile.schema.json",
+  "profile_id": "pci-dss-4.0.1-roc-evidence",
+  "framework": "PCI DSS",
+  "version": "4.0.1",
+  "source": {
+    "url": "https://docs-prv.pcisecuritystandards.org/PCI%20DSS/Standard/PCI-DSS-v4_0_1.pdf",
+    "sha256": "5e6b9093b84007b973097d20126a3768ea2f0a1d4200255c849b0fb3bf04ebc7"
+  },
+  "deliverable": {
+    "title": "PCI DSS Report on Compliance Evidence Package",
+    "output_name": "pci-dss-roc-evidence-draft",
+    "draft_label": "DRAFT EVIDENCE PACKAGE — NOT AN OFFICIAL ROC, AOC, CERTIFICATE, OR COMPLIANCE VALIDATION",
+    "official_template_required": true,
+    "attestation_authority": "Use the current official PCI SSC reporting forms and the qualified assessment and acceptance path applicable to the entity."
+  },
+  "needs": [
+    {"id": "pci.scope-and-entity", "title": "Entity, reporting scope, CDE boundaries, locations, system components, and segmentation reliance", "source_refs": ["PCI DSS 4.0.1 scope", "ROC scope and environment sections"], "evidence_expectations": ["Current scope inventory and diagrams", "Entity and service-provider classification", "Segmentation rationale and validation references"], "required": true},
+    {"id": "pci.assessment-method", "title": "Assessment period, methods, sampling, personnel, locations, and evidence cutoff", "source_refs": ["PCI DSS 4.0.1 assessment process", "ROC reporting instructions"], "evidence_expectations": ["Assessment plan and method", "Sampling rationale", "Assessor identity and declared qualification"], "required": true},
+    {"id": "pci.requirement-1", "title": "Requirement 1 — Network security controls", "source_refs": ["PCI DSS Requirement 1"], "evidence_expectations": ["Network control standards and configurations", "Rule-set review and change evidence", "Observed network boundary evidence"], "required": true},
+    {"id": "pci.requirement-2", "title": "Requirement 2 — Secure configurations", "source_refs": ["PCI DSS Requirement 2"], "evidence_expectations": ["Configuration standards", "System inventory and hardening evidence", "Default-account and insecure-service review"], "required": true},
+    {"id": "pci.requirement-3", "title": "Requirement 3 — Stored account data", "source_refs": ["PCI DSS Requirement 3"], "evidence_expectations": ["Data-retention and disposal evidence", "Storage locations and protection mechanisms", "Key-management evidence where applicable"], "required": true},
+    {"id": "pci.requirement-4", "title": "Requirement 4 — Account data in transit", "source_refs": ["PCI DSS Requirement 4"], "evidence_expectations": ["Transmission-flow inventory", "Cryptographic configuration evidence", "Certificate and protocol review"], "required": true},
+    {"id": "pci.requirement-5", "title": "Requirement 5 — Malicious software protection", "source_refs": ["PCI DSS Requirement 5"], "evidence_expectations": ["Anti-malware or alternative control coverage", "Detection and update evidence", "Control effectiveness review"], "required": true},
+    {"id": "pci.requirement-6", "title": "Requirement 6 — Secure systems and software", "source_refs": ["PCI DSS Requirement 6"], "evidence_expectations": ["Vulnerability and patch process", "Secure development and change evidence", "Public web application protection evidence"], "required": true},
+    {"id": "pci.requirement-7", "title": "Requirement 7 — Need-to-know access", "source_refs": ["PCI DSS Requirement 7"], "evidence_expectations": ["Access-control model", "Role and privilege review", "Enforcement and recertification evidence"], "required": true},
+    {"id": "pci.requirement-8", "title": "Requirement 8 — User identification and authentication", "source_refs": ["PCI DSS Requirement 8"], "evidence_expectations": ["Identity lifecycle evidence", "Authentication configuration", "MFA and service-account review"], "required": true},
+    {"id": "pci.requirement-9", "title": "Requirement 9 — Physical access", "source_refs": ["PCI DSS Requirement 9"], "evidence_expectations": ["Facility and media controls", "Visitor and personnel access evidence", "Media inventory and destruction evidence"], "required": true},
+    {"id": "pci.requirement-10", "title": "Requirement 10 — Logging and monitoring", "source_refs": ["PCI DSS Requirement 10"], "evidence_expectations": ["Audit-log coverage and retention", "Time synchronization and review evidence", "Detection and response evidence"], "required": true},
+    {"id": "pci.requirement-11", "title": "Requirement 11 — Security testing", "source_refs": ["PCI DSS Requirement 11"], "evidence_expectations": ["Wireless, vulnerability-scan, penetration-test, and change-test evidence", "Segmentation-test evidence where applicable", "Remediation and retest records"], "required": true},
+    {"id": "pci.requirement-12", "title": "Requirement 12 — Security policies and programs", "source_refs": ["PCI DSS Requirement 12"], "evidence_expectations": ["Governance and risk-analysis records", "Security-awareness and incident-response evidence", "Third-party responsibility and compliance records"], "required": true},
+    {"id": "pci.compensating-controls", "title": "Compensating controls and constraints", "source_refs": ["PCI DSS Appendix B", "PCI DSS Appendix C"], "evidence_expectations": ["Constraint and objective rationale", "Compensating-control worksheet references", "Effectiveness and maintenance evidence"], "required": false},
+    {"id": "pci.customized-approach", "title": "Customized approach documentation", "source_refs": ["PCI DSS customized approach", "Customized approach templates"], "evidence_expectations": ["Control objective and design evidence", "Targeted risk analysis", "Testing procedure and result references"], "required": false},
+    {"id": "pci.third-parties", "title": "Third-party service-provider responsibilities and validation", "source_refs": ["PCI DSS Requirements 12.8 and 12.9"], "evidence_expectations": ["Responsibility matrix", "Current service-provider validation evidence", "Contractual and monitoring records"], "required": true},
+    {"id": "pci.attestation-readiness", "title": "Official template, assessor qualification, executive acknowledgement, and attestation readiness", "source_refs": ["Current PCI SSC ROC and AOC forms"], "evidence_expectations": ["Current official form obtained through the authorized channel", "Declared assessor qualification and organization", "Unresolved items and signature owners"], "required": true}
+  ]
+}

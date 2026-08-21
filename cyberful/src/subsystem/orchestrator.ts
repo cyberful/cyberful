@@ -213,16 +213,12 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
         budgetCarry = {
           approvalWaitMs: Math.max(budgetCarry.approvalWaitMs, result.approvalWaitMs ?? 0),
           retryWaitMs: Math.max(budgetCarry.retryWaitMs, result.retryWaitMs ?? 0),
-          targetCooldownWaitMs: Math.max(
-            budgetCarry.targetCooldownWaitMs,
-            result.targetCooldownWaitMs ?? 0,
-          ),
+          targetCooldownWaitMs: Math.max(budgetCarry.targetCooldownWaitMs, result.targetCooldownWaitMs ?? 0),
           phaseExtensionMs: Math.max(budgetCarry.phaseExtensionMs, result.retryCompensationMs ?? 0),
           recoveryExtensionMs: budgetCarry.recoveryExtensionMs ?? 0,
           recoveryChainIDs: budgetCarry.recoveryChainIDs ?? [],
         }
-        const providerFailure =
-          result.phaseFailure?.source === "provider" ? result.subsystemFailure : undefined
+        const providerFailure = result.phaseFailure?.source === "provider" ? result.subsystemFailure : undefined
         const authorizationReframeAvailable =
           policy?.fallbackConfigured === false && supportsAuthorizationReframe(input.workflow)
         const recoveryChainID = providerFailure
@@ -244,30 +240,53 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
                     policy.automaticSecurityBlockEnabled !== false),
                 fallbackConfigured: policy.fallbackConfigured,
                 useFallbackProvider:
-                  providerFailure.providerCode === "active_tail_too_large"
+                  providerFailure.providerCode === "active_tail_too_large" ||
+                  providerFailure.providerCode === "tool_call_history_mismatch"
                     ? false
                     : providerFailure.kind === "security_policy_block" || policy.useFallbackProvider,
                 alreadyRecovered: attempt > 1,
-                remainingRuntimeMs:
-                  remainingTimeoutMs - Math.max(0, result.closeoutReserveMs ?? 0),
+                remainingRuntimeMs: remainingTimeoutMs - Math.max(0, result.closeoutReserveMs ?? 0),
                 recoveryBonusMs: policy.recoveryBonusMs ?? 300_000,
                 bonusAlreadyGranted:
-                  recoveryChainID !== undefined &&
-                  (budgetCarry.recoveryChainIDs ?? []).includes(recoveryChainID),
+                  recoveryChainID !== undefined && (budgetCarry.recoveryChainIDs ?? []).includes(recoveryChainID),
                 authorizationReframeAvailable,
               })
             : undefined
-        const upstreamRecovery =
+        // ── Every Phase Restart Needs Useful Residual Runtime ─────
+        // Required-service failures used to bypass the shared admission policy,
+        // so a failure at the deadline could start a replacement with only a few
+        // milliseconds. Setup then consumed that remainder and produced a second
+        // zero-duration budget failure. Upstream recovery stays on the main model
+        // route and receives no time bonus, but now shares the same one-restart
+        // and minimum-research-time contract as provider-owned recovery.
+        //
+        // @docs/concepts/execution-model.md
+        // ────────────────────────────────────────────────────────────
+        const upstreamFailure =
           result.phaseFailure?.source === "upstream" && result.phaseFailure.retryable === true
-        const recoverableFailure = providerRecovery?.kind === "admitted" || upstreamRecovery
-        if (
-          result.ok ||
-          !recoverableFailure ||
-          !policy?.enabled ||
-          attempt > policy.maxRestarts ||
-          (upstreamRecovery && remainingTimeoutMs <= 0) ||
-          abort.aborted
-        )
+            ? {
+                kind: "transport" as const,
+                retryable: true,
+                ...(result.phaseFailure.code ? { providerCode: result.phaseFailure.code } : {}),
+              }
+            : undefined
+        const upstreamRecovery: RecoveryDecision | undefined =
+          upstreamFailure && policy
+            ? decideRecovery({
+                scope: "phase_restart",
+                sourceRoute: route,
+                failure: upstreamFailure,
+                enabled: policy.enabled,
+                fallbackConfigured: policy.fallbackConfigured,
+                useFallbackProvider: false,
+                alreadyRecovered: attempt > 1,
+                remainingRuntimeMs: remainingTimeoutMs - Math.max(0, result.closeoutReserveMs ?? 0),
+                recoveryBonusMs: 0,
+                bonusAlreadyGranted: false,
+              })
+            : undefined
+        const recoverableFailure = providerRecovery?.kind === "admitted" || upstreamRecovery?.kind === "admitted"
+        if (result.ok || !recoverableFailure || !policy?.enabled || attempt > policy.maxRestarts || abort.aborted)
           return { result, results }
         if (providerRecovery?.kind === "admitted" && providerRecovery.bonusMs > 0 && recoveryChainID) {
           remainingTimeoutMs += providerRecovery.bonusMs
@@ -287,12 +306,16 @@ export const runAndAdvance = Effect.fn("Expert.runAndAdvance")(function* (input:
           phase,
           objective,
           result,
-          providerRecovery?.kind === "admitted" &&
-            providerRecovery.inputTreatment === "authorization_reframe"
+          providerRecovery?.kind === "admitted" && providerRecovery.inputTreatment === "authorization_reframe"
             ? { workflow: input.workflow, ...(clientName ? { clientName } : {}) }
             : undefined,
         )
-        route = providerRecovery?.kind === "admitted" ? providerRecovery.route : "main"
+        route =
+          providerRecovery?.kind === "admitted"
+            ? providerRecovery.route
+            : upstreamRecovery?.kind === "admitted"
+              ? upstreamRecovery.route
+              : "main"
         attempt++
       }
     })

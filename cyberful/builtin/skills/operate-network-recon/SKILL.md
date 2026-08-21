@@ -1,6 +1,27 @@
 ---
 name: operate-network-recon
 description: Build a high-fidelity network and service inventory using Nmap, Masscan, packet capture, DNS, and protocol-specific follow-up. Use for authorized external or internal reconnaissance, service fingerprinting, exposure validation, segmentation checks, UDP discovery, TLS/SNI routing, scan reconciliation, or when an existing port list may be incomplete or misleading.
+metadata:
+  domain: security-tooling
+  subdomain: network-reconnaissance
+  triggers:
+    - authorized network reconnaissance
+    - network service inventory
+    - Nmap campaign
+    - service fingerprinting
+    - port exposure validation
+  tags:
+    - Nmap
+    - network-recon
+    - service-discovery
+    - port-scanning
+    - DNS
+    - packet-capture
+  frameworks:
+    mitre_attack:
+      - T1046
+    nist_csf:
+      - ID.AM
 ---
 
 # Operate Network Recon
@@ -50,6 +71,8 @@ For every material discrepancy:
 3. vary only one transport assumption;
 4. validate with the native protocol;
 5. timestamp the conclusion.
+
+For a repeatable active campaign, stage [scripts/run_network_recon_campaign.py](scripts/run_network_recon_campaign.py), [scripts/manifest.json](scripts/manifest.json), and the [campaign example](assets/network-recon-campaign.example.json). Fill the explicit authority contract before execution. The orchestrator constructs fixed Nmap argv, rejects hosts or ports outside that contract, enforces request and timeout bounds, and preserves raw stdout/stderr under the [evidence schema](assets/network-recon-evidence.schema.json). It does not classify a service or vulnerability.
 
 ## Select scripts narrowly
 

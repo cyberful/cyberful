@@ -1,5 +1,5 @@
 // ── Built-In Bug Bounty Workflow Tests ──────────────────────────
-// Verifies the dedicated policy boundaries, shared Pentest execution personas,
+// Verifies dedicated reward-aware personas, policy boundaries,
 // submission artifacts, budgets, and live-target capability contract.
 // → cyberful/src/subsystem/phase.ts — owns workflow policy and persona resolution.
 // ─────────────────────────────────────────────────────────────────
@@ -25,6 +25,7 @@ const PHASES = [
 
 describe("built-in Bug Bounty Program workflow", () => {
   const home = path.join(Builtin.DIR, "agents", "bug-bounty")
+  const browserSkill = fs.readFileSync(path.join(Builtin.DIR, "skills", "operate-browser", "SKILL.md"), "utf8")
 
   test("exposes the live-target chain and Markdown submission index", () => {
     const workflow = SubsystemPhase.workflow("bug-bounty")
@@ -47,6 +48,7 @@ describe("built-in Bug Bounty Program workflow", () => {
       "fuzz-campaign",
       "protocol-campaign",
       "cve-dictionary",
+      "mitre-attack",
     ])
     expect(workflow.zapLifecycle).toBe("engagement")
     expect(workflow.completionTitle).toBe("Bug bounty assessment completed")
@@ -66,26 +68,21 @@ describe("built-in Bug Bounty Program workflow", () => {
     ])
   })
 
-  test("uses dedicated boundary personas and the exact Pentest execution personas", async () => {
+  test("uses one dedicated persona for every Bug Bounty phase", async () => {
     const agents = await ConfigAgent.load(Builtin.DIR)
     expect(
       fs
         .readdirSync(home)
         .filter((file) => file.endsWith(".md"))
         .toSorted(),
-    ).toEqual(["brief.md", "report.md", "verify.md"])
+    ).toEqual(["brief.md", "exploit.md", "hacker.md", "recon.md", "report.md", "verify.md"])
 
-    for (const phase of ["brief", "verify", "report"] as const) {
+    for (const [phase] of PHASES) {
       expect(agents[`bug-bounty/${phase}`]).toBeDefined()
       expect(SubsystemPhase.personaPath(home, phase, "bug-bounty")).toBe(path.join(home, `${phase}.md`))
     }
-    for (const phase of ["recon", "exploit", "hacker"] as const) {
-      expect(SubsystemPhase.personaPath(home, phase, "bug-bounty")).toBe(
-        path.join(Builtin.DIR, "agents", "pentest", `${phase}.md`),
-      )
-    }
     expect(SubsystemPhase.personaPath("/custom/agents/bug-bounty", "recon", "bug-bounty")).toBe(
-      "/custom/agents/pentest/recon.md",
+      "/custom/agents/bug-bounty/recon.md",
     )
   })
 
@@ -100,9 +97,9 @@ describe("built-in Bug Bounty Program workflow", () => {
       expect(budgets[phase]).toBe(minutes)
     }
     expect(budgets.$novelty).toEqual({
-      recon: { required: true },
-      exploit: { required: true },
-      hacker: { required: true },
+      recon: { required: true, mode: "bounty-portfolio" },
+      exploit: { required: true, mode: "bounty-portfolio" },
+      hacker: { required: true, mode: "bounty-portfolio" },
     })
 
     expect(
@@ -117,21 +114,35 @@ describe("built-in Bug Bounty Program workflow", () => {
     ).toEqual({ brief: 0, recon: 3, exploit: 5, hacker: 5, verify: 0, report: 0 })
   })
 
-  test("research personas diversify qualitatively, execute directly, and preserve honest verdicts", () => {
+  test("research personas optimize reward, protect scarce browser access, use a root critic, and nudge skills", () => {
     const recon = fs.readFileSync(SubsystemPhase.personaPath(home, "recon", "bug-bounty"), "utf8")
     const exploit = fs.readFileSync(SubsystemPhase.personaPath(home, "exploit", "bug-bounty"), "utf8")
     const hacker = fs.readFileSync(SubsystemPhase.personaPath(home, "hacker", "bug-bounty"), "utf8")
 
-    expect(recon).toMatch(/maximize meaningful browser\s+navigation/i)
-    expect(recon).toMatch(/candidate findings and coverage hypotheses/i)
-    expect(recon).toMatch(/no route, click, hypothesis, or family quota/i)
-    expect(exploit).toMatch(/subagents inherit[\s\S]*execute their discriminators directly/i)
+    expect(recon).toMatch(/maximize the highest eligible, defensible bounty reward/i)
+    expect(recon).toContain("`bounty_context`")
+    expect(recon).toMatch(/without scores, quotas, or formulas/i)
+    expect(exploit).toContain('`display_name: "portfolio-critic"`')
+    expect(exploit).toContain('`output_artifact: "raw/strategy/exploit-portfolio-critic.md"`')
+    expect(exploit).toMatch(/original phase root[\s\S]*first half/i)
+    expect(exploit).toMatch(/advisory and artifact-only/i)
     expect(exploit).toContain("`UNTESTABLE`")
-    expect(exploit).toMatch(/typed blocker and next step/i)
-    expect(exploit).toMatch(/prerequisite-resolution pass[\s\S]*call\s+`question`/i)
-    expect(hacker).toMatch(/semantic pivots over endpoint or payload variants/i)
-    expect(hacker).toMatch(/resolve safe prerequisites[\s\S]*call\s+`question`/i)
-    for (const persona of [recon, exploit, hacker]) expect(persona).toMatch(/hypothesis/i)
+    expect(exploit).toContain('`display_name: "finding-breaker"`')
+    expect(exploit).toContain('`output_artifact: "raw/strategy/exploit-finding-breaker.md"`')
+    expect(exploit).toMatch(/never Verify-only `SURVIVES`, `REVISE`, or `DEMOTE`/i)
+    expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-portfolio-critic.md"`')
+    expect(hacker).toContain('`display_name: "finding-breaker"`')
+    expect(hacker).toContain('`output_artifact: "raw/strategy/hacker-finding-breaker.md"`')
+    expect(hacker).toMatch(/after two negatives converge[\s\S]*change impact, boundary, or enforcement owner/i)
+    for (const persona of [recon, exploit, hacker]) {
+      expect(persona).toMatch(/narrowest useful skill/i)
+      expect(persona).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
+      expect(persona).toMatch(/hypothesis/i)
+      expect(persona).toMatch(/not a score|never score|without scores/i)
+    }
+    expect(browserSkill).toMatch(/one phase-shared agent-browser session/i)
+    expect(browserSkill).toMatch(/avoid disrupting unrelated work/i)
+    expect(browserSkill).toMatch(/Save required screenshots, downloads, ZAP facts, and durable artifacts before handoff/i)
   })
 
   test("brief records program policy without inventing missing rules", () => {
@@ -150,8 +161,12 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(brief).toContain("`engagement_policy configure`")
     expect(brief).toContain("`engagement_policy finalize`")
     expect(brief).toMatch(/mandatory non-secret request header/i)
-    expect(brief.indexOf("`engagement_policy configure`")).toBeLessThan(brief.indexOf("`browser_status`"))
-    expect(brief.indexOf("`engagement_policy finalize`")).toBeGreaterThan(brief.indexOf("`browser_status`"))
+    expect(brief.indexOf("`engagement_policy configure`")).toBeLessThan(
+      brief.indexOf("run the `operate-browser` Brief readiness preflight"),
+    )
+    expect(brief.indexOf("`engagement_policy finalize`")).toBeGreaterThan(
+      brief.indexOf("run the `operate-browser` Brief readiness preflight"),
+    )
     expect(brief).toMatch(/Do not infer authorization or a restriction/i)
     expect(brief).toMatch(/one exact action and asset/i)
     expect(brief).toMatch(/resolution\s+attempt/i)
@@ -161,15 +176,17 @@ describe("built-in Bug Bounty Program workflow", () => {
 
   test("brief preflights supplied access and records one bounded prerequisite matrix", () => {
     const brief = fs.readFileSync(path.join(home, "brief.md"), "utf8")
+    const browserContract = `${brief}\n${browserSkill}`
 
     expect(brief).toContain("provided identities")
     expect(brief).toMatch(/Handoff `MISSION\.md` to Recon/i)
+    expect(brief).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
     for (const preflightInstruction of [
       "Account, proxy, and application preflight",
-      "`browser_status`",
-      "`proxy.mode=zap`",
-      "`browser_network_log`",
-      "`OK, retry`",
+      "`agent_browser_open`",
+      "routed through ZAP",
+      "Use ZAP for durable HTTP evidence",
+      "`web_search`",
       "Prerequisite matrix",
       "`READY`",
       "`BLOCKED`",
@@ -177,19 +194,18 @@ describe("built-in Bug Bounty Program workflow", () => {
       "`OUT_OF_SCOPE`",
       "`UNRESOLVED`",
     ]) {
-      expect(brief).toContain(preflightInstruction)
+      expect(browserContract).toContain(preflightInstruction)
     }
-    expect(brief).toMatch(/complete the normal login autonomously/i)
-    expect(brief).toContain("{{var:<saved-name>}}")
+    expect(browserSkill).toMatch(/complete ordinary login autonomously/i)
+    expect(browserSkill).toContain("{{var:<saved-name>}}")
     expect(brief).toContain("[session-variable:<saved-name>]")
-    expect(brief).not.toContain("{{var:name}}")
-    expect(brief).toMatch(/numbered target profiles `1` through `5`/i)
-    expect(brief).toMatch(/`search` profile is not a supplied account/i)
-    expect(brief).toMatch(/`proxy\.configured=false` with `proxy\.mode=direct`/i)
-    expect(brief).toMatch(/excluded from this account preflight, prerequisite-matrix profile readiness, and engagement-policy profile states/i)
-    expect(brief).toMatch(/Never ask the human to restore ZAP for `search`/i)
-    expect(brief).toMatch(/Ask the human only after autonomous login cannot continue/i)
-    expect(brief).not.toMatch(/Never enter credentials/i)
+    expect(browserContract).not.toContain("{{var:name}}")
+    expect(browserSkill).toMatch(/numbered profiles `1` through `5`/i)
+    expect(browserSkill).toMatch(/always uses the temporary direct `search` profile/i)
+    expect(browserSkill).toMatch(/profile: "search"[^.]*only DuckDuckGo or Google/i)
+    expect(browserSkill).toMatch(/do not open a result host on `search`/i)
+    expect(browserSkill).toMatch(/Ask the human only when a human factor/i)
+    expect(browserContract).not.toMatch(/Never enter credentials/i)
     expect(brief).toMatch(/not an exhaustive vulnerability checklist/i)
     expect(brief).not.toContain("`NOT_PROVIDED`")
     expect(brief).not.toContain("`POLICY_UNKNOWN`")
@@ -199,8 +215,12 @@ describe("built-in Bug Bounty Program workflow", () => {
     const verify = fs.readFileSync(path.join(home, "verify.md"), "utf8")
     const report = fs.readFileSync(path.join(home, "report.md"), "utf8")
 
+    expect(verify).toMatch(/Before the first browser call, load and follow the builtin `operate-browser` skill/i)
     for (const verdict of ["SURVIVES", "REVISE", "DEMOTE"]) expect(verify).toContain(verdict)
     for (const status of ["SUBMISSION_READY", "NEEDS_MORE_EVIDENCE", "NOT_REPORTABLE"]) expect(verify).toContain(status)
+    expect(verify).toMatch(/Reproduction proves a mechanism, not necessarily a vulnerability/i)
+    expect(verify).toMatch(/violated security invariant/i)
+    expect(verify).toMatch(/cheapest benign explanation/i)
     expect(verify).toMatch(/Write `BUG_BOUNTY_VERIFY\.md`/i)
 
     expect(report).toContain("reports/bug-bounty/BBP-###.md")
@@ -213,11 +233,11 @@ describe("built-in Bug Bounty Program workflow", () => {
     expect(report).toMatch(/to `complete`/i)
   })
 
-  test("keeps the permanent Bug Bounty instruction corpus within 2,500 words", () => {
+  test("keeps the permanent Bug Bounty instruction corpus within 2,800 words", () => {
     const personas = PHASES.map(([phase]) =>
       fs.readFileSync(SubsystemPhase.personaPath(home, phase, "bug-bounty"), "utf8"),
     )
-    const skills = ["nuclei", "zap"].map((name) =>
+    const skills = ["operate-nuclei", "operate-zap"].map((name) =>
       fs.readFileSync(path.join(Builtin.DIR, "skills", name, "SKILL.md"), "utf8"),
     )
     const runners = PHASES.map(([phase]) =>
@@ -233,12 +253,12 @@ describe("built-in Bug Bounty Program workflow", () => {
           handoff: { successor: phase === "report" ? undefined : "next" },
         },
         1,
-        ["recon", "exploit", "hacker"].includes(phase) ? { required: true } : undefined,
+        ["recon", "exploit", "hacker"].includes(phase) ? { required: true, mode: "bounty-portfolio" } : undefined,
       ),
     )
     const runner = runners.toSorted((left, right) => right.split(/\s+/).length - left.split(/\s+/).length)[0] ?? ""
     const permanentWords = [runner, ...personas, ...skills].join("\n").trim().split(/\s+/).length
 
-    expect(permanentWords).toBeLessThanOrEqual(2_500)
+    expect(permanentWords).toBeLessThanOrEqual(2_800)
   })
 })

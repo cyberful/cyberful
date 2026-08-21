@@ -6,12 +6,18 @@
 
 from __future__ import annotations
 
+import bz2
+import gzip
+import io
+import lzma
 import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
+import zipfile
 
 import native_security
 
@@ -201,7 +207,10 @@ class NativeSecurityTests(unittest.TestCase):
 
     def test_archive_extract_retries_prepended_zip_with_native_7zip_and_publishes_atomically(self) -> None:
         source = self.workspace / "omni.ja"
-        source.write_bytes(b"optimized-prefix" + b"PK\x03\x04" + b"fixture")
+        ordinary = self.workspace / "ordinary.zip"
+        with zipfile.ZipFile(ordinary, "w") as archive:
+            archive.writestr("modules/fixture.js", "ok")
+        source.write_bytes(b"optimized-prefix" + ordinary.read_bytes())
         output = self.workspace / "omni"
 
         def run(argv, **_kwargs):
@@ -220,6 +229,250 @@ class NativeSecurityTests(unittest.TestCase):
 
         self.assertEqual(result["engine"], "7zz")
         self.assertTrue((output / "modules" / "fixture.js").is_file())
+        self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
+
+    def test_archive_extract_rejects_zip_traversal_before_subprocess_start(self) -> None:
+        source = self.workspace / "hostile.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("../escaped.txt", "escaped")
+
+        with patch.object(native_security, "_run") as run:
+            with self.assertRaisesRegex(ValueError, "escapes its destination"):
+                native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(source), "output": str(self.workspace / "zip-output")},
+                )
+
+        run.assert_not_called()
+        self.assertFalse((self.workspace / "escaped.txt").exists())
+
+    def test_archive_extract_inspects_and_extracts_tar_gzip_by_signature(self) -> None:
+        source = self.workspace / "renamed-package.bin"
+        payload = b"multi-format archive\n"
+        with tarfile.open(source, "w:gz") as archive:
+            member = tarfile.TarInfo("source/fixture.txt")
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+        inspected = native_security.invoke("archive_extract", {"operation": "inspect", "path": str(source)})
+        output = self.workspace / "unpacked"
+        extracted = native_security.invoke(
+            "archive_extract",
+            {"operation": "extract", "path": str(source), "output": str(output)},
+        )
+
+        self.assertEqual(inspected["format"], "tar.gz")
+        self.assertEqual(inspected["engine"], "tarfile")
+        self.assertEqual(inspected["entries_preview"][0]["path"], "source/fixture.txt")
+        self.assertEqual(extracted["format"], "tar.gz")
+        self.assertEqual((output / "source" / "fixture.txt").read_bytes(), payload)
+        self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
+
+    def test_archive_extract_distinguishes_tar_variants_and_nested_zip_bytes(self) -> None:
+        fixtures = (("w", "tar"), ("w:bz2", "tar.bz2"), ("w:xz", "tar.xz"))
+        for index, (mode, format_name) in enumerate(fixtures):
+            with self.subTest(format=format_name):
+                source = self.workspace / f"variant-{index}.bin"
+                payload = b"PK\x03\x04nested archive bytes"
+                with tarfile.open(source, mode) as archive:
+                    member = tarfile.TarInfo("nested.bin")
+                    member.size = len(payload)
+                    archive.addfile(member, io.BytesIO(payload))
+                output = self.workspace / f"variant-{index}"
+
+                inspected = native_security.invoke("archive_extract", {"operation": "inspect", "path": str(source)})
+                native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(source), "output": str(output)},
+                )
+
+                self.assertEqual(inspected["format"], format_name)
+                self.assertEqual((output / "nested.bin").read_bytes(), payload)
+
+    def test_archive_extract_rejects_tar_traversal_without_partial_output(self) -> None:
+        source = self.workspace / "hostile.tar"
+        with tarfile.open(source, "w") as archive:
+            member = tarfile.TarInfo("../escaped.txt")
+            member.size = 7
+            archive.addfile(member, io.BytesIO(b"escaped"))
+        output = self.workspace / "unpacked"
+
+        with self.assertRaisesRegex(ValueError, "escapes its destination"):
+            native_security.invoke(
+                "archive_extract",
+                {"operation": "extract", "path": str(source), "output": str(output)},
+            )
+
+        self.assertFalse(output.exists())
+        self.assertFalse((self.workspace / "escaped.txt").exists())
+        self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
+
+    def test_archive_extract_rejects_tar_links_during_inspection(self) -> None:
+        source = self.workspace / "linked.tar"
+        with tarfile.open(source, "w") as archive:
+            member = tarfile.TarInfo("outside")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "/etc/passwd"
+            archive.addfile(member)
+
+        with self.assertRaisesRegex(ValueError, "link or special member"):
+            native_security.invoke("archive_extract", {"operation": "inspect", "path": str(source)})
+
+    def test_archive_extract_handles_a_bounded_single_gzip_stream(self) -> None:
+        source = self.workspace / "fixture.txt.gz"
+        with gzip.open(source, "wb") as archive:
+            archive.write(b"single stream\n")
+        output = self.workspace / "stream"
+
+        result = native_security.invoke(
+            "archive_extract",
+            {"operation": "extract", "path": str(source), "output": str(output)},
+        )
+
+        self.assertEqual(result["format"], "gzip")
+        self.assertEqual(result["engine"], "gzip")
+        self.assertEqual((output / "fixture.txt").read_bytes(), b"single stream\n")
+
+    def test_archive_extract_handles_bzip2_and_xz_streams(self) -> None:
+        fixtures = (("bzip2", ".bz2", bz2.open), ("xz", ".xz", lzma.open))
+        for format_name, suffix, opener in fixtures:
+            with self.subTest(format=format_name):
+                source = self.workspace / f"{format_name}.txt{suffix}"
+                with opener(source, "wb") as archive:
+                    archive.write(format_name.encode("utf-8"))
+                inspected = native_security.invoke("archive_extract", {"operation": "inspect", "path": str(source)})
+                output = self.workspace / f"{format_name}-output"
+                extracted = native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(source), "output": str(output)},
+                )
+
+                self.assertEqual(inspected["entries_preview"][0]["size"], len(format_name))
+                self.assertEqual(extracted["format"], format_name)
+                self.assertEqual((output / f"{format_name}.txt").read_text(encoding="utf-8"), format_name)
+
+    def test_archive_extract_rejects_malformed_and_oversized_streams(self) -> None:
+        malformed = self.workspace / "malformed.gz"
+        malformed.write_bytes(b"\x1f\x8bnot-gzip")
+        with self.assertRaisesRegex(ValueError, "archive stream failed with gzip"):
+            native_security.invoke("archive_extract", {"operation": "inspect", "path": str(malformed)})
+
+        oversized = self.workspace / "oversized.gz"
+        with gzip.open(oversized, "wb") as archive:
+            archive.write(b"12345")
+        output = self.workspace / "oversized-output"
+        with patch.object(native_security, "MAX_ARCHIVE_FILE_SIZE", 4):
+            with self.assertRaisesRegex(ValueError, "per-file safety bound"):
+                native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(oversized), "output": str(output)},
+                )
+        self.assertFalse(output.exists())
+        self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
+
+    def test_archive_extract_validates_7zip_members_before_extraction(self) -> None:
+        source = self.workspace / "fixture.7z"
+        source.write_bytes(b"7z\xbc\xaf'\x1cfixture")
+        output = self.workspace / "seven"
+        listing = {
+            "argv": ["7zz", "l"],
+            "exit_code": 0,
+            "stdout": "----------\nPath = source/fixture.c\nSize = 12\nAttributes = A\n",
+            "stderr": "",
+        }
+
+        def run(argv, **_kwargs):
+            if argv[1] == "l":
+                return listing
+            destination = Path(next(item[2:] for item in argv if item.startswith("-o")))
+            (destination / "source").mkdir()
+            (destination / "source" / "fixture.c").write_text("int main(){}", encoding="utf-8")
+            return {"argv": argv, "exit_code": 0, "stdout": "ok", "stderr": ""}
+
+        with patch.object(native_security, "_command", side_effect=lambda name: name), patch.object(native_security, "_run", side_effect=run):
+            result = native_security.invoke(
+                "archive_extract",
+                {"operation": "extract", "path": str(source), "output": str(output)},
+            )
+
+        self.assertEqual(result["format"], "7z")
+        self.assertEqual(result["engine"], "7zz")
+        self.assertTrue((output / "source" / "fixture.c").is_file())
+
+    def test_archive_extract_rejects_7zip_traversal_before_extraction(self) -> None:
+        source = self.workspace / "hostile.7z"
+        source.write_bytes(b"7z\xbc\xaf'\x1cfixture")
+        listing = {
+            "argv": ["7zz", "l"],
+            "exit_code": 0,
+            "stdout": "----------\nPath = ../escaped\nSize = 1\nAttributes = A\n",
+            "stderr": "",
+        }
+
+        with patch.object(native_security, "_command", return_value="7zz"), patch.object(native_security, "_run", return_value=listing) as run:
+            with self.assertRaisesRegex(ValueError, "escapes its destination"):
+                native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(source), "output": str(self.workspace / "seven")},
+                )
+
+        run.assert_called_once()
+
+    def test_archive_extract_cleans_up_after_7zip_subprocess_failure(self) -> None:
+        source = self.workspace / "broken.7z"
+        source.write_bytes(b"7z\xbc\xaf'\x1cfixture")
+        listing = {
+            "argv": ["7zz", "l"],
+            "exit_code": 0,
+            "stdout": "----------\nPath = source.c\nSize = 12\nAttributes = A\n",
+            "stderr": "",
+        }
+        failure = {"argv": ["7zz", "x"], "exit_code": 2, "stdout": "", "stderr": "data error"}
+        output = self.workspace / "broken-output"
+
+        with patch.object(native_security, "_command", return_value="7zz"), patch.object(native_security, "_run", side_effect=[listing, failure]):
+            with self.assertRaisesRegex(ValueError, "data error"):
+                native_security.invoke(
+                    "archive_extract",
+                    {"operation": "extract", "path": str(source), "output": str(output)},
+                )
+
+        self.assertFalse(output.exists())
+        self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
+
+    def test_archive_extract_expands_tar_zstd_as_a_tar_tree(self) -> None:
+        source = self.workspace / "fixture.tar.zst"
+        source.write_bytes(b"\x28\xb5\x2f\xfdfixture")
+        output = self.workspace / "zstd-output"
+        listing = {
+            "argv": ["7zz", "l"],
+            "exit_code": 0,
+            "stdout": "----------\nPath = fixture.tar\nSize = 10240\nAttributes = A\n",
+            "stderr": "",
+        }
+
+        def run(argv, **_kwargs):
+            if argv[1] == "l":
+                return listing
+            destination = Path(next(item[2:] for item in argv if item.startswith("-o")))
+            with tarfile.open(destination / "fixture.tar", "w") as archive:
+                member = tarfile.TarInfo("source/fixture.c")
+                member.size = 12
+                archive.addfile(member, io.BytesIO(b"int main(){}"))
+            return {"argv": argv, "exit_code": 0, "stdout": "ok", "stderr": ""}
+
+        with patch.object(native_security, "_command", return_value="7zz"), patch.object(native_security, "_run", side_effect=run):
+            inspected = native_security.invoke("archive_extract", {"operation": "inspect", "path": str(source)})
+            result = native_security.invoke(
+                "archive_extract",
+                {"operation": "extract", "path": str(source), "output": str(output)},
+            )
+
+        self.assertEqual(inspected["engine"], "7zz+tarfile")
+        self.assertEqual(inspected["entries_preview"][0]["path"], "source/fixture.c")
+        self.assertEqual(result["format"], "tar.zst")
+        self.assertEqual(result["engine"], "7zz+tarfile")
+        self.assertEqual((output / "source" / "fixture.c").read_bytes(), b"int main(){}")
         self.assertEqual(list(self.workspace.glob(".cyberful-archive-*")), [])
 
     def test_debugger_sigsys_is_nopass_until_explicitly_changed(self) -> None:

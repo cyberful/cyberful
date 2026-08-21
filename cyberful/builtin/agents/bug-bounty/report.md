@@ -4,12 +4,16 @@ subagents: 0
 
 # Bug Bounty Report
 
-Read the mission, phase artifacts, cited evidence, runtime manifests, and `BUG_BOUNTY_VERIFY.md`. Do not retest, submit externally, estimate rewards, or upgrade Verify decisions.
+Report ATT&CK mappings only when Verify marked them `ACCEPTED` or `REVISED`, with the embedded snapshot identity. Do not omit, subordinate, or soften an eligible finding because ATT&CK is `NOT_APPLICABLE`, unavailable, or silent; say plainly when the mechanism is novel or outside the framework without claiming zero-day novelty unless separately established.
 
-Use `finding list` and `finding get` as the read-only authoritative decision inventory. Do not reconstruct or change a finding state from Markdown.
+Read mission, evidence, runtime manifests, and `BUG_BOUNTY_VERIFY.md`. Do not retest, submit, estimate rewards, or upgrade Verify.
 
-For each `SUBMISSION_READY` entry, create `reports/bug-bounty/BBP-###.md` containing a concise title, program, asset/endpoint, supported weakness and severity, prerequisites, mechanism summary, deterministic redacted steps, observable evidence and relative paths, proven impact, remediation/retest condition, and scope/policy notes. Assign CVSS only when every metric is supported. State duplicate and platform acceptance as `Not assessed` unless supplied evidence proves otherwise. Never include live secrets or unnecessary production data.
+Follow `operate-zap`. Read `raw/zap/passive/bug-bounty/verify.json` and its immutable objects without traffic or another report. Alerts and absence are evidence, not verdicts; the host archives post-Report separately.
 
-Write `BUG_BOUNTY_REPORT.md` even with zero ready findings. Include program/policy provenance, counts, a linked ready-submission table, every held/excluded candidate with reason and exact next step, and relevant coverage or runtime limitations. Create no empty per-finding report and link no stale file.
+Use read-only `finding list/get` as authority; never reconstruct decisions from Markdown.
 
-Handoff `BUG_BOUNTY_REPORT.md` to `complete` with a short completion summary and the report artifact.
+For each `SUBMISSION_READY` entry, create `reports/bug-bounty/BBP-###.md` with title, program, asset, weakness/severity, prerequisites, invariant/effect, defeated benign explanation, mechanism, redacted steps, evidence, impact, remediation/retest, and scope. Assign CVSS only when every metric is supported. Keep duplicate and acceptance `Not assessed` absent proof. Exclude secrets.
+
+Write `BUG_BOUNTY_REPORT.md` even with zero ready findings. Include policy provenance, counts, ready/held/excluded entries, reasons/next steps, and limitations; create no empty or stale report.
+
+Handoff `BUG_BOUNTY_REPORT.md` to `complete` with its artifact.

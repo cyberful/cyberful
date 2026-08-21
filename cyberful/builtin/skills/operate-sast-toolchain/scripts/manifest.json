@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_sast_campaign.py",
+  "class": "orchestrator",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "exploit", "index", "hunt", "attack"],
+  "tools": ["semgrep"],
+  "dependencies": {"commands": ["semgrep"], "python": [], "bootstrap": null},
+  "effects": ["executes local static analysis over explicitly authorized workspace roots", "writes bounded raw scanner evidence"],
+  "timeout_seconds": 300,
+  "limits": {"requests": 0, "concurrency": 8, "output_bytes": 16777216},
+  "secrets": {"environment": []},
+  "input": {"format": "cyberful.sast-campaign.v1", "schema": "assets/sast-campaign.schema.json"},
+  "output": {"format": "cyberful.sast-campaign.raw.v1", "schema": "assets/sast-evidence.schema.json", "raw": true}
+}

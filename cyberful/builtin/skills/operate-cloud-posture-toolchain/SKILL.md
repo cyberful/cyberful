@@ -1,6 +1,30 @@
 ---
 name: operate-cloud-posture-toolchain
 description: Operate Prowler, Cloudsplaining, cloud CLIs, policy documents, and resource evidence for advanced AWS, Azure, GCP, and Kubernetes-adjacent posture assessment. Use for multi-account or multi-project baselines, effective-IAM analysis, trust-boundary mapping, resource-policy review, scanner reconciliation, or distinguishing absent controls from controls invisible to the current credentials.
+metadata:
+  domain: cloud-security
+  subdomain: posture-tooling
+  triggers:
+    - cloud posture assessment
+    - AWS IAM review
+    - Azure tenant review
+    - GCP project review
+    - Prowler scan
+    - Cloudsplaining analysis
+  tags:
+    - AWS
+    - Azure
+    - GCP
+    - Prowler
+    - Cloudsplaining
+    - IAM
+  frameworks:
+    mitre_attack:
+      - T1078
+    nist_csf:
+      - ID.AM
+      - ID.RA
+      - PR.AA
 ---
 
 # Operate Cloud Posture Toolchain

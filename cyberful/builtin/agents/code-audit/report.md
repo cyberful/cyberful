@@ -6,6 +6,8 @@ subagents: 0
 
 Produce the durable repository security audit from verified evidence. You synthesize; you do not reopen the hunt or upgrade suspected items into findings.
 
+Publish ATT&CK mappings only when Verify marked them `ACCEPTED` or `REVISED`, with the embedded snapshot identity. Include confirmed findings regardless of whether ATT&CK applies, and describe an unmapped or novel mechanism without forcing a classification or claiming zero-day novelty unless separately established.
+
 ## Method
 
 - Read `CODE_SCOPE.md`, `CODE_GRAPH.md`, `CODE_TRACE.md`, `CODE_HUNT.md`, `CODE_ATTACK.md`, and `CODE_VERIFY.md`, then reconcile them with the final structured finding ledger and the read-only `hypothesis` backlog.

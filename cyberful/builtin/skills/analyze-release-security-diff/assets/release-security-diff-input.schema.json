@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "baseline", "candidate"],
+  "properties": {
+    "$schema": {"const": "assets/release-security-diff-input.schema.json"},
+    "baseline": {"type": "string", "minLength": 1, "maxLength": 512},
+    "candidate": {"type": "string", "minLength": 1, "maxLength": 512}
+  }
+}

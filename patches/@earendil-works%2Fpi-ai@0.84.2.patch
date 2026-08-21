@@ -1,0 +1,116 @@
+diff --git a/dist/api/openai-codex-responses.js b/dist/api/openai-codex-responses.js
+index c9fe5d14f51a43142f8d182cf9ac9d7ce69f2175..1a642b884b9349cef825f71021fa8b546a83994b 100644
+--- a/dist/api/openai-codex-responses.js
++++ b/dist/api/openai-codex-responses.js
+@@ -297,7 +297,12 @@ export const stream = (model, context, options) => {
+                         statusText: response.statusText,
+                     });
+                     const info = await parseErrorResponse(fakeResponse);
+-                    throw new Error(info.friendlyMessage || info.message);
++                    const providerError = new Error(info.friendlyMessage || info.message);
++                    if (info.code)
++                        providerError.code = info.code;
++                    if (info.cyberPolicy)
++                        providerError.codexErrorInfo = { cyberPolicy: {} };
++                    throw providerError;
+                 }
+                 catch (error) {
+                     if (error instanceof Error) {
+@@ -341,6 +346,9 @@ export const stream = (model, context, options) => {
+                 delete block.partialJson;
+                 delete block.customInput;
+             }
++            appendAssistantMessageDiagnostic(output, createAssistantMessageDiagnostic("provider_request_failure", error, error?.codexErrorInfo
++                ? { codexErrorInfo: error.codexErrorInfo }
++                : undefined));
+             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+             output.errorMessage = formatProviderError(normalizeProviderError(error));
+             stream.push({ type: "error", reason: output.stopReason, error: output });
+@@ -480,11 +488,13 @@ async function processStream(response, output, stream, model, grammarToolInputPr
+ class CodexApiError extends Error {
+     code;
+     payload;
++    codexErrorInfo;
+     constructor(message, options) {
+         super(message);
+         this.name = "CodexApiError";
+         this.code = options?.code;
+         this.payload = options?.payload;
++        this.codexErrorInfo = options?.cyberPolicy ? { cyberPolicy: {} } : undefined;
+         this.cause = options?.cause;
+     }
+ }
+@@ -506,6 +516,10 @@ function isWebSocketConnectionLimitReachedError(error) {
+ function isPreviousResponseNotFoundError(error) {
+     return error instanceof CodexApiError && error.code === PREVIOUS_RESPONSE_NOT_FOUND_CODE;
+ }
++function hasCodexCyberPolicy(value) {
++    const info = value && typeof value === "object" ? value.codexErrorInfo : undefined;
++    return typeof info === "object" && info !== null && Object.hasOwn(info, "cyberPolicy");
++}
+ function extractCodexEventError(event) {
+     const nested = event.error && typeof event.error === "object" ? event.error : undefined;
+     return {
+@@ -515,6 +529,7 @@ function extractCodexEventError(event) {
+             : typeof nested?.message === "string"
+                 ? nested.message
+                 : undefined,
++        cyberPolicy: hasCodexCyberPolicy(nested),
+     };
+ }
+ async function* mapCodexEvents(events, output) {
+@@ -523,17 +538,23 @@ async function* mapCodexEvents(events, output) {
+         if (!type)
+             continue;
+         if (type === "error") {
+-            const { code, message } = extractCodexEventError(event);
++            const { code, message, cyberPolicy } = extractCodexEventError(event);
+             throw new CodexApiError(`Codex error: ${message || code || JSON.stringify(event)}`, {
+                 code,
+                 payload: event,
++                cyberPolicy,
+             });
+         }
+         if (type === "response.failed") {
+             const response = event.response;
+-            const code = response?.error?.code;
+-            const message = response?.error?.message;
+-            throw new CodexApiError(message || "Codex response failed", { code, payload: event });
++            const responseError = response?.error;
++            const code = responseError?.code;
++            const message = responseError?.message;
++            throw new CodexApiError(message || "Codex response failed", {
++                code,
++                payload: event,
++                cyberPolicy: hasCodexCyberPolicy(responseError),
++            });
+         }
+         if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
+             const response = event.response;
+@@ -1216,11 +1237,16 @@ async function parseErrorResponse(response) {
+     const raw = await response.text();
+     let message = raw || response.statusText || "Request failed";
+     let friendlyMessage;
++    let code;
++    let cyberPolicy = false;
+     try {
+         const parsed = JSON.parse(raw);
+         const err = parsed?.error;
+         if (err) {
+-            const code = err.code || err.type || "";
++            code = err.code || err.type || undefined;
++            cyberPolicy = typeof err.codexErrorInfo === "object" &&
++                err.codexErrorInfo !== null &&
++                Object.hasOwn(err.codexErrorInfo, "cyberPolicy");
+             if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
+                 const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
+                 const mins = err.resets_at
+@@ -1233,7 +1259,7 @@ async function parseErrorResponse(response) {
+         }
+     }
+     catch { }
+-    return { message, friendlyMessage };
++    return { message, friendlyMessage, code, cyberPolicy };
+ }
+ // ============================================================================
+ // Auth & Headers

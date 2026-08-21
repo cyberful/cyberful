@@ -1,6 +1,27 @@
 ---
 name: test-concurrency-resource-abuse
 description: Assess race conditions, transactional invariants, idempotency, retries, replay, rate and quota enforcement, algorithmic complexity, resource amplification, and cost abuse during authorized penetration tests or code audits. Use for TOCTOU, double spend, duplicate redemption, limit bypass, ReDoS, decompression bombs, fan-out, pagination, batch, queue, storage, compute, and unbounded-consumption risks.
+metadata:
+  domain: application-security
+  subdomain: concurrency-and-resource-abuse
+  triggers:
+    - concurrency abuse test
+    - race condition probe
+    - idempotency bypass
+    - resource amplification
+    - quota or rate limit bypass
+  tags:
+    - race-condition
+    - TOCTOU
+    - idempotency
+    - resource-exhaustion
+    - rate-limits
+    - cost-abuse
+  frameworks:
+    mitre_attack:
+      - T1499
+    nist_csf:
+      - PR.IR
 ---
 
 # Test Concurrency and Resource Abuse
@@ -23,6 +44,8 @@ Read [race-idempotency.md](references/race-idempotency.md) for state races. Read
 6. Repeat with a matched sequential control.
 
 Success is an invariant violation, not merely two successful HTTP responses. Use single-digit concurrency first; precision exposes more than indiscriminate load.
+
+For repeatable active trials in Pentest or Bug Bounty, stage [scripts/run_concurrency_probe.py](scripts/run_concurrency_probe.py), its [manifest](scripts/manifest.json), and the [probe example](assets/concurrency-probe.example.json). Declare canonical allowed origins plus request and concurrency limits before execution. Literal loopback targets connect directly. Docker service hostnames and other non-loopback targets must use Cyberful's runtime-injected `HTTP_PROXY` or `HTTPS_PROXY`; optional trust comes only from runtime `SSL_CERT_FILE` or `CURL_CA_BUNDLE`, and TLS verification is never disabled. Secret authorization is accepted only through `CYBERFUL_PROBE_AUTHORIZATION`. The JSON payload cannot select the route or trust source, and the script is unavailable for Code Audit target traffic. It writes raw bounded responses under the [evidence schema](assets/concurrency-evidence.schema.json); reconcile durable state separately because response success alone never establishes an invariant violation.
 
 ## Test Replay and Retry Boundaries
 

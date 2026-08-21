@@ -11,7 +11,12 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
-import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
+import {
+  NOOP_TELEMETRY_CONTEXT,
+  type AgentTool,
+  type StreamFn,
+  type TelemetryContext,
+} from "@earendil-works/pi-agent-core"
 import {
   createAssistantMessageEventStream,
   createModels,
@@ -28,7 +33,13 @@ import { Type } from "typebox"
 import { Settings } from "@/config/settings"
 import type { AgentEvent, AgentRun, AgentRunRole, AgentRunSpec, ProviderAffinity } from "./agent-subsystem"
 import { SubsystemPhaseBudgetClock } from "./phase-budget-clock"
-import { clearFallbackLedger, fallbackLedgerForSession, formatTaskCapsule, PiAgentSubsystem } from "./pi-agent"
+import {
+  clearFallbackLedger,
+  fallbackLedgerForSession,
+  formatTaskCapsule,
+  PiAgentSubsystem,
+  researchContinuationDecision,
+} from "./pi-agent"
 import type { PiModels } from "./pi-models"
 import { PiReasoning } from "./pi-reasoning"
 import type { CompiledAgentPrompt, PromptSkill, ProviderRoute } from "./prompt-compiler"
@@ -73,6 +84,7 @@ type ActivityEvent = Extract<AgentEvent, { type: "activity" }>
 type ProviderRetryEvent = Extract<AgentEvent, { type: "provider_retry" }>
 type ContextRotationEvent = Extract<AgentEvent, { type: "context_rotation" }>
 type PhaseCloseoutEvent = Extract<AgentEvent, { type: "phase_closeout" }>
+type ResearchContinuationEvent = Extract<AgentEvent, { type: "phase_research_continuation" }>
 
 interface CapturedCall {
   readonly ordinal: number
@@ -84,6 +96,7 @@ interface CapturedCall {
   readonly reasoning?: string
   readonly payload?: unknown
   readonly signal?: AbortSignal
+  readonly telemetryContext?: TelemetryContext
 }
 
 type ResponseFactory = (call: CapturedCall) => AssistantMessage | Promise<AssistantMessage>
@@ -396,10 +409,12 @@ class InMemoryProvider {
         ...(streamOptions?.reasoning ? { reasoning: streamOptions.reasoning } : {}),
         payload,
         ...(streamOptions?.signal ? { signal: streamOptions.signal } : {}),
+        ...(streamOptions?.telemetryContext ? { telemetryContext: streamOptions.telemetryContext } : {}),
       }
       this.calls.push(call)
       for (const waiter of this.#waiters.filter((candidate) => this.calls.length >= candidate.count)) waiter.resolve()
       const message = await response(call)
+      if (message.stopReason === "pending") throw new Error("In-memory providers must return a terminal stop reason")
       const stream = createAssistantMessageEventStream()
       stream.push({ type: "start", partial: { ...message, content: [] } })
       if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -455,6 +470,7 @@ function prompt(
   route: ProviderRoute,
   objective: string,
   handoffOwner: boolean,
+  capacity: ReturnType<PiModels["contextCapacity"]>,
 ): CompiledAgentPrompt {
   const system = [
     SYSTEM_INVARIANT,
@@ -482,6 +498,19 @@ function prompt(
       delegationEnabled: true,
       delegationLimit: 64,
       handoffOwner,
+      skillCatalog: {
+        operationalContextWindow: capacity.operationalContextWindow,
+        contextSource: capacity.source,
+        descriptionBudgetPercentage: 2,
+        descriptionBudgetTokens: Math.floor(capacity.operationalContextWindow * 0.02),
+        descriptionBudgetCharacters: Math.floor(capacity.operationalContextWindow * 0.02) * 4,
+        nameIndexCharacters: 0,
+        metadataCharacters: 0,
+        totalSkills: 0,
+        describedSkills: 0,
+        compressedSkills: 0,
+        nameOnlySkills: 0,
+      },
     },
   }
 }
@@ -496,7 +525,7 @@ interface RootSpecOptions {
   readonly maxConcurrent?: number
   readonly maxDepth?: number
   readonly deadlineAt?: number
-  readonly maxOutputTokens?: number
+  readonly maxCumulativeOutputTokens?: number | null
   readonly workarea?: string
   readonly budgetClock?: AgentRunSpec["budget"]["clock"]
   readonly closeoutReserveMs?: number
@@ -504,10 +533,12 @@ interface RootSpecOptions {
   readonly abort?: AbortSignal
   readonly recoverHypothesisOwnership?: AgentRunSpec["recoverHypothesisOwnership"]
   readonly recoverTestObjects?: AgentRunSpec["recoverTestObjects"]
+  readonly releaseBrowserOwner?: AgentRunSpec["releaseBrowserOwner"]
 }
 
 function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
   const resolvedModel = models.model(MAIN_PROVIDER)
+  const context = models.contextCapacity(MAIN_PROVIDER)
   return {
     id: options.id,
     sessionID: options.sessionID ?? `session-${options.id}`,
@@ -515,21 +546,33 @@ function rootSpec(models: PiModels, options: RootSpecOptions): AgentRunSpec {
     depth: 0,
     provider: MAIN_PROVIDER,
     model: resolvedModel,
-    context: models.contextCapacity(MAIN_PROVIDER),
+    context,
     providerAffinity: "main",
     reasoning: PiReasoning.resolve("ultra", resolvedModel),
-    prompt: prompt("root", "main", options.objective, true),
-    compileChildPrompt: (input) => prompt(input.role, input.providerRoute, formatTaskCapsule(input.task), false),
+    prompt: prompt("root", "main", options.objective, true, context),
+    compileChildPrompt: (input) => {
+      const childProvider = input.providerRoute === "fallback" ? FALLBACK_PROVIDER : MAIN_PROVIDER
+      return prompt(
+        input.role,
+        input.providerRoute,
+        formatTaskCapsule(input.task),
+        false,
+        models.contextCapacity(childProvider),
+      )
+    },
     task: { objective: options.objective, expectedResult: "Return verified evidence." },
     workarea: options.workarea ?? "/tmp/cyberful-pi-agent-test",
     tools: options.tools ?? [],
     ...(options.gatewayTools ? { gatewayTools: () => options.gatewayTools! } : {}),
     ...(options.recoverHypothesisOwnership ? { recoverHypothesisOwnership: options.recoverHypothesisOwnership } : {}),
     ...(options.recoverTestObjects ? { recoverTestObjects: options.recoverTestObjects } : {}),
+    ...(options.releaseBrowserOwner ? { releaseBrowserOwner: options.releaseBrowserOwner } : {}),
     skills: SKILLS,
     budget: {
       deadlineAt: options.deadlineAt ?? Date.now() + 30_000,
-      maxOutputTokens: options.maxOutputTokens ?? 8_192,
+      ...(options.maxCumulativeOutputTokens === null
+        ? {}
+        : { maxCumulativeOutputTokens: options.maxCumulativeOutputTokens ?? 8_192 }),
       ...(options.budgetClock ? { clock: options.budgetClock } : {}),
       ...(options.closeoutReserveMs ? { closeoutReserveMs: options.closeoutReserveMs } : {}),
     },
@@ -609,7 +652,357 @@ function closeoutEvents(events: readonly AgentEvent[]): readonly PhaseCloseoutEv
   return events.filter((event): event is PhaseCloseoutEvent => event.type === "phase_closeout")
 }
 
+function researchContinuationEvents(events: readonly AgentEvent[]): readonly ResearchContinuationEvent[] {
+  return events.filter(
+    (event): event is ResearchContinuationEvent => event.type === "phase_research_continuation",
+  )
+}
+
 describe("Pi complete root and main-route subagent runs", () => {
+  test("selects one positive continuation only for eligible research phases", () => {
+    const web = {
+      webTarget: true,
+      unusedProfiles: [2],
+      coverageCandidateCount: 3,
+      coverageCandidateSamples: ["https://example.test/settings"],
+      collectorDegraded: false,
+    }
+    expect(
+      researchContinuationDecision({ phase: "recon", assessment: web, alreadyIssued: false, activeSubagents: 0 }),
+    ).toEqual({ cause: "recon_breadth" })
+    expect(
+      researchContinuationDecision({ phase: "exploit", assessment: web, alreadyIssued: false, activeSubagents: 0 }),
+    ).toEqual({ cause: "coverage_candidates" })
+    expect(
+      researchContinuationDecision({ phase: "hacker", assessment: web, alreadyIssued: false, activeSubagents: 0 }),
+    ).toEqual({ cause: "coverage_candidates" })
+    expect(
+      researchContinuationDecision({ phase: "exploit", assessment: web, alreadyIssued: true, activeSubagents: 0 }),
+    ).toBeUndefined()
+    expect(
+      researchContinuationDecision({
+        phase: "recon",
+        assessment: { ...web, webTarget: false, unusedProfiles: [], coverageCandidateCount: 0 },
+        alreadyIssued: false,
+        activeSubagents: 0,
+      }),
+    ).toBeUndefined()
+    expect(
+      researchContinuationDecision({ phase: "attack", assessment: web, alreadyIssued: false, activeSubagents: 0 }),
+    ).toBeUndefined()
+    expect(
+      researchContinuationDecision({ phase: "ask", assessment: web, alreadyIssued: false, activeSubagents: 0 }),
+    ).toBeUndefined()
+    expect(
+      researchContinuationDecision({
+        phase: "exploit",
+        assessment: { ...web, unusedProfiles: [], coverageCandidateCount: 0, coverageCandidateSamples: [] },
+        alreadyIssued: false,
+        activeSubagents: 0,
+      }),
+    ).toBeUndefined()
+    expect(
+      researchContinuationDecision({ phase: "exploit", assessment: web, alreadyIssued: false, activeSubagents: 2 }),
+    ).toEqual({ cause: "active_subagents" })
+  })
+
+  test("steers the root once on premature exhaustion and closes on the second exhaustion", async () => {
+    const hypothesis: AgentTool<
+      typeof EMPTY_PARAMETERS,
+      {
+        readonly synthesisOutcome: "exhausted"
+        readonly activeBlockingHypotheses: 0
+        readonly researchCloseout: {
+          readonly webTarget: true
+          readonly unusedProfiles: readonly number[]
+          readonly coverageCandidateCount: number
+          readonly coverageCandidateSamples: readonly string[]
+          readonly collectorDegraded: boolean
+        }
+      }
+    > = {
+      name: "hypothesis",
+      label: "Hypothesis registry",
+      description: "Return a host-validated exhausted synthesis.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "exhausted" }],
+        details: {
+          synthesisOutcome: "exhausted",
+          activeBlockingHypotheses: 0,
+          researchCloseout: {
+            webTarget: true,
+            unusedProfiles: [2],
+            coverageCandidateCount: 1,
+            coverageCandidateSamples: ["https://example.test/settings"],
+            collectorDegraded: false,
+          },
+        },
+      }),
+    }
+    const provider = new InMemoryProvider((call) =>
+      toolResultCount(call) < 2
+        ? toolCall(call, "hypothesis", {})
+        : assistant(call, "closeout completed after one continuation"),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "hypothesis-coverage-continuation",
+        objective: "continue live product research once before closeout",
+        tools: [hypothesis],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    expect(result).toMatchObject({ termination: "completed", output: "closeout completed after one continuation" })
+    expect(researchContinuationEvents(events)).toEqual([
+      {
+        type: "phase_research_continuation",
+        runID: "hypothesis-coverage-continuation",
+        cause: "coverage_candidates",
+        ordinal: 1,
+        unusedProfileCount: 1,
+        coverageCandidateCount: 1,
+        collectorDegraded: false,
+        activeSubagents: 0,
+      },
+    ])
+    expect(closeoutEvents(events)).toHaveLength(1)
+    expect(closeoutEvents(events)[0]).toMatchObject({ cause: "hypothesis_exhausted" })
+    expect(
+      new Set(
+        provider.calls.flatMap(userTexts).filter((text) => text.includes("HOST-OWNED LIVE PRODUCT CONTINUATION")),
+      ).size,
+    ).toBe(1)
+  })
+
+  test("keeps active subagents alive and asks the root to integrate them before exhaustion", async () => {
+    let childStarted!: () => void
+    const childIsRunning = new Promise<void>((resolve) => {
+      childStarted = resolve
+    })
+    let releaseChild!: () => void
+    const childRelease = new Promise<void>((resolve) => {
+      releaseChild = resolve
+    })
+    const hypothesis: AgentTool<
+      typeof EMPTY_PARAMETERS,
+      {
+        readonly synthesisOutcome: "exhausted"
+        readonly activeBlockingHypotheses: 0
+        readonly researchCloseout: {
+          readonly webTarget: true
+          readonly unusedProfiles: readonly number[]
+          readonly coverageCandidateCount: number
+          readonly coverageCandidateSamples: readonly string[]
+          readonly collectorDegraded: boolean
+        }
+      }
+    > = {
+      name: "hypothesis",
+      label: "Hypothesis registry",
+      description: "Return exhausted while a child remains active.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        await childIsRunning
+        setTimeout(releaseChild, 25)
+        return {
+          content: [{ type: "text", text: "exhausted while child active" }],
+          details: {
+            synthesisOutcome: "exhausted",
+            activeBlockingHypotheses: 0,
+            researchCloseout: {
+              webTarget: true,
+              unusedProfiles: [2],
+              coverageCandidateCount: 1,
+              coverageCandidateSamples: ["https://example.test/settings"],
+              collectorDegraded: false,
+            },
+          },
+        }
+      },
+    }
+    const provider = new InMemoryProvider(async (call) => {
+      if (runRole(call) === "subagent") {
+        childStarted()
+        await childRelease
+        return assistant(call, "child evidence completed normally")
+      }
+      if (toolResultCount(call) === 0)
+        return assistant(
+          call,
+          [
+            fauxToolCall(
+              "delegate_task",
+              {
+                task: "test one authorized child path",
+                expected_result: "return child evidence",
+                output_artifact: "raw/delegations/active-child.md",
+              },
+              { id: "active-child-delegation" },
+            ),
+            fauxToolCall("hypothesis", {}, { id: "active-child-exhaustion" }),
+          ],
+          { stopReason: "toolUse" },
+        )
+      return assistant(call, "root integrated the completed child")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "active-child-research-continuation",
+        objective: "wait for active child evidence before exhaustion",
+        tools: [hypothesis],
+      }),
+    )
+
+    expect(await run.result).toMatchObject({ termination: "completed", output: "root integrated the completed child" })
+    const events = await collectEvents(run)
+    expect(researchContinuationEvents(events)).toEqual([
+      {
+        type: "phase_research_continuation",
+        runID: "active-child-research-continuation",
+        cause: "active_subagents",
+        ordinal: 1,
+        unusedProfileCount: 1,
+        coverageCandidateCount: 1,
+        collectorDegraded: false,
+        activeSubagents: 1,
+      },
+    ])
+    expect(closeoutEvents(events)).toHaveLength(0)
+    expect(
+      events.some(
+        (event) =>
+          event.type === "run_finished" &&
+          event.role === "subagent" &&
+          event.terminationCause === "parent_closeout",
+      ),
+    ).toBeFalse()
+    expect(provider.calls.some((call) => userTexts(call).join("\n").includes("integrate their returned evidence"))).toBeTrue()
+  })
+
+  test("keeps the time-reserve closeout ahead of an in-flight exhausted synthesis", async () => {
+    const hypothesis: AgentTool<
+      typeof EMPTY_PARAMETERS,
+      {
+        readonly synthesisOutcome: "exhausted"
+        readonly activeBlockingHypotheses: 0
+        readonly researchCloseout: {
+          readonly webTarget: true
+          readonly unusedProfiles: readonly number[]
+          readonly coverageCandidateCount: number
+          readonly coverageCandidateSamples: readonly string[]
+          readonly collectorDegraded: boolean
+        }
+      }
+    > = {
+      name: "hypothesis",
+      label: "Hypothesis registry",
+      description: "Finish an exhausted synthesis after the closeout reserve begins.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        return {
+          content: [{ type: "text", text: "late exhausted synthesis" }],
+          details: {
+            synthesisOutcome: "exhausted",
+            activeBlockingHypotheses: 0,
+            researchCloseout: {
+              webTarget: true,
+              unusedProfiles: [2],
+              coverageCandidateCount: 1,
+              coverageCandidateSamples: ["https://example.test/settings"],
+              collectorDegraded: false,
+            },
+          },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) =>
+      call.ordinal === 1 ? toolCall(call, "hypothesis", {}) : assistant(call, "reserve closeout completed"),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "reserve-before-research-continuation",
+        objective: "preserve reserve precedence over exhausted coverage",
+        tools: [hypothesis],
+        deadlineAt: Date.now() + 260,
+        closeoutReserveMs: 180,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({ termination: "completed", output: "reserve closeout completed" })
+    const events = await collectEvents(run)
+    expect(researchContinuationEvents(events)).toHaveLength(0)
+    expect(closeoutEvents(events)).toHaveLength(1)
+    expect(closeoutEvents(events)[0]).toMatchObject({ cause: "reserve" })
+  })
+
+  test("forces provider telemetry through Pi's local no-op context", async () => {
+    const provider = new InMemoryProvider((call) => assistant(call, "local-only telemetry completed"))
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "noop-provider-telemetry",
+        objective: "verify the provider telemetry boundary",
+      }),
+    )
+
+    await run.result
+
+    expect(provider.calls).toHaveLength(1)
+    expect(provider.calls[0]?.telemetryContext).toBe(NOOP_TELEMETRY_CONTEXT)
+  })
+
+  test("emits one strategic nudge for a hypothesis convergence signal without blocking the run", async () => {
+    const hypothesis: AgentTool<
+      typeof EMPTY_PARAMETERS,
+      { readonly convergence: { readonly cluster: string; readonly negativeHypothesisIDs: readonly string[] } }
+    > = {
+      name: "hypothesis",
+      label: "Hypothesis registry",
+      description: "Return a host-validated convergence signal.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({
+        content: [{ type: "text", text: "second negative recorded" }],
+        details: {
+          convergence: {
+            cluster: "object-authorization",
+            negativeHypothesisIDs: ["BB-NEG-1", "BB-NEG-2"],
+          },
+        },
+      }),
+    }
+    const provider = new InMemoryProvider((call) =>
+      toolResultCount(call) === 0 ? toolCall(call, "hypothesis", {}) : assistant(call, "continued after convergence"),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "hypothesis-convergence-nudge",
+        objective: "continue safely after a portfolio convergence signal",
+        tools: [hypothesis],
+      }),
+    )
+
+    const result = await run.result
+    const events = await collectEvents(run)
+    const nudges = activityEvents(events).filter(
+      (event) => event.activity.kind === "status" && event.activity.text.includes("Hypothesis convergence detected"),
+    )
+
+    expect(result).toMatchObject({ termination: "completed", output: "continued after convergence", toolCalls: 1 })
+    expect(nudges).toHaveLength(1)
+    expect(nudges[0]!.activity).toMatchObject({
+      kind: "status",
+      text: expect.stringContaining("handoff will require that structural pivot or evidenced exhaustion"),
+    })
+  })
+
   test("maps configured ultra to the supported Codex max payload and records both levels", async () => {
     const base = registry()
     const sol = {
@@ -890,6 +1283,34 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(retryEvents(events).map((event) => event.state)).toEqual(["scheduled", "attempting", "succeeded"])
   })
 
+  test("leaves a Codex tool-call history mismatch for a fresh phase owner", async () => {
+    const provider = new InMemoryProvider((call) =>
+      assistant(call, [], {
+        stopReason: "error",
+        errorMessage:
+          "Codex error: No tool call found for function call output with call_id call_BmFnAysktU3JZy0b7kkbd8vU.",
+      }),
+    )
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "tool-call-history-mismatch",
+        objective: "preserve durable phase state after a corrupted provider conversation",
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "provider_failed",
+      failure: {
+        kind: "malformed_output",
+        providerCode: "tool_call_history_mismatch",
+        retryable: true,
+      },
+    })
+    expect(provider.calls).toHaveLength(1)
+    expect(retryEvents(await collectEvents(run))).toEqual([])
+  })
+
   test("does not retry when the global provider retry policy is disabled", async () => {
     const configured = settings()
     const provider = new InMemoryProvider((call) => unavailableError(call))
@@ -1127,7 +1548,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve a large tool result and continue the same run",
         tools: [evidenceDump, smallCheckpoint],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1206,7 +1627,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "rotate before the historical 283K to 307K failure range",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 8_000,
+        maxCumulativeOutputTokens: 8_000,
       }),
     )
 
@@ -1279,7 +1700,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "rotate through a declared alternate summarizer route",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1345,7 +1766,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "recover one rejected summary without opening another route",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1393,7 +1814,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve context after a blocked semantic summary",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1454,7 +1875,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "preserve working notes when deterministic compaction is exhausted",
         tools: [smallCheckpoint],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1526,7 +1947,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "retain an indispensable active notebook below the trigger",
         tools: [evidenceDump],
         workarea,
-        maxOutputTokens: 8_000,
+        maxCumulativeOutputTokens: 8_000,
       }),
     )
 
@@ -1887,7 +2308,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "fail context artifact persistence without losing the result",
         tools: [evidenceDump],
         workarea: unavailableWorkarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1898,6 +2319,30 @@ describe("Pi complete root and main-route subagent runs", () => {
     const rotations = rotationEvents(await collectEvents(run))
     expect(rotations.map((event) => event.state)).toEqual(["started", "failed"])
     expect(rotations.at(-1)).toMatchObject({ reason: "summary_failed" })
+  })
+
+  test("lists the workarea root when the model supplies an empty prefix", async () => {
+    const workarea = await temporaryWorkarea()
+    await Bun.write(path.join(workarea, "MISSION.md"), "mission\n")
+    const provider = new InMemoryProvider((call) => {
+      if (toolResultCount(call) === 0) return toolCall(call, "workarea_list", { prefix: "" })
+      const listing = call.messages.find(
+        (message) => message.role === "toolResult" && message.toolName === "workarea_list",
+      )
+      if (!listing || !textContent(listing.content).includes("MISSION.md"))
+        throw new Error("empty-prefix workarea discovery did not return the root artifact")
+      return assistant(call, "root artifact discovered")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "empty-workarea-prefix",
+        objective: "discover the workarea root",
+        workarea,
+      }),
+    )
+
+    await expect(run.result).resolves.toMatchObject({ termination: "completed", output: "root artifact discovered" })
   })
 
   test("latches a failed summary until a new user message or 8K more context arrives", async () => {
@@ -1962,7 +2407,7 @@ describe("Pi complete root and main-route subagent runs", () => {
         objective: "continue safely after one malformed summary",
         tools: [first, second],
         workarea,
-        maxOutputTokens: 4_000,
+        maxCumulativeOutputTokens: 4_000,
       }),
     )
 
@@ -1983,14 +2428,58 @@ describe("Pi complete root and main-route subagent runs", () => {
     })
   })
 
-  test("keeps MCP schemas out of the first payload and loads only searched tools", async () => {
+  test("keeps web_search eager while loading agent-browser schemas only after tool_search", async () => {
     let snapshots = 0
-    const gatewayTools: AgentTool[] = [
+    let instructionLoads = 0
+    const managedInstructions = "---\nname: core-mcp-managed\n---\n\n# Managed browser instructions\n"
+    const gatewayTools: Array<
+      AgentTool & {
+        readonly deferLoading?: boolean
+        readonly instructionBundles?: ReadonlyArray<{
+          readonly id: string
+          readonly load: () => Promise<{
+            readonly id: string
+            readonly source: "agent-browser"
+            readonly sourceVersion: string
+            readonly content: string
+            readonly bytes: number
+            readonly sha256: string
+          }>
+        }>
+      }
+    > = [
       {
-        name: "browser_snapshot",
-        label: "Browser snapshot",
+        name: "web_search",
+        label: "Web search",
+        description: "Search the public web through Cyberful's canonical wrapper.",
+        parameters: EMPTY_PARAMETERS,
+        deferLoading: false,
+        execute: async () => ({
+          content: [{ type: "text", text: "search results" }],
+          details: { kind: "search" },
+        }),
+      },
+      {
+        name: "agent_browser_snapshot",
+        label: "agent-browser snapshot",
         description: "Return visible page text and actionable DOM references.",
         parameters: EMPTY_PARAMETERS,
+        instructionBundles: [
+          {
+            id: "agent-browser/core-mcp-managed",
+            load: async () => {
+              instructionLoads++
+              return {
+                id: "agent-browser/core-mcp-managed",
+                source: "agent-browser",
+                sourceVersion: "0.34.0-cyberful.3",
+                content: managedInstructions,
+                bytes: Buffer.byteLength(managedInstructions),
+                sha256: createHash("sha256").update(managedInstructions).digest("hex"),
+              }
+            },
+          },
+        ],
         execute: async () => {
           snapshots++
           return {
@@ -2023,7 +2512,7 @@ describe("Pi complete root and main-route subagent runs", () => {
     const provider = new InMemoryProvider((call) => {
       const results = toolResultCount(call)
       if (results === 0) return toolCall(call, "tool_search", { query: "visible browser snapshot", limit: 1 })
-      if (results === 1) return toolCall(call, "browser_snapshot", {})
+      if (results === 1) return toolCall(call, "agent_browser_snapshot", {})
       return assistant(call, "deferred browser tool completed")
     })
     const runtime = subsystem(provider)
@@ -2043,17 +2532,78 @@ describe("Pi complete root and main-route subagent runs", () => {
       toolCalls: 2,
     })
     expect(snapshots).toBe(1)
+    expect(instructionLoads).toBe(1)
     expect(provider.calls[0]!.toolNames).toContain("tool_search")
     expect(provider.calls[0]!.toolNames).toContain("delegation_status")
     expect(provider.calls[0]!.toolNames).toContain("handoff")
-    expect(provider.calls[0]!.toolNames).not.toContain("browser_snapshot")
+    expect(provider.calls[0]!.toolNames).toContain("web_search")
+    expect(provider.calls[0]!.toolNames).not.toContain("agent_browser_snapshot")
     expect(provider.calls[0]!.toolNames).not.toContain("zap_active_scan")
-    expect(provider.calls[1]!.toolNames).toContain("browser_snapshot")
+    expect(provider.calls[1]!.toolNames).toContain("web_search")
+    expect(provider.calls[1]!.toolNames).toContain("agent_browser_snapshot")
     expect(provider.calls[1]!.toolNames).not.toContain("zap_active_scan")
     const searchResult = provider.calls[1]!.messages.find(
       (message) => message.role === "toolResult" && message.toolName === "tool_search",
     )
-    expect(searchResult?.role === "toolResult" ? searchResult.addedToolNames : undefined).toEqual(["browser_snapshot"])
+    expect(searchResult?.role === "toolResult" ? searchResult.addedToolNames : undefined).toEqual([
+      "agent_browser_snapshot",
+    ])
+    expect(searchResult?.role === "toolResult" ? textContent(searchResult.content) : "").toContain(managedInstructions)
+  })
+
+  test("keeps deferred browser tools unavailable until their instruction bundle loads successfully", async () => {
+    let loads = 0
+    let snapshots = 0
+    const content = "---\nname: core-mcp-managed\n---\n\n# Managed browser instructions\n"
+    const snapshot = {
+      name: "agent_browser_snapshot",
+      label: "agent-browser snapshot",
+      description: "Return visible page text and actionable DOM references.",
+      parameters: EMPTY_PARAMETERS,
+      instructionBundles: [
+        {
+          id: "agent-browser/core-mcp-managed",
+          load: async () => {
+            loads++
+            if (loads === 1) throw new Error("managed instruction fetch failed")
+            return {
+              id: "agent-browser/core-mcp-managed",
+              source: "agent-browser" as const,
+              sourceVersion: "0.34.0-cyberful.3",
+              content,
+              bytes: Buffer.byteLength(content),
+              sha256: createHash("sha256").update(content).digest("hex"),
+            }
+          },
+        },
+      ],
+      execute: async () => {
+        snapshots++
+        return { content: [{ type: "text" as const, text: "snapshot complete" }], details: {} }
+      },
+    }
+    const provider = new InMemoryProvider((call) => {
+      const searches = call.messages.filter(
+        (message) => message.role === "toolResult" && message.toolName === "tool_search",
+      )
+      if (searches.length < 2) return toolCall(call, "tool_search", { query: "browser snapshot", limit: 1 })
+      if (snapshots === 0) return toolCall(call, "agent_browser_snapshot", {})
+      return assistant(call, "instruction retry completed")
+    })
+    const runtime = subsystem(provider)
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "deferred-instruction-retry-root",
+        objective: "retry browser instruction discovery before using the browser",
+        gatewayTools: [snapshot],
+      }),
+    )
+
+    expect(await run.result).toMatchObject({ termination: "completed", output: "instruction retry completed" })
+    expect(loads).toBe(2)
+    expect(snapshots).toBe(1)
+    expect(provider.calls[1]!.toolNames).not.toContain("agent_browser_snapshot")
+    expect(provider.calls[2]!.toolNames).toContain("agent_browser_snapshot")
   })
 
   test("ranks the shell tool for the observed descriptive cyberful-os query", async () => {
@@ -2098,14 +2648,18 @@ describe("Pi complete root and main-route subagent runs", () => {
     expect(result?.role === "toolResult" ? result.addedToolNames : undefined).toEqual(["shell"])
   })
 
-  test("paginates the complete authorized tool inventory without a functional catalog limit", async () => {
-    const gatewayTools: AgentTool[] = ["zap_alpha", "zap_beta", "zap_gamma"].map((name) => ({
+  test("paginates query star across the complete deferred agent-browser inventory", async () => {
+    const gatewayTools = [
+      "agent_browser_open",
+      "agent_browser_snapshot",
+      "agent_browser_skills_get",
+    ].map((name) => ({
       name,
       label: name,
       description: `Authorized ${name} operation.`,
       parameters: EMPTY_PARAMETERS,
       execute: async () => ({
-        content: [{ type: "text", text: `${name} complete` }],
+        content: [{ type: "text" as const, text: `${name} complete` }],
         details: { name },
       }),
     }))
@@ -2124,27 +2678,49 @@ describe("Pi complete root and main-route subagent runs", () => {
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "complete-tool-inventory-root",
-        objective: "enumerate every authorized ZAP tool page",
+        objective: "enumerate every authorized agent-browser tool page",
         gatewayTools,
       }),
     )
 
     expect((await run.result).termination).toBe("completed")
-    expect(provider.calls[0]!.toolNames).not.toContain("zap_alpha")
-    expect(provider.calls[1]!.toolNames).toEqual(expect.arrayContaining(["zap_alpha", "zap_beta"]))
-    expect(provider.calls[1]!.toolNames).not.toContain("zap_gamma")
-    expect(provider.calls[2]!.toolNames).toEqual(expect.arrayContaining(["zap_alpha", "zap_beta", "zap_gamma"]))
+    expect(provider.calls[0]!.toolNames).not.toContain("agent_browser_open")
+    expect(provider.calls[1]!.toolNames).toEqual(
+      expect.arrayContaining(["agent_browser_open", "agent_browser_skills_get"]),
+    )
+    expect(provider.calls[1]!.toolNames).not.toContain("agent_browser_snapshot")
+    expect(provider.calls[2]!.toolNames).toEqual(
+      expect.arrayContaining(["agent_browser_open", "agent_browser_skills_get", "agent_browser_snapshot"]),
+    )
   })
 
-  test("keeps loaded MCP definitions isolated between root, child, and fallback runs", async () => {
-    const gatewayTools: AgentTool[] = [
+  test("loads deferred browser instructions independently in root, child, and fallback runs", async () => {
+    let instructionLoads = 0
+    const content = "---\nname: core-mcp-managed\n---\n\n# Managed browser instructions\n"
+    const gatewayTools = [
       {
-        name: "browser_snapshot",
+        name: "agent_browser_snapshot",
         label: "Browser snapshot",
         description: "Return a bounded visible DOM snapshot.",
         parameters: EMPTY_PARAMETERS,
+        instructionBundles: [
+          {
+            id: "agent-browser/core-mcp-managed",
+            load: async () => {
+              instructionLoads++
+              return {
+                id: "agent-browser/core-mcp-managed",
+                source: "agent-browser" as const,
+                sourceVersion: "0.34.0-cyberful.3",
+                content,
+                bytes: Buffer.byteLength(content),
+                sha256: createHash("sha256").update(content).digest("hex"),
+              }
+            },
+          },
+        ],
         execute: async () => ({
-          content: [{ type: "text", text: "snapshot complete" }],
+          content: [{ type: "text" as const, text: "snapshot complete" }],
           details: { kind: "browser" },
         }),
       },
@@ -2152,19 +2728,21 @@ describe("Pi complete root and main-route subagent runs", () => {
     const provider = new InMemoryProvider((call) => {
       const role = runRole(call)
       const results = toolResultCount(call)
-      if (role === "subagent") return assistant(call, "child catalog remained isolated")
-      if (role === "fallback") return assistant(call, "fallback catalog remained isolated")
+      if (role === "subagent" || role === "fallback")
+        return results === 0
+          ? toolCall(call, "tool_search", { query: "browser snapshot" })
+          : assistant(call, `${role} loaded its own browser instructions`)
       if (results === 0) return toolCall(call, "tool_search", { query: "browser snapshot" })
       if (results === 1)
         return toolCall(call, "delegate_task", {
-          task: "inspect the child tool catalog without loading anything",
-          expected_result: "report whether browser_snapshot was inherited",
+          task: "load the child browser contract",
+          expected_result: "report that the managed browser instructions loaded",
           output_artifact: "raw/delegations/catalog.md",
         })
       if (results === 2)
         return toolCall(call, "request_fallback_delegation", {
-          task: "Inspect the fallback tool catalog without loading anything.",
-          expected_result: "Report whether browser_snapshot was inherited.",
+          task: "Load the fallback browser contract.",
+          expected_result: "Report that the managed browser instructions loaded.",
         })
       return assistant(call, "root completed isolated catalog checks")
     })
@@ -2172,22 +2750,23 @@ describe("Pi complete root and main-route subagent runs", () => {
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "deferred-tool-isolation-root",
-        objective: "prove that loaded tool schemas remain local to one AgentRun",
+        objective: "prove that managed browser instructions load once in each AgentRun",
         gatewayTools,
       }),
     )
 
     expect((await run.result).termination).toBe("completed")
     const rootCalls = provider.calls.filter((call) => runRole(call) === "root")
-    const childCall = provider.calls.find((call) => runRole(call) === "subagent")
-    const fallbackCall = provider.calls.find((call) => runRole(call) === "fallback")
+    const childCalls = provider.calls.filter((call) => runRole(call) === "subagent")
+    const fallbackCalls = provider.calls.filter((call) => runRole(call) === "fallback")
 
-    expect(rootCalls[0]!.toolNames).not.toContain("browser_snapshot")
-    expect(rootCalls.slice(1).every((call) => call.toolNames.includes("browser_snapshot"))).toBeTrue()
-    expect(childCall?.toolNames).toContain("tool_search")
-    expect(childCall?.toolNames).not.toContain("browser_snapshot")
-    expect(fallbackCall?.toolNames).toContain("tool_search")
-    expect(fallbackCall?.toolNames).not.toContain("browser_snapshot")
+    expect(instructionLoads).toBe(3)
+    expect(rootCalls[0]!.toolNames).not.toContain("agent_browser_snapshot")
+    expect(rootCalls.slice(1).every((call) => call.toolNames.includes("agent_browser_snapshot"))).toBeTrue()
+    expect(childCalls[0]!.toolNames).not.toContain("agent_browser_snapshot")
+    expect(childCalls[1]!.toolNames).toContain("agent_browser_snapshot")
+    expect(fallbackCalls[0]!.toolNames).not.toContain("agent_browser_snapshot")
+    expect(fallbackCalls[1]!.toolNames).toContain("agent_browser_snapshot")
   })
 
   test("preserves the system contract, nested delegation, root-only handoff, audit events, and cumulative usage", async () => {
@@ -2379,8 +2958,23 @@ describe("Pi complete root and main-route subagent runs", () => {
   })
 
   test("enforces per-run progressive skill disclosure and records explicit audit totals", async () => {
+    let metadataSearches = 0
     let instructionReads = 0
     let resourceReads = 0
+    let resourceStages = 0
+    const skillSearch: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "skill_search",
+      label: "Search trusted skills",
+      description: "Search skill metadata without loading instructions.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        metadataSearches++
+        return {
+          content: [{ type: "text", text: '{"results":[{"name":"inspect-evidence"}]}' }],
+          details: {},
+        }
+      },
+    }
     const skillRead: AgentTool<
       typeof SKILL_READ_PARAMETERS,
       { readonly skill: string; readonly kind: "instructions" | "resource" }
@@ -2401,15 +2995,43 @@ describe("Pi complete root and main-route subagent runs", () => {
         }
       },
     }
+    const skillStageParameters = Type.Object({
+      skill: Type.String({ minLength: 1 }),
+      path: Type.String({ minLength: 1 }),
+    })
+    const skillStage: AgentTool<typeof skillStageParameters, { readonly skill: string; readonly path: string }> = {
+      name: "skill_stage",
+      label: "Stage trusted skill resource",
+      description: "Stage one reviewed script or asset in the workarea.",
+      parameters: skillStageParameters,
+      execute: async (_callID, input) => {
+        resourceStages++
+        return {
+          content: [{ type: "text", text: '{"path":"raw/skill-resources/inspect-evidence/digest/scripts/check.py"}' }],
+          details: { skill: input.skill, path: input.path },
+        }
+      },
+    }
     const provider = new InMemoryProvider((call) => {
       const results = toolResultCount(call)
-      if (results === 0)
+      if (results === 0) return toolCall(call, "skill_search", {})
+      if (results === 1)
+        return toolCall(call, "skill_stage", {
+          skill: "inspect-evidence",
+          path: "scripts/check.py",
+        })
+      if (results === 2)
         return toolCall(call, "skill_read", {
           skill: "inspect-evidence",
           path: "references/check.md",
         })
-      if (results === 1) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
-      if (results === 2)
+      if (results === 3) return toolCall(call, "skill_read", { skill: "inspect-evidence" })
+      if (results === 4)
+        return toolCall(call, "skill_stage", {
+          skill: "inspect-evidence",
+          path: "scripts/check.py",
+        })
+      if (results === 5)
         return toolCall(call, "skill_read", {
           skill: "/trusted/skills/inspect-evidence/SKILL.md",
           path: "references/check.md",
@@ -2421,7 +3043,7 @@ describe("Pi complete root and main-route subagent runs", () => {
       rootSpec(runtime.models, {
         id: "skill-disclosure-root",
         objective: "read a skill and one directly required reference",
-        tools: [skillRead],
+        tools: [skillSearch, skillRead, skillStage],
       }),
     )
 
@@ -2435,17 +3057,19 @@ describe("Pi complete root and main-route subagent runs", () => {
       termination: "completed",
       output: "progressive skill disclosure complete",
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 3,
+      toolCalls: 6,
     })
+    expect(metadataSearches).toBe(1)
     expect(instructionReads).toBe(1)
     expect(resourceReads).toBe(1)
+    expect(resourceStages).toBe(1)
     expect(finished).toMatchObject({
       skillsUsed: ["inspect-evidence"],
-      toolCalls: 3,
+      toolCalls: 6,
       childRunIDs: [],
       fallbackAdmissions: 0,
       fallbackDescendants: 0,
-      usage: { input: 20, output: 12, reasoning: 4, cacheRead: 8, cacheWrite: 4 },
+      usage: { input: 35, output: 21, reasoning: 7, cacheRead: 14, cacheWrite: 7 },
     })
   })
 })
@@ -2725,6 +3349,13 @@ describe("Pi complete fallback AgentRuns", () => {
   test("retains skills, tools, nested delegation, and fallback affinity for the entire subtree", async () => {
     let skillReads = 0
     const probes: string[] = []
+    const skillSearch: AgentTool<typeof EMPTY_PARAMETERS> = {
+      name: "skill_search",
+      label: "Search trusted skills",
+      description: "Search skill metadata before reading instructions.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => ({ content: [{ type: "text", text: '{"results":[]}' }], details: {} }),
+    }
     const skillRead: AgentTool<typeof EMPTY_PARAMETERS, { readonly skill: string }> = {
       name: "skill_read",
       label: "Read trusted skill",
@@ -2785,7 +3416,7 @@ describe("Pi complete fallback AgentRuns", () => {
       rootSpec(runtime.models, {
         id: "full-fallback-root",
         objective: "exercise a complete proactive fallback",
-        tools: [skillRead, probe],
+        tools: [skillSearch, skillRead, probe],
       }),
     )
 
@@ -2810,6 +3441,7 @@ describe("Pi complete fallback AgentRuns", () => {
     expect(fallbackCalls.length).toBeGreaterThan(0)
     expect(fallbackCalls.every((call) => call.provider === FALLBACK_PROVIDER)).toBeTrue()
     expect(fallbackCalls.every((call) => call.system.includes("Skill catalog: inspect-evidence"))).toBeTrue()
+    expect(fallbackCalls.every((call) => call.toolNames.includes("skill_search"))).toBeTrue()
     expect(fallbackCalls.every((call) => call.toolNames.includes("skill_read"))).toBeTrue()
     expect(fallbackCalls.every((call) => call.toolNames.includes("evidence_probe"))).toBeTrue()
     expect(fallbackCalls.every((call) => !call.toolNames.includes("request_fallback_delegation"))).toBeTrue()
@@ -2822,9 +3454,9 @@ describe("Pi complete fallback AgentRuns", () => {
     })
     const runtime = subsystem(provider)
     const base = rootSpec(runtime.models, {
-        id: "terminal-fallback-root",
-        objective: "automatic fallback must remain terminal on a second provider block",
-      })
+      id: "terminal-fallback-root",
+      objective: "automatic fallback must remain terminal on a second provider block",
+    })
     const fallbackModel = runtime.models.model(FALLBACK_PROVIDER)
     const run = await runtime.subsystem.start({
       ...base,
@@ -2833,7 +3465,7 @@ describe("Pi complete fallback AgentRuns", () => {
       context: runtime.models.contextCapacity(FALLBACK_PROVIDER),
       providerAffinity: "fallback",
       reasoning: PiReasoning.resolve("ultra", fallbackModel),
-      prompt: prompt("root", "fallback", base.task.objective, true),
+      prompt: prompt("root", "fallback", base.task.objective, true, runtime.models.contextCapacity(FALLBACK_PROVIDER)),
     })
 
     const result = await run.result
@@ -2972,6 +3604,47 @@ describe("Pi complete fallback AgentRuns", () => {
 })
 
 describe("Pi AgentRun steering and cancellation", () => {
+  test("releases AgentRun browser ownership after completion and cancellation", async () => {
+    const releases: Array<{ runID: string; role: AgentRunRole }> = []
+    const completedRuntime = subsystem(new InMemoryProvider((call) => assistant(call, "completed")))
+    const completed = await completedRuntime.subsystem.start(
+      rootSpec(completedRuntime.models, {
+        id: "browser-cleanup-completed",
+        objective: "complete normally",
+        releaseBrowserOwner: async ({ runID, role }) => {
+          releases.push({ runID, role })
+        },
+      }),
+    )
+    await completed.result
+
+    const cancelledProvider = new InMemoryProvider(async (call) => {
+      await new Promise<void>((resolve) => {
+        if (call.signal?.aborted) resolve()
+        else call.signal?.addEventListener("abort", () => resolve(), { once: true })
+      })
+      return assistant(call, [], { stopReason: "aborted", errorMessage: "Request was aborted" })
+    })
+    const cancelledRuntime = subsystem(cancelledProvider)
+    const cancelled = await cancelledRuntime.subsystem.start(
+      rootSpec(cancelledRuntime.models, {
+        id: "browser-cleanup-cancelled",
+        objective: "wait for cancellation",
+        releaseBrowserOwner: async ({ runID, role }) => {
+          releases.push({ runID, role })
+        },
+      }),
+    )
+    await cancelledProvider.waitForCalls(1)
+    await cancelled.cancel("verify browser cleanup")
+    await cancelled.result
+
+    expect(releases).toEqual([
+      { runID: "browser-cleanup-completed", role: "root" },
+      { runID: "browser-cleanup-cancelled", role: "root" },
+    ])
+  })
+
   test("focus supersedes queued guidance and cancels active delegated work with an explicit cause", async () => {
     const provider = new InMemoryProvider(async (call) => {
       if (runRole(call) === "root") {
@@ -3006,21 +3679,16 @@ describe("Pi AgentRun steering and cancellation", () => {
     const events = await collectEvents(run)
     expect(
       events.some(
-        (event) =>
-          event.type === "steering" && event.steeringID === queued.id && event.state === "superseded",
+        (event) => event.type === "steering" && event.steeringID === queued.id && event.state === "superseded",
       ),
     ).toBeTrue()
     expect(
-      events.some(
-        (event) => event.type === "steering" && event.steeringID === focused.id && event.state === "applied",
-      ),
+      events.some((event) => event.type === "steering" && event.steeringID === focused.id && event.state === "applied"),
     ).toBeTrue()
     expect(
       events.some(
         (event) =>
-          event.type === "run_finished" &&
-          event.role === "subagent" &&
-          event.terminationCause === "operator_focus",
+          event.type === "run_finished" && event.role === "subagent" && event.terminationCause === "operator_focus",
       ),
     ).toBeTrue()
   })
@@ -3304,7 +3972,7 @@ describe("Pi AgentRun steering and cancellation", () => {
       rootSpec(runtime.models, {
         id: "output-budget-root",
         objective: "respect the AgentRun output budget",
-        maxOutputTokens: 2,
+        maxCumulativeOutputTokens: 2,
       }),
     )
 
@@ -3313,6 +3981,43 @@ describe("Pi AgentRun steering and cancellation", () => {
       output: "bounded output",
       usage: { output: 3 },
     })
+  })
+
+  test("allows cumulative output beyond one response limit when no AgentRun output budget is configured", async () => {
+    let executions = 0
+    const checkpoint: AgentTool<typeof EMPTY_PARAMETERS, { readonly complete: true }> = {
+      name: "checkpoint",
+      label: "Checkpoint",
+      description: "Record one durable checkpoint before the final response.",
+      parameters: EMPTY_PARAMETERS,
+      execute: async () => {
+        executions++
+        return {
+          content: [{ type: "text", text: "checkpoint complete" }],
+          details: { complete: true },
+        }
+      },
+    }
+    const provider = new InMemoryProvider((call) =>
+      call.ordinal === 1 ? toolCall(call, "checkpoint", {}) : assistant(call, "phase complete"),
+    )
+    const runtime = subsystem(provider, registryWithLimits(131_072, 4))
+    const run = await runtime.subsystem.start(
+      rootSpec(runtime.models, {
+        id: "unbounded-cumulative-output-root",
+        objective: "complete more than one model response worth of cumulative output",
+        tools: [checkpoint],
+        maxCumulativeOutputTokens: null,
+      }),
+    )
+
+    expect(await run.result).toMatchObject({
+      termination: "completed",
+      output: "phase complete",
+      usage: { output: 6 },
+    })
+    expect(executions).toBe(1)
+    expect(provider.calls).toHaveLength(2)
   })
 
   test("pauses the active-execution deadline while a host approval is pending", async () => {

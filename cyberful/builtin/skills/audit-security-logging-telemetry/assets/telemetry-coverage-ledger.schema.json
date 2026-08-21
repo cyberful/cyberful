@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/telemetry-coverage-ledger.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope_reference", "entries"],
+  "properties": {
+    "$schema": {"const": "https://cyberful.dev/schemas/telemetry-coverage-ledger.v1.json"},
+    "schema_version": {"const": 1},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512},
+    "entries": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["effect", "question", "producer", "event_type", "identity_fields", "correlation_fields", "transport", "destination", "retention", "consumer", "failure_controls", "evidence_refs"],
+        "properties": {
+          "effect": {"type": "string", "minLength": 1, "maxLength": 256},
+          "question": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "producer": {"type": "string", "minLength": 1, "maxLength": 256},
+          "event_type": {"type": "string", "minLength": 1, "maxLength": 256},
+          "identity_fields": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "correlation_fields": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "transport": {"type": "string", "minLength": 1, "maxLength": 512},
+          "destination": {"type": "string", "minLength": 1, "maxLength": 512},
+          "retention": {"type": "string", "minLength": 1, "maxLength": 256},
+          "consumer": {"type": "string", "minLength": 1, "maxLength": 512},
+          "failure_controls": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+          "evidence_refs": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}
+        }
+      }
+    }
+  }
+}

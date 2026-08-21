@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "trace_identity_propagation.py",
+  "class": "analysis",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "exploit", "verify", "index", "trace", "hunt"],
+  "tools": ["python3"],
+  "dependencies": { "commands": ["python3"], "python": [], "bootstrap": null },
+  "effects": ["reads-bounded-offline-identity-artifacts", "writes-bounded-raw-delta-evidence"],
+  "timeout_seconds": 15,
+  "limits": { "requests": 0, "concurrency": 1, "output_bytes": 1048576 },
+  "secrets": { "environment": [] },
+  "input": { "format": "json", "schema": "assets/identity-propagation.schema.json" },
+  "output": { "format": "json", "schema": "assets/identity-propagation-evidence.schema.json", "raw": true }
+}

@@ -1,6 +1,27 @@
 ---
 name: operate-content-discovery
 description: Design and interpret advanced content discovery with ffuf and complementary web fuzzers. Use for path, file, extension, parameter, value, header, method, API object, virtual-host, subdomain, backup, and recursive discovery when response normalization, wildcard routing, authentication, rate limits, or edge behavior make naive status-code filtering unreliable.
+metadata:
+  domain: application-security
+  subdomain: attack-surface-discovery
+  triggers:
+    - content discovery
+    - ffuf campaign
+    - hidden route discovery
+    - virtual host fuzzing
+    - soft 404 calibration
+    - recursive web discovery
+  tags:
+    - ffuf
+    - web-fuzzing
+    - attack-surface
+    - wildcard-routing
+    - OWASP-WSTG-CONF-04
+  frameworks:
+    mitre_attack:
+      - T1595
+    nist_csf:
+      - ID.AM
 ---
 
 # Operate Content Discovery
@@ -42,6 +63,8 @@ Use the dedicated ffuf tool with an argv array. Set:
 - matchers broad enough to preserve anomalies, then filters for known baselines.
 
 Prefer the bundled frequency-ordered cyberful-os lists for capped campaigns. Promote discovered directories, technologies, schema names, and route fragments into a smaller second-stage wordlist.
+
+For a bounded active run, stage [scripts/run_content_discovery_campaign.py](scripts/run_content_discovery_campaign.py), [assets/content-discovery-campaign.example.json](assets/content-discovery-campaign.example.json), and [assets/content-discovery-campaign.schema.json](assets/content-discovery-campaign.schema.json). Replace the example values in the workarea, keep one mutation axis per invocation, and set an external authorization reference, exact allowed origins, request limit, rate, concurrency, and timeout explicitly. These campaign fields are defense-in-depth constraints, not authority: the mission-bound Cyberful gateway or ZAP route remains the transport authority. The orchestrator refuses non-loopback targets without the matching runtime `HTTP_PROXY` or `HTTPS_PROXY`, accepts Docker hostnames for that host-owned proxy, and inherits only `SSL_CERT_FILE` or `CURL_CA_BUNDLE` for trust after validating the JSON. Loopback IP literals explicitly bypass every proxy. The orchestrator resolves only the fixed `ffuf` command from the trusted runtime, uses argv without a shell, bounds streams and native output while the process runs, and preserves command/version/exit evidence. Read [references/differential-discovery.md](references/differential-discovery.md) to interpret the raw result; a match still requires controlled replay.
 
 ## Validate each cluster
 

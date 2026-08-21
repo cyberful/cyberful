@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false, "required": ["resources"],
+  "properties": {
+    "resources": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "kind", "region", "public", "principals", "policy_sha256", "encrypted", "logging", "lifecycle"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 512},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "region": {"type": "string", "maxLength": 128},
+          "public": {"type": "boolean"},
+          "principals": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "maxLength": 512}},
+          "policy_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+          "encrypted": {"type": ["boolean", "null"]},
+          "logging": {"type": ["boolean", "null"]},
+          "lifecycle": {"type": "string", "minLength": 1, "maxLength": 64}
+        }
+      }
+    }
+  }
+}

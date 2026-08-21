@@ -4,7 +4,11 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { describe, expect, test } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { buildTruncatedPreview } from "./truncate"
+import { emptyDirectorySync } from "./truncation-dir"
 
 describe("tool output previews", () => {
   test("keeps the requested side of a line-limited result", () => {
@@ -34,5 +38,21 @@ describe("tool output previews", () => {
     expect(
       buildTruncatedPreview(text, { maxLines: 0, maxBytes: Number.POSITIVE_INFINITY, direction: "head" })?.unit,
     ).toBe("lines")
+  })
+
+  test("empties overflow contents while preserving the output directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-tool-output-"))
+    try {
+      fs.mkdirSync(path.join(root, "nested"))
+      fs.writeFileSync(path.join(root, "result.txt"), "stale")
+      fs.writeFileSync(path.join(root, "nested", "result.txt"), "stale")
+
+      emptyDirectorySync(root)
+
+      expect(fs.existsSync(root)).toBe(true)
+      expect(fs.readdirSync(root)).toEqual([])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 })

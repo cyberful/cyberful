@@ -1,6 +1,6 @@
 // ── Architecture Tombstones ─────────────────────────────────────
-// Prevents retired compatibility layers and the duplicate direct-interactive UI
-// from silently returning after the Pi, Event, and TUI capability refactors.
+// Prevents retired compatibility layers, external Pi process execution, and the
+// duplicate direct-interactive UI from returning after capability refactors.
 // → cyberful/src/event.ts — exposes the single application event facade.
 // → cyberful/src/subsystem/pi-agent.ts — owns the sole agent runtime.
 // → cyberful/src/cli/cmd/tui/feature/builtins.ts — installs host capabilities directly.
@@ -79,5 +79,38 @@ describe("retired architecture boundaries", () => {
     }
 
     expect(matches).toEqual([])
+  })
+
+  test("active source never launches an external Pi command", async () => {
+    const commandName = ["p", "i"].join("")
+    const externalCommandPatterns = [
+      new RegExp(`Bun\\.spawn(?:Sync)?\\(\\s*\\[\\s*["']${commandName}["']`, "m"),
+      new RegExp(`Process\\.spawn\\(\\s*\\[\\s*["']${commandName}["']`, "m"),
+      new RegExp(`ChildProcess\\.make\\(\\s*["']${commandName}["']`, "m"),
+    ]
+    const matches: string[] = []
+    const sourceFiles = new Bun.Glob("**/*.{ts,tsx}")
+
+    for await (const relativePath of sourceFiles.scan({ cwd: sourceRoot, onlyFiles: true })) {
+      if (relativePath === "architecture-boundaries.test.ts" || relativePath.startsWith("server/client/gen/")) {
+        continue
+      }
+      const source = await Bun.file(path.join(sourceRoot, relativePath)).text()
+      if (externalCommandPatterns.some((pattern) => pattern.test(source))) matches.push(relativePath)
+    }
+
+    expect(matches).toEqual([])
+  })
+
+  test("the Pi updater can only rebuild Cyberful's embedded runtime", async () => {
+    const updater = await Bun.file(path.resolve(sourceRoot, "../../scripts/update_pi.py")).text()
+
+    expect(updater).toContain('["npm", "view",')
+    expect(updater).toContain('run(["make", "install"]')
+    expect(updater).not.toMatch(/run\(\s*\[\s*["']pi["']/m)
+    expect(updater).not.toMatch(/["']npm["']\s*,\s*["'](?:install|update|link)["']/m)
+    expect(updater).not.toMatch(/["'](?:--global|-g)["']/m)
+    expect(updater).not.toContain("/opt/homebrew")
+    expect(updater).not.toContain("/usr/local")
   })
 })

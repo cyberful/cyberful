@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze Cloud Control-Plane Evidence"
+  short_description: "Reconcile offline cloud snapshots and drift"
+  default_prompt: "Use $analyze-cloud-control-plane-evidence to compare these bounded control-plane snapshots offline."

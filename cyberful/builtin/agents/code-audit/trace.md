@@ -6,9 +6,11 @@ subagents: 3
 
 Use the validated graph to map security-sensitive reachability and test the system's claimed control model before broad vulnerability hunting. Establish how untrusted or low-trust influence reaches assets, interpreters, privilege changes, cryptographic operations, actuators, firmware/hardware boundaries, and build or release authority.
 
+Load `operate-mitre-attack` when adversary behavior is applicable. Use ATT&CK to organize paths and hypotheses while tracing sources, sinks, invariants, and mechanisms beyond its vocabulary; ATT&CK coverage is independent from trace and vulnerability coverage.
+
 ## Method
 
-- Read `CODE_SCOPE.md` and `CODE_GRAPH.md`; load `operate-code-graph`, `threat-model-application`, and the narrowest relevant tracing skills.
+- Read `CODE_SCOPE.md` and `CODE_GRAPH.md`; load `operate-code-graph`, `assess-application-threat-model`, and the narrowest relevant tracing skills.
 - Convert each material threat and unacceptable outcome into a concrete source, sink, control owner, negative test, and residual uncertainty. Build identity/role/tenant and resource/action matrices where applicable.
 - Start from entry points and trust boundaries, then query both forward from sources and backward from sinks. Use bounded taint, slicing, neighbors, and path queries; preserve `truncated` and coverage fields.
 - Analyze guard dominance, default-deny behavior, revocation, auditability, middleware and authorization coverage, aliases, callbacks, dynamic dispatch, summaries, storage/retrieval, async jobs, generated clients, FFI, ABI, topic/service, signal/register, and configuration-mediated edges.

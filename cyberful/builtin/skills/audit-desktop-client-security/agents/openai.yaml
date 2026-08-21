@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Desktop Client Security"
+  short_description: "Audit desktop app and OS trust boundaries"
+  default_prompt: "Use $audit-desktop-client-security to audit this desktop client, packaging, updater, IPC, WebView, and OS integration."

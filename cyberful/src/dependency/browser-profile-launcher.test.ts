@@ -17,6 +17,7 @@ const ENVIRONMENT_KEYS = [
   "CYBER_BROWSER_MCP_COMMAND",
   "CYBER_BROWSER_MCP_ENTRY",
   "CYBER_BROWSER_BUN_REENTRY",
+  "CYBER_AGENT_BROWSER_BINARY",
   "CYBER_BROWSER_USER_DATA_DIR_3",
   "CYBER_BROWSER_ARTIFACTS_DIR_3",
   "CYBERFUL_TEST_BROWSER_RESULT",
@@ -33,20 +34,34 @@ afterEach(() => {
   temporaryRoots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true }))
 })
 
-test("the installed CLI opens the selected persistent browser identity and waits for exit", async () => {
+test("the installed CLI opens the selected persistent browser identity through the headed daemon", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cyberful-browser-profile-"))
   temporaryRoots.push(root)
   const fixture = path.join(root, "browser-fixture.ts")
   const result = path.join(root, "result.json")
   await Bun.write(
     fixture,
-    `await Bun.write(process.env.CYBERFUL_TEST_BROWSER_RESULT, JSON.stringify({
+    `const args = Bun.argv.slice(2)
+if (args[0] === "session") {
+  console.log(JSON.stringify({ success: true, data: { active: false } }))
+  process.exit(0)
+}
+await Bun.write(process.env.CYBERFUL_TEST_BROWSER_RESULT, JSON.stringify({
       profile: process.env.CYBER_BROWSER_PROFILE_ID,
       profileDirectory: process.env.CYBER_BROWSER_USER_DATA_DIR,
       artifactsDirectory: process.env.CYBER_BROWSER_ARTIFACTS_DIR,
-      eager: process.env.CYBER_BROWSER_EAGER,
+      agentProfile: process.env.AGENT_BROWSER_PROFILE,
+      session: process.env.AGENT_BROWSER_SESSION,
+      namespace: process.env.AGENT_BROWSER_NAMESPACE,
+      headed: process.env.AGENT_BROWSER_HEADED,
+      passive: process.env.AGENT_BROWSER_PASSIVE,
+      idleTimeout: process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS,
+      launchArgs: process.env.AGENT_BROWSER_ARGS,
+      socketDirectory: process.env.AGENT_BROWSER_SOCKET_DIR,
+      pluginNames: JSON.parse(process.env.AGENT_BROWSER_PLUGINS).map((plugin) => plugin.name),
       headless: process.env.CYBER_BROWSER_HEADLESS,
       bunReentry: process.env.BUN_BE_BUN,
+      args,
     }))\n`,
   )
   Object.assign(process.env, {
@@ -59,14 +74,24 @@ test("the installed CLI opens the selected persistent browser identity and waits
     CYBERFUL_TEST_BROWSER_RESULT: result,
   })
 
-  expect(await BrowserProfileLauncher.launchBrowserProfile(3, { write: () => {} })).toBe(0)
+  delete process.env.CYBER_AGENT_BROWSER_BINARY
+  expect(await BrowserProfileLauncher.launchBrowserProfile(3, { write: () => {}, pollIntervalMs: 1 })).toBe(0)
   expect(await Bun.file(result).json()).toEqual({
     profile: "3",
     profileDirectory: "/profiles/three",
     artifactsDirectory: "/artifacts/three",
-    eager: "1",
+    agentProfile: "/profiles/three",
+    session: "cyberful-manual-3",
+    namespace: "cyberful-manual-3",
+    headed: "1",
+    passive: "1",
+    idleTimeout: "0",
+    launchArgs: "--restore-last-session",
+    socketDirectory: process.platform === "win32" ? path.join(os.tmpdir(), "cyb-ab-manual-3") : "/tmp/cyb-ab-manual-3",
+    pluginNames: ["captcha"],
     headless: "false",
     bunReentry: "1",
+    args: ["open", "--headed"],
   })
 })
 

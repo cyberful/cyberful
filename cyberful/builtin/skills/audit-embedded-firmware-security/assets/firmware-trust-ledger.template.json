@@ -1,0 +1,22 @@
+{
+  "scope_reference": "",
+  "image_sha256": "",
+  "product_claims": [],
+  "extraction_manifest": "",
+  "boot_chain": [],
+  "update_chain": [],
+  "services": [],
+  "findings": [
+    {
+      "id": "FW-001",
+      "boundary": "",
+      "artifact_paths": [],
+      "startup_or_call_path": [],
+      "attacker_position": "",
+      "device_state": "",
+      "fleet_relevance": "unknown",
+      "evidence": [],
+      "validation": ""
+    }
+  ]
+}

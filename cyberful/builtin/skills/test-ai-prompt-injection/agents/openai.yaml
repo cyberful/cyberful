@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Prompt Injection Tester"
+  short_description: "Test bounded prompt-injection control failures"
+  default_prompt: "Use $test-ai-prompt-injection to compare a benign control with an authorized prompt-injection candidate."

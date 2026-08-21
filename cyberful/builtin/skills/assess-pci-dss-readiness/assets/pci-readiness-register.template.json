@@ -1,0 +1,15 @@
+{
+  "format": "cyberful.pci-readiness-register.v1",
+  "engagement_id": "pci-readiness-synthetic",
+  "standard_version": "PCI DSS 4.0.1",
+  "supported_scope": "CDE scoping and penetration-testing readiness for Requirements 11.4 and 12.5.2",
+  "entity_type": "merchant",
+  "validation_process": "Entity-selected validation process confirmed with its compliance-accepting entity",
+  "items": [
+    {"requirement": "11.4.1", "topic": "Defined penetration-testing methodology", "status": "gap", "evidence_refs": [], "rationale": "The current methodology has not yet been reconciled to all required coverage elements.", "owner": "payment-security-owner", "next_action": "Complete the plan-pci-dss-penetration-test artifact."}
+  ],
+  "outside_scope_dependencies": [
+    {"topic": "PCI DSS requirements outside 11.4 and 12.5.2", "owner": "entity and selected assessor", "reason": "This Cyberful readiness workflow does not perform a complete PCI DSS assessment."}
+  ],
+  "conclusion_boundary": "Readiness evidence only; no PCI DSS compliance or attestation decision."
+}

@@ -1,0 +1,2 @@
+edge_id,source_authority,subject_namespace,actor,credential_or_assertion,audience,relying_party,tenant,assurance,freshness,revocation_source,enforcement_owner,failure_mode,evidence_reference,status
+edge-001,,,,,,,,,,,,,,,unreviewed

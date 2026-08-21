@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_kubernetes_policy_campaign.py",
+  "class": "orchestrator",
+  "network": "none",
+  "workflows": ["pentest", "bug-bounty", "code-audit"],
+  "phases": ["recon", "verify", "index", "hunt"],
+  "tools": ["conftest"],
+  "dependencies": {"commands": ["conftest"], "python": [], "bootstrap": null},
+  "effects": ["snapshots-confined-kubernetes-manifests-and-policy", "blocks-tool-network-syscalls", "writes-bounded-raw-policy-evidence"],
+  "timeout_seconds": 120,
+  "limits": {"requests": 0, "concurrency": 1, "output_bytes": 4194304},
+  "secrets": {"environment": []},
+  "input": {"format": "json", "schema": "assets/kubernetes-policy-campaign.schema.json"},
+  "output": {"format": "json", "schema": "assets/kubernetes-policy-evidence.schema.json", "raw": true}
+}

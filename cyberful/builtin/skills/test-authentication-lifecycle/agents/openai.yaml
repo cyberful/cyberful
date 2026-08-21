@@ -1,4 +1,4 @@
 interface:
   display_name: "Authentication Lifecycle Tester"
-  short_description: "Advanced auth ceremony and recovery testing"
-  default_prompt: "Use $test-authentication-lifecycle to test every identity and authenticator ceremony across its full state lifecycle."
+  short_description: "Coordinate authentication lifecycle coverage"
+  default_prompt: "Use $test-authentication-lifecycle to coordinate identity ceremonies and state-transition evidence."

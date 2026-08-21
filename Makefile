@@ -19,7 +19,7 @@ help:
 	@echo "  make test         Run Bun, Python, and the live Docker cyberful-os contract"
 	@echo "  make test-bun     Run the isolated application and browser MCP Bun tests"
 	@echo "  make test-browser Run the browser MCP boundary and ownership tests"
-	@echo "  make test-python  Run the cyberful-os Python unit tests"
+	@echo "  make test-python  Run built-in skill and cyberful-os Python unit tests"
 	@echo "  make runtime-build Build the native unified cyberful-os image"
 	@echo "  make test-runtime Attest the existing unified image, ZAP, and Ghidra end to end"
 	@echo "  make test-cyberful-os Build and verify the real cyberful-os image, MCP, and gateway"
@@ -49,7 +49,7 @@ test: test-bun test-python test-cyberful-os
 	@echo "│ CYBERFUL TEST SUMMARY                                                │"
 	@echo "├──────────────────────────────────────────────────────────────────────┤"
 	@echo "│ [✓] Application and browser MCP Bun tests                            │"
-	@echo "│ [✓] cyberful-os Python unit tests                                       │"
+	@echo "│ [✓] Built-in skill and cyberful-os Python unit tests                   │"
 	@echo "│ [✓] Live image and required capability attestation                   │"
 	@echo "│ [✓] Core, audit, cloud, Kubernetes, and fuzzing startup probes       │"
 	@echo "│ [✓] cyberful-os MCP inventory and phase-gateway exposure                │"
@@ -65,6 +65,7 @@ test-browser:
 	cd mcps && bun run test:browser
 
 test-python:
+	$(PYTHON) cyberful/script/run-skill-tests.py
 	cd mcps/cyberful-os && $(PYTHON) -m unittest discover -s tests -v
 
 runtime-build:

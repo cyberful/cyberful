@@ -8,6 +8,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import semver from "semver"
+import { embeddedAttackSnapshot } from "../cyberful/src/mitre-attack/builder"
 
 type Platform = {
   platform: "darwin" | "linux" | "windows"
@@ -104,6 +105,89 @@ function validateOwnedOutput(repositoryRoot: string, artifacts: string, output: 
   }
 }
 
+function normalizeArchiveTimestamps(root: string) {
+  const pending = [root]
+  for (let index = 0; index < pending.length; index++) {
+    const file = pending[index]
+    fs.utimesSync(file, ARCHIVE_TIME, ARCHIVE_TIME)
+    if (!fs.statSync(file).isDirectory()) continue
+    pending.push(...fs.readdirSync(file).map((entry) => path.join(file, entry)))
+  }
+}
+
+function createDeterministicTarGzip(input: {
+  stagingRoot: string
+  rootName: string
+  destination: string
+  label: string
+}) {
+  const temporaryTar = path.join(input.stagingRoot, `.${input.rootName}.tar`)
+  const compressedTar = `${temporaryTar}.gz`
+  try {
+    runArchiveCommand(
+      process.platform === "linux"
+        ? [
+            "tar",
+            "--sort=name",
+            "--mtime=@0",
+            "--owner=0",
+            "--group=0",
+            "--numeric-owner",
+            "-cf",
+            temporaryTar,
+            input.rootName,
+          ]
+        : ["tar", "-cf", temporaryTar, input.rootName],
+      input.stagingRoot,
+      `tar creation for ${input.label}`,
+    )
+    runArchiveCommand(["gzip", "-n", "-f", temporaryTar], undefined, `gzip compression for ${input.label}`)
+    fs.renameSync(compressedTar, input.destination)
+  } finally {
+    fs.rmSync(temporaryTar, { force: true })
+    fs.rmSync(compressedTar, { force: true })
+  }
+}
+
+function attackArchive(input: {
+  artifactFiles: string[]
+  stagingRoot: string
+  output: string
+  version: string
+}) {
+  const snapshotManifestFile = findSuffix(input.artifactFiles, "mitre-attack-snapshot/manifest.json")
+  const snapshotRoot = path.dirname(snapshotManifestFile)
+  const embedded = embeddedAttackSnapshot(snapshotRoot)
+  if (embedded.manifest.cyberful.version !== input.version) {
+    throw new Error(
+      `MITRE ATT&CK snapshot was prepared for Cyberful ${embedded.manifest.cyberful.version}; expected ${input.version}`,
+    )
+  }
+  const nativeManifests = input.artifactFiles.filter((file) => path.basename(file) === "mitre-attack-manifest.json")
+  if (nativeManifests.length !== 4) {
+    throw new Error(`Expected four native MITRE ATT&CK manifests; found ${nativeManifests.length}`)
+  }
+  const canonical = `${JSON.stringify(embedded.manifest, null, 2)}\n`
+  for (const manifestFile of nativeManifests) {
+    if (fs.readFileSync(manifestFile, "utf8") !== canonical) {
+      throw new Error(`Native binary artifact used a different MITRE ATT&CK snapshot: ${manifestFile}`)
+    }
+  }
+
+  const rootName = `cyberful-mitre-attack-${embedded.manifest.snapshot_id}`
+  const root = path.join(input.stagingRoot, rootName)
+  fs.rmSync(root, { recursive: true, force: true })
+  fs.cpSync(snapshotRoot, root, { recursive: true, errorOnExist: true, force: false })
+  normalizeArchiveTimestamps(root)
+  const filename = `${rootName}.tar.gz`
+  createDeterministicTarGzip({
+    stagingRoot: input.stagingRoot,
+    rootName,
+    destination: path.join(input.output, filename),
+    label: filename,
+  })
+}
+
 function archive(input: {
   repositoryRoot: string
   artifactFiles: string[]
@@ -155,13 +239,7 @@ function archive(input: {
     releaseNotices.forEach(([source, destination]) =>
       copy(path.join(input.repositoryRoot, source), path.join(root, destination)),
     )
-    const pendingTimestamps = [root]
-    for (let index = 0; index < pendingTimestamps.length; index++) {
-      const file = pendingTimestamps[index]
-      fs.utimesSync(file, ARCHIVE_TIME, ARCHIVE_TIME)
-      if (!fs.statSync(file).isDirectory()) continue
-      pendingTimestamps.push(...fs.readdirSync(file).map((entry) => path.join(file, entry)))
-    }
+    normalizeArchiveTimestamps(root)
 
     const filename = `${rootName}.${input.target.platform === "windows" ? "zip" : "tar.gz"}`
     if (input.target.platform === "windows") {
@@ -180,32 +258,12 @@ function archive(input: {
     // then gzip -n removes the compressor timestamp and original filename.
     // A temporary pair keeps partial output private until both stages succeed.
     // ────────────────────────────────────────────────────────────────
-    const temporaryTar = path.join(input.stagingRoot, `.${rootName}.tar`)
-    const compressedTar = `${temporaryTar}.gz`
-    try {
-      runArchiveCommand(
-        process.platform === "linux"
-          ? [
-              "tar",
-              "--sort=name",
-              "--mtime=@0",
-              "--owner=0",
-              "--group=0",
-              "--numeric-owner",
-              "-cf",
-              temporaryTar,
-              rootName,
-            ]
-          : ["tar", "-cf", temporaryTar, rootName],
-        input.stagingRoot,
-        `tar creation for ${filename}`,
-      )
-      runArchiveCommand(["gzip", "-n", "-f", temporaryTar], undefined, `gzip compression for ${filename}`)
-      fs.renameSync(compressedTar, path.join(input.output, filename))
-    } finally {
-      fs.rmSync(temporaryTar, { force: true })
-      fs.rmSync(compressedTar, { force: true })
-    }
+    createDeterministicTarGzip({
+      stagingRoot: input.stagingRoot,
+      rootName,
+      destination: path.join(input.output, filename),
+      label: filename,
+    })
   } finally {
     fs.rmSync(extracted, { recursive: true, force: true })
   }
@@ -253,6 +311,7 @@ export function prepareReleaseAssets(input: {
         target,
       }),
     )
+    attackArchive({ artifactFiles, stagingRoot, output, version: input.version })
   } finally {
     fs.rmSync(stagingRoot, { recursive: true, force: true })
   }

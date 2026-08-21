@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/iac-audit-campaign.v1.json",
+  "title": "Infrastructure-as-code audit campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "campaign_id", "scope_reference", "source_directory", "max_files", "max_total_bytes", "timeout_seconds", "stdout_limit_bytes"],
+  "properties": {
+    "$schema": {"const": "./iac-audit-campaign.schema.json"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "scope_reference": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Attribution to an externally authorized mission scope; this field does not grant authority."},
+    "source_directory": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "max_files": {"type": "integer", "minimum": 1, "maximum": 20000},
+    "max_total_bytes": {"type": "integer", "minimum": 1, "maximum": 536870912},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+    "stdout_limit_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+  }
+}

@@ -48,11 +48,34 @@ const EMPTY_SKILL_PARAMETERS = Type.Object(
 )
 const EMPTY_SKILLS = {
   catalog: [],
+  searchTool: {
+    name: "skill_search",
+    label: "Search trusted skills",
+    description: "No skills are configured in this isolated phase-runner test.",
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1 }),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, default: 8 })),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 20, pattern: "^(0|[1-9][0-9]*)$" })),
+    }),
+    execute: async () => ({
+      content: [{ type: "text" as const, text: "{}" }],
+      details: { query: "*", total: 0, returned: 0 },
+    }),
+  },
   tool: {
     name: "skill_read",
     label: "Read trusted skill",
     description: "No skills are configured in this isolated phase-runner test.",
     parameters: EMPTY_SKILL_PARAMETERS,
+    execute: async () => {
+      throw new Error("no test skills are configured")
+    },
+  },
+  stageTool: {
+    name: "skill_stage",
+    label: "Stage trusted skill resource",
+    description: "No skills are configured in this isolated phase-runner test.",
+    parameters: Type.Object({ skill: Type.String({ minLength: 1 }), path: Type.String({ minLength: 1 }) }),
     execute: async () => {
       throw new Error("no test skills are configured")
     },
@@ -371,9 +394,10 @@ describe("runPhase transcript persistence", () => {
         },
       }),
     )
-    expect(system).toMatch(/question.*concrete missing authorization, fact, or human CAPTCHA action/i)
+    expect(system).toMatch(/question.*failed CAPTCHA automation/i)
+    expect(system).toContain("fixed `captcha.solve`")
     expect(system).toContain("`question kind=captcha`")
-    expect(system).toMatch(/Other work continues/i)
+    expect(system).toMatch(/then snapshot again/i)
     expect(system).toContain("Do not retry a target request that returns HTTP `429`")
     expect(system).not.toMatch(/403|WAF|managed challenge|reset/i)
     expect(userMessage).toContain("carry out recon")
@@ -381,8 +405,82 @@ describe("runPhase transcript persistence", () => {
     expect(skillRoots).toEqual(["/tmp/skills"])
   })
 
+  test("budgets root, subagent, and fallback catalogs from each effective provider route", async () => {
+    const settings = Settings.parse(`version: 1
+agent:
+  subsystem: pi
+  main_provider: main
+  fallback_provider: fallback
+  subagents:
+    enabled: true
+    provider: child
+    reasoning_effort: [xhigh, medium]
+    max_per_run: 4
+    max_concurrent: 2
+    max_depth: 2
+  skill_catalog:
+    description_budget_percentage: 3
+  fallback:
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+  providers:
+    main:
+      adapter: openai-completions
+      base_url: https://main.invalid/v1
+      model: main-model
+      context_window: 100000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: MAIN_KEY }
+    child:
+      adapter: openai-completions
+      base_url: https://child.invalid/v1
+      model: child-model
+      context_window: 150000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: CHILD_KEY }
+    fallback:
+      adapter: openai-completions
+      base_url: https://fallback.invalid/v1
+      model: fallback-model
+      context_window: 200000
+      max_output_tokens: 8192
+      auth: { type: environment, variable: FALLBACK_KEY }
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false
+`)
+    const manifests: Record<string, number> = {}
+    await SubsystemPhaseRunner.runPhase(
+      spec(),
+      deps({
+        loadSettings: async () => settings,
+        run: async (input) => {
+          manifests.root = input.compiledPrompt.manifest.skillCatalog.descriptionBudgetCharacters
+          manifests.child = input.compileChildPrompt({
+            role: "subagent",
+            providerRoute: "main",
+            task: { objective: "Inspect one bounded child surface." },
+          }).manifest.skillCatalog.descriptionBudgetCharacters
+          manifests.fallback = input.compileChildPrompt({
+            role: "fallback",
+            providerRoute: "fallback",
+            task: { objective: "Inspect one bounded fallback surface." },
+          }).manifest.skillCatalog.descriptionBudgetCharacters
+          return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
+        },
+      }),
+    )
+
+    expect(manifests).toEqual({ root: 12_000, child: 18_000, fallback: 24_000 })
+  })
+
   test("phase prompts keep reward-aware maturation specific to Bug Bounty", () => {
     const bugBounty = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "exploit" }), 120)
+    const verify = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "verify" }), 45)
     const brief = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "brief" }), 30)
     const report = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "bug-bounty", phase: "report" }), 90)
     const pentest = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "exploit" }), 120)
@@ -390,6 +488,8 @@ describe("runPhase transcript persistence", () => {
 
     expect(bugBounty).toMatch(/finding maturation checkpoint/i)
     expect(bugBounty).toMatch(/host-derived published monetary upside/i)
+    expect(bugBounty).toMatch(/MAXIMIZED.*supported vulnerability/i)
+    expect(verify).toMatch(/SUBMISSION_READY.*violated security invariant.*unwanted attacker effect/i)
     expect(brief).toMatch(/reward_policy set.*NOT_PUBLISHED.*UNAVAILABLE/i)
     expect(report).toMatch(/reward_policy get.*BUG_BOUNTY_REPORT\.md.*portable BBP-###/i)
     expect(pentest).toMatch(/technical finding maturation checkpoint/i)
@@ -409,7 +509,32 @@ describe("runPhase transcript persistence", () => {
     expect(report).toMatch(/end-to-end attack path.*unsupported link/i)
     expect(pentest).toMatch(/What can an attacker actually achieve with this vulnerability\?/)
     expect(pentestRecon).not.toMatch(/What can an attacker actually achieve with this vulnerability\?/)
-    expect(codeAudit).not.toMatch(/What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i)
+    expect(codeAudit).not.toMatch(
+      /What can an attacker actually achieve with this vulnerability\?|end-to-end attack path/i,
+    )
+  })
+
+  test("web research prompts positively require live-product breadth without quotas", () => {
+    for (const workflow of ["pentest", "bug-bounty"] as const) {
+      for (const phase of ["recon", "exploit", "hacker"] as const) {
+        const prompt = SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow, phase }), 120)
+        expect(prompt).toMatch(/reachable authorized web applications.*exercise real functionality, journeys, and state transitions/i)
+        expect(prompt).toMatch(/beyond landing pages, dashboards, documentation, source artifacts, and known paths/i)
+        expect(prompt).not.toMatch(/explain.*zero browser|minimum (?:click|route|journey)|route quota/i)
+      }
+    }
+    const contrarian = SubsystemPhaseRunner.buildPhasePrompt(
+      spec({ workflow: "pentest", phase: "recon" }),
+      120,
+      { required: true, mode: "qualitative" },
+    )
+    expect(contrarian).toMatch(/route variation is coverage, not causal novelty, and never ends exploration/i)
+    expect(
+      SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "code-audit", phase: "attack" }), 120),
+    ).not.toContain("## Live product research")
+    expect(
+      SubsystemPhaseRunner.buildPhasePrompt(spec({ workflow: "pentest", phase: "verify" }), 120),
+    ).not.toContain("## Live product research")
   })
 
   test("resolves the Bug Bounty novelty reserve into both prompt and private gateway contract", async () => {
@@ -422,7 +547,7 @@ describe("runPhase transcript persistence", () => {
           if (filePath.endsWith("budgets.json"))
             return JSON.stringify({
               recon: 60,
-              $novelty: { recon: { required: true } },
+              $novelty: { recon: { required: true, mode: "bounty-portfolio" } },
             })
           return phaseInstructionFile(filePath) ?? "{}"
         },
@@ -436,8 +561,12 @@ describe("runPhase transcript persistence", () => {
 
     expect(system).toContain("## Contrarian pass")
     expect(system).toMatch(/no numeric quotas/i)
-    expect(JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"))
-      .toEqual(result.noveltyContract)
+    expect(system).toMatch(/requires a reward-aware `bounty_context`/i)
+    expect(system).toContain("`opportunity_closeout`")
+    expect(system).toMatch(/first positive finding is not phase completion/i)
+    expect(
+      JSON.parse(requireValue(privateEnv, "gateway private env missing").CYBERFUL_SUBSYSTEM_NOVELTY_CONTRACT ?? "null"),
+    ).toEqual(result.noveltyContract)
   })
 
   test("human approval wait extends the deadline without consuming phase duration", async () => {
@@ -487,9 +616,7 @@ describe("runPhase transcript persistence", () => {
       }),
       deps({
         readFile: async (filePath) =>
-          filePath.endsWith("budgets.json")
-            ? JSON.stringify({ recon: 60 })
-            : phaseInstructionFile(filePath) ?? "{}",
+          filePath.endsWith("budgets.json") ? JSON.stringify({ recon: 60 }) : (phaseInstructionFile(filePath) ?? "{}"),
         run: async (input) => {
           runtimeTimeoutMs = input.timeoutMs
           expect(input.budgetClock?.snapshot()).toMatchObject({
@@ -522,11 +649,10 @@ describe("runPhase transcript persistence", () => {
       }),
     )
 
-    expect(system).toMatch(/Browser profiles 1–5 are separate target identities/i)
-    expect(system).toMatch(/keep their state and evidence separate/i)
+    expect(system).toMatch(/target identities, state, and evidence separate across browser profiles 1–5/i)
     expect(system).toContain("`web_search`")
     expect(system).toContain('profile: "search"')
-    expect(system).toMatch(/never as target identity, scope authority/i)
+    expect(system).toMatch(/never a selected result, target identity, or authority/i)
   })
 
   test("routes imported-source execution through cyberful-os without hardcoding a host path", async () => {
@@ -561,7 +687,6 @@ describe("runPhase transcript persistence", () => {
 
   test("keeps worker scratch state in the workarea and gateway secrets out of the Pi system message", async () => {
     let privateEnv: Record<string, string> | undefined
-    let system = ""
     const directories: string[] = []
     const removed: string[] = []
     await SubsystemPhaseRunner.runPhase(
@@ -574,7 +699,6 @@ describe("runPhase transcript persistence", () => {
           removed.push(directory)
         },
         run: async (input) => {
-          system = input.compiledPrompt.system
           privateEnv = input.spec.mcpServer?.privateEnv
           return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }
         },
@@ -582,10 +706,7 @@ describe("runPhase transcript persistence", () => {
     )
     expect(directories).toEqual(["/tmp/wa/.cyberful-tmp"])
     expect(removed).toEqual(["/tmp/wa/.cyberful-tmp"])
-    expect(privateEnv?.CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH).toContain("expert-circuit-breaker-ses_test/engagement.json")
-    expect(system).not.toContain(
-      requireValue(privateEnv, "gateway private environment missing").CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH,
-    )
+    expect(privateEnv).not.toHaveProperty("CYBERFUL_SUBSYSTEM_CIRCUIT_BREAKER_PATH")
   })
 
   test("counts only distinct deliverable checkpoints as semantic progress", async () => {
@@ -655,6 +776,19 @@ describe("runPhase transcript persistence", () => {
                 delegationEnabled: true,
                 delegationLimit: 1,
                 handoffOwner: true,
+                skillCatalog: {
+                  operationalContextWindow: 256_000,
+                  contextSource: "catalog_default",
+                  descriptionBudgetPercentage: 2,
+                  descriptionBudgetTokens: 5_120,
+                  descriptionBudgetCharacters: 20_480,
+                  nameIndexCharacters: 0,
+                  metadataCharacters: 0,
+                  totalSkills: 0,
+                  describedSkills: 0,
+                  compressedSkills: 0,
+                  nameOnlySkills: 0,
+                },
               },
             },
             {
@@ -734,6 +868,146 @@ describe("runPhase transcript persistence", () => {
       summary: "exploit complete",
       artifact: "EXPLOIT.md",
     })
+  })
+
+  test("captures passive evidence after every accepted Pentest and Bug Bounty phase, including Report", async () => {
+    const phases = ["brief", "recon", "exploit", "hacker", "verify", "report"] as const
+    const deliverables = {
+      brief: "MISSION.md",
+      recon: "RECON.md",
+      exploit: "EXPLOIT.md",
+      hacker: "HACKER.md",
+      verify: "VERIFY.md",
+      report: "REPORT.md",
+    } as const
+    const captured: Array<{ workflow: string; phase: string; attempt: number }> = []
+
+    for (const workflow of ["pentest", "bug-bounty"] as const) {
+      for (const [index, phase] of phases.entries()) {
+        let processExited = false
+        const successor = phases[index + 1]
+        const result = await SubsystemPhaseRunner.runPhase(
+          spec({ workflow, phase, attempt: 2, handoff: { successor } }),
+          deps({
+            run: async () => {
+              processExited = true
+              return { stdout: "{}", stderr: "", exitCode: 0, timedOut: false, termination: "completed" }
+            },
+            readFile: async (filePath) => {
+              if (filePath.endsWith("budgets.json")) return JSON.stringify({ [phase]: 120 })
+              const instruction = phaseInstructionFile(filePath)
+              if (instruction) return instruction
+              return JSON.stringify({
+                phase,
+                successor,
+                summary: `${phase} complete`,
+                artifact:
+                  workflow === "bug-bounty" && phase === "verify"
+                    ? "BUG_BOUNTY_VERIFY.md"
+                    : workflow === "bug-bounty" && phase === "report"
+                      ? "BUG_BOUNTY_REPORT.md"
+                      : deliverables[phase],
+                ...(phase === "exploit" || phase === "hacker"
+                  ? {
+                      verdicts: {
+                        confirmed: [],
+                        disproved: [],
+                        suspected: [],
+                        inconclusive: [],
+                        untestable: [],
+                      },
+                    }
+                  : {}),
+              })
+            },
+            removeFile: async () => {},
+            waitForGatewayExit: async () => processExited,
+            capturePassiveEvidence: async ({ phase: capturedPhase, attempt }) => {
+              expect(processExited).toBe(true)
+              captured.push({ workflow, phase: capturedPhase, attempt })
+              return {
+                state: "complete",
+                manifest: `raw/zap/passive/${workflow}/${capturedPhase}.json`,
+              }
+            },
+          }),
+        )
+        expect({ workflow, phase, ok: result.ok, failure: result.phaseFailure }).toMatchObject({
+          workflow,
+          phase,
+          ok: true,
+        })
+        expect(result.passiveEvidence?.state).toBe("complete")
+        expect(result.summary).toContain(`raw/zap/passive/${workflow}/${phase}.json`)
+      }
+    }
+
+    expect(captured).toHaveLength(12)
+    expect(captured.every((capture) => capture.attempt === 2)).toBe(true)
+  })
+
+  test("never captures for rejected attempts, Code Audit, or interactive Ask", async () => {
+    let captures = 0
+    const capturePassiveEvidence = async () => {
+      captures += 1
+      return { state: "complete" as const }
+    }
+    const rejected = await SubsystemPhaseRunner.runPhase(
+      spec({ workflow: "pentest", phase: "exploit", handoff: { successor: "hacker" } }),
+      deps({ capturePassiveEvidence, removeFile: async () => {} }),
+    )
+    expect(rejected.ok).toBe(false)
+
+    const audit = await SubsystemPhaseRunner.runPhase(
+      spec({ workflow: "code-audit", phase: "scope", handoff: { successor: "index" } }),
+      deps({
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ scope: 120 })
+          const instruction = phaseInstructionFile(filePath)
+          if (instruction) return instruction
+          return JSON.stringify({ phase: "scope", successor: "index", summary: "scope complete", artifact: "SCOPE.md" })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        capturePassiveEvidence,
+      }),
+    )
+    expect(audit.ok).toBe(true)
+
+    const ask = await SubsystemPhaseRunner.runPhase(
+      spec({ phase: "ask", kind: "interactive", home: "/tmp/agents/ask" }),
+      deps({ capturePassiveEvidence }),
+    )
+    expect(ask.ok).toBe(true)
+    expect(captures).toBe(0)
+  })
+
+  test("keeps an accepted handoff successful when passive evidence collection rejects", async () => {
+    const result = await SubsystemPhaseRunner.runPhase(
+      spec({ workflow: "pentest", phase: "recon", handoff: { successor: "exploit" } }),
+      deps({
+        readFile: async (filePath) => {
+          if (filePath.endsWith("budgets.json")) return JSON.stringify({ recon: 120 })
+          const instruction = phaseInstructionFile(filePath)
+          if (instruction) return instruction
+          return JSON.stringify({
+            phase: "recon",
+            successor: "exploit",
+            summary: "recon complete",
+            artifact: "RECON.md",
+          })
+        },
+        removeFile: async () => {},
+        waitForGatewayExit: async () => true,
+        capturePassiveEvidence: async () => {
+          throw new Error("synthetic ZAP failure")
+        },
+      }),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.handoff?.successor).toBe("exploit")
+    expect(result.passiveEvidence?.state).toBe("failed")
+    expect(result.warnings.join("\n")).toContain("phase advancement is unchanged")
   })
 
   test("a gateway lifecycle failure blocks an otherwise valid handoff", async () => {
@@ -876,8 +1150,9 @@ describe("runPhase transcript persistence", () => {
 
   test("a phase budget cutoff advances with a sealed partial deliverable", async () => {
     const manifests: string[] = []
+    const passiveAttempts: number[] = []
     const result = await SubsystemPhaseRunner.runPhase(
-      spec({ phase: "exploit", handoff: { successor: "hacker" } }),
+      spec({ workflow: "pentest", phase: "exploit", attempt: 3, handoff: { successor: "hacker" } }),
       deps({
         run: async () => ({
           stdout: "{}",
@@ -897,6 +1172,10 @@ describe("runPhase transcript persistence", () => {
         writeArtifactManifest: async (manifestPath) => {
           manifests.push(manifestPath)
         },
+        capturePassiveEvidence: async ({ attempt }) => {
+          passiveAttempts.push(attempt)
+          return { state: "complete", manifest: "raw/zap/passive/pentest/exploit.json" }
+        },
       }),
     )
 
@@ -909,7 +1188,10 @@ describe("runPhase transcript persistence", () => {
         "The exploit phase exhausted its active-execution budget. Continue from the sealed partial deliverable 'EXPLOIT.md' and treat unfinished coverage as degraded.\n\nphase summary",
       artifact: "EXPLOIT.md",
     })
-    expect(manifests).toEqual(["/tmp/wa/raw/phase-manifests/exploit.sha256"])
+    expect(manifests).toEqual(["/tmp/wa/raw/phase-manifests/pentest/exploit.sha256"])
+    expect(passiveAttempts).toEqual([3])
+    expect(result.passiveEvidence?.state).toBe("complete")
+    expect(result.summary).toContain("raw/zap/passive/pentest/exploit.json")
     expect(result.warnings).toContain(
       "Phase budget exhausted before an explicit handoff; advancing with sealed partial deliverable 'EXPLOIT.md'.",
     )
@@ -1025,10 +1307,7 @@ describe("runPhase transcript persistence", () => {
       spec({ transcriptPath: TRANSCRIPT }),
       deps({
         run: async () => ((ranBuffered = true), { stdout: "{}", stderr: "", exitCode: 0, timedOut: false }),
-        runStreaming: async () => (
-          (ranStreaming = true),
-          { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }
-        ),
+        runStreaming: async () => ((ranStreaming = true), { stdout: NDJSON, stderr: "", exitCode: 0, timedOut: false }),
         createTranscript: async () => {
           wrote = true
           return { append: async () => {}, close: async () => {} }
@@ -1258,7 +1537,7 @@ describe("runPhase transcript persistence", () => {
       const manifest: unknown = JSON.parse(contents)
       expect(result.runtimeManifest).toBe("raw/phase-manifests/recon.runtime.json")
       expect(manifest).toMatchObject({
-        version: 6,
+        version: 7,
         phase: "recon",
         backend: "pi",
         budget: {
@@ -1343,10 +1622,12 @@ describe("interactive Ask excursion", () => {
 })
 
 describe("phase gateway lifecycle", () => {
+  const gatewayIdentity = { pid: 77, ppid: 1, started: "Thu Aug 21 12:00:00 2026", command: "cyberful gateway" }
+
   function lifecycleDeps(over: Partial<GatewayReapDeps> = {}): GatewayReapDeps {
     let now = 0
     return {
-      readSignal: async () => JSON.stringify({ pid: 77 }),
+      readSignal: async () => `${JSON.stringify({ version: 2, pid: 77, processes: [gatewayIdentity] })}\n`,
       now: () => now,
       sleep: async (ms) => {
         now += ms
@@ -1355,6 +1636,7 @@ describe("phase gateway lifecycle", () => {
       processGroupAlive: () => false,
       signalProcess: () => {},
       killTree: () => {},
+      reapCaptured: async () => ({ survivedClose: [], forceKilled: [], remaining: [] }),
       ...over,
     }
   }
@@ -1421,10 +1703,44 @@ describe("phase gateway lifecycle", () => {
   })
 
   test("requires PID registration for a handoff phase but not for an unused optional gateway", async () => {
-    const missing = lifecycleDeps({ readSignal: async () => "{}" })
+    const readSignal = async () => {
+      const error = new Error("missing") as NodeJS.ErrnoException
+      error.code = "ENOENT"
+      throw error
+    }
+    const missing = lifecycleDeps({ readSignal })
     expect(await waitForGatewayExit("/tmp/missing.json", 100, true, missing)).toBe(false)
+    expect(await waitForGatewayExit("/tmp/missing.json", 100, false, lifecycleDeps({ readSignal }))).toBe(true)
+  })
+
+  test("rejects an obsolete or malformed gateway marker", async () => {
+    await expect(
+      waitForGatewayExit("/tmp/gateway-pid.json", 100, false, lifecycleDeps({ readSignal: async () => "{}" })),
+    ).rejects.toThrow("unsupported format")
+  })
+
+  test("reaps identities appended by delegated gateways after the root exits", async () => {
+    const child = { pid: 88, ppid: 77, started: "Thu Aug 21 12:00:01 2026", command: "mitre-attack" }
+    let captured: readonly typeof gatewayIdentity[] = []
+    const content = [
+      JSON.stringify({ version: 2, pid: 77, processes: [gatewayIdentity] }),
+      JSON.stringify({ owner: 78, processes: [child] }),
+      "",
+    ].join("\n")
     expect(
-      await waitForGatewayExit("/tmp/missing.json", 100, false, lifecycleDeps({ readSignal: async () => "{}" })),
+      await waitForGatewayExit(
+        "/tmp/gateway-pid.json",
+        100,
+        true,
+        lifecycleDeps({
+          readSignal: async () => content,
+          reapCaptured: async (processes) => {
+            captured = processes
+            return { survivedClose: [child], forceKilled: [child], remaining: [] }
+          },
+        }),
+      ),
     ).toBe(true)
+    expect(captured.map((process) => process.pid)).toEqual([77, 88])
   })
 })

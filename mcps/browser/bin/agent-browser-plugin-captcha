@@ -1,0 +1,9 @@
+#!/usr/bin/env bun
+// ── CAPTCHA Plugin Source Launcher ───────────────────────────────
+// Runs the checked-in protocol implementation under Bun; release builds replace
+// this launcher with a target-native standalone binary at the same logical path.
+// → mcps/browser/plugin-captcha/agent-browser-plugin-captcha.mjs — implements the protocol.
+// ────────────────────────────────────────────────────────────────
+import { runCaptchaPlugin } from "../plugin-captcha/agent-browser-plugin-captcha.mjs"
+
+await runCaptchaPlugin()

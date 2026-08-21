@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.local/schemas/pci-penetration-test-plan.v1.json",
+  "title": "Cyberful PCI DSS penetration-test plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "engagement_id", "standard_version", "authorization_reference", "entity_type", "assessment_period", "scope_evidence", "coverage", "tester", "rules_of_engagement", "remediation_and_retest", "retention", "open_dependencies"],
+  "properties": {
+    "format": {"const": "cyberful.pci-penetration-test-plan.v1"},
+    "engagement_id": {"$ref": "#/$defs/id"},
+    "standard_version": {"const": "PCI DSS 4.0.1"},
+    "authorization_reference": {"$ref": "#/$defs/text"},
+    "entity_type": {"enum": ["merchant", "service-provider", "multi-tenant-service-provider"]},
+    "assessment_period": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+    "scope_evidence": {"type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "coverage": {"type": "array", "minItems": 1, "maxItems": 512, "items": {"$ref": "#/$defs/coverage"}},
+    "tester": {"type": "object", "additionalProperties": false, "required": ["resource", "qualification_evidence", "independence_evidence"], "properties": {"resource": {"$ref": "#/$defs/text"}, "qualification_evidence": {"$ref": "#/$defs/text_list"}, "independence_evidence": {"$ref": "#/$defs/text_list"}}},
+    "rules_of_engagement": {"type": "object", "additionalProperties": false, "required": ["windows", "allowed_effects", "forbidden_effects", "limits", "stop_conditions", "incident_contacts", "account_data_handling", "cleanup"], "properties": {"windows": {"$ref": "#/$defs/text_list"}, "allowed_effects": {"$ref": "#/$defs/text_list"}, "forbidden_effects": {"$ref": "#/$defs/text_list"}, "limits": {"$ref": "#/$defs/text_list"}, "stop_conditions": {"$ref": "#/$defs/text_list"}, "incident_contacts": {"$ref": "#/$defs/text_list"}, "account_data_handling": {"$ref": "#/$defs/text"}, "cleanup": {"$ref": "#/$defs/text_list"}}},
+    "remediation_and_retest": {"type": "object", "additionalProperties": false, "required": ["risk_owner", "correction_evidence", "retest_completion"], "properties": {"risk_owner": {"$ref": "#/$defs/text"}, "correction_evidence": {"$ref": "#/$defs/text_list"}, "retest_completion": {"$ref": "#/$defs/text_list"}}},
+    "retention": {"type": "object", "additionalProperties": false, "required": ["minimum_months", "location", "access_owner"], "properties": {"minimum_months": {"type": "integer", "minimum": 12, "maximum": 120}, "location": {"$ref": "#/$defs/text"}, "access_owner": {"$ref": "#/$defs/text"}}},
+    "open_dependencies": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["dependency", "owner", "effect_on_coverage"], "properties": {"dependency": {"$ref": "#/$defs/text"}, "owner": {"$ref": "#/$defs/text"}, "effect_on_coverage": {"$ref": "#/$defs/text"}}}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "text_list": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["coverage_id", "layer", "vantage", "targets", "reason", "procedure", "expected_evidence", "completion"], "properties": {"coverage_id": {"$ref": "#/$defs/id"}, "layer": {"enum": ["application", "network", "segmentation"]}, "vantage": {"enum": ["internal", "external", "cde", "out-of-scope", "third-party", "administrative"]}, "targets": {"$ref": "#/$defs/text_list"}, "reason": {"$ref": "#/$defs/text"}, "procedure": {"$ref": "#/$defs/text"}, "expected_evidence": {"$ref": "#/$defs/text_list"}, "completion": {"$ref": "#/$defs/text"}}}
+  }
+}

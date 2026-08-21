@@ -1,0 +1,5 @@
+interface:
+  display_name: "Request Normalization Tracer"
+  short_description: "Localize HTTP hop disagreements"
+  default_prompt: "Use $trace-request-normalization to map each HTTP hop and prove the smallest normalization disagreement with bounded evidence."
+

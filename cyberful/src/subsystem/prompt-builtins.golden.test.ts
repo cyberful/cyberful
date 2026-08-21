@@ -65,21 +65,21 @@ const GOLDEN_CASES = [
     id: "bug-bounty/recon",
     workflow: "bug-bounty",
     phase: "recon",
-    personaID: "pentest/recon",
+    personaID: "bug-bounty/recon",
     successor: "exploit",
   },
   {
     id: "bug-bounty/exploit",
     workflow: "bug-bounty",
     phase: "exploit",
-    personaID: "pentest/exploit",
+    personaID: "bug-bounty/exploit",
     successor: "hacker",
   },
   {
     id: "bug-bounty/hacker",
     workflow: "bug-bounty",
     phase: "hacker",
-    personaID: "pentest/hacker",
+    personaID: "bug-bounty/hacker",
     successor: "verify",
   },
   {
@@ -149,26 +149,26 @@ const GOLDEN_CASES = [
 type GoldenID = (typeof GOLDEN_CASES)[number]["id"]
 
 const EXPECTED_SYSTEM_SHA256 = {
-  "pentest/brief": "7b589ed58c67ddceeb48be2eecde472b80c6a405b5c02e046583df3f8a02306a",
-  "pentest/recon": "87b17f0bd02c17f697c3f1f9ea708e2a941b1b2015282411b877dbe29cbf6d9d",
-  "pentest/exploit": "81a80b488be253d23c2556669dffe2c66807c929ca49757ff73a1a5177a7a8a7",
-  "pentest/hacker": "6893f6f471564ff2f276aa1f7e7ad785ba8fe722b8e1c95527a5899dbb7046da",
-  "pentest/verify": "bf0a4cee3510b5040c64a660d7e46b2b6bd24326cb0bba8441d930376c0d1f45",
-  "pentest/report": "9836fb78f0bd26858919dd7f3aebbcd2d05fd5b146fbf9481dcd8db97719c47c",
-  "bug-bounty/brief": "34e48572f358e2ce09615232e96d863afaa8b3fd4b5b2432b3ad967219fd9620",
-  "bug-bounty/recon": "2bc08751f7314d71b41506049e2cc565c51bd1b9ca1e5ed5cb5903aed0e27cc4",
-  "bug-bounty/exploit": "d8241eec451ce63601d0a6c9fefb7f177fa850fdbb057e5302e6c3a981538a74",
-  "bug-bounty/hacker": "74d70119eaca16ff63495250310c5fd0ea94dc726725bd87e608c555812460fe",
-  "bug-bounty/verify": "b313316db68ec058adef3f477d9420e6ab601d164ca02ae09fb1d6e4aaa42f7b",
-  "bug-bounty/report": "430c42d6b7395533f1642ab857cc634d8bb3b1d1f3785e8e43df19f406a7fc9f",
-  "code-audit/scope": "135d87f502524a6223869aea0afa028058529432448a0112d433d16a22eb116e",
-  "code-audit/index": "83984ed2c8599f446940caf9151e8afe10ba6edd0d0b68d629a0fca9bed009ea",
-  "code-audit/trace": "66302f36c72954cad76a507b7b5079cda1f2171a7a22d401b9f41e329ae0cdbc",
-  "code-audit/hunt": "294137751df8eccaa62d76911428e8e4d77751075430adfb5c78b980d0498776",
-  "code-audit/attack": "a841b36d42fdec97d3479ca4a67695d239b77b153d0b2c2d6276d698e6818d52",
-  "code-audit/verify": "4669adb8987f6a3f38b8fe213812ad2655e5cf9418940786e95fbaafeac8452c",
-  "code-audit/report": "a037b3085ae1248261dcb9131ce686df6b48430d14a49bb2fed2e67e33def72d",
-  "ask/ask": "56fa7eb8176dcb192b5f33f8c9046eedd8681954e8052e71f01ce55e16dbbdfd",
+  "pentest/brief": "fee3ccb68f2468e78953b9498c1e258a6a9005161f061d70f17214ca693f4203",
+  "pentest/recon": "4f6a6dff630a75f3c0593b8154c5fbba933d46cfb5cbbf76c764a1d66da6e0f6",
+  "pentest/exploit": "16380b68163449b9ab0655a72e6b7399980ac9549d205c616ea22629c204dd28",
+  "pentest/hacker": "8f63ca079bf1910f42f49657b7f2d4c7ed2e9414a1ce017a1a4c98b337ceb684",
+  "pentest/verify": "a42be1095cb8de7c8e8f342247f07f8f9c625cbd0e10d6355048c2bfcd78e72c",
+  "pentest/report": "f981ff76b29163b38ae2bd419a64c18ffc5252aa0dabc6b047124827828670e7",
+  "bug-bounty/brief": "41408cad31e214fc7965438de548dc06eeab08a4c43e68e08e6cadd233c1e0e6",
+  "bug-bounty/recon": "3a1b66f94e016dc2e4e78f79695bf16c18ce2f6b119cbf36e3841df7ba1d0d48",
+  "bug-bounty/exploit": "bf0aa57e2a41e894b2a5bd70e7eb49176961e15501236f35c9a1bf9d6c4d4ca1",
+  "bug-bounty/hacker": "fba7eac761aa220acdbf24dc7cf2ecd8d83d61a06c84294f9b2fcb780ada087c",
+  "bug-bounty/verify": "77654df6ba1ef142480fe1c40ceff478092666704dd46310638abda92da2622b",
+  "bug-bounty/report": "4a5444a62511fb506da4e13cade44b9eb26c5b7e8187b7b70036487a1753963e",
+  "code-audit/scope": "001d68efd350fcbb911646c71dfd05dc065fad6185f4a864b726019818640f2d",
+  "code-audit/index": "1866e743729faea0a06f74bad83faad6076da9d76b910c98c07e425b8abb2f08",
+  "code-audit/trace": "75375115daba839f145fcab26207255b8cb61dfe968fc5a096f04e4efe50627f",
+  "code-audit/hunt": "b29cf12650f85646a9abd52cd1bc17953ebf7880c1057ada76b37f520e9f2742",
+  "code-audit/attack": "1a479228655afc5adce743bdb0fd53f41d9edfa1378e2f16e0c13b41e1b69ce6",
+  "code-audit/verify": "dbb3c7cbd6fb48ce40c0cb15489e00c972ceed65cc63f93751255decdfc1eee2",
+  "code-audit/report": "86c5fec33ddf959c638074a2d37d4881274d40dd36bb1182c4bd067b766e84b4",
+  "ask/ask": "4e24b02761bcc357b2287b98ee0e26b4286a22c2a5f5afb7bc29c01583b2e8b4",
 } satisfies Record<GoldenID, string>
 
 const AUTHORIZATION_PREFIX = {
@@ -213,6 +213,20 @@ const GOLDEN_SKILLS = {
       location: "/builtin/skills/inspect-evidence/SKILL.md",
     },
   ],
+  searchTool: {
+    name: "skill_search",
+    label: "Search trusted skills",
+    description: "Search golden-test skill metadata.",
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1 }),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, default: 8 })),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 20, pattern: "^(0|[1-9][0-9]*)$" })),
+    }),
+    execute: async () => ({
+      content: [{ type: "text" as const, text: "{}" }],
+      details: { query: "*", total: 0, returned: 0 },
+    }),
+  },
   tool: {
     name: "skill_read",
     label: "Read trusted skill",
@@ -220,6 +234,15 @@ const GOLDEN_SKILLS = {
     parameters: SKILL_READ_PARAMETERS,
     execute: async () => {
       throw new Error("the golden prompt test does not execute skills")
+    },
+  },
+  stageTool: {
+    name: "skill_stage",
+    label: "Stage trusted skill resource",
+    description: "Stage one golden-test skill resource.",
+    parameters: Type.Object({ skill: Type.String({ minLength: 1 }), path: Type.String({ minLength: 1 }) }),
+    execute: async () => {
+      throw new Error("the golden prompt test does not stage skills")
     },
   },
   read: async () => {
@@ -383,8 +406,8 @@ test("every built-in workflow/persona compiles to its reviewed complete system c
   for (const phase of ["recon", "exploit", "hacker"] as const) {
     const pentest = required(compiledByID.get(`pentest/${phase}`), `missing pentest/${phase} golden`)
     const bugBounty = required(compiledByID.get(`bug-bounty/${phase}`), `missing bug-bounty/${phase} golden`)
-    expect(bugBounty.manifest.personaID).toBe(`pentest/${phase}`)
-    expect(bugBounty.manifest.componentHashes.persona).toBe(pentest.manifest.componentHashes.persona)
+    expect(bugBounty.manifest.personaID).toBe(`bug-bounty/${phase}`)
+    expect(bugBounty.manifest.componentHashes.persona).not.toBe(pentest.manifest.componentHashes.persona)
     expect(bugBounty.manifest.componentHashes.authorization).not.toBe(pentest.manifest.componentHashes.authorization)
   }
 

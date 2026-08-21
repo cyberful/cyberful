@@ -1,5 +1,13 @@
 # Differential Discovery Heuristics
 
+## Campaign contract
+
+Run one target profile and mutation axis per staged campaign configuration. `allowed_origins` contains exact `(scheme, host, effective port)` tuples; changing HTTP to HTTPS or either explicit/effective port requires a separately allowed origin. `authorization_reference` points to the external engagement scope but does not grant authority. The mission-bound Cyberful gateway or ZAP route is the transport authority; campaign JSON can only narrow it. The non-empty wordlist count must fit `request_limit`, and concurrency cannot exceed that limit.
+
+Keep authorization tokens, proxy URLs, and CA paths out of JSON and command arguments supplied by the model. After the JSON is fully validated, non-loopback HTTP(S) targets inherit only the matching host-owned `HTTP_PROXY` or `HTTPS_PROXY` and `SSL_CERT_FILE` or `CURL_CA_BUNDLE`; absent route means refusal. A runtime proxy may use its Docker hostname. Loopback IP literals bypass proxy inheritance explicitly. The orchestrator resolves only the fixed `ffuf` command and does not add insecure TLS flags, shell interpolation, recursion, filters, headers, or credentials on the model's behalf.
+
+Preserve `ffuf-results.json` and `campaign-record.json` unchanged. The record binds argv, ffuf version, exit code, wordlist digest, native-output digest, and bounded streams. It is execution evidence, not a classification: compare raw responses and replay controls before updating the coverage ledger.
+
 ## Response vectors
 
 Model each response as:

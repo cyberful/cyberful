@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyberful.dev/schemas/smart-contract-invariant-evidence.schema.json",
+  "title": "Raw smart-contract invariant evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "campaign_id", "scope_reference", "input_sha256", "source", "network_sandbox", "tool", "command", "result", "limits"],
+  "properties": {
+    "format": {"const": "cyberful.smart-contract-invariant-evidence.v1"},
+    "campaign_id": {"type": "string"},
+    "scope_reference": {"type": "string"},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "files", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string"},
+        "files": {"type": "integer", "minimum": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "network_sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "mechanism"],
+      "properties": {"network": {"const": "none"}, "mechanism": {"type": "string"}}
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "runtime_cache_environment", "version_probe"],
+      "properties": {
+        "name": {"const": "forge"},
+        "runtime_cache_environment": {
+          "type": "array",
+          "items": {"enum": ["FOUNDRY_DIR", "SVM_HOME", "XDG_CACHE_HOME"]},
+          "uniqueItems": true
+        },
+        "version_probe": {"$ref": "#/$defs/process"}
+      }
+    },
+    "command": {"type": "array", "items": {"type": "string"}},
+    "result": {"$ref": "#/$defs/process"},
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_seconds", "stdout_bytes", "stderr_bytes"],
+      "properties": {
+        "timeout_seconds": {"type": "integer"},
+        "stdout_bytes": {"type": "integer"},
+        "stderr_bytes": {"type": "integer"}
+      }
+    }
+  },
+  "$defs": {
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base64", "bytes", "sha256"],
+      "properties": {
+        "base64": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "exit_code", "timed_out", "limit_exceeded", "stdout", "stderr"],
+      "properties": {
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "exit_code": {"type": ["integer", "null"]},
+        "timed_out": {"type": "boolean"},
+        "limit_exceeded": {"type": ["string", "null"], "enum": ["stdout", "stderr", null]},
+        "stdout": {"$ref": "#/$defs/stream"},
+        "stderr": {"$ref": "#/$defs/stream"}
+      }
+    }
+  }
+}

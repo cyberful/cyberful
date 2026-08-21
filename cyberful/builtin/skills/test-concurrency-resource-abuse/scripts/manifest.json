@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "entrypoint": "run_concurrency_probe.py",
+  "class": "probe",
+  "network": "target",
+  "transport": {"authority": "runtime", "route": "http-proxy", "loopback": "direct", "proxy_environment": ["HTTP_PROXY", "HTTPS_PROXY"], "trust_environment": ["SSL_CERT_FILE", "CURL_CA_BUNDLE"]},
+  "workflows": ["pentest", "bug-bounty"],
+  "phases": ["exploit", "hacker"],
+  "tools": ["python3"],
+  "dependencies": {"commands": ["python3"], "python": [], "bootstrap": null},
+  "effects": ["sends synchronized HTTP requests to explicitly authorized origins", "writes bounded raw response evidence"],
+  "timeout_seconds": 60,
+  "limits": {"requests": 64, "concurrency": 8, "output_bytes": 4194304},
+  "secrets": {"environment": ["CYBERFUL_PROBE_AUTHORIZATION"]},
+  "input": {"format": "cyberful.concurrency-probe.v1", "schema": "assets/concurrency-probe.schema.json"},
+  "output": {"format": "cyberful.concurrency-probe.raw.v1", "schema": "assets/concurrency-evidence.schema.json", "raw": true}
+}

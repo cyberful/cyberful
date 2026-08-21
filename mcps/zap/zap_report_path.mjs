@@ -1,10 +1,32 @@
 // ── Engagement ZAP Report Paths ─────────────────────────────────────
-// Canonicalizes report destinations beneath the mounted workarea without
-// filtering the sites collected by ZAP.
+// Canonicalizes report destinations beneath the mounted workarea and validates
+// optional Reports API site filters as exact HTTP(S) origins.
 // → mcps/zap/zap_bridge.mjs — applies these constraints to report generation.
 // ────────────────────────────────────────────────────────────────────
 
 import path from "node:path"
+
+export function normalizedReportSites(value) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100)
+    throw new Error("ZAP report sites must contain between 1 and 100 origins")
+  const sites = value.map((candidate, index) => {
+    if (typeof candidate !== "string" || candidate !== candidate.trim())
+      throw new Error(`ZAP report sites[${index}] must be a normalized HTTP(S) origin`)
+    let parsed
+    try {
+      parsed = new URL(candidate)
+    } catch {
+      throw new Error(`ZAP report sites[${index}] must be a normalized HTTP(S) origin`)
+    }
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin !== candidate)
+      throw new Error(`ZAP report sites[${index}] must be a normalized HTTP(S) origin`)
+    return parsed.origin
+  })
+  if (new Set(sites).size !== sites.length) throw new Error("ZAP report sites must be unique")
+  return sites
+}
+
 export function engagementReportPath(requestedPath, workarea) {
   const requested = typeof requestedPath === "string" ? requestedPath.trim() : ""
   if (!requested) throw new Error("a report filename is required")

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit PCI DSS Penetration Evidence"
+  short_description: "Audit PCI DSS 11.4 evidence and retests"
+  default_prompt: "Use $audit-pci-dss-penetration-test-evidence to audit a bounded PCI DSS 11.4 evidence set without issuing a compliance verdict."

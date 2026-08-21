@@ -1,0 +1,8 @@
+{
+  "authorized": true,
+  "artifact": "inputs/application-image.tar",
+  "output_directory": "raw/supply-chain",
+  "tools": ["syft", "grype", "trivy", "gitleaks"],
+  "max_tool_runs": 4,
+  "timeout_seconds": 600
+}

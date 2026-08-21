@@ -1,0 +1,38 @@
+{
+  "$schema": "https://cyberful.local/schemas/tenant-context.v1.json",
+  "trace_id": "synthetic-tenant-trace-001",
+  "events": [
+    {
+      "event_id": "gateway-route",
+      "order": 10,
+      "component": "edge-gateway",
+      "boundary": "gateway",
+      "evidence_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "context": {
+        "authenticated_tenant": "tenant-a",
+        "asserted_tenant": "tenant-a",
+        "routed_tenant": "tenant-a",
+        "resource_tenant": null,
+        "cache_partition": null,
+        "job_tenant": null,
+        "data_partition": null
+      }
+    },
+    {
+      "event_id": "repository-query",
+      "order": 20,
+      "component": "records-repository",
+      "boundary": "repository",
+      "evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "context": {
+        "authenticated_tenant": "tenant-a",
+        "asserted_tenant": null,
+        "routed_tenant": "tenant-a",
+        "resource_tenant": "tenant-a",
+        "cache_partition": null,
+        "job_tenant": null,
+        "data_partition": "tenant-a"
+      }
+    }
+  ]
+}

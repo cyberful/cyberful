@@ -1,0 +1,4 @@
+interface:
+  display_name: "Identity Propagation Tracer"
+  short_description: "Trace identity claims across service boundaries"
+  default_prompt: "Use $trace-identity-propagation to reconstruct this principal and delegation path from the supplied artifacts."
