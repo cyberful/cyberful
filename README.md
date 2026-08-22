@@ -39,8 +39,6 @@ cyberful
 
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.ai/open-docs/getting-started/)**.
 
-Choose a workarea in the TUI, select a workflow, and describe the objective. The composer's fixed status shoulder reports the active phase, its elapsed time, and whether Cyberful is generating or executing a job without claiming a completion percentage. Every live-target request must include the exact authorized targets, exclusions, test window, account roles, and traffic constraints. Bug bounty requests should also supply the official program policy or its exact public URL; Brief reads published reward tiers autonomously, and finding maturation checkpoints make the technical frontier and potential published upside visible in the live feed. Code Audit can review the complete repository or an explicitly requested branch, commit range, or set of current changes.
-
 ## Requirements
 
 To install through npm and run a release:
