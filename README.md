@@ -18,8 +18,6 @@ Bug Bounty research validates reward context and resolves convergence through te
   <img src=".github/assets/cyberful-demo.gif" alt="Cyberful running an authorized penetration test" />
 </p>
 
-Cyberful combines coding-agent reasoning with isolated offensive tooling, independent verification, durable evidence, and report-ready outputs. It is open source, local-first, and emits no telemetry.
-
 ## Why Cyberful
 
 Cyberful exists to **democratize cybersecurity**: to make advanced security work understandable, inspectable, and usable by more developers, researchers, maintainers, and smaller teams. Democratization does not mean unrestricted automation or lower standards; findings remain evidence-backed, independently verifiable, and tied to the engagement that authorized them.
