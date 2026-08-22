@@ -3695,19 +3695,14 @@ describe("Pi AgentRun steering and cancellation", () => {
 
   test("keeps the same root, blocks research tools, and writes handoff during reserved closeout", async () => {
     const workarea = await temporaryWorkarea()
+    const clockNow = 1_000
+    const closeoutReserveMs = 30_000
     let researchExecutions = 0
     let handoffs = 0
-    const provider = new InMemoryProvider(async (call) => {
-      if (call.ordinal === 1) {
-        await new Promise<void>((resolve) => {
-          if (call.signal?.aborted) resolve()
-          else call.signal?.addEventListener("abort", () => resolve(), { once: true })
-        })
-        return assistant(call, [], { stopReason: "aborted" })
-      }
-      if (call.ordinal === 2) return toolCall(call, "research_probe", {})
-      if (call.ordinal === 3) return toolCall(call, "evidence_manifest", { command: "create" })
-      if (call.ordinal === 4) return toolCall(call, "handoff", {})
+    const provider = new InMemoryProvider((call) => {
+      if (call.ordinal === 1) return toolCall(call, "research_probe", {})
+      if (call.ordinal === 2) return toolCall(call, "evidence_manifest", { command: "create" })
+      if (call.ordinal === 3) return toolCall(call, "handoff", {})
       return assistant(call, "closeout complete")
     })
     const researchProbe: AgentTool<typeof EMPTY_PARAMETERS> = {
@@ -3730,13 +3725,13 @@ describe("Pi AgentRun steering and cancellation", () => {
         return { content: [{ type: "text", text: "handoff accepted" }], details: {} }
       },
     }
-    const runtime = subsystem(provider)
+    const runtime = subsystem(provider, registry(), () => clockNow)
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "closeout-root",
-        objective: "research until the host closeout boundary",
-        deadlineAt: Date.now() + 180,
-        closeoutReserveMs: 100,
+        objective: "complete the host-owned durable closeout",
+        deadlineAt: clockNow + closeoutReserveMs,
+        closeoutReserveMs,
         workarea,
         tools: [researchProbe],
         gatewayTools: [handoff],
@@ -3749,8 +3744,8 @@ describe("Pi AgentRun steering and cancellation", () => {
     expect(result).toMatchObject({ id: "closeout-root", termination: "completed", output: "closeout complete" })
     expect(startedEvents(events)).toHaveLength(1)
     expect(closeoutEvents(events)).toHaveLength(1)
-    expect(closeoutEvents(events)[0]).toMatchObject({ state: "entered", reserveMs: 100 })
-    expect(userTexts(provider.calls[1]!).join("\n")).toContain("HOST-OWNED PHASE CLOSEOUT")
+    expect(closeoutEvents(events)[0]).toMatchObject({ state: "entered", reserveMs: closeoutReserveMs })
+    expect(userTexts(provider.calls[0]!).join("\n")).toContain("HOST-OWNED PHASE CLOSEOUT")
     expect(
       activityEvents(events).find(
         (event) => event.activity.kind === "output" && event.activity.tool === "research_probe",
