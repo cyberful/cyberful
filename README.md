@@ -12,8 +12,6 @@ Cyberful combines coding-agent reasoning with isolated offensive tooling, indepe
 
 Bug Bounty research validates reward context and resolves convergence through tested pivots or evidenced exhaustion—without scores, rankings, or quotas.
 
-Every release embeds a build-resolved MITRE ATT&CK STIX 2.1 snapshot for Enterprise, Mobile, and ICS. Agents use that offline snapshot as the authoritative source for ATT&CK facts and as a non-exhaustive threat-informed reasoning lens; zero-days, business-logic failures, application-specific weaknesses, and novel chains outside the matrix remain first-class research targets.
-
 *(i) Documentation:* installation, workflows, configuration, architecture, and security runtimes are documented at **[cyberful.ai/open-docs](https://cyberful.ai/open-docs/)**.
 
 <p align="center">
