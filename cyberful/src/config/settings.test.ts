@@ -52,6 +52,12 @@ afterEach(async () => {
 })
 
 describe("Settings", () => {
+  test("keeps the repository example aligned with the generated default", async () => {
+    const example = await readFile(path.join(import.meta.dir, "../../../example.settings.yaml"), "utf8")
+
+    expect(example).toBe(Settings.DEFAULT_YAML)
+  })
+
   test("creates and loads a secret-free OpenAI Codex subscription default", async () => {
     const directory = await temporaryDirectory()
 

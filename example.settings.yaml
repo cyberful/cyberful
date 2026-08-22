@@ -1,0 +1,61 @@
+version: 1
+
+agent:
+  subsystem: pi
+  main_provider: openai-codex
+  reasoning_effort: ultra
+
+  subagents:
+    enabled: true
+    provider: openai-codex
+    reasoning_effort: [xhigh, medium]
+    max_per_run: 5
+    max_concurrent: 5
+    max_depth: 2
+    timeout_minutes: 30
+
+  compaction:
+    enabled: true
+    trigger_percentage: 75
+    target_percentage: 35
+    model_summary: true
+    summarizer:
+      provider: inherit
+      reasoning_effort: medium
+
+  skill_catalog:
+    description_budget_percentage: 2
+
+  retry:
+    enabled: true
+    max_retries: 3
+    base_delay_ms: 1000
+    max_delay_ms: 15000
+    attempt_timeout_ms: 600000
+    max_phase_extension_minutes: 15
+
+  phase_recovery:
+    enabled: true
+    max_restarts: 1
+    use_fallback_provider: true
+
+  fallback:
+    recovery_bonus_minutes: 5
+    proactive:
+      enabled: false
+      percentage: 2
+    automatic_security_block:
+      enabled: false
+
+  providers:
+    openai-codex:
+      adapter: openai-codex
+      model: gpt-5.6-sol
+      operational_context_window: 256000
+      auth:
+        type: subscription
+
+instructions:
+  persona_roots: []
+  skill_roots: []
+  allow_project_discovery: false

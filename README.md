@@ -24,18 +24,32 @@ Cyberful exists to **democratize cybersecurity**: to make advanced security work
 
 ## Getting started
 
-The npm installation needs Node.js 18 or newer, npm, Docker, and a supported model-provider account. Install Cyberful, create an engagement directory, and authenticate the default OpenAI Codex provider:
+Cyberful requires Node.js 18 or newer, npm, Docker, and a supported model-provider account.
+
+1. Install Cyberful.
 
 ```sh
 npm install --global cyberful
-mkdir -p "$HOME/cyberful-engagements/first-test"
-cd "$HOME/cyberful-engagements/first-test"
-cyberful auth login
-cyberful auth status
-cyberful
 ```
 
-`cyberful auth status` must report `Status: available`. The first launch builds the fingerprinted Cyberful security image locally with visible Docker logs and installs its isolated Chromium browser. Keep at least 100 GB of disk space free for the first build and dedicate at least 10 GB of RAM to Docker.
+2. Choose or create a folder that will serve as your cybersecurity laboratory.
+
+```sh
+mkdir cyberful-lab
+cd cyberful-lab
+```
+
+3. Create a `settings.yaml` based on [example.settings.yaml](example.settings.yaml), then authenticate the configured provider.
+
+```sh
+cyberful auth login
+```
+
+4. Start Cyberful and select a workflow.
+
+```sh
+cyberful
+```
 
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.ai/open-docs/getting-started/)**.
 
