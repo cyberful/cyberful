@@ -24,7 +24,7 @@ Cyberful exists to **democratize cybersecurity**: to make advanced security work
 
 ## Getting started
 
-Cyberful requires Node.js 18 or newer, npm, Docker, and a supported model-provider account.
+Cyberful requires Node.js 18 or newer, npm, Docker, and a configured model provider.
 
 1. Install Cyberful.
 
@@ -52,6 +52,8 @@ cyberful
 ```
 
 For complete fresh-machine instructions on macOS, Linux, and Windows, follow **[Your first penetration test](https://cyberful.ai/open-docs/getting-started/)**.
+
+To keep model inference on your own machine, follow **[Local inference](https://cyberful.ai/open-docs/user-guide/settings/#local-inference)**.
 
 ## Requirements
 
