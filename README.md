@@ -8,9 +8,9 @@
 
 For authorized pentests, code audits, and bug bounty research.
 
-Cyberful combines coding-agent reasoning with isolated offensive tooling, independent verification, durable evidence, and report-ready outputs. It is open source, local-first, and emits no telemetry.
+Cyberful is an AI Red Team. More specifically, it is a security research machine that uses a multi-agent system to orchestrate 316 cybersecurity tools, including 203 command-line applications and commands such as Nmap, Metasploit, and Nuclei, alongside ZAP and Ghidra.
 
-Bug Bounty research validates reward context and resolves convergence through tested pivots or evidenced exhaustion—without scores, rankings, or quotas.
+In short, hypothesis workers map attack surfaces, test exploit paths, and validate impact in isolation. Then, a deterministic control plane enforces scope and preserves evidence. Finally, only independently reproduced vulnerabilities reach reports. This applies to penetration testing, code audits, and bug bounty hunting.
 
 *(i) Documentation:* installation, workflows, configuration, architecture, and security runtimes are documented at **[cyberful.ai/open-docs](https://cyberful.ai/open-docs/)**.
 
