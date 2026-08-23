@@ -8,7 +8,7 @@
 
 For authorized pentests, code audits, and bug bounty research.
 
-Cyberful is an AI Red Team. More specifically, it is a security research machine that uses a multi-agent system to orchestrate 316 cybersecurity tools, including 203 command-line applications and commands such as Nmap, Metasploit, and Nuclei, alongside ZAP and Ghidra.
+Cyberful is an AI Red Team. In other words, it is **your security research laboratory** that uses a multi-agent system to orchestrate 316 cybersecurity tools, including 203 command-line applications and commands such as Nmap, Metasploit, and Nuclei, alongside ZAP and Ghidra.
 
 In short, hypothesis workers map attack surfaces, test exploit paths, and validate impact in isolation. Then, a deterministic control plane enforces scope and preserves evidence. Finally, only independently reproduced vulnerabilities reach reports. This applies to penetration testing, code audits, and bug bounty hunting.
 
