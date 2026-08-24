@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hardened the public Cyberful Agent Skill against credential confusion, indirect prompt injection, and unrequested high-impact actions by distinguishing public run selectors from authentication secrets, treating target-derived values as untrusted data, making observation the default, and keeping target interaction inside Cyberful's mediated runtime.
+
 ## 0.4.0
 
 - Added the public `skills/cyberful` Agent Skills package, `SessionInspectionV1`, `cyberful session inspect`, and the attached `cyberful session watch` control-room stream.

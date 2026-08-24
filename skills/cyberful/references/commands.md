@@ -10,15 +10,19 @@ Run `cyberful --version` and require Cyberful 0.4.0 or later. Work from the auth
 
 Use a stable workarea name because durable lifecycle, evidence, findings, usage, reports, and cleanup live below it.
 
+Inspection is the default control-room action. Starting a new run performs authorized security work and requires the user's explicit request in the current task. Do not infer permission to start from an available target, program page, earlier run, or installed Cyberful CLI.
+
 ## Headless run
 
-Start this way unless the user specifically wants the TUI:
+When the user explicitly requests a new run, start this way unless they specifically want the TUI:
 
 ```sh
 cyberful run --workflow <pentest|bug-bounty|code-audit> --workarea <name> --format json "<authorized objective>"
 ```
 
-The first observation is `session.opened`. Record its `sessionID`. JSON output is `CyberfulObservationV1` JSONL; do not parse it as the pre-0.4.0 event shape.
+The first observation is `session.opened`. Use its `sessionID` only as an opaque local selector for that run. It is intentionally present in the public observation envelope and is not a bearer token, credential, or proof of authorization. JSON output is `CyberfulObservationV1` JSONL; do not parse it as the pre-0.4.0 event shape.
+
+Never ask the user for a password, API key, token, cookie, provider header, or other secret, and never place one in conversation or model-visible command text. When a control plane requires authentication, the user must configure it in their own environment outside the agent's context.
 
 The run exits 0 for `success` or `warning`, and 1 for `blocked` or `failed`. Use the terminal snapshot rather than the shell code alone to explain the outcome.
 
@@ -30,7 +34,7 @@ Start the TUI with a loopback control plane when another process must supervise 
 cyberful --port 4096
 ```
 
-Use the URL shown by Cyberful. Authentication options are `--username` and `--password`; environment-backed server credentials remain supported by the CLI.
+Use the URL shown by Cyberful. The human operator configures control-plane authentication through the CLI's supported options or environment-backed server credentials without disclosing the values to the agent.
 
 ## Inspect
 
