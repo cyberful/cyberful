@@ -10,7 +10,7 @@ import type {
   WorkareaFinding,
 } from "@/server/client"
 import { Locale } from "@/util/locale"
-import { TextAttributes, type KeyEvent } from "@opentui/core"
+import { TextAttributes, type KeyEvent, type RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "@tui/context/theme"
 import { useTuiConfig } from "@tui/context/tui-config"
@@ -402,6 +402,29 @@ export function FindingSidebar(props: {
   )
 }
 
+export function HypothesisDialogHeader(props: {
+  id: string
+  description: string
+  state: string
+  phase: string
+  textColor: RGBA
+  mutedColor: RGBA
+}) {
+  return (
+    <box id="hypothesis-dialog-header" width="100%" flexDirection="column">
+      <text width="100%" fg={props.textColor} attributes={TextAttributes.BOLD} wrapMode="word">
+        {props.id}
+      </text>
+      <text id="hypothesis-dialog-description" width="100%" fg={props.textColor} wrapMode="word">
+        {props.description}
+      </text>
+      <text marginTop={1} width="100%" fg={props.mutedColor} wrapMode="word">
+        {`${props.state} · ${props.phase}`}
+      </text>
+    </box>
+  )
+}
+
 export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
   const dialog = useDialog()
   const dimensions = useTerminalDimensions()
@@ -419,24 +442,7 @@ export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
       paddingBottom={1}
       overflow="hidden"
     >
-      <box height={3} width="100%" flexShrink={0} flexDirection="column" gap={1} overflow="hidden">
-        <text
-          height={1}
-          width="100%"
-          overflow="hidden"
-          fg={theme.text}
-          attributes={TextAttributes.BOLD}
-          wrapMode="none"
-          truncate
-        >
-          {props.hypothesis.description}
-        </text>
-        <text height={1} width="100%" overflow="hidden" fg={theme.textMuted} wrapMode="none" truncate>
-          {`${props.hypothesis.id} · ${props.hypothesis.state} · ${props.hypothesis.phase}`}
-        </text>
-      </box>
       <scrollbox
-        marginTop={1}
         flexGrow={1}
         flexShrink={1}
         minHeight={0}
@@ -446,7 +452,15 @@ export function DialogHypothesis(props: { hypothesis: HypothesisItem }) {
         verticalScrollbarOptions={{ visible: true }}
         horizontalScrollbarOptions={{ visible: false }}
       >
-        <text fg={theme.textMuted} wrapMode="word">
+        <HypothesisDialogHeader
+          id={props.hypothesis.id}
+          description={props.hypothesis.description}
+          state={props.hypothesis.state}
+          phase={props.hypothesis.phase}
+          textColor={theme.text}
+          mutedColor={theme.textMuted}
+        />
+        <text marginTop={1} fg={theme.textMuted} wrapMode="word">
           {`Owner: ${props.hypothesis.ownerDisplayName ?? props.hypothesis.owner}`}
         </text>
         <text marginTop={1} fg={theme.textMuted} attributes={TextAttributes.BOLD}>

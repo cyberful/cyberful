@@ -57,6 +57,16 @@ Preserve user changes in a dirty worktree. Prefer additive, narrowly scoped chan
 - The default branch in this repo is `main`.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 
+## Dependency maintenance
+
+Automated dependency version PRs are deliberately disabled. Keep GitHub's dependency graph and Dependabot alerts as vulnerability signals, but review and implement dependency changes as repository-owned work rather than accepting an isolated version bump.
+
+- Run `bun scripts/dependencies.ts inventory` before a release and during scheduled maintenance to inspect the root Bun workspace, the `mcps/` npm graph, and the separate `mcps/zap/` Bun graph. This command only reports available versions.
+- Run `bun scripts/dependencies.ts audit` for security triage. A non-zero result is evidence to investigate, not permission to update or suppress a package; determine the affected path, runtime reachability, patched dependency behavior, and minimum safe version.
+- Update one coherent dependency family at a time and preserve exact pins. Keep Pi packages, OpenTUI plus `web-tree-sitter`, every `@parcel/watcher` wrapper and platform binding, and Sigstore packages internally compatible rather than splitting them into independent bumps.
+- Regenerate only the lockfile owned by the changed manifest: use `bun install` at the repository root or under `mcps/zap/`, and `npm install --prefix mcps` for `mcps/package-lock.json`. Inspect the complete manifest and lockfile diff before testing.
+- Run `bun scripts/dependencies.ts verify` after every reviewed update. Native bindings and release dependencies additionally require the applicable cross-platform build or runtime tests; tool and runtime version changes also require the coordinated engineer documentation and tool-catalog checks described below.
+
 ## Working narration
 
 Make work legible while it happens:

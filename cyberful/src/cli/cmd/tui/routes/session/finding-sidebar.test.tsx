@@ -1,12 +1,14 @@
 // ── Finding Sidebar Projection Tests ─────────────────────────────
-// Verifies historical-first grouping and the rendered 2/3 + 1/3 terminal split.
+// Verifies finding and hypothesis projection, modal layout, and terminal sizing.
 // → cyberful/src/cli/cmd/tui/routes/session/finding-sidebar.tsx — owns the projection.
 // ─────────────────────────────────────────────────────────────────
 
 import { expect, test } from "bun:test"
+import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { FindingRegistryView, SessionHypothesisRegistryView } from "@/server/client"
 import {
+  HypothesisDialogHeader,
   activeHypothesisLabel,
   findingDialogHeight,
   findingGroups,
@@ -197,6 +199,36 @@ test("finding details stay centered inside a bounded terminal-height modal", () 
   expect(findingDialogHeight(40)).toBe(28)
   expect(findingDialogHeight(12)).toBeLessThanOrEqual(10)
   expect(findingDialogHeight(4)).toBe(4)
+})
+
+test("the hypothesis dialog shows its ID before the complete wrapped description", async () => {
+  const description = "A complete hypothesis description remains visible across every wrapped line"
+  const color = RGBA.fromHex("#ffffff")
+  const rendered = await testRender(
+    () => (
+      <box width={30} height={8}>
+        <HypothesisDialogHeader
+          id="H-EXPLOIT-001"
+          description={description}
+          state="TESTING"
+          phase="exploit"
+          textColor={color}
+          mutedColor={color}
+        />
+      </box>
+    ),
+    { width: 30, height: 8 },
+  )
+
+  try {
+    await rendered.renderOnce()
+    const frame = rendered.captureCharFrame().replace(/\s+/g, " ")
+    const descriptionRenderable = rendered.renderer.root.findDescendantById("hypothesis-dialog-description")
+    expect(frame).toContain(`H-EXPLOIT-001 ${description} TESTING · exploit`)
+    expect(descriptionRenderable?.height).toBeGreaterThan(1)
+  } finally {
+    rendered.renderer.destroy()
+  }
 })
 
 test("OpenTUI clips a three-line finding preview to the sidebar content width", async () => {
