@@ -4,7 +4,7 @@
 
 # Cyberful: The Open-Source AI Red Team.
 
-[![CI](https://github.com/cyberful/cyberful/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberful/cyberful/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful) [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1463ff.svg)](LICENSE) [![Documentation](https://img.shields.io/badge/docs-open--docs-1463ff.svg)](https://cyberful.ai/open-docs/)
+[![CI](https://github.com/cyberful/cyberful/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberful/cyberful/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/cyberful.svg)](https://www.npmjs.com/package/cyberful) [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1463ff.svg)](LICENSE) [![Documentation](https://img.shields.io/badge/docs-open--docs-1463ff.svg)](https://cyberful.ai/open-docs/) [![skills.sh](https://skills.sh/b/cyberful/cyberful)](https://skills.sh/cyberful/cyberful)
 
 For authorized pentests, code audits, and bug bounty research.
 
