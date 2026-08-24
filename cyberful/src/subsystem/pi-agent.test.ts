@@ -3765,6 +3765,14 @@ describe("Pi AgentRun steering and cancellation", () => {
   test("reserves child closeout time for its durable output without closing the phase", async () => {
     const workarea = await temporaryWorkarea()
     const outputArtifact = "raw/delegations/auth.md"
+    const clockNow = 1_000
+    const closeoutReserveMs = 30_000
+    const deadlineAt = clockNow + closeoutReserveMs * 2
+    const budgetClock = SubsystemPhaseBudgetClock.create({
+      deadlineAt,
+      retryCompensationCapMs: 1_800_000,
+      now: () => clockNow,
+    })
     let shellExecutions = 0
     const blockedShell: AgentTool<typeof EMPTY_PARAMETERS> = {
       name: "shell",
@@ -3810,16 +3818,17 @@ describe("Pi AgentRun steering and cancellation", () => {
       if (results === 3) return toolCall(call, "workarea_read", { path: outputArtifact })
       return assistant(call, "child reconciled its durable output")
     })
-    const runtime = subsystem(provider)
+    const runtime = subsystem(provider, registry(), () => clockNow)
     const run = await runtime.subsystem.start(
       rootSpec(runtime.models, {
         id: "child-closeout-root",
         objective: "retain phase ownership while the child closes out",
         tools: [blockedShell],
         workarea,
-        deadlineAt: Date.now() + 2_000,
-        closeoutReserveMs: 200,
-        childMaxRuntimeMs: 300,
+        deadlineAt,
+        budgetClock,
+        closeoutReserveMs,
+        childMaxRuntimeMs: closeoutReserveMs,
       }),
     )
 
@@ -3856,6 +3865,7 @@ describe("Pi AgentRun steering and cancellation", () => {
         .map((message) => textContent(message.content))
         .join("\n"),
     ).toContain("auth closeout complete")
+    budgetClock.close()
   })
 
   test("preserves a budget-exhausted child's public summary and test-object ledger for the root", async () => {
