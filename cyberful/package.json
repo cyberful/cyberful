@@ -16,7 +16,8 @@
   "scripts": {
     "check:code": "bun run script/check-code-principles.ts",
     "validate:skills": "bun run script/validate-skills.ts",
-    "typecheck": "bun run check:code && bun run validate:skills && tsgo --noEmit",
+    "validate:public-skills": "bun run script/validate-public-skills.ts",
+    "typecheck": "bun run check:code && bun run validate:skills && bun run validate:public-skills && tsgo --noEmit",
     "build": "bun run script/build.ts",
     "generate-client": "bun run script/generate-client.ts",
     "cve-dictionary:acquire": "bun run script/cve-dictionary-sources.ts",

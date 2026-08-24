@@ -22,6 +22,12 @@ import { ensureWorkarea, requireWorkarea, setLastWorkarea, workareaSystemPrompt 
 import * as Log from "@/util/log"
 import { runCveDictionaryPreflight } from "@/cli/cve-dictionary-preflight"
 import { completionExitCode } from "./run/outcome"
+import {
+  createObservationEmitter,
+  inspectionCandidate,
+  normalizeEventV1,
+  writeObservationJson,
+} from "../observation"
 
 const log = Log.create({ service: "cli.run" })
 
@@ -162,7 +168,7 @@ export const RunCommand = effectCmd({
         type: "string",
         choices: ["default", "json"],
         default: "default",
-        describe: "format: default (formatted) or json (raw JSON events)",
+        describe: "format: default (formatted) or json (CyberfulObservationV1 JSONL)",
       })
       .option("file", {
         alias: ["f"],
@@ -478,21 +484,14 @@ export const RunCommand = effectCmd({
           process.exit(1)
         }
         const sessionID = sess.id
-
-        function emit(type: string, data: Record<string, unknown>) {
-          if (args.format === "json") {
-            process.stdout.write(
-              JSON.stringify({
-                type,
-                timestamp: Date.now(),
-                sessionID,
-                ...data,
-              }) + EOL,
-            )
-            return true
-          }
-          return false
-        }
+        const observation =
+          args.format === "json"
+            ? createObservationEmitter({ sessionID, write: writeObservationJson })
+            : undefined
+        observation?.emit("session.opened", {
+          workflow: args.workflow,
+          directory: sess.directory,
+        })
 
         // Consume one subscribed event stream for the active session and mirror it to stdout/UI.
         async function loop(events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
@@ -500,6 +499,32 @@ export const RunCommand = effectCmd({
           let error: string | undefined
 
           for await (const event of events.stream) {
+            if (observation) {
+              const candidate = normalizeEventV1(event, sessionID)
+              if (candidate) observation.candidate(candidate)
+              if (event.type === "session.error" && event.properties.sessionID === sessionID) {
+                error = error ? `${error}${EOL}Session error` : "Session error"
+              }
+              if (
+                event.type === "session.status" &&
+                event.properties.sessionID === sessionID &&
+                event.properties.status.type === "idle"
+              ) {
+                const final = await client.session
+                  .inspection({ sessionID, live: "true" }, { throwOnError: true, signal: AbortSignal.timeout(15_000) })
+                  .then((response) => response.data)
+                  .catch(() => {
+                    observation.emit("session.error", {
+                      name: "InspectionError",
+                      message: "Terminal session inspection is unavailable.",
+                    })
+                    return undefined
+                  })
+                if (final) observation.candidate(inspectionCandidate(final, "terminal"))
+                break
+              }
+              continue
+            }
             if (
               event.type === "message.updated" &&
               event.properties.sessionID === sessionID &&
@@ -518,7 +543,6 @@ export const RunCommand = effectCmd({
               if (part.sessionID !== sessionID) continue
 
               if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
-                if (emit("tool_use", { part })) continue
                 if (part.state.status === "completed") {
                   await tool(part)
                   continue
@@ -539,15 +563,14 @@ export const RunCommand = effectCmd({
               }
 
               if (part.type === "step-start") {
-                if (emit("step_start", { part })) continue
+                continue
               }
 
               if (part.type === "step-finish") {
-                if (emit("step_finish", { part })) continue
+                continue
               }
 
               if (part.type === "text" && part.time?.end) {
-                if (emit("text", { part })) continue
                 const text = part.text.trim()
                 if (!text) continue
                 if (!process.stdout.isTTY) {
@@ -560,7 +583,6 @@ export const RunCommand = effectCmd({
               }
 
               if (part.type === "reasoning" && part.time?.end && thinking) {
-                if (emit("reasoning", { part })) continue
                 const text = part.text.trim()
                 if (!text) continue
                 const line = `Thinking: ${text}`
@@ -582,7 +604,6 @@ export const RunCommand = effectCmd({
                 err = String(props.error.data.message)
               }
               error = error ? error + EOL + err : err
-              if (emit("error", { error: props.error })) continue
               UI.error(err)
             }
 
@@ -593,7 +614,6 @@ export const RunCommand = effectCmd({
             ) {
               const message = event.properties.status.message?.trim()
               if (message && isMemoryStatusMessage(message)) {
-                if (emit("status", { status: event.properties.status })) continue
                 const key = `status:${message}`
                 if (toggles.get(key) !== true) {
                   if (process.stdout.isTTY) {
@@ -685,7 +705,14 @@ export const RunCommand = effectCmd({
         try {
           const [result, streamError] = await Promise.all([operationTask, eventTask])
           if (result.error) {
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+            if (observation) {
+              observation.emit("session.error", {
+                name: "RequestError",
+                message: "Session request failed.",
+              })
+            } else {
+              UI.error(formatRunError(result.error))
+            }
             process.exitCode = 1
           }
           const workflowExitCode = completionExitCode(result.data)

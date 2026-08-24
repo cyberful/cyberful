@@ -37,12 +37,18 @@ const transferNamespaces = [`it${process.pid}-transfer-1`, `it${process.pid}-tra
 let server: Server | undefined
 let serverPort = 0
 
+function inheritedBrowserEnvironment(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[0] !== "AGENT_BROWSER_ALLOWED_DOMAINS" && entry[1] !== undefined,
+    ),
+  )
+}
+
 function environment(profile: number): Record<string, string> {
   const artifacts = path.join(root, `artifacts-${profile}`)
   return {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-    ),
+    ...inheritedBrowserEnvironment(),
     AGENT_BROWSER_PROFILE: path.join(root, `profile-${profile}`),
     AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
     AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
@@ -63,10 +69,7 @@ function environment(profile: number): Record<string, string> {
 function searchEnvironment(): Record<string, string> {
   const artifacts = path.join(root, "artifacts-search")
   return {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-    ),
-    AGENT_BROWSER_ALLOWED_DOMAINS: "*.duckduckgo.com,*.google.com",
+    ...inheritedBrowserEnvironment(),
     AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
     AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
     AGENT_BROWSER_SESSION: "it-search",
@@ -170,7 +173,7 @@ afterAll(async () => {
 })
 
 describe("real agent-browser profiles", () => {
-  test("discovers the production plugin catalog once and starts the managed search runtime", async () => {
+  test("discovers the production plugin catalog and lets search open a public result host", async () => {
     const options = {
       label: "browser-search",
       command: [browserLauncher, "mcp"] as const,
@@ -206,16 +209,32 @@ describe("real agent-browser profiles", () => {
           capabilities: ["command.run", "captcha.solve"],
         },
       })
-      const blocked = await runtime.call("allowlist-check", async (client) => {
+      const searchPage = await runtime.call("search-page", async (client) => {
         const result = await client.callTool(
-          { name: "agent_browser_open", arguments: { url: `http://127.0.0.1:${serverPort}/blocked` } },
+          { name: "agent_browser_open", arguments: { url: `http://localhost:${serverPort}/search-engine` } },
           CallToolResultSchema,
           { timeout: 60_000, maxTotalTimeout: 60_000 },
         )
         return CallToolResultSchema.parse(result)
       })
-      expect(blocked.isError).toBe(true)
-      expect(JSON.stringify(blocked)).toContain("not in the allowed domains list")
+      response(searchPage)
+      const opened = await runtime.call("public-result", async (client) => {
+        const result = await client.callTool(
+          { name: "agent_browser_open", arguments: { url: `http://127.0.0.1:${serverPort}/public-result` } },
+          CallToolResultSchema,
+          { timeout: 60_000, maxTotalTimeout: 60_000 },
+        )
+        return CallToolResultSchema.parse(result)
+      })
+      response(opened)
+      const current = await runtime.call("public-result-url", async (client) => {
+        const result = await client.callTool({ name: "agent_browser_get_url", arguments: {} }, CallToolResultSchema, {
+          timeout: 60_000,
+          maxTotalTimeout: 60_000,
+        })
+        return CallToolResultSchema.parse(result)
+      })
+      expect(data(current).url).toBe(`http://127.0.0.1:${serverPort}/public-result`)
     } finally {
       await runtime.close()
     }

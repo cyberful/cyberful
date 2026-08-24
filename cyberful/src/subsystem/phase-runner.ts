@@ -767,7 +767,7 @@ export function buildPhasePrompt(
     "- Keep target identities, state, and evidence separate across browser profiles 1–5.",
     ...(workflow !== "code-audit"
       ? [
-          "- Use `web_search` for public searches; agent-browser `profile: \"search\"` is host-confined to DuckDuckGo and Google search pages, never a selected result, target identity, or authority.",
+          "- Use `web_search` and `profile: \"search\"` for unauthenticated public research; target interaction requires a numbered ZAP-routed profile.",
         ]
       : []),
     "- Use `question` only for missing authority or facts, or failed CAPTCHA automation.",

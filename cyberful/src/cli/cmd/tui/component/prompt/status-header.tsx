@@ -35,15 +35,14 @@ export function composerStatusView(input: {
   now: number
 }): ComposerStatusView {
   if (!input.sessionID) return { kind: "label", text: input.label ?? "Prompt" }
+  if (input.status.type === "idle") return { kind: "idle", text: "○ Ready" }
   if (input.runningPhase) {
     const activity = input.runningPhase.lastKind === "tool" ? "executing job" : "generating"
     const phase = Locale.titlecase(input.runningPhase.phase.replace(/^pentest-/, "").replaceAll("-", " "))
     const elapsed = compactActivityDuration(input.now - input.runningPhase.startedAt)
     return { kind: "working", text: `Working · ${elapsed} · ${phase} · ${activity}` }
   }
-  if (input.status.type === "busy")
-    return { kind: "working", text: input.status.message ? `Working · ${input.status.message}` : "Working" }
-  return { kind: "idle", text: "○ Ready" }
+  return { kind: "working", text: input.status.message ? `Working · ${input.status.message}` : "Working" }
 }
 
 export function ComposerStatusHeader(props: {

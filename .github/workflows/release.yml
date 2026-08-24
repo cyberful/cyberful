@@ -398,10 +398,12 @@ jobs:
           if [[ -z "$release_ids" ]]; then
             create_error="$(mktemp)"
             trap 'rm -f "$create_error"' EXIT
+            release_body="$(bun scripts/release-notes.ts CHANGELOG.md "$RELEASE_VERSION")"
             if release_id="$(
               gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
                 -f "tag_name=$TAG" \
                 -f "name=$TAG" \
+                -f "body=$release_body" \
                 -F draft=true \
                 -F generate_release_notes=true \
                 --jq .id \

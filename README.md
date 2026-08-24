@@ -93,7 +93,7 @@ Workareas live under `work/<name>/` and session logs under `logs/session-logs/`.
 
 The first local engagement also prepares the release-pinned CVE Dictionary in the foreground. Before downloading, Cyberful checks an explicit verified path, the managed pointer, verified orphan snapshots, and a source checkout's fixed `dist/cve-dictionary` directory; selecting an orphan repairs the missing pointer atomically. Release `2026.08.05` downloads about 5.18 GiB only when no verified local candidate exists, expands to about 24.47 GiB, requires approximately 31 GiB of additional free space during installation, and shows verified download and activation progress on stderr. Later startups reuse the local snapshot without a network update check.
 
-Start a specific headless workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`. Session lifecycle, queued or focused out-of-band steering, autonomous CAPTCHA handling and its human fallback, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.ai/open-docs/user-guide/sessions-and-reports/).
+Start a specific headless workflow with `cyberful run --workflow bug-bounty --workarea <name> "<objective>"`. Add `--format json` for the redacted versioned coding-agent stream, inspect durable or attached state with `cyberful session inspect`, and supervise an attached TUI with `cyberful session watch`. The public cross-agent skill and full control-room contract are documented in [Cyberful Skill: How to integrate cyberful in your coding agent](https://cyberful.ai/open-docs/user-guide/cyberful-skill/). Resume an existing session with `cyberful run --continue` or `cyberful run --session <id>`; session lifecycle, steering, approvals, reports, and cleanup are covered in [Sessions, configuration, and reports](https://cyberful.ai/open-docs/user-guide/sessions-and-reports/).
 
 ## Documentation
 
@@ -101,6 +101,7 @@ Start a specific headless workflow with `cyberful run --workflow bug-bounty --wo
 - [Your first penetration test](https://cyberful.ai/open-docs/getting-started/)
 - [Application security workflows](https://cyberful.ai/open-docs/user-guide/workflows/)
 - [Terminal interface](https://cyberful.ai/open-docs/user-guide/interface/)
+- [Cyberful Skill: How to integrate cyberful in your coding agent](https://cyberful.ai/open-docs/user-guide/cyberful-skill/)
 - [Architecture](https://cyberful.ai/open-docs/concepts/architecture/)
 - [Execution model](https://cyberful.ai/open-docs/concepts/execution-model/)
 - [Security runtimes](https://cyberful.ai/open-docs/runtimes/)

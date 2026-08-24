@@ -19,6 +19,14 @@ describe("composer status view", () => {
       kind: "idle",
       text: "○ Ready",
     })
+    expect(
+      composerStatusView({
+        sessionID: "s",
+        status: { type: "idle" },
+        runningPhase: { phase: "report", startedAt: 1_000 },
+        now: 1_471_000,
+      }),
+    ).toEqual({ kind: "idle", text: "○ Ready" })
   })
 
   test("uses generic busy copy until a live phase takes precedence", () => {

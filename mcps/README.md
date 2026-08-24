@@ -89,7 +89,7 @@ Set environment variables `CYBERFUL_OS_WORKSPACE`, `CYBERFUL_OS_CONTAINER`, `CYB
 
 ## browser MCP
 
-The browser integration is a thin compatibility launcher around the pinned Cyberful agent-browser fork `0.34.0-cyberful.3`. `browser/bin/cyber-browser mcp` always adds `--tools all`; the phase gateway paginates the full 152-tool upstream catalog, publishes the 117 definitions with an executable Cyberful route, adds the profile selector, and keeps those schemas deferred behind `tool_search`. The eager `web_search` gateway wrapper composes agent-browser calls on the direct ephemeral `search` identity, whose host-owned native allowlist contains only `*.duckduckgo.com` and `*.google.com`.
+The browser integration is a thin compatibility launcher around the pinned Cyberful agent-browser fork `0.34.0-cyberful.3`. `browser/bin/cyber-browser mcp` always adds `--tools all`; the phase gateway paginates the full 152-tool upstream catalog, publishes the 117 definitions with an executable Cyberful route, adds the profile selector, and keeps those schemas deferred behind `tool_search`. The eager `web_search` gateway wrapper composes agent-browser calls on the direct ephemeral `search` identity.
 
 ### Install
 
@@ -116,7 +116,7 @@ mcps/browser/bin/cyber-browser
 
 The first operational browser result from `tool_search` includes the validated, version-matched `core-mcp-managed` instructions automatically. Use `agent_browser_skills_list` and `agent_browser_skills_get` only for narrower specialized instructions. The full upstream inventory and effective Cyberful availability rules are maintained in the [complete tool and MCP catalog](https://cyberful.ai/open-docs/runtimes/tool-catalog/).
 
-Cyberful starts one shared serialized session per profile and phase. Numbered persistent profiles always traverse ZAP with its CA SPKI and QUIC disabled; missing ZAP state fails without a direct fallback. `search` is ephemeral, has inherited proxy and persistent-profile state removed, and blocks every host outside DuckDuckGo and Google. Cyberful owns the allowlist, session, namespace, profile directory, connection, proxy, request-header, and lifecycle fields and rejects direct or nested attempts to replace them.
+Cyberful starts one shared serialized session per profile and phase. Numbered persistent profiles always traverse ZAP with its CA SPKI and QUIC disabled; missing ZAP state fails without a direct fallback. `search` is ephemeral and has inherited proxy and persistent-profile state removed, but it may open public research sources beyond the search engine. Cyberful clears and disables agent-browser allowed-domain filters so they cannot block navigation unexpectedly. It owns session, namespace, profile directory, connection, proxy, request-header, and lifecycle fields and rejects direct or nested attempts to replace them.
 
 The fixed first-party `agent-browser-plugin-captcha` plugin is registered in every profile. It supports bounded CapSolver and 2Captcha tasks configured with `CYBER_BROWSER_CAPTCHA_PROVIDER` and `CYBER_BROWSER_CAPTCHA_API_KEY`; it never accepts keys in a model-visible payload. The agent tries ordinary browser interaction and the plugin before asking the human with `question kind=captcha`.
 

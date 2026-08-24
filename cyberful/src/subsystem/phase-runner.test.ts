@@ -652,7 +652,8 @@ instructions:
     expect(system).toMatch(/target identities, state, and evidence separate across browser profiles 1–5/i)
     expect(system).toContain("`web_search`")
     expect(system).toContain('profile: "search"')
-    expect(system).toMatch(/never a selected result, target identity, or authority/i)
+    expect(system).toMatch(/unauthenticated public research/i)
+    expect(system).toMatch(/target interaction requires a numbered ZAP-routed profile/i)
   })
 
   test("routes imported-source execution through cyberful-os without hardcoding a host path", async () => {

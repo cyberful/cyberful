@@ -1113,8 +1113,9 @@ export interface UpstreamTool {
   call(args: Record<string, unknown>, signal?: AbortSignal, actor?: GatewayToolActor): Promise<CallToolResult>
 }
 
+const DISABLED_AGENT_BROWSER_ARGUMENTS = new Set(["allowedDomains"])
+
 const HOST_OWNED_AGENT_BROWSER_ARGUMENTS = new Set([
-  "allowedDomains",
   "session",
   "namespace",
   "restore",
@@ -1308,25 +1309,28 @@ const HOST_RESET_AGENT_BROWSER_ENVIRONMENT = [
   "AGENT_BROWSER_STATE",
 ] as const
 
-export const SEARCH_BROWSER_ALLOWED_DOMAINS = ["*.duckduckgo.com", "*.google.com"] as const
-
-// ── Cyberful Owns Session And Egress Fields ─────────────────────────
+// ── Cyberful Owns Routing And Disables Domain Filters ───────────────
 // agent-browser publishes complete CLI parity through common fields. Cyberful
-// removes only fields that can select another daemon/profile or append global
-// CLI flags, leaving every upstream tool name and ordinary operation intact.
-// Profile itself is reintroduced by the gateway and is therefore the only
-// model-selectable routing coordinate in an otherwise upstream-owned schema.
+// removes fields that can select another daemon/profile or append global CLI
+// flags. It also removes allowedDomains: no Cyberful browser profile installs a
+// domain filter, and a caller cannot accidentally reintroduce one. Profile is
+// the only model-selectable route in an otherwise upstream-owned schema.
 // ─────────────────────────────────────────────────────────────────────
 export function agentBrowserToolDefinition(definition: UpstreamTool["def"]): UpstreamTool["def"] {
   if (!definition.name.startsWith("agent_browser_") || !isRecord(definition.inputSchema)) return definition
   const properties = isRecord(definition.inputSchema.properties) ? definition.inputSchema.properties : {}
   const required = Array.isArray(definition.inputSchema.required)
     ? definition.inputSchema.required.filter(
-        (name): name is string => typeof name === "string" && !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name),
+        (name): name is string =>
+          typeof name === "string" &&
+          !DISABLED_AGENT_BROWSER_ARGUMENTS.has(name) &&
+          !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name),
       )
     : undefined
   const sanitizedProperties = Object.fromEntries(
-    Object.entries(properties).filter(([name]) => !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name)),
+    Object.entries(properties).filter(
+      ([name]) => !DISABLED_AGENT_BROWSER_ARGUMENTS.has(name) && !HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name),
+    ),
   )
   if (definition.name === "agent_browser_plugin_run") {
     sanitizedProperties.name = {
@@ -1459,8 +1463,9 @@ export function selectBrowserProfileUpstream(
   }
 }
 
+const DISABLED_AGENT_BROWSER_FLAGS = ["--allowed-domains"]
+
 const HOST_OWNED_AGENT_BROWSER_FLAGS = [
-  "--allowed-domains",
   "--session",
   "--namespace",
   "--profile",
@@ -1480,8 +1485,8 @@ function reservedBatchArgument(value: unknown, profile: BrowserProfileId | undef
     for (const item of command) {
       if (typeof item !== "string") continue
       const reservedFlags = BrowserProfile.isTargetBrowserProfileId(profile)
-        ? [...HOST_OWNED_AGENT_BROWSER_FLAGS, ...TARGET_EXTERNAL_AGENT_BROWSER_FLAGS]
-        : HOST_OWNED_AGENT_BROWSER_FLAGS
+        ? [...DISABLED_AGENT_BROWSER_FLAGS, ...HOST_OWNED_AGENT_BROWSER_FLAGS, ...TARGET_EXTERNAL_AGENT_BROWSER_FLAGS]
+        : [...DISABLED_AGENT_BROWSER_FLAGS, ...HOST_OWNED_AGENT_BROWSER_FLAGS]
       const flag = reservedFlags.find((candidate) => item === candidate || item.startsWith(`${candidate}=`))
       if (flag) return flag
     }
@@ -1500,6 +1505,8 @@ export function agentBrowserPolicyError(
   if (!tool.startsWith("agent_browser_")) return
   if (tool === "agent_browser_set_headers")
     return "request headers are owned by Cyberful and enforced from engagement_policy through ZAP"
+  const disabled = Object.keys(args).find((name) => DISABLED_AGENT_BROWSER_ARGUMENTS.has(name))
+  if (disabled) return `agent-browser argument '${disabled}' is disabled in Cyberful`
   const reserved = Object.keys(args).find((name) => HOST_OWNED_AGENT_BROWSER_ARGUMENTS.has(name))
   if (reserved) return `agent-browser argument '${reserved}' is owned by Cyberful`
   if (
@@ -1516,6 +1523,8 @@ export function agentBrowserPolicyError(
   if (tool === "agent_browser_plugin_run" && (args.name !== "captcha" || args.requestType !== "captcha.solve"))
     return "only Cyberful's captcha/captcha.solve plugin request is available"
   const batchEscape = tool === "agent_browser_batch" ? reservedBatchArgument(args.commands, profile) : undefined
+  if (batchEscape && DISABLED_AGENT_BROWSER_FLAGS.includes(batchEscape))
+    return `agent-browser domain filtering with '${batchEscape}' is disabled in Cyberful`
   if (batchEscape) return `agent-browser batch cannot override Cyberful routing with '${batchEscape}'`
   if (BrowserProfile.isTargetBrowserProfileId(profile) && TARGET_EXTERNAL_BROWSER_TOOLS.has(tool))
     return `${tool} cannot attach or delegate outside the ZAP-pinned target browser; use profile search`
@@ -1859,14 +1868,14 @@ function proxyEnabled(): boolean {
   return v === "1" || v === "true" || v === "yes"
 }
 
-// ── Profile Choice Is Explicit And Fail-Closed ───────────────────
+// ── Profile Choice Is Explicit And Search Stays Ephemeral ───────
 // Target profiles keep stable user-data directories and fail on lock conflicts;
 // their phase restore protects daemon recreation without periodic storage tabs.
 // Native Chrome restoration also retains session cookies across clean startups.
-// Search must use a fresh context because native domain containment rejects Chrome
-// profiles. Two host-owned wildcards cover the search engines and block every
-// other navigation and page-initiated network path. Inherited target routing,
-// restoration, and profile state are removed from that context.
+// Search uses a fresh context without target routing, restoration, or profile
+// state, but remains open to public research sources beyond a search engine.
+// Ambient and caller-supplied allowed-domain settings are discarded so this
+// identity cannot regain the filter that previously blocked selected results.
 // ─────────────────────────────────────────────────────────────────
 export function resolveBrowserUpstreamEnv(input: {
   dedicated?: string
@@ -1885,9 +1894,7 @@ export function resolveBrowserUpstreamEnv(input: {
   const artifacts = input.direct ? path.join(input.tempProfileDir, "artifacts") : input.artifactsDir
   return {
     set: {
-      ...(input.direct
-        ? { AGENT_BROWSER_ALLOWED_DOMAINS: SEARCH_BROWSER_ALLOWED_DOMAINS.join(",") }
-        : { AGENT_BROWSER_PROFILE: profile! }),
+      ...(!input.direct ? { AGENT_BROWSER_PROFILE: profile! } : {}),
       AGENT_BROWSER_DOWNLOAD_PATH: artifacts,
       AGENT_BROWSER_SCREENSHOT_DIR: artifacts,
       ...(restoreKey
@@ -1899,24 +1906,27 @@ export function resolveBrowserUpstreamEnv(input: {
           }
         : {}),
     },
-    unset: input.direct
-      ? [
-          "CYBER_BROWSER_PROXY",
-          "CYBER_BROWSER_PROXY_CA_SPKI",
-          "CYBER_BROWSER_PROXY_WARNING",
-          "AGENT_BROWSER_PROFILE",
-          "AGENT_BROWSER_PROXY",
-          "AGENT_BROWSER_PROXY_BYPASS",
-          "HTTP_PROXY",
-          "HTTPS_PROXY",
-          "ALL_PROXY",
-          "NO_PROXY",
-          "http_proxy",
-          "https_proxy",
-          "all_proxy",
-          "no_proxy",
-        ]
-      : [],
+    unset: [
+      "AGENT_BROWSER_ALLOWED_DOMAINS",
+      ...(input.direct
+        ? [
+            "CYBER_BROWSER_PROXY",
+            "CYBER_BROWSER_PROXY_CA_SPKI",
+            "CYBER_BROWSER_PROXY_WARNING",
+            "AGENT_BROWSER_PROFILE",
+            "AGENT_BROWSER_PROXY",
+            "AGENT_BROWSER_PROXY_BYPASS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+          ]
+        : []),
+    ],
   }
 }
 
@@ -2268,7 +2278,7 @@ async function connectDefaultUpstreams(upstreamDiagnosticSink?: (text: string) =
             def: {
               name: "web_search",
               description:
-                "Search the public web through DuckDuckGo using the direct agent-browser search profile. The profile is host-confined to DuckDuckGo and Google; use a numbered ZAP-routed profile for an authorized target.",
+                "Search the public web through DuckDuckGo using the direct agent-browser search profile. Selected unauthenticated public sources can be inspected on search; use a numbered ZAP-routed profile for engagement-target interaction.",
               inputSchema: {
                 type: "object",
                 additionalProperties: false,

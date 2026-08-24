@@ -23,7 +23,6 @@ const {
   loadPrivateGatewayEnvironment,
   projectAgentBrowserSkillsResult,
   resolveBrowserUpstreamEnv,
-  SEARCH_BROWSER_ALLOWED_DOMAINS,
   selectBrowserProfileUpstream,
   upstreamProcessEnv,
 } = await import("./server")
@@ -90,6 +89,7 @@ describe("resolveBrowserUpstreamEnv", () => {
       AGENT_BROWSER_RESTORE_SAVE: "always",
       AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
     })
+    expect(r.unset).toContain("AGENT_BROWSER_ALLOWED_DOMAINS")
   })
 
   test("a pinned profile remains explicit and never falls back", () => {
@@ -122,7 +122,7 @@ describe("resolveBrowserUpstreamEnv", () => {
     ).toThrow("target agent-browser restore key is missing")
   })
 
-  test("the search profile strips proxy and persistent state behind a two-domain allowlist", () => {
+  test("the search profile strips proxy, persistent state, and domain filtering", () => {
     const r = resolveBrowserUpstreamEnv({
       dedicated: "/home/u/search",
       artifactsDir: "/home/u/search-artifacts",
@@ -130,11 +130,11 @@ describe("resolveBrowserUpstreamEnv", () => {
       tempProfileDir: TEMP,
     })
     expect(r.set).toEqual({
-      AGENT_BROWSER_ALLOWED_DOMAINS: SEARCH_BROWSER_ALLOWED_DOMAINS.join(","),
       AGENT_BROWSER_DOWNLOAD_PATH: path.join(TEMP, "artifacts"),
       AGENT_BROWSER_SCREENSHOT_DIR: path.join(TEMP, "artifacts"),
     })
-    expect(SEARCH_BROWSER_ALLOWED_DOMAINS).toEqual(["*.duckduckgo.com", "*.google.com"])
+    expect(r.set).not.toHaveProperty("AGENT_BROWSER_ALLOWED_DOMAINS")
+    expect(r.unset).toContain("AGENT_BROWSER_ALLOWED_DOMAINS")
     expect(r.unset).toContain("CYBER_BROWSER_PROXY")
     expect(r.unset).toContain("AGENT_BROWSER_PROFILE")
     expect(r.unset).toContain("AGENT_BROWSER_PROXY")
@@ -220,11 +220,11 @@ describe("browser profile tool routing", () => {
     expect(profiledSchema.properties).toHaveProperty("profile")
   })
 
-  test("rejects direct and nested attempts to replace host lifecycle or target egress", () => {
+  test("rejects disabled domain filters and attempts to replace host lifecycle or target egress", () => {
     expect(agentBrowserPolicyError("agent_browser_open", { session: "other" }, 1)).toContain("owned by Cyberful")
     expect(
       agentBrowserPolicyError("agent_browser_open", { allowedDomains: ["*.wolt.com"] }, "search"),
-    ).toContain("owned by Cyberful")
+    ).toContain("disabled in Cyberful")
     expect(agentBrowserPolicyError("agent_browser_connect", { endpoint: "ws://remote.test" }, 1)).toContain(
       "ZAP-pinned",
     )
@@ -238,7 +238,7 @@ describe("browser profile tool routing", () => {
         { commands: [["open", "https://target.test", "--allowed-domains=*.wolt.com"]] },
         "search",
       ),
-    ).toContain("--allowed-domains")
+    ).toContain("domain filtering")
     expect(
       agentBrowserPolicyError("agent_browser_batch", { commands: [["connect", "ws://remote.test"]] }, 1),
     ).toContain("connect")

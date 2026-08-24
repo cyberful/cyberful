@@ -33,8 +33,8 @@ Use the managed upstream skill for typed browser operations and this overlay for
 
 - Use numbered profiles `1` through `5` only for target identities explicitly supplied or assigned by the operator. Always pass `profile` explicitly when identity matters and preserve the identity-to-profile assignment throughout the phase.
 - Numbered profiles are persistent, shared within the phase, and routed through ZAP. If ZAP, its CA, the selected profile, or the browser process is unavailable, stop that browser path; never fall back to a direct target connection.
-- Use `web_search` for public discovery. It always uses the temporary direct `search` profile and returns structured DuckDuckGo results. Direct `agent_browser_*` calls with `profile: "search"` may access only DuckDuckGo or Google search pages.
-- The host fixes the `search` network allowlist to `*.duckduckgo.com` and `*.google.com`; the wildcard semantics include each bare domain. Navigations, redirects, subresources, sockets, workers, beacons, and WebRTC cannot reach any other host, and model arguments cannot widen the list. Use a numbered ZAP-routed profile for every authorized target or selected result that requires browser inspection.
+- Use `web_search` for public discovery. It always uses the temporary direct `search` profile and returns structured DuckDuckGo results. Direct `agent_browser_*` calls with `profile: "search"` may open selected public sources without target cookies, proxy state, or persistent data.
+- The host installs no allowed-domain filter and rejects caller-supplied filters that could unexpectedly block navigation. Use a numbered ZAP-routed profile for engagement-target interaction so mandatory headers, passive evidence, and the assigned target identity remain in effect.
 - Never copy cookies, storage, tokens, headers, or other session material between profiles. Use different numbered profiles for different identities.
 
 ## Respect shared browser state
@@ -71,6 +71,6 @@ This is one ordinary readiness journey, not reconnaissance or a security test. D
 
 ## Collect evidence through the canonical flow
 
-For public research, use `web_search` and retain the minimum structured result evidence needed. If additional search-page interaction is necessary, use agent-browser on `search` only for DuckDuckGo or Google. Do not open a result host on `search`; use an authorized numbered ZAP-routed profile when target inspection is in scope. A search failure or challenge is a bounded wrapper error; do not bypass the host allowlist.
+For public research, use `web_search` and retain the minimum structured result evidence needed. Use agent-browser on `search` when a selected public source such as program policy, documentation, or a status page requires browser inspection. Move to an authorized numbered ZAP-routed profile before interacting with an engagement target; public research through `search` does not create target evidence or expand scope. A search failure or challenge is a bounded wrapper error.
 
 For target work, use the visible product journey and the least surprising browser action that expresses the intended user behavior. Save required screenshots, downloads, ZAP facts, and durable artifacts before handoff. Treat automatically contacted APIs, CDNs, identity services, and third parties as dependency observations rather than new testing targets. Before using `zap_*` tools or resources, load and follow the `operate-zap` skill.

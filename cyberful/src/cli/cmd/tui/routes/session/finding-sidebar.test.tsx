@@ -21,7 +21,7 @@ const view: FindingRegistryView = {
   workarea: "target",
   runID: "ses_current",
   registry: {
-    schema_version: 1,
+    schema_version: 2,
     revision: 3,
     runs: [
       { id: "ses_old", workflow: "bug-bounty", startedAt: "2026-01-01T00:00:00.000Z", status: "COMPLETED" },
@@ -48,6 +48,7 @@ const view: FindingRegistryView = {
             submission: { result: "SUBMISSION_READY", rationale: "Ready in the old run." },
             summary: "Old confirmation.",
             evidencePaths: [],
+            attackAssessment: { applicability: "UNASSESSED", mappings: [], review: "NOT_REVIEWED" },
             maturation: {
               assessment: {
                 status: "MAXIMIZED",
@@ -93,6 +94,7 @@ const view: FindingRegistryView = {
             submission: { result: "NOT_ASSESSED" },
             summary: "Revisit started.",
             evidencePaths: [],
+            attackAssessment: { applicability: "UNASSESSED", mappings: [], review: "NOT_REVIEWED" },
           },
         ],
       },

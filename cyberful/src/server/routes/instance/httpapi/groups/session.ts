@@ -14,6 +14,7 @@ import { Todo } from "@/session/todo"
 import { FindingRegistry } from "@/finding/registry"
 import { SessionHypothesis } from "@/session/hypothesis"
 import { SessionProviderUsage } from "@/session/provider-usage"
+import { SessionInspection } from "@/session/inspection"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
@@ -60,6 +61,10 @@ export const ToolArtifactQuery = Schema.Struct({
     ),
   ),
 })
+export const InspectionQuery = Schema.Struct({
+  ...DirectoryRoutingQueryFields,
+  live: Schema.optional(QueryBoolean),
+})
 export const ToolArtifactChunk = Schema.Struct({
   path: Schema.String,
   content: Schema.String,
@@ -101,6 +106,7 @@ export const SessionPaths = {
   list: root,
   status: `${root}/status`,
   get: `${root}/:sessionID`,
+  inspection: `${root}/:sessionID/inspection`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   findings: `${root}/:sessionID/findings`,
@@ -162,6 +168,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.get",
             summary: "Get session",
             description: "Retrieve detailed information about a specific Cyberful session.",
+          }),
+        ),
+        HttpApiEndpoint.get("inspection", SessionPaths.inspection, {
+          params: { sessionID: SessionID },
+          query: InspectionQuery,
+          success: described(SessionInspection.SessionInspectionV1, "Redacted coding-agent inspection snapshot"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.inspection",
+            summary: "Inspect a session",
+            description:
+              "Aggregate live connection state and durable workflow facts without exposing reasoning, transcripts, or raw tool payloads.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {

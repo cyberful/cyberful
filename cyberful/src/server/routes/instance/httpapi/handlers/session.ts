@@ -11,6 +11,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
+import { SessionInspection } from "@/session/inspection"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { FindingRegistry } from "@/finding/registry"
@@ -29,6 +30,7 @@ import {
   CommandPayload,
   DiffQuery,
   ForkPayload,
+  InspectionQuery,
   ListQuery,
   MessagesQuery,
   PromptPayload,
@@ -82,10 +84,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const sessionWorkarea = Effect.fn("SessionHttpApi.sessionWorkarea")(function* (sessionID: SessionID) {
       const info = yield* requireSession(sessionID)
       const history = yield* SessionError.mapStorageNotFound(session.messages({ sessionID }))
-      const workarea = history.findLast(
+      const workareaValue = history.findLast(
         (item): item is MessageV2.WithParts & { info: MessageV2.User } =>
           item.info.role === "user" && typeof item.info.metadata?.workarea === "string",
       )?.info.metadata?.workarea
+      const workarea = typeof workareaValue === "string" ? workareaValue : undefined
       if (typeof workarea !== "string") return yield* new HttpApiError.BadRequest({})
       const instance = yield* InstanceState.context
       return {
@@ -93,6 +96,33 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         name: workarea,
         workflow: info.workflow,
       }
+    })
+
+    const inspection = Effect.fn("SessionHttpApi.inspection")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof InspectionQuery.Type
+    }) {
+      const info = yield* requireSession(ctx.params.sessionID)
+      const history = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+      const workareaValue = history.findLast(
+        (item): item is MessageV2.WithParts & { info: MessageV2.User } =>
+          item.info.role === "user" && typeof item.info.metadata?.workarea === "string",
+      )?.info.metadata?.workarea
+      const workarea = typeof workareaValue === "string" ? workareaValue : undefined
+      const instance = yield* InstanceState.context
+      const liveStatus = ctx.query.live === false ? undefined : yield* statusSvc.get(ctx.params.sessionID)
+      return yield* Effect.tryPromise({
+        try: () =>
+          SessionInspection.buildSessionInspection({
+            session: info,
+            messages: history,
+            ...(workarea
+              ? { workarea: { root: workareaAbsolutePath(instance.directory, workarea), name: workarea } }
+              : {}),
+            ...(liveStatus ? { liveStatus } : {}),
+          }),
+        catch: () => new HttpApiError.BadRequest({}),
+      })
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -398,6 +428,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("list", list)
       .handle("status", status)
       .handle("get", get)
+      .handle("inspection", inspection)
       .handle("children", children)
       .handle("todo", todo)
       .handle("findings", findings)

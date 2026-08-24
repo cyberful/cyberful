@@ -92,10 +92,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       // ── Activity Can Recover A Missing Phase Start ───────────────
       // This entry drives both the phase header and its generating or tool spinner.
-      // Start creates it and end clears it, but the first progress, text, or tool
-      // frame also initializes it because event delivery may omit start. Tokens
-      // remain session-wide across process boundaries; `lastKind` selects the
-      // current user-facing activity label.
+      // Start creates it and end clears it, while an authoritative session idle
+      // first commits queued phase frames and then clears any residual marker.
+      // The first progress, text, or tool frame also initializes it because event
+      // delivery may omit start. Tokens remain session-wide across process boundaries;
+      // `lastKind` selects the current user-facing activity label.
       // ─────────────────────────────────────────────────────────────────
       expert_phase_running: {
         [sessionID: string]: RunningPhase | undefined
@@ -518,7 +519,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         case "session.status": {
-          setStore("session_status", event.properties.sessionID, event.properties.status)
+          const sessionID = event.properties.sessionID
+          const nextStatus = event.properties.status
+          if (nextStatus.type === "idle") phaseActivityBatcher.flush(sessionID)
+          setStore(
+            produce((draft) => {
+              draft.session_status[sessionID] = nextStatus
+              if (nextStatus.type === "idle") draft.expert_phase_running[sessionID] = undefined
+            }),
+          )
           break
         }
 

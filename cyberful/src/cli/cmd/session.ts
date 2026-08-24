@@ -21,6 +21,7 @@ import { which } from "../../util/which"
 import { createControlPlaneClient } from "@/server/client"
 import { ServerAuth } from "@/server/auth"
 import { errorMessage } from "@/util/error"
+import { SessionInspectCommand, SessionWatchCommand } from "./session-inspection"
 
 function pagerCmd(): string[] {
   const lessOptions = ["-R", "-S"]
@@ -53,7 +54,13 @@ export const SessionCommand = cmd({
   command: "session",
   describe: "manage sessions",
   builder: (yargs: Argv) =>
-    yargs.command(SessionListCommand).command(SessionDeleteCommand).command(SessionSteerCommand).demandCommand(),
+    yargs
+      .command(SessionListCommand)
+      .command(SessionDeleteCommand)
+      .command(SessionSteerCommand)
+      .command(SessionInspectCommand)
+      .command(SessionWatchCommand)
+      .demandCommand(),
   async handler() {},
 })
 

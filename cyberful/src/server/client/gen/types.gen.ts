@@ -1000,6 +1000,229 @@ export type NotFoundError = {
   }
 }
 
+export type SessionInspectionSource = {
+  mode: "live" | "durable"
+  connection: "connected" | "not-attached"
+  reliable: boolean
+  status?: SessionStatus
+}
+
+export type SessionInspectionRetry = {
+  runID: string
+  state: string
+  attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  attemptTimeoutMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  retryWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  compensationMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  deadlineAt?: string
+  compensationCapReached?: boolean
+}
+
+export type SessionInspectionRecovery = {
+  chainID: string
+  runID: string
+  recoveryRunID?: string
+  scope: string
+  cause: string
+  state: string
+  sourceRoute: string
+  destinationRoute?: string
+  quotaExempt: boolean
+  bonusMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  availableRuntimeMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  availableOutputTokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  deadlineAt?: string
+  denialCode?: string
+  termination?: string
+  terminationCause?: string
+  updatedAt: string
+}
+
+export type SessionInspectionSteering = {
+  id: string
+  runID: string
+  mode: string
+  state: string
+  acceptedAt: string
+  appliedAt?: string
+  reason?: string
+  updatedAt: string
+}
+
+export type SessionInspectionCleanup = {
+  state: "completed" | "failed"
+  removed: Array<string>
+  remaining: Array<string>
+  completedAt: string
+}
+
+export type SessionInspectionLifecycle = {
+  version: 2
+  workflow: string
+  phase: string
+  attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  status: string
+  mode: "work" | "closeout"
+  termination?: string
+  sessionStatus?: "closed" | "closed_with_cleanup_errors"
+  sessionOutcome?: "success" | "warning" | "blocked" | "failed"
+  deadlineAt: string
+  budgetRemainingMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  closeoutReserveMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  closeoutRemainingMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  approvalWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  humanWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  retryWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  providerWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  targetCooldownWaitMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  retryCompensationMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  phaseExtensionMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  recoveryExtensionMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  lastProgressAt: string
+  updatedAt: string
+  freshnessMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  retry?: SessionInspectionRetry
+  recoveries: Array<SessionInspectionRecovery>
+  steering: Array<SessionInspectionSteering>
+  cleanup?: SessionInspectionCleanup
+}
+
+export type SessionInspectionActor = {
+  id: string
+  parentID?: string
+  recoveryOf?: string
+  role?: string
+  provider?: string
+  model?: string
+  status: "running" | "completed" | "failed"
+  lastActivityAt: string
+  toolCalls: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  termination?: string
+}
+
+export type SessionInspectionActors = {
+  running: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  failed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  active: Array<SessionInspectionActor>
+}
+
+export type SessionInspectionFinding = {
+  id: string
+  title: string
+  phase: string
+  review: "IN_REVIEW" | "ASSESSED"
+  technicalState?: string
+  severity: string
+  summary: string
+  evidencePaths: Array<string>
+  verification: string
+  submission: string
+  updatedAt: string
+}
+
+export type SessionInspectionFindings = {
+  revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  currentCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  countsByState: {
+    [key: string]: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  current: Array<SessionInspectionFinding>
+}
+
+export type SessionInspectionHypothesis = {
+  id: string
+  phase: string
+  owner: string
+  ownerDisplayName?: string
+  description: string
+  state: string
+  blocker?: string
+  blockerReason?: string
+  nextStep?: string
+  findingID?: string
+}
+
+export type SessionInspectionHypotheses = {
+  revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  activeCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  countsByState: {
+    [key: string]: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  active: Array<SessionInspectionHypothesis>
+}
+
+export type SessionInspectionApprovalQuestion = {
+  question: string
+  header: string
+  options: Array<{
+    label: string
+    description: string
+  }>
+  multiple?: boolean
+  custom?: boolean
+}
+
+export type SessionInspectionApproval = {
+  id: string
+  sessionID: string
+  active: boolean
+  createdAt: string
+  questions: Array<SessionInspectionApprovalQuestion>
+}
+
+export type SessionInspectionCompletion = {
+  workflow: string
+  outcome: "success" | "warning" | "blocked" | "failed"
+  title: string
+  summaryMarkdown: string
+  workarea?: string
+  artifacts: Array<CompletionArtifact>
+  nextWorkflow?: string
+  startedPhase?: string
+  lastPhase?: string
+  ranPhases?: Array<string>
+  failure?: CompletionFailure
+}
+
+export type SessionInspectionDiagnostic = {
+  component: string
+  code: string
+  message: string
+}
+
+export type SessionInspectionV1 = {
+  schemaVersion: 1
+  generatedAt: string
+  source: SessionInspectionSource
+  session: Session
+  lifecycle?: SessionInspectionLifecycle
+  actors: SessionInspectionActors
+  findings?: SessionInspectionFindings
+  hypotheses?: SessionInspectionHypotheses
+  providerUsage?: {
+    root: {
+      input: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheRead: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheWrite: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      generated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      reasoning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+    subagents: {
+      input: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheRead: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      cacheWrite: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      generated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      reasoning: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+  }
+  approvals: Array<SessionInspectionApproval>
+  completion?: SessionInspectionCompletion
+  diagnostics: Array<SessionInspectionDiagnostic>
+}
+
 export type FindingRun = {
   id: string
   workflow: "pentest" | "bug-bounty" | "code-audit"
@@ -1087,6 +1310,28 @@ export type WorkareaFinding = {
         summary: string
         evidencePaths: Array<string>
         maturation?: FindingMaturation
+        attackAssessment: {
+          applicability: "UNASSESSED" | "APPLICABLE" | "NOT_APPLICABLE" | "UNAVAILABLE"
+          rationale?: string
+          mappings: Array<{
+            attack_id: string
+            stix_id?: string
+            domain?: "enterprise" | "mobile" | "ics"
+            rationale: string
+            evidence_refs: Array<string>
+          }>
+          snapshot?: {
+            snapshot_id: string
+            database_sha256: string
+            domains: Array<{
+              domain: "enterprise" | "mobile" | "ics"
+              version: string
+              source_sha256: string
+            }>
+          }
+          review: "NOT_REVIEWED" | "ACCEPTED" | "REVISED" | "REJECTED"
+          review_rationale?: string
+        }
         review: "IN_REVIEW"
         plan: string
         carriedState?: "SUSPECTED" | "INCONCLUSIVE" | "UNTESTABLE" | "CONFIRMED" | "DISPROVED"
@@ -1102,6 +1347,28 @@ export type WorkareaFinding = {
         summary: string
         evidencePaths: Array<string>
         maturation?: FindingMaturation
+        attackAssessment: {
+          applicability: "UNASSESSED" | "APPLICABLE" | "NOT_APPLICABLE" | "UNAVAILABLE"
+          rationale?: string
+          mappings: Array<{
+            attack_id: string
+            stix_id?: string
+            domain?: "enterprise" | "mobile" | "ics"
+            rationale: string
+            evidence_refs: Array<string>
+          }>
+          snapshot?: {
+            snapshot_id: string
+            database_sha256: string
+            domains: Array<{
+              domain: "enterprise" | "mobile" | "ics"
+              version: string
+              source_sha256: string
+            }>
+          }
+          review: "NOT_REVIEWED" | "ACCEPTED" | "REVISED" | "REJECTED"
+          review_rationale?: string
+        }
         review: "ASSESSED"
         disposition:
           | {
@@ -1133,7 +1400,7 @@ export type WorkareaFinding = {
 }
 
 export type FindingRegistry = {
-  schema_version: 1
+  schema_version: 2
   revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   runs: Array<FindingRun>
   findings: Array<WorkareaFinding>
@@ -3956,6 +4223,40 @@ export type SessionUpdateResponses = {
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
+
+export type SessionInspectionData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    live?: "true" | "false"
+  }
+  url: "/session/{sessionID}/inspection"
+}
+
+export type SessionInspectionErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionInspectionError = SessionInspectionErrors[keyof SessionInspectionErrors]
+
+export type SessionInspectionResponses = {
+  /**
+   * Redacted coding-agent inspection snapshot
+   */
+  200: SessionInspectionV1
+}
+
+export type SessionInspectionResponse = SessionInspectionResponses[keyof SessionInspectionResponses]
 
 export type SessionChildrenData = {
   body?: never

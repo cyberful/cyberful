@@ -46,4 +46,27 @@ describe("TUI frame batching", () => {
     scheduled.forEach((callback) => callback())
     expect(keys).toEqual(["a", "b"])
   })
+
+  test("an idle-boundary flush commits the final Report frames exactly once", () => {
+    const scheduled: Array<() => void> = []
+    const commits: string[][] = []
+    const batcher = new FrameBatcher<string, string>(
+      16,
+      (_key, values) => commits.push([...values]),
+      {
+        schedule: (callback) => {
+          scheduled.push(callback)
+          return callback
+        },
+        cancel: () => {},
+      },
+    )
+
+    batcher.add("session-report", "final text")
+    batcher.add("session-report", "report artifact")
+    batcher.flush("session-report")
+    scheduled.forEach((callback) => callback())
+
+    expect(commits).toEqual([["final text", "report artifact"]])
+  })
 })

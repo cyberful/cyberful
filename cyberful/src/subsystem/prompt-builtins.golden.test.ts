@@ -149,18 +149,18 @@ const GOLDEN_CASES = [
 type GoldenID = (typeof GOLDEN_CASES)[number]["id"]
 
 const EXPECTED_SYSTEM_SHA256 = {
-  "pentest/brief": "fee3ccb68f2468e78953b9498c1e258a6a9005161f061d70f17214ca693f4203",
-  "pentest/recon": "4f6a6dff630a75f3c0593b8154c5fbba933d46cfb5cbbf76c764a1d66da6e0f6",
-  "pentest/exploit": "16380b68163449b9ab0655a72e6b7399980ac9549d205c616ea22629c204dd28",
-  "pentest/hacker": "8f63ca079bf1910f42f49657b7f2d4c7ed2e9414a1ce017a1a4c98b337ceb684",
-  "pentest/verify": "a42be1095cb8de7c8e8f342247f07f8f9c625cbd0e10d6355048c2bfcd78e72c",
-  "pentest/report": "f981ff76b29163b38ae2bd419a64c18ffc5252aa0dabc6b047124827828670e7",
-  "bug-bounty/brief": "41408cad31e214fc7965438de548dc06eeab08a4c43e68e08e6cadd233c1e0e6",
-  "bug-bounty/recon": "3a1b66f94e016dc2e4e78f79695bf16c18ce2f6b119cbf36e3841df7ba1d0d48",
-  "bug-bounty/exploit": "bf0aa57e2a41e894b2a5bd70e7eb49176961e15501236f35c9a1bf9d6c4d4ca1",
-  "bug-bounty/hacker": "fba7eac761aa220acdbf24dc7cf2ecd8d83d61a06c84294f9b2fcb780ada087c",
-  "bug-bounty/verify": "77654df6ba1ef142480fe1c40ceff478092666704dd46310638abda92da2622b",
-  "bug-bounty/report": "4a5444a62511fb506da4e13cade44b9eb26c5b7e8187b7b70036487a1753963e",
+  "pentest/brief": "35283f0735f2717e4b4931264969583f59a7d6a174ad87de60a9b6edb650afec",
+  "pentest/recon": "7cd0633b420655d6455faa526c91cef855654fea9c0ccca9f97e1efbb4784ba2",
+  "pentest/exploit": "03c59ad3662cbc4312c92a522cb967e5acc67641faf54dcd15f5ef515996b5e7",
+  "pentest/hacker": "ef76624c3030408ffa4b0990a183635210a72b85c7041bba75b6d8d1012c8915",
+  "pentest/verify": "69a957a16870b1dca8a53e77e6de682bdc726f3d8933bb3c40befe4a1e166604",
+  "pentest/report": "1266d393a6c7d547395cbef3d28d0cfa6252f945df700025ea4293c36857c9af",
+  "bug-bounty/brief": "a8dd33f5eb6f45e1f03f0c6a24ee41449bacd22d58cd653e2827cfcd0423daa3",
+  "bug-bounty/recon": "8a05ac143e0b4fb5a062b65c4455c57a717c5d8d2e5910c08568185a90c8cd96",
+  "bug-bounty/exploit": "1b783f94cef50c2dd1addb9270a50775900fdb3b29e4b5a64baeacc04e9c9f59",
+  "bug-bounty/hacker": "8c74668dc632016aeb65665f2a43d1d4e0ddd2d5be895164d87a57f2392ea9b8",
+  "bug-bounty/verify": "68af29c9e15e24279b97ca0d4cb51e80244697750c82372974462f457589b544",
+  "bug-bounty/report": "92fb69c9427175c18a746ddbc9d4760cbdd7be5c73ff7180489fc88a4f933d9a",
   "code-audit/scope": "001d68efd350fcbb911646c71dfd05dc065fad6185f4a864b726019818640f2d",
   "code-audit/index": "1866e743729faea0a06f74bad83faad6076da9d76b910c98c07e425b8abb2f08",
   "code-audit/trace": "75375115daba839f145fcab26207255b8cb61dfe968fc5a096f04e4efe50627f",
@@ -168,7 +168,7 @@ const EXPECTED_SYSTEM_SHA256 = {
   "code-audit/attack": "1a479228655afc5adce743bdb0fd53f41d9edfa1378e2f16e0c13b41e1b69ce6",
   "code-audit/verify": "dbb3c7cbd6fb48ce40c0cb15489e00c972ceed65cc63f93751255decdfc1eee2",
   "code-audit/report": "86c5fec33ddf959c638074a2d37d4881274d40dd36bb1182c4bd067b766e84b4",
-  "ask/ask": "4e24b02761bcc357b2287b98ee0e26b4286a22c2a5f5afb7bc29c01583b2e8b4",
+  "ask/ask": "80b59245a9d65711d346d2f3b467c87c56e2a0da9382f66c8722919b68acd209",
 } satisfies Record<GoldenID, string>
 
 const AUTHORIZATION_PREFIX = {

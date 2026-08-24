@@ -120,6 +120,8 @@ import type {
   SessionGetResponses,
   SessionHypothesesErrors,
   SessionHypothesesResponses,
+  SessionInspectionErrors,
+  SessionInspectionResponses,
   SessionListErrors,
   SessionListResponses,
   SessionMessageErrors,
@@ -1525,6 +1527,38 @@ export class Session extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Inspect a session
+   *
+   * Aggregate live connection state and durable workflow facts without exposing reasoning, transcripts, or raw tool payloads.
+   */
+  public inspection<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      live?: "true" | "false"
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionInspectionResponses, SessionInspectionErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "live" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionInspectionResponses, SessionInspectionErrors, ThrowOnError>({
+      url: "/session/{sessionID}/inspection",
+      ...options,
+      ...params,
     })
   }
 
