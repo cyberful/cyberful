@@ -104,7 +104,7 @@
     "tar": "7.5.13",
     "typebox": "1.1.38",
     "ulid": "catalog:",
-    "web-tree-sitter": "0.25.10",
+    "web-tree-sitter": "0.26.12",
     "which": "7.0.0",
     "xdg-basedir": "5.1.0",
     "yargs": "18.0.0",
